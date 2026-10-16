@@ -1,6 +1,6 @@
 # Call of Duty 3 + World at War
 
-Play **Call of Duty 3** (Xbox 360) natively on Linux and Windows, and bring **Call of Duty: World at War** content into it, from your own copies of both games.
+Play **Call of Duty 3** (Xbox 360) natively on Linux and Windows
 
 - **Call of Duty 3** is rebuilt from your disc as a native program (a static recompilation on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk)), with a WaW-style console, an FOV slider, mouse aim, up to 4K and high frame rates.
 - **Both games' files are ripped** into open formats (textures, models, materials, scripts) for the native engine that blends them. World at War itself is never run.

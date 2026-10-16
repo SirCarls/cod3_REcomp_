@@ -1,0 +1,35 @@
+# CoDUOMP.exe 1.51 (SHA-1 31b21e8b55bb168dd2ce11e510a9cd2f47776c57): names we identified and checked.
+# address	name	how	evidence
+# No public symbols: found by error strings and by matching code shape with CoD2MP_s.exe 1.3 (names/cod2mp.tsv).
+0043A020	Com_Error	strings	"recursive error after: %s"; cdecl (level, format, ...); /GS cookie
+00439CC0	Com_Printf	strings	called with "Info_SetValueForKey: oversize infostring" where CoD2 calls its Com_Printf
+0042C990	FS_HashFileName	shape	same code as CoD2's 0x00421AA0 (fname eax, hashSize on the stack)
+004350F0	Com_StringContains	shape	Quake III's (character compare, toupper); cdecl (str1, str2, casesensitive)
+004351B0	Com_Filter	shape	filter ecx, name and casesensitive on the stack; calls Com_StringContains; returns eax
+004353D0	Com_FilterPath	shape	filter edx, name and casesensitive on the stack; 63 characters, '\' and ':' as '/'
+00435480	Com_HashKey	shape	same code as CoD2's 0x0042D8F0 (string eax, maxlen ebx)
+0043D860	generateHashValue	strings	"null name in generateHashValue"; name in eax
+0044F310	COM_SkipPath	shape	same code as CoD2's 0x00449F60 (path in edx)
+0044F330	COM_StripExtension	shape	in edx, out ecx; cuts at the first '.' (Quake III 1.32's)
+0044F350	COM_StripFilename	shape	in edx, out esi; Q_strncpyz(out, in, strlen(in)) then cut after the last '/'
+0044F3A0	COM_DefaultExtension	shape	path ecx, maxSize and extension on the stack; same steps as CoD2's 0x0044A100
+0044F810	Q_strncpyz	shape	same code as CoD2's 0x0044A650 (dest edi, src ecx, size esi)
+0044F830	Q_stricmpn	shape	same code as CoD2's 0x0044A670; Info_ValueForKey calls it with n = 99999
+0044F890	Q_strncmp	shape	same code as CoD2's 0x0044A6D0
+0044F8D0	Q_stricmp	shape	s1 edx, s2 ecx; NULL gives -1, else Q_stricmpn(s1, s2, 99999); 203 callers
+0044F8F0	Q_strlwr	shape	s in edi; C runtime tolower per byte
+0044F920	Q_strupr	shape	s in edi; C runtime toupper per byte
+0044F950	Q_strcat	strings	"Q_strcat: already overflowed"; dest ebx, size eax, src on the stack
+0044F9A0	Q_PrintStrlen	shape	same code as CoD2's 0x0044A8A0
+0044F9D0	Q_CleanStr	shape	same code as CoD2's 0x0044A8D0
+0044FA30	Com_sprintf	shape	same code as CoD2's 0x0044A930
+0044FAB0	va	strings	"Attempted to overrun string in call to va()"; one 32000-byte ring
+0044FB70	Info_ValueForKey	strings	"Info_ValueForKey: oversize infostring" (8192); s ecx, key ebx
+0044FC90	Info_NextPair	shape	same code as CoD2's 0x0044AB90
+0044FCE0	Info_RemoveKey	strings	"Info_RemoveKey: oversize infostring" (1024); s ecx, key ebx
+0044FE00	Info_RemoveKey_Big	strings	"Info_RemoveKey_Big: oversize infostring" (8192); s ecx, key ebx
+0044FF20	Info_Validate	shape	same code as CoD2's 0x0044ADE0 (s in esi)
+0044FF50	Info_SetValueForKey	strings	"Can't use keys with a \..."; s and value on the stack, key in ecx
+00450180	Info_SetValueForKey_Big	strings	"BIG Info string length exceeded"; s and value on the stack, key in ecx
+0056D1FD	tolower	shape	C runtime; same code as CoD2's 0x0057B5B6
+0056D2F0	toupper	shape	C runtime; same code as CoD2's 0x0057B7D5

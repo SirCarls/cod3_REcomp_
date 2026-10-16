@@ -1,0 +1,93 @@
+diff --git a/include/rex/graphics/util/draw.h b/include/rex/graphics/util/draw.h
+index 3da182d..aee16ba 100644
+--- a/include/rex/graphics/util/draw.h
++++ b/include/rex/graphics/util/draw.h
+@@ -353,8 +353,18 @@ union ResolveEdramInfo {
+     // of the resolve region with the contents of the first surely covered
+     // column / row with resolution scaling.
+     uint32_t fill_half_pixel_offset : 1;
++    uint32_t : 1;
++    // Bit 11 of the base, for resolves starting past tile 2047 in the
++    // 4096-tile emulated EDRAM (read by the edited Vulkan resolve shaders).
++    uint32_t base_tiles_bit_11 : 1;
+   };
+   ResolveEdramInfo() : packed(0) { static_assert_size(*this, sizeof(packed)); }
++  uint32_t GetBaseTiles() const { return base_tiles | (base_tiles_bit_11 << 11); }
++  void SetBaseTiles(uint32_t tiles) {
++    tiles &= xenos::kEdramTileCount - 1;
++    base_tiles = tiles & ((1u << 11) - 1);
++    base_tiles_bit_11 = (tiles >> 11) & 1;
++  }
+ };
+ 
+ union ResolveCoordinateInfo {
+diff --git a/include/rex/graphics/xenos.h b/include/rex/graphics/xenos.h
+index f7fd14e..a9d8d12 100644
+--- a/include/rex/graphics/xenos.h
++++ b/include/rex/graphics/xenos.h
+@@ -410,7 +410,14 @@ constexpr uint32_t kRenderTargetFormatBits =
+ 
+ constexpr uint32_t kEdramTileWidthSamples = 80;
+ constexpr uint32_t kEdramTileHeightSamples = 16;
+-constexpr uint32_t kEdramTileCount = 2048;
++// The Xbox 360 has 2048 tiles (10 MiB) and wraps around them. The emulated
++// EDRAM has 4096 so a title may draw at a resolution whose color and depth
++// together don't fit in 10 MiB (Call of Duty 3 at 1920x1080: 3264 tiles).
++// Surfaces and resolves that stay within 2048 tiles behave as on the console.
++// The precompiled Vulkan resolve shaders get the same size from the setup
++// tool (c3w/sdk_shaders.py); the D3D12 ones still wrap at 2048, so on D3D12
++// a title must stay within 2048 tiles.
++constexpr uint32_t kEdramTileCount = 4096;
+ constexpr uint32_t kEdramSizeBytes =
+     kEdramTileCount * kEdramTileHeightSamples * kEdramTileWidthSamples * sizeof(uint32_t);
+ 
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 953c5fd..fe63201 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -946,12 +946,12 @@ bool RenderTargetCache::PrepareHostRenderTargetsResolveClear(
+   if (resolve_info.IsClearingDepth()) {
+     pitch_tiles_at_32bpp = resolve_info.depth_edram_info.pitch_tiles;
+     base_offset_tiles_at_32bpp =
+-        resolve_info.depth_edram_info.base_tiles - resolve_info.depth_original_base;
++        resolve_info.depth_edram_info.GetBaseTiles() - resolve_info.depth_original_base;
+     msaa_samples = resolve_info.depth_edram_info.msaa_samples;
+   } else if (resolve_info.IsClearingColor()) {
+     pitch_tiles_at_32bpp = resolve_info.color_edram_info.pitch_tiles;
+     base_offset_tiles_at_32bpp =
+-        resolve_info.color_edram_info.base_tiles - resolve_info.color_original_base;
++        resolve_info.color_edram_info.GetBaseTiles() - resolve_info.color_original_base;
+     if (resolve_info.color_edram_info.format_is_64bpp) {
+       assert_zero(pitch_tiles_at_32bpp & 1);
+       pitch_tiles_at_32bpp >>= 1;
+diff --git a/src/graphics/util/draw.cpp b/src/graphics/util/draw.cpp
+index 305380e..9e96082 100644
+--- a/src/graphics/util/draw.cpp
++++ b/src/graphics/util/draw.cpp
+@@ -745,7 +745,7 @@ void GetResolveEdramTileSpan(ResolveEdramInfo edram_info, ResolveCoordinateInfo
+   uint32_t y1 = (((coordinate_info.edram_offset_y_div_8 + height_div_8) << y_scale_log2) +
+                  (xenos::kEdramTileHeightSamples - 1)) /
+                 xenos::kEdramTileHeightSamples;
+-  base_out = edram_info.base_tiles + y0 * edram_info.pitch_tiles + x0;
++  base_out = edram_info.GetBaseTiles() + y0 * edram_info.pitch_tiles + x0;
+   row_length_used_out = x1 - x0;
+   rows_out = y1 - y0;
+ }
+@@ -1040,7 +1040,7 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
+     depth_edram_info.is_depth = 1;
+     // If wrapping happens, it's fine, it doesn't matter how many times and
+     // where modulo xenos::kEdramTileCount is applied in this context.
+-    depth_edram_info.base_tiles = rb_depth_info.depth_base + edram_base_offset_tiles;
++    depth_edram_info.SetBaseTiles(rb_depth_info.depth_base + edram_base_offset_tiles);
+     depth_edram_info.format = uint32_t(rb_depth_info.depth_format);
+     depth_edram_info.format_is_64bpp = 0;
+     depth_edram_info.fill_half_pixel_offset = uint32_t(fill_half_pixel_offset);
+@@ -1061,7 +1061,7 @@ bool GetResolveInfo(const RegisterFile& regs, const memory::Memory& memory,
+     color_edram_info.is_depth = 0;
+     // If wrapping happens, it's fine, it doesn't matter how many times and
+     // where modulo xenos::kEdramTileCount is applied in this context.
+-    color_edram_info.base_tiles = color_info.color_base + (edram_base_offset_tiles << is_64bpp);
++    color_edram_info.SetBaseTiles(color_info.color_base + (edram_base_offset_tiles << is_64bpp));
+     color_edram_info.format = uint32_t(color_info.color_format);
+     color_edram_info.format_is_64bpp = is_64bpp;
+     color_edram_info.fill_half_pixel_offset = uint32_t(fill_half_pixel_offset);

@@ -1,0 +1,26 @@
+# mace2.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x8903AD18 = {}  # code-ref @0x890B3FF0
+0x890A5FE8 = {}  # code-ref @0x8906E35C
+0x890D0488 = {}  # code-ref @0x8917FA90
+0x891B3A78 = {}  # code-ref @0x8923B6D0
+0x891B5600 = {}  # code-ref @0x8923C1C8
+0x891B66A0 = {}  # code-ref @0x890CDEA0
+0x891B66B8 = {}  # code-ref @0x890CDEBC
+0x891B66D0 = {}  # code-ref @0x890CDED8
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89265130
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x8919F2CC
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x8919F3FC
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

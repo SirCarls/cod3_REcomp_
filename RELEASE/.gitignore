@@ -1,0 +1,59 @@
+# Game data never goes into the repository. Everything game-specific is
+# made on each user's machine from their own discs (tools/check_repo.py
+# checks this in CI).
+#
+# The folders the tools make in the project folder: input/ (your discs and
+# downloads), output/ (the built game), work/ (temporary build files) and
+# dev/ (tools/run_local.* results: logs, rips, test builds).
+/input/
+/output/
+/work/
+/config/
+/dev/
+# Older layouts (before 2026-10-07): run_local results and builds made
+# straight into the project folder.
+/assets/
+/ripped/
+/logs/
+/build/
+/data/
+/launcher/
+/userdata/
+/Launcher.sh
+/Launcher.bat
+/cod3_waw.json
+*.AppImage
+*.iso
+*.xex
+*.cod
+*.wbk
+*.ff
+*.iwd
+*.rar
+*.zip
+
+# The recomp's generated C++ and its game executables (made by the setup tool).
+/COD_3_WAW_Setup-tool/recomp/generated/*
+!/COD_3_WAW_Setup-tool/recomp/generated/rexglue.cmake
+/COD_3_WAW_Setup-tool/recomp/assets/
+/COD_3_WAW_Setup-tool/recomp/out/
+
+# Build output.
+/engine/target/
+/engine/bin/
+__pycache__/
+*.pyc
+
+# Editors and systems.
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Files the Claude desktop app saves next to the project.
+/Claude outputs/
+
+# The new-user bundle made by tools/make_release.py (a copy of the files above).
+/RELEASE/

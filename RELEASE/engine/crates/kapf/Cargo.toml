@@ -1,0 +1,10 @@
+[package]
+name = "kapf"
+description = "Call of Duty 3 (Xbox 360) .cod archive reader: KAPF header, sections, NCH/LZO1X chunks."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+lzo = { path = "../lzo" }

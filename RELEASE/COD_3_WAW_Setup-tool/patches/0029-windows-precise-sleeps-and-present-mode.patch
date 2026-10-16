@@ -1,0 +1,223 @@
+diff --git a/include/rex/ui/present_mode.h b/include/rex/ui/present_mode.h
+new file mode 100644
+--- /dev/null
++++ b/include/rex/ui/present_mode.h
+@@ -0,0 +1,23 @@
++/**
++ * @file        rex/ui/present_mode.h
++ *
++ * @brief       How the presenter shows frames, in words, for a game's log.
++ *
++ * The presenters set it when they make a swap chain, for example
++ * "Vulkan immediate (no V-Sync, may tear)" or "Direct3D 12 flip, sync
++ * interval 0, tearing allowed". Empty until then. Any thread.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <string>
++#include <string_view>
++
++namespace rex::ui {
++
++std::string GetPresentModeDescription();
++void SetPresentModeDescription(std::string_view description);
++
++}  // namespace rex::ui
+diff --git a/src/core/threading_win.cpp b/src/core/threading_win.cpp
+--- a/src/core/threading_win.cpp
++++ b/src/core/threading_win.cpp
+@@ -100,15 +100,69 @@
+   MemoryBarrier();
+ }
+ 
++// ::Sleep wakes on the system timer's tick: a 1 ms sleep takes 1 to 2 ms
++// with timeBeginPeriod(1), and 15.6 ms when Windows doesn't apply a
++// program's timer request (Windows 11 may drop it while it thinks the window
++// is hidden). The GPU's vblank thread and its command thread wait in 1 ms
++// sleeps every frame, so on Windows those set the frame rate's ceiling
++// (32 fps at 15.6 ms). A high-resolution waitable timer (Windows 10 1803 and
++// later) wakes within a fraction of a millisecond whatever the tick is, like
++// nanosleep on Linux. One per thread, made on its first sleep and kept for
++// the thread's life (closed when the thread ends); nullptr where Windows has
++// none (then ::Sleep as before).
++#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
++#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002  // Windows 10 1803 SDK and later
++#endif
++static HANDLE ThreadSleepTimer() {
++  struct Holder {
++    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
++                                          TIMER_MODIFY_STATE | SYNCHRONIZE);
++    ~Holder() {
++      if (timer) {
++        CloseHandle(timer);
++      }
++    }
++  };
++  thread_local Holder holder;
++  return holder.timer;
++}
++
++// Arms the thread's timer `duration` from now; false if there is no timer.
++static bool ArmThreadSleepTimer(HANDLE timer, std::chrono::microseconds duration) {
++  if (!timer) {
++    return false;
++  }
++  LARGE_INTEGER due;
++  due.QuadPart = -int64_t(duration.count()) * 10;  // relative, in 100 ns units
++  return SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) != FALSE;
++}
++
+ void Sleep(std::chrono::microseconds duration) {
+   if (duration.count() < 100) {
+     MaybeYield();
+-  } else {
+-    ::Sleep(static_cast<DWORD>(duration.count() / 1000));
++    return;
++  }
++  HANDLE timer = ThreadSleepTimer();
++  if (ArmThreadSleepTimer(timer, duration) &&
++      WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0) {
++    return;
+   }
++  ::Sleep(static_cast<DWORD>(duration.count() / 1000));
+ }
+ 
+ SleepResult AlertableSleep(std::chrono::microseconds duration) {
++  HANDLE timer = ThreadSleepTimer();
++  if (duration.count() >= 100 && ArmThreadSleepTimer(timer, duration)) {
++    // Alertable: a queued APC ends the wait early, as SleepEx does.
++    const DWORD result = WaitForSingleObjectEx(timer, INFINITE, TRUE);
++    if (result == WAIT_IO_COMPLETION) {
++      CancelWaitableTimer(timer);
++      return SleepResult::kAlerted;
++    }
++    if (result == WAIT_OBJECT_0) {
++      return SleepResult::kSuccess;
++    }
++  }
+   if (SleepEx(static_cast<DWORD>(duration.count() / 1000), TRUE) == WAIT_IO_COMPLETION) {
+     return SleepResult::kAlerted;
+   }
+diff --git a/src/ui/d3d12/d3d12_presenter.cpp b/src/ui/d3d12/d3d12_presenter.cpp
+--- a/src/ui/d3d12/d3d12_presenter.cpp
++++ b/src/ui/d3d12/d3d12_presenter.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++#include <rex/ui/present_mode.h>
+ #include <rex/ui/d3d12/d3d12_presenter.h>
+ #include <rex/ui/d3d12/d3d12_provider.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+@@ -450,6 +451,16 @@
+     paint_context_.swap_chain_height = new_swap_chain_height;
+     paint_context_.swap_chain_allows_tearing =
+         (swap_chain_desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
++    // Frames are presented with sync interval 0 (PaintAndPresentImpl), so
++    // the swap chain never waits for the display; for the game's log
++    // (rex/ui/present_mode.h).
++    SetPresentModeDescription(
++        paint_context_.swap_chain_allows_tearing
++            ? "Direct3D 12 flip, sync interval 0, tearing allowed (no V-Sync, may tear)"
++            : "Direct3D 12 flip, sync interval 0, no tearing (the newest frame at each refresh)");
++    REXLOG_INFO("D3D12Presenter: Created {}x{} swap chain, {} buffers, tearing {}",
++                new_swap_chain_width, new_swap_chain_height, PaintContext::kSwapChainBufferCount,
++                paint_context_.swap_chain_allows_tearing ? "allowed" : "not allowed");
+     for (uint32_t i = 0; i < PaintContext::kSwapChainBufferCount; ++i) {
+       if (FAILED(paint_context_.swap_chain->GetBuffer(
+               i, IID_PPV_ARGS(&paint_context_.swap_chain_buffers[i])))) {
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -20,6 +20,7 @@
+ #include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
++#include <rex/ui/present_mode.h>
+ #include <rex/ui/presenter.h>
+ #include <rex/ui/window.h>
+ 
+@@ -283,6 +284,22 @@
+ namespace rex {
+ namespace ui {
+ 
++// rex/ui/present_mode.h
++namespace {
++std::mutex present_mode_mutex;
++std::string present_mode_description;
++}  // namespace
++
++std::string GetPresentModeDescription() {
++  std::lock_guard<std::mutex> lock(present_mode_mutex);
++  return present_mode_description;
++}
++
++void SetPresentModeDescription(std::string_view description) {
++  std::lock_guard<std::mutex> lock(present_mode_mutex);
++  present_mode_description.assign(description);
++}
++
+ void Presenter::FatalErrorHostGpuLossCallback([[maybe_unused]] bool is_responsible,
+                                               [[maybe_unused]] bool statically_from_ui_thread) {
+   rex::FatalError("Graphics device lost (probably due to an internal error)");
+@@ -1640,8 +1657,13 @@
+ 
+ void Presenter::ForceUIThreadPaintTick() {
+ #if REX_PLATFORM_WIN32
+-  std::scoped_lock<std::mutex> dxgi_ui_tick_lock(dxgi_ui_tick_mutex_);
+-  dxgi_ui_tick_force_requested_ = true;
++  {
++    std::scoped_lock<std::mutex> dxgi_ui_tick_lock(dxgi_ui_tick_mutex_);
++    dxgi_ui_tick_force_requested_ = true;
++  }
++  // A UI thread already waiting for the next vblank (WaitForUITickFromUIThread)
++  // shows the new frame now, not up to a refresh later.
++  dxgi_ui_tick_signal_condition_.notify_all();
+ #else
+   ui_tick_force_requested_.store(true, std::memory_order_release);
+ #endif  // XE_PLATFORM
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -16,6 +16,7 @@
+ #include <cmath>
+ #include <cstring>
+ #include <memory>
++#include <string>
+ #include <utility>
+ #include <vector>
+ 
+@@ -24,6 +25,7 @@
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/platform.h>
++#include <rex/ui/present_mode.h>
+ #include <rex/ui/vulkan/presenter.h>
+ #include <rex/ui/vulkan/util.h>
+ 
+@@ -1416,6 +1418,22 @@
+       swapchain_create_info.imageExtent.width, swapchain_create_info.imageExtent.height,
+       uint32_t(swapchain_create_info.imageFormat), uint32_t(swapchain_create_info.imageColorSpace),
+       uint32_t(swapchain_create_info.presentMode));
++  // The mode in words for the game's log (rex/ui/present_mode.h).
++  const char* present_mode_text = "FIFO (V-Sync)";
++  switch (swapchain_create_info.presentMode) {
++    case VK_PRESENT_MODE_IMMEDIATE_KHR:
++      present_mode_text = "immediate (no V-Sync, may tear)";
++      break;
++    case VK_PRESENT_MODE_MAILBOX_KHR:
++      present_mode_text = "mailbox (no tearing, the newest frame at each refresh)";
++      break;
++    case VK_PRESENT_MODE_FIFO_RELAXED_KHR:
++      present_mode_text = "FIFO relaxed (V-Sync, tears when a frame is late)";
++      break;
++    default:
++      break;
++  }
++  SetPresentModeDescription(std::string("Vulkan ") + present_mode_text);
+ 
+   present_queue_family_out = queue_family_index_present;
+   image_format_out = swapchain_create_info.imageFormat;

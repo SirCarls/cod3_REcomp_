@@ -1,0 +1,31 @@
+# stbert.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89031BE0 = {}  # code-ref @0x89075E10
+0x89031C18 = {}  # code-ref @0x89075C90
+0x89035EB0 = {}  # code-ref @0x89073988
+0x890388B8 = {}  # code-ref @0x890740E0
+0x89038D48 = {}  # code-ref @0x89074260
+0x8903A3B0 = {}  # code-ref @0x89074D60
+0x8906B598 = {}  # code-ref @0x89052254
+0x8908CFF8 = {}  # code-ref @0x89141EB8
+0x89178378 = {}  # code-ref @0x89200228
+0x89179F00 = {}  # code-ref @0x89200D20
+0x8917AFA0 = {}  # code-ref @0x8908AA10
+0x8917AFB8 = {}  # code-ref @0x8908AA2C
+0x8917AFD0 = {}  # code-ref @0x8908AA48
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89225060
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89163B54
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89163C84
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

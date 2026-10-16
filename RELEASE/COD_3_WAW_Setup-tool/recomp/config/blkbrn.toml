@@ -1,0 +1,24 @@
+# blkbrn.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89083C68 = {}  # code-ref @0x89133C18
+0x8916A378 = {}  # code-ref @0x891F22B8
+0x8916BF00 = {}  # code-ref @0x891F2DB0
+0x8916CFA0 = {}  # code-ref @0x89081680
+0x8916CFB8 = {}  # code-ref @0x8908169C
+0x8916CFD0 = {}  # code-ref @0x890816B8
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89215060
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89155B54
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89155C84
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

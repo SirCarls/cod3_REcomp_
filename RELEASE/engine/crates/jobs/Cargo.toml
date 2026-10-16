@@ -1,0 +1,10 @@
+[package]
+name = "jobs"
+description = "The Rust engine's job pool: one pool sized from the machine (crate machine), three priorities (frame, now, background) and a parallel loop the thread that asks helps with, so a frame's work, draw recording included, spreads over every core."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+machine = { path = "../machine" }

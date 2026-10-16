@@ -1,0 +1,11 @@
+[package]
+name = "decomp_check"
+description = "Answers tools/decomp/decomp.py check: runs the Rust ports on the checker's test cases."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+cod3_game = { path = "../../crates/cod3_game" }

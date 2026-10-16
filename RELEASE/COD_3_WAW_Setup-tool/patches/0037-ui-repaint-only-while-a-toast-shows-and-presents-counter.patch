@@ -1,0 +1,118 @@
+diff --git a/include/rex/graphics/gpu_stats.h b/include/rex/graphics/gpu_stats.h
+index 8a46575..b809cbd 100644
+--- a/include/rex/graphics/gpu_stats.h
++++ b/include/rex/graphics/gpu_stats.h
+@@ -19,9 +19,9 @@
+ #include <cstdint>
+ 
+ // 2: kGpuThreadMicros, kSubmitMicros, kShaderTranslations,
+-// kShaderTranslateMicros and ScopedMicros. A game built against either
+-// version can test this to know which counters exist.
+-#define REX_GRAPHICS_STATS_VERSION 2
++// kShaderTranslateMicros and ScopedMicros. 3: kPresents. A game built against
++// any version can test this to know which counters exist.
++#define REX_GRAPHICS_STATS_VERSION 3
+ 
+ namespace rex::graphics::stats {
+ 
+@@ -50,6 +50,11 @@ enum class Counter : uint32_t {
+                          //   host command buffer and submitting it
+   kShaderTranslations,   // guest shaders translated while a draw waited for them
+   kShaderTranslateMicros,//   time spent (the draw, and the frame, wait)
++  // Pictures the window presented: the game's frames plus repaints for the
++  // UI alone (an open settings window, an animation). Well above the game's
++  // frame rate means the window repaints on its own, which costs a CPU core
++  // and graphics card time.
++  kPresents,
+   kCount
+ };
+ 
+diff --git a/include/rex/ui/overlay/achievement_toast.h b/include/rex/ui/overlay/achievement_toast.h
+index 7642601..e27cb81 100644
+--- a/include/rex/ui/overlay/achievement_toast.h
++++ b/include/rex/ui/overlay/achievement_toast.h
+@@ -12,6 +12,7 @@
+ #pragma once
+ 
+ #include <chrono>
++#include <atomic>
+ #include <deque>
+ #include <mutex>
+ #include <optional>
+@@ -35,6 +36,14 @@ class AchievementToastDialog : public AchievementNotificationDialog {
+   // Thread-safe: safe to call from any thread, including guest threads.
+   void Push(const rex::system::AchievementEvent& event) override;
+ 
++  // The window repaints over and over only while a toast is on screen (to
++  // fade it in and out). The dialog exists for the whole session, so with the
++  // default (always) the window repainted and presented at the display's rate
++  // on top of the game's own frames all the time, for nothing.
++  bool WantsContinuousRepaint() const override {
++    return showing_.load(std::memory_order_relaxed);
++  }
++
+  protected:
+   void OnDraw(ImGuiIO& io) override;
+ 
+@@ -49,6 +58,7 @@ class AchievementToastDialog : public AchievementNotificationDialog {
+ 
+   std::mutex mutex_;
+   std::deque<PendingToast> queue_;
++  std::atomic<bool> showing_{false};  // queue_ not empty; set under mutex_
+   AchievementIconCache icon_cache_;
+ };
+ 
+diff --git a/src/core/gpu_stats.cpp b/src/core/gpu_stats.cpp
+index c6f3507..a59c7e0 100644
+--- a/src/core/gpu_stats.cpp
++++ b/src/core/gpu_stats.cpp
+@@ -55,6 +55,7 @@ const char* Name(Counter counter) {
+     case Counter::kSubmitMicros: return "submit_us";
+     case Counter::kShaderTranslations: return "shader_translations";
+     case Counter::kShaderTranslateMicros: return "shader_translate_us";
++    case Counter::kPresents: return "presents";
+     case Counter::kCount: break;
+   }
+   return "?";
+diff --git a/src/ui/overlay/achievement_toast.cpp b/src/ui/overlay/achievement_toast.cpp
+index 53b8c0b..91b4e15 100644
+--- a/src/ui/overlay/achievement_toast.cpp
++++ b/src/ui/overlay/achievement_toast.cpp
+@@ -27,6 +27,7 @@ AchievementToastDialog::~AchievementToastDialog() {}
+ void AchievementToastDialog::Push(const rex::system::AchievementEvent& event) {
+   std::lock_guard<std::mutex> lock(mutex_);
+   queue_.push_back({event, std::chrono::steady_clock::now()});
++  showing_.store(true, std::memory_order_relaxed);
+ }
+ 
+ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+@@ -47,6 +48,7 @@ void AchievementToastDialog::OnDraw(ImGuiIO& io) {
+         break;
+       }
+     }
++    showing_.store(!queue_.empty(), std::memory_order_relaxed);
+     if (queue_.empty()) {
+       return;
+     }
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+index 2429501..69576d7 100644
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -18,6 +18,7 @@
+ 
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/logging.h>
+ #include <rex/platform.h>
+ #include <rex/ui/present_mode.h>
+@@ -1521,6 +1522,9 @@ Presenter::PaintResult Presenter::PaintAndPresent(bool execute_ui_drawers) {
+   assert_false(execute_ui_drawers && !is_in_ui_thread_paint_);
+   assert_true(surface_paint_connection_state_ == SurfacePaintConnectionState::kConnectedPaintable);
+   PaintResult result = PaintAndPresentImpl(execute_ui_drawers);
++  if (result == PaintResult::kPresented || result == PaintResult::kPresentedSuboptimal) {
++    graphics::stats::Add(graphics::stats::Counter::kPresents);
++  }
+   switch (result) {
+     case PaintResult::kPresented:
+       surface_paint_connection_was_optimal_at_successful_paint_ = true;

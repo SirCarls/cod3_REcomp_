@@ -1,0 +1,55 @@
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -552,6 +552,12 @@
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), true);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), true);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), true);
++      break;
+     default:
+       break;
+   }
+@@ -571,6 +577,12 @@
+     case rex::ui::MouseEvent::Button::kMiddle:
+       SetKeyState(static_cast<uint16_t>(VirtualKey::kMButton), false);
+       break;
++    case rex::ui::MouseEvent::Button::kX1:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton1), false);
++      break;
++    case rex::ui::MouseEvent::Button::kX2:
++      SetKeyState(static_cast<uint16_t>(VirtualKey::kXButton2), false);
++      break;
+     default:
+       break;
+   }
+--- a/src/ui/keybinds.cpp
++++ b/src/ui/keybinds.cpp
+@@ -141,6 +141,14 @@
+     {"LMB", VirtualKey::kLButton},
+     {"RMB", VirtualKey::kRButton},
+     {"MMB", VirtualKey::kMButton},
++    // Side buttons ("back" / "forward"). MOUSE4 / MOUSE5 are the names the
++    // PC Call of Duty games use in their configs.
++    {"MB4", VirtualKey::kXButton1},
++    {"MB5", VirtualKey::kXButton2},
++    {"MOUSE4", VirtualKey::kXButton1},
++    {"MOUSE5", VirtualKey::kXButton2},
++    {"MM4", VirtualKey::kXButton1},
++    {"MM5", VirtualKey::kXButton2},
+ };
+ 
+ VirtualKey ParseVirtualKey(std::string_view name) {
+@@ -149,6 +157,9 @@
+ }
+ 
+ std::string VirtualKeyToString(VirtualKey vk) {
++  // Always the short names, whatever order the aliases come out of the table in.
++  if (vk == VirtualKey::kXButton1) return "MB4";
++  if (vk == VirtualKey::kXButton2) return "MB5";
+   for (const auto& [name, key] : kKeyNames) {
+     if (key == vk) {
+       return name;

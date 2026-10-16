@@ -1,0 +1,13 @@
+[package]
+name = "iw_pc"
+description = "Call of Duty 2 (1.3) and Call of Duty: United Offensive (1.51), PC: their own code decompiled into Rust and checked against the original."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+# Ports the PC originals share with Call of Duty 3's, checked against both games.
+cod3_game = { path = "../cod3_game" }
+# SHA-256 for checking the protocol tables read from the player's executable (net::protocol_data).
+game_sources = { path = "../game_sources" }

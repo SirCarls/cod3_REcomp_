@@ -1,0 +1,128 @@
+# Call of Duty 3: textures that show Nazi party or German military insignia.
+#
+# To replace one with your own picture, save a PNG named <file>.png (the first
+# column, exactly, "$" and all) in <game folder>/data/cod3/user_textures_png/
+# and press "Build user texture pack" in the setup tool (Play tab). The rules
+# (PNG, RGBA 8-bit, the same aspect ratio, sizes, alpha) are in
+# docs/TEXTURE_REPLACEMENT.md. Start from the ripped original,
+# data/cod3/textures/<file>.png, so the picture lines up with the model.
+#
+# Columns (tab-separated):
+#   file    the PNG name (without .png) of the ripped picture to replace
+#   key     the texture's key (hd_keys.tsv): XXH64 of its original data. This,
+#           not a memory address, identifies it while the game runs.
+#   width, height   the original's size in texels
+#   format  the GPU format the game keeps it in (DXT1, DXT3, DXT5)
+#   sizes   sizes your PNG may have (any scale >= 1 with this aspect ratio,
+#           sides multiples of 4, at most 8192; these are the whole scales)
+#   alpha   "opaque": your PNG's alpha is ignored. "transparent parts": your
+#           picture may be more solid than the original, never more see-through.
+#   mp      whether your replacement is also used in a multiplayer match.
+#           "no" for textures soldiers or vehicles wear: a replaced copy could
+#           make players easier to see, so matches use the game's own. "no"
+#           also, for now, for the world insignia found in the other levels:
+#           the game's own multiplayer list (recomp/src/game/hd_textures.cpp)
+#           doesn't have their keys yet. Outside a match every row is used.
+#   kind    party: a Nazi party symbol (swastika, SS runes, party eagle).
+#           military: a German military marking (Balkenkreuz, Iron Cross),
+#           not a party symbol. related: Nazi-era, no party symbol visible.
+#   shows   what the picture shows
+#   where   the archives (sp/<level>/<archive>.cod, or sp/frontend.cod for the
+#           menus) it is in, one level after another ("; "). Outside Saint-Lo
+#           these are the archives whose materials use the picture's name; a
+#           name with two pictures (<name>__<key>) can't be told apart there.
+#           "not named by any material": no single-player material uses it by
+#           name (it may be for multiplayer, or unused).
+#
+# This list covers all 15 single-player levels (sp/<level>/*.cod), the shared
+# sp/global.cod and sp/anim.cod, and the menus (sp/frontend.cod). Saint-Lo and
+# the shared archives were checked in the archives themselves, the other 14
+# levels in their ripped textures and material listings. The multiplayer maps
+# (mp/) were not checked, as their archives weren't available; a picture they
+# share with the single-player levels has the same key and is covered here.
+# Movies (attract.wmv ...) are video,
+# not textures, and can't be replaced this way; the animated menu background
+# frames in frontend.cod's DTEX section aren't textures the game looks up
+# either.
+#
+# file	key	width	height	format	sizes	alpha	mp	kind	shows	where
+# Saint-Lo, the shared archives and the menus
+cloth_masked$of_flag_german	e26a0a1331259fd8	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	yes	party	Nazi party flag: a black swastika on a white disc, red field	saint_lo/zn09
+decal$of_germanflag_dirty_c	3d71bea5f9c2267d	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	yes	party	Hanging party banner: a swastika on a white disc, dirty red cloth	saint_lo/zn07, zn09, zn10, zn12, zn12b, zn13, zn13a, zn14, zn14b
+of_c_pnzgren_helm1_c	d7d10142dfca1784	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	German soldier's helmet: an SS runes decal and a swastika shield decal	saint_lo/chars; blkbrn/chars; chambois/char; crssrds/chars; falaise/chars; laison/chars; mace2/chars; stbert/chars
+of_c_pnzgren_helm2_c	8d5ba713bcfd5f25	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	The same helmet with a net: SS runes and swastika shield decals	saint_lo/chars; blkbrn/chars; chambois/char; crssrds/chars; falaise/chars; laison/chars; mace2/chars; stbert/chars
+of_c_pnzgren_helm3_c	bec9817db2754aff	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	The same helmet, plain: SS runes and swastika shield decals	saint_lo/chars; blkbrn/chars; chambois/char; crssrds/chars; falaise/chars; laison/chars; stbert/chars
+of_c_pnzgren_body1_c	7d8c6dbbfd2117ce	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Panzergrenadier camouflage uniform: an SS runes collar tab (and a belt buckle with an eagle emblem, not legible at this size)	saint_lo/chars, ei_char; blkbrn/chars; chambois/char; crssrds/chars; falaise/chars; laison/chars; stbert/chars
+c_pnzgren_body1_s	04aca89141fa9c11	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	The same uniform's shine (specular) map: the collar runes show faintly in the shine; optional, replace together with the uniform	saint_lo/chars, ei_char; blkbrn/chars; chambois/char; crssrds/chars; falaise/chars; laison/chars; stbert/chars
+metal$of_v_fw190	cc05fcb9517dacb0	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	yes	party	Fw 190 fighter plane: a swastika on the tail fin, and Balkenkreuz crosses on the wings and fuselage	saint_lo/vehicles
+wood$us_gersmallcrate_top_c	78110e521ebffb27	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	yes	party	Ink stamp on a crate lid: an eagle over a wreath (party eagle style; the swastika in the wreath isn't legible at this size)	saint_lo/saint_lo; crssrds/zn10
+metal$p_ger_knife_c	244cd5634547c2be	512	64	DXT1	512x64, 1024x128, 2048x256, 4096x512	opaque	yes	related	Hitler Youth knife: the red and white diamond emblem on the grip (its center, where the swastika would be, is blank)	saint_lo/zn09, zn14; crssrds/zn03
+decal$us_german_propaganda_	43e8a8f26b93615f	256	256	DXT3	256x256, 512x512, 1024x1024, 2048x2048	transparent parts	yes	related	German wartime propaganda poster: charging soldiers and a collection can; no party symbol visible	saint_lo/mid
+panzezriv_c	aede510890dfb141	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Panzer IV tank: Balkenkreuz crosses (Wehrmacht marking, not a party symbol)	saint_lo/vehicles
+sp_bs_veh_main_icon_02	fe2665c6dacb3f45	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (vehicles): an Iron Cross on red behind a German tank; no swastika	frontend
+sp_bs_wpn_main_icon_02	2beac860929168f5	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (weapons): the same cross on red behind a P38 pistol; no swastika	frontend
+# The other levels: world insignia (flags, crates, posters, a knife, the Stuka)
+cloth$of_germanflag_dirty_c	d616f2029e2f1500	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	no	party	Hanging party banner (cloth version): a swastika on a white disc, dirty red cloth	mayenne/court, hall, town_i, twn_i_a
+wood$of_crate_top_axis_c	78f187697b49bea1	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	Crate lid stencil: an eagle with a swastika in its wreath, "Deutsches Wehrmacht", a small eagle stamp and "Der Reichsfuehrer-SS" with SS runes	chambois/zn06; crssrds/zn03_a; forest/zn07; fuelplnt/wrhs, zn05; hostage/zn13; island/z2/zn02ab, z4/zn04a, z5/zn05a; laison/zn07; mace2/zn01, zn02a, zn03, zn03a, zn04a; mayenne/phantomz, town_n; stbert/zn07
+wood$crate_top_axis_c	6fd792844e53aa72	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	The same crate lid, edited: the eagle over an empty wreath (no swastika), a small eagle stamp	falaise/zn10
+of_knife148_c	f7b23274ceea0665	512	128	DXT1	512x128, 1024x256, 2048x512, 4096x1024	opaque	no	party	Hitler Youth knife: the red and white diamond emblem with a swastika on the grip, "Blut und Ehre" on the blade	crssrds/zn03
+decal$german_propaganda1_c	cfcee273e57f1cea	256	256	DXT3	256x256, 512x512, 1024x1024, 2048x2048	transparent parts	no	related	Wartime propaganda poster: a Hitler Youth boy with an armband; no legible symbol	forest/zn07; fuelplnt/office
+decal$german_propaganda5_c	8fe7a1b07761ef73	256	256	DXT3	256x256, 512x512, 1024x1024, 2048x2048	transparent parts	no	related	Wartime propaganda leaflet "Longing for You" (a pin-up); no symbol	forest/zn07
+cloth$germankriegsflag_dirt	87c95b90af7d844a	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	no	military	German war flag as the game has it: an Iron Cross in the center disc (where the real flag has a swastika)	crssrds/zn03, zn06_a, zn07, zn08, zn09
+metal$stuka_body	4f951004958dffc5	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	military	Stuka (Ju 87) dive bomber in flight: Balkenkreuz crosses; no swastika in this picture	crssrds/vehicles; mayenne/dpbridge
+metal$stuka_wingtip_c	fb61d0649fcd34a3	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	military	A Stuka's wrecked wing: a Balkenkreuz	crssrds/zn07
+# The other levels: soldiers (uniforms, the gorget, helmets, heads)
+of_c_wrmcht2_body_c	d3f42c269537bc8a	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Military police (Feldgendarmerie) uniform: breast eagle with a swastika, a sleeve eagle and a cuff title	fuelplnt/chars; hostage/chars
+of_c_wrmcht2_emb_c	e962e352d4e48663	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	Military police gorget ("Feldjaegerkorps"): an eagle over a wreath with a swastika	fuelplnt/chars; hostage/chars
+c_wrmcht2_emb_s	75397864ba5e6644	128	128	DXT1	128x128, 256x256, 512x512, 1024x1024	opaque	no	party	The gorget's shine (specular) map: the eagle and wreath show in the shine; optional, replace together with the gorget	fuelplnt/chars; hostage/chars
+of_c_wrmcht_body_c	962d029613386d33	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Wehrmacht soldier's uniform: breast eagle with a swastika	forest/chars; mayenne/chars; nightd/chars
+of_c_wrmcht_m_body_c	633eaf1badbc25d7	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Wehrmacht soldier's uniform (second version): breast eagle with a swastika	mace2/wehr
+c_wrmcht_m_body_s	4520f1fd14026faa	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	That uniform's shine (specular) map: the breast eagle shows in the shine; optional	mace2/wehr
+of_c_pnzgren_m_body1_c	4e388a3591c52f3a	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Panzergrenadier camouflage uniform (second version): an SS runes collar tab and an eagle belt buckle	mace2/chars
+of_c_pnzcrew_body_c	87b8945b389f99e2	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Tank crew uniform: breast eagle with a swastika	crssrds/zn09
+c_pnzcrew_body_s	28772a0c1a951e2b	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	The tank crew uniform's shine (specular) map: the breast eagle shows in the shine; optional	crssrds/zn09
+of_c_fallsh_body1_c	d992419503553590	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Paratrooper smock: the Luftwaffe breast eagle (its swastika isn't legible at this size)	crssrds/zn09; forest/chars
+c_fallsh_body1_s	e8263d9e2827f0f3	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	The smock's shine (specular) map: the breast eagle shows in the shine; optional	crssrds/zn09; forest/chars
+of_c_fallsh_i_body1_c	eeeddb29a4538866	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Paratrooper smock (second version): the Luftwaffe breast eagle (swastika not legible)	island/chars
+c_fallsh_i_body1_s	1306e3940bd6d96f	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	That smock's shine (specular) map: the breast eagle shows in the shine; optional	island/chars
+of_c_pnzgren_m_helm3_c	e475257d3c826451	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	Panzergrenadier helmet, plain (second version): SS runes and swastika shield decals	mace2/chars
+of_c_pnzcrew_helm1_c	b6a3260e9f47a7a8	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	Tank crew helmet: an eagle decal with a swastika and a black-white-red shield decal	crssrds/zn09
+of_c_pnzcrew_helm2_c	2765fcd1b83fdc1b	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	Helmet (tank crew and military police): an eagle decal with a swastika and a shield decal	crssrds/zn09; fuelplnt/chars
+of_c_wrmcht_helm1_c	c1ced8cb557f9ef9	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	Wehrmacht soldier's helmet: an eagle decal with a swastika and a shield decal	forest/chars; mace2/wehr; mayenne/chars; nightd/chars
+of_c_wrmcht_helm2_c	a1a4bbf2b6acbcf0	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	The same helmet with a net: eagle and shield decals	forest/chars; mace2/wehr; mayenne/chars; nightd/chars
+of_c_wrmcht2_helm2_c	9afcca82b4f39ccf	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	Military police helmet with a net: eagle and shield decals	fuelplnt/chars
+of_c_wrmcht_head_c	16cc853f3766068a	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Wehrmacht soldier's head: the helmet's eagle decal with a swastika	forest/chars; mace2/wehr; mayenne/chars; nightd/chars
+of_c_wrmcht2_head_c	9b7dccb60e954083	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Military police head: the helmet's eagle decal with a swastika	fuelplnt/chars; hostage/chars
+of_c_wrmcht2_heado_c	2cc18271227be39a	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Officer's head: a peaked cap with a cockade and an eagle	hostage/chars
+of_c_pnzcrew_head1_c	21de7b985433e256	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Tank crew head: a cap with a cockade in an oak wreath and an eagle	crssrds/zn09
+of_c_pnzcrew_head2_c	8eab83b7a3079dd0	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Tank crew head (second face): the same cap insignia	not named by any material in the level listings
+of_c_pnzcrew_head3_c	9491be3c0b2c8ffb	1024	512	DXT1	1024x512, 2048x1024, 4096x2048, 8192x4096	opaque	no	party	Tank crew head (third face): the same cap insignia	not named by any material in the level listings
+# The other levels: vehicles (Balkenkreuz crosses)
+of_king_tiger_c	468999288dcdec50	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	King Tiger tank: Balkenkreuz crosses	blkbrn/vehicles/kngtgr; stbert/stbert
+king_tiger_d1_c	1a0aec7e363ff005	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The King Tiger, damaged: Balkenkreuz crosses	blkbrn/vehicles/kngtgr
+king_tiger_d2_c	182096f365e9fa20	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The King Tiger wreck: Balkenkreuz crosses	falaise/zn05, zn06, zn16
+of_king_tiger	d57a5d491442ec74	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small King Tiger picture: Balkenkreuz crosses	not named by any material in the level listings
+king_tiger_d1	c3b4d90bbc23263f	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small damaged King Tiger picture: Balkenkreuz crosses	not named by any material in the level listings
+of_tigeri_c	0a2b7714c6464a2e	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	Tiger I tank: Balkenkreuz crosses	blkbrn/vehicles/vehicles; chambois/defense2; falaise/vehic1, vehic2; laison/zn13
+pantherv_c	56a4f6fe1b031b90	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Panther tank: Balkenkreuz crosses	blkbrn/vehicles/vehicles; mace2/pantherv
+pantherv_d1_c	608483fdf90d9ec6	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The Panther, damaged: Balkenkreuz crosses	blkbrn/vehicles/vehicles; mace2/pantherv
+panzezriv_c__ad6b7df34fd90727	ad6b7df34fd90727	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Panzer IV tank (the second picture named panzezriv_c): Balkenkreuz crosses	chambois/veh; crssrds/dp_2, zn09; falaise/vehic2; fuelplnt/vehicles; island/z2/zn02e, z4/zn04b, zn06a; mace2/vehicles; mayenne/dpeast; nightd/nightd
+hanomag_c	387c71dfff04fc08	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Hanomag half-track: Balkenkreuz crosses (and a yellow division sign)	chambois/defense2; crssrds/zn03; falaise/vehic2; fuelplnt/vehicle2; mace2/vehicles
+hanomag_d1_c	1b8cea1fd9ac9b01	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The Hanomag, damaged: Balkenkreuz crosses	blkbrn/town/znt08; chambois/defense2; falaise/vehic2; stbert/zn03
+hanomag	c4908a0accdcfd5c	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small Hanomag picture: Balkenkreuz crosses	chambois/defense2; crssrds/zn03; falaise/vehic2; fuelplnt/vehicle2; mace2/vehicles
+sdk_c	18f5b36afa44be94	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Armored car (sdk): Balkenkreuz crosses	chambois/defense2, trucks; hostage/dyn1; island/i_sdk
+sdk_d1_c	cfd7b703cc7c0cb7	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The armored car, damaged: Balkenkreuz crosses	chambois/defense2, trucks; hostage/dyn1; island/i_sdk
+v_sdk	5fe08560a857928a	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small armored car picture: Balkenkreuz crosses	chambois/defense2, trucks; hostage/dyn1; island/i_sdk
+v_sdk_d1	0d1a0afae197aa04	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small damaged armored car picture: Balkenkreuz crosses	chambois/defense2, trucks; hostage/dyn1; island/i_sdk
+horch1a_c	b18e34c32f0bc6cb	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	Horch staff car: Balkenkreuz crosses	fuelplnt/vehicles, zn06; hostage/hostage, weapons; laison/zn10, zn20
+horch1a_d1_c	a670e3c652a921aa	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	The Horch, damaged: a Balkenkreuz	fuelplnt/vehicles; hostage/hostage; laison/zn10
+horch1a	9f752b9fe517a1b4	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small Horch picture: Balkenkreuz crosses	fuelplnt/vehicles, zn06; hostage/hostage; laison/zn10
+kubelwagon_c	ef77aaf3d7262c24	1024	1024	DXT5	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	Kubelwagen: Balkenkreuz crosses	blkbrn/vehicles/convoy; crssrds/zn03, zn07, zn09; falaise/end, zn04, zn05, zn09; laison/laison, zn10, zn15
+kubelwagon_c__cfb80c49a03bd7a1	cfb80c49a03bd7a1	1024	1024	DXT5	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	Kubelwagen (the second picture named kubelwagon_c): Balkenkreuz crosses	blkbrn/vehicles/convoy; crssrds/zn03, zn07, zn09; falaise/end, zn04, zn05, zn09; laison/laison, zn10, zn15
+kubelwagon_d1_c	cfb209277e05351f	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	transparent parts	no	military	The Kubelwagen, damaged: a Balkenkreuz	blkbrn/vehicles/convoy; crssrds/zn03, zn07, zn09; falaise/end, zn04, zn05, zn09; laison/zn10, zn15
+v_opel_blitz_c	4984862371805215	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Opel Blitz truck: a Balkenkreuz on the cab door	blkbrn/vehicles/convoy; chambois/defense2, trucks; crssrds/zn07; fuelplnt/vehicles; hostage/hostage; island/i_opel; laison/zn16; mayenne/dpbridge; nightd/nightd, weapons; stbert/stbert, zn06
+v_opel_blitz2_c	ae65b9fef2c908a6	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Opel Blitz truck (parked version): a Balkenkreuz on the cab door	blkbrn/zn09; island/z2/zn02d, zn07a; laison/laison; mayenne/dpeast, town_i; nightd/nightd
+v_opel_blitz2_c__8a0ce8bcb0f7d890	8a0ce8bcb0f7d890	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Opel Blitz truck (the second picture named v_opel_blitz2_c): a Balkenkreuz on the cab door	blkbrn/zn09; island/z2/zn02d, zn07a; laison/laison; mayenne/dpeast, town_i; nightd/nightd
+v_opel_blitz_d1_c	b394221ddbeff4ad	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	The Opel Blitz, damaged: a Balkenkreuz on the cab door	blkbrn/blkbrn, vehicles/convoy; chambois/defense2, trucks; crssrds/zn07; falaise/zn04, zn05d, zn06, zn08; forest/forest; fuelplnt/vehicles; hostage/hostage; island/i_opel; laison/zn05, zn10, zn15; mayenne/dpbridge; nightd/nightd; stbert/stbert
+v_opel_blitz	d28fedcd71397081	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small Opel Blitz picture: a Balkenkreuz on the cab door	not named by any material in the level listings
+v_opel_blitz_d1	f9ca0abc54fc33ff	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	no	military	Small damaged Opel Blitz picture: a Balkenkreuz	not named by any material in the level listings

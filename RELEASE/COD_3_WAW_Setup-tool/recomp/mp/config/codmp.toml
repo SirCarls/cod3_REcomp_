@@ -1,0 +1,97 @@
+# Codegen overrides for codmp_xenonf.xex
+# Call of Duty 3 (USA, Europe) multiplayer program - Title ID 415607E1,
+# media 2E07093A, XEX filetime 2006-10-09, SHA-1
+# 907985e2f1bdea255b52226ef39acf627c2d7ffc; image 0x82000000..0x82E20000.
+# The second program next to default.xex (docs/MULTIPLAYER.md). Evidence for
+# every address: dev/agents/multiplayer/NOTES.md (private) and the symbol map
+# (tools/name_mp_functions.py).
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (CRT), the same arrangement as default.toml
+#   setjmp 0x82322010: the host setjmp keyed by the guest jmp_buf (seven
+#     callers, among them ScriptThread_Run 0x824C5298 at 0x824C5324).
+#   longjmp 0x8231E400: NOT configured as longjmp_address. Recompiled as a
+#     plain function (longjmp_guest) and replaced by the campaign's hook in
+#     src/game/script_threads.cpp: on a script thread's fiber a longjmp is
+#     the thread yielding; anywhere else it is a host longjmp.
+# ---------------------------------------------------------------------------
+setjmp_address = 0x82322010
+
+# ---------------------------------------------------------------------------
+# Function boundaries the analyzer cannot discover on its own
+# ---------------------------------------------------------------------------
+[functions]
+# C++ "this"-adjustor thunk outside every .pdata range, only reached through
+# a tail branch (the analyzer's one UnresolvedCall, from 0x822990E4).
+0x82298D38 = { size = 8 }   # addi r3,r3,4 ; b 0x82290020
+
+# Functions only reachable through data pointers (vtable this-adjustor thunks,
+# callbacks) that have no .pdata entry. Found by tools/find_missing_funcs.py
+# (run on the image and this program's generated cod3mp_init.cpp); codegen
+# discovers their extent itself.
+0x820B3EC0 = {}  # code-ref @0x824D3440
+0x821853C0 = {}  # vtable @0x82029618
+0x82185610 = {}  # vtable @0x8202961C
+0x82185738 = {}  # vtable @0x82001D10
+0x82185920 = {}  # vtable @0x82029640
+0x821C60B0 = {}  # vtable @0x82033F14
+0x8228EDF0 = {}  # vtable @0x82048584
+0x8228F178 = {}  # vtable @0x820485D8
+0x82297180 = {}  # vtable @0x82048970
+0x822990D8 = {}  # vtable @0x82048A68
+0x82299108 = {}  # vtable @0x82048A34
+0x82299110 = {}  # vtable @0x82048A78
+0x82299130 = {}  # vtable @0x82048A60
+0x82299140 = {}  # vtable @0x82048A30
+0x82299148 = {}  # vtable @0x8204896C
+0x822EEB98 = {}  # code-ref @0x822EEBCC
+0x82333958 = {}  # code-ref @0x8233454C
+0x82333968 = {}  # code-ref @0x82334558
+0x823577E0 = {}  # vtable @0x8205D7B0
+0x823579E8 = {}  # vtable @0x8205D800
+0x823D4800 = {}  # code-ref @0x823EE01C
+0x824B63D8 = {}  # code-ref @0x824D1560
+0x824B63E8 = {}  # vtable @0x825DA024
+
+# ---------------------------------------------------------------------------
+# Script thread resume (src/game/script_threads.cpp)
+# ScriptThread_Run here is 0x824C5298, instruction for instruction
+# default.xex's 0x824A6150 (same length 0x358, the same 214 primary opcodes),
+# so the campaign's two hooks (default.toml) sit at the same offsets:
+#   resume prepare  0x824A63AC -> 0x824C54F4 (`or r1,r11,r10`)
+#   resume          0x824A6480 -> 0x824C55C8 (`blr`), jump 0x824A62A8 -> 0x824C53F0
+# The thread argument is at r1+436 and the thread stack 8 KB, as in the
+# campaign (`lwz r3,0x2054(r1)` before the start call at 0x824C53EC).
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x824C54F4
+name = "cod3_script_resume_prepare"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x824C55C8
+name = "cod3_script_resume"
+registers = ["ctx", "base"]
+jump_address_on_true = 0x824C53F0
+
+# ---------------------------------------------------------------------------
+# Script-thread yields (src/game/level_hooks.cpp). The campaign's script code
+# is in its level DLLs; this program's game modes are in the executable, with
+# the same interface table convention (0x82A98030, 642 calls through it):
+# Broc_Wait 0x824C4840 is slot +76 and Broc_WaitFrames 0x824C4910 slot +80
+# (the engine's slot / function pairs at 0x825FF0F0, as in the campaign).
+# tools/find_yield_sites.py finds the two calls. With script
+# threads on host fibers each call returns when the thread is resumed, and
+# the `return` hands control straight back to the script, as in the levels.
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x821DE13C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x821DE26C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true

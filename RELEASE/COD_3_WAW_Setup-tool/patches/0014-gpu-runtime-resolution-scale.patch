@@ -1,0 +1,1184 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -99,6 +99,20 @@
+   virtual void ClearCaches();
+   virtual void InvalidateGpuMemory();
+ 
++  // Requests a change of the draw resolution scale (the multiplier of the
++  // internal rendering resolution) while the title is running. Callable from
++  // any thread and cheap: it only records the request (replacing an older one
++  // that hasn't been applied yet). The command processor applies it between
++  // two guest frames by recreating everything that depends on the scale -
++  // render targets and the EDRAM buffer, the texture cache with the resolved
++  // textures, translated shaders and pipelines - which causes a hitch, and the
++  // contents of render targets and resolved textures are lost. If the new scale
++  // can't be set up (not enough memory, for instance), 1x is used instead.
++  // With force_rebuild, everything is recreated even if the scale stays the
++  // same. Changing the draw_resolution_scale_x, draw_resolution_scale_y or
++  // resolution_scale cvar requests the scale they configure.
++  static void RequestDrawResolutionScale(uint32_t x, uint32_t y, bool force_rebuild = false);
++
+   // "Desired" is for the external thread managing the post-processing effect.
+   SwapPostEffect GetDesiredSwapPostEffect() const { return swap_post_effect_desired_; }
+   void SetDesiredSwapPostEffect(SwapPostEffect swap_post_effect);
+@@ -234,6 +248,14 @@
+   // Shared memexport readback enable state with backend legacy-flag override support.
+   bool IsReadbackMemexportEnabled(bool legacy_backend_flag) const;
+ 
++  // For the implementations, on the command processor thread at the end of a
++  // frame: returns whether a RequestDrawResolutionScale request should be
++  // applied now, and takes it. A request is returned only once it has stayed
++  // the same for a whole frame - the scale cvars are usually changed one after
++  // another, each change making a request, and the intermediate combinations
++  // shouldn't cause a rebuild each.
++  bool TakeDrawResolutionScaleRequest(uint32_t& x_out, uint32_t& y_out, bool& force_rebuild_out);
++
+   memory::Memory* memory_ = nullptr;
+   system::KernelState* kernel_state_ = nullptr;
+   GraphicsSystem* graphics_system_ = nullptr;
+@@ -289,6 +311,10 @@
+   const char* legacy_readback_memexport_cvar_name_ = nullptr;
+ 
+  private:
++  // The pending draw resolution scale request seen at the previous end of a
++  // frame (in the packed form, 0 if none).
++  uint32_t draw_resolution_scale_request_seen_ = 0;
++
+   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
+   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
+   uint32_t gamma_ramp_rw_component_ = 0;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
+@@ -25,6 +26,7 @@
+ #include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
++#include <rex/graphics/pipeline/texture/cache.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/sampler_info.h>
+ #include <rex/graphics/xenos.h>
+@@ -105,6 +107,22 @@
+   return ReadbackResolveMode::kDisabled;
+ }
+ 
++// The pending RequestDrawResolutionScale request, packed as
++// x | y << 8 | force_rebuild << 16 | kDrawResolutionScaleRequestValid, 0 if
++// none. Static rather than a member so the cvar change callbacks don't need to
++// reference the command processor (they may run on any thread at any time).
++constexpr uint32_t kDrawResolutionScaleRequestForceRebuild = UINT32_C(1) << 16;
++constexpr uint32_t kDrawResolutionScaleRequestValid = UINT32_C(1) << 17;
++std::atomic<uint32_t> pending_draw_resolution_scale_request{0};
++
++// Cvars that configure the draw resolution scale (combined by
++// TextureCache::GetConfigDrawResolutionScale).
++constexpr const char* kDrawResolutionScaleCvars[] = {
++    "draw_resolution_scale_x",
++    "draw_resolution_scale_y",
++    "resolution_scale",
++};
++
+ }  // namespace
+ 
+ CommandProcessor::CommandProcessor(GraphicsSystem* graphics_system,
+@@ -141,6 +159,18 @@
+     }
+   }
+ 
++  // Let the draw resolution scale cvars be changed while running. The
++  // callbacks run on the thread changing the cvar while the cvar registry is
++  // locked (recursively, so reading the cvars is fine), thus they only record
++  // the request for the command processor thread.
++  for (const char* cvar_name : kDrawResolutionScaleCvars) {
++    rex::cvar::RegisterChangeCallback(cvar_name, [](std::string_view, std::string_view) {
++      uint32_t x, y;
++      TextureCache::GetConfigDrawResolutionScale(x, y);
++      RequestDrawResolutionScale(x, y);
++    });
++  }
++
+   worker_running_ = true;
+   worker_thread_ = system::object_ref<system::XHostThread>(
+       new system::XHostThread(kernel_state_, 128 * 1024, 0, [this]() {
+@@ -154,12 +184,52 @@
+ }
+ 
+ void CommandProcessor::Shutdown() {
++  // The callbacks are code of the GPU plugin, which may be unloaded after the
++  // shutdown, while the cvar registry may outlive it. This removes all
++  // callbacks of these cvars, but they're defined by the GPU emulation.
++  for (const char* cvar_name : kDrawResolutionScaleCvars) {
++    rex::cvar::UnregisterChangeCallbacks(cvar_name);
++  }
++
+   worker_running_ = false;
+   write_ptr_index_event_->Set();
+   worker_thread_->Wait(0, 0, 0, nullptr);
+   worker_thread_.reset();
+ }
+ 
++void CommandProcessor::RequestDrawResolutionScale(uint32_t x, uint32_t y, bool force_rebuild) {
++  x = std::clamp(x, UINT32_C(1), TextureCache::kMaxDrawResolutionScaleAlongAxis);
++  y = std::clamp(y, UINT32_C(1), TextureCache::kMaxDrawResolutionScaleAlongAxis);
++  pending_draw_resolution_scale_request.store(
++      x | (y << 8) | (force_rebuild ? kDrawResolutionScaleRequestForceRebuild : 0) |
++          kDrawResolutionScaleRequestValid,
++      std::memory_order_release);
++}
++
++bool CommandProcessor::TakeDrawResolutionScaleRequest(uint32_t& x_out, uint32_t& y_out,
++                                                      bool& force_rebuild_out) {
++  uint32_t request = pending_draw_resolution_scale_request.load(std::memory_order_acquire);
++  if (request != draw_resolution_scale_request_seen_) {
++    // New (or no) request - wait until the end of the next frame to see if
++    // it's final.
++    draw_resolution_scale_request_seen_ = request;
++    return false;
++  }
++  if (!request) {
++    return false;
++  }
++  draw_resolution_scale_request_seen_ = 0;
++  if (!pending_draw_resolution_scale_request.compare_exchange_strong(
++          request, 0, std::memory_order_acq_rel, std::memory_order_acquire)) {
++    // Replaced by a newer request just now.
++    return false;
++  }
++  x_out = request & 0xFF;
++  y_out = (request >> 8) & 0xFF;
++  force_rebuild_out = (request & kDrawResolutionScaleRequestForceRebuild) != 0;
++  return true;
++}
++
+ void CommandProcessor::InitializeShaderStorage(const std::filesystem::path& cache_root,
+                                                uint32_t title_id, bool blocking) {}
+ 
+diff --git a/include/rex/graphics/pipeline/render_target/cache.h b/include/rex/graphics/pipeline/render_target/cache.h
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -163,6 +163,12 @@
+   bool IsDrawResolutionScaled() const {
+     return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
+   }
++  // For changing the draw resolution scale at runtime: everything sized or
++  // compiled for the scale (the EDRAM buffer, render targets, resolve and
++  // transfer pipelines) is created by the implementation's Initialize, so the
++  // scale may only be changed between its Shutdown and Initialize, when there
++  // are no render targets.
++  void SetDrawResolutionScale(uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y);
+ 
+   // Virtual (both the common code and the implementation may do something
+   // here), don't call from destructors (does work not needed for shutdown
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -360,6 +360,18 @@
+   DestroyAllRenderTargets(true);
+ }
+ 
++void RenderTargetCache::SetDrawResolutionScale(uint32_t draw_resolution_scale_x,
++                                               uint32_t draw_resolution_scale_y) {
++  assert_not_zero(draw_resolution_scale_x);
++  assert_not_zero(draw_resolution_scale_y);
++  assert_true(render_targets_.empty());
++  draw_resolution_scale_x_ = draw_resolution_scale_x;
++  draw_resolution_scale_y_ = draw_resolution_scale_y;
++  // The render targets the last draws were using have been destroyed with the
++  // old scale - don't keep pointers to them.
++  ResetAccumulatedRenderTargets();
++}
++
+ void RenderTargetCache::ClearCache() {
+   // Keep only render targets currently owning any EDRAM data.
+   if (!render_targets_.empty()) {
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -81,6 +81,14 @@
+   virtual void BeginFrame();
+ 
+   void MarkRangeAsResolved(uint32_t start_unscaled, uint32_t length_unscaled);
++  // For changing the draw resolution scale at runtime, before this texture
++  // cache (and its scaled resolve buffer) is destroyed: resolves with scaling
++  // write only to the scaled resolve buffer, so the 1x copy in the shared
++  // memory of the ranges they wrote is stale, though marked as valid. Makes the
++  // shared memory reload those ranges from the guest memory when they're used
++  // next (with resolve readback, the guest memory has downscaled copies of the
++  // resolve results).
++  void InvalidateScaledResolveRangesInSharedMemory();
+   // Ensures the memory backing the range in the scaled resolve address space is
+   // allocated and returns whether it is.
+   virtual bool EnsureScaledResolveMemoryCommitted(uint32_t /*start_unscaled*/,
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -64,19 +64,22 @@
+     .range(-1, 5)
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// The draw resolution scale cvars can be changed while running: the command
++// processor rebuilds everything that depends on the scale between two frames
++// (see CommandProcessor::RequestDrawResolutionScale).
+ REXCVAR_DEFINE_INT32(draw_resolution_scale_x, 1, "GPU", "Draw resolution scale X (1 = no scaling)")
+     .range(1, 8)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_INT32(draw_resolution_scale_y, 1, "GPU", "Draw resolution scale Y (1 = no scaling)")
+     .range(1, 8)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_INT32(resolution_scale, 1, "GPU",
+                      "Draw resolution scale for both X and Y axes (same as setting "
+                      "draw_resolution_scale_x and draw_resolution_scale_y)")
+     .range(1, 8)
+-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
+ REXCVAR_DEFINE_BOOL(pre_mask_resolve_l2_block, true, "GPU",
+                     "Pre-mask scaled resolve L2 blocks to the write range before iterating");
+@@ -350,6 +353,53 @@
+   shared_memory().RangeWrittenByGpu(start_unscaled, length_unscaled);
+ }
+ 
++void TextureCache::InvalidateScaledResolveRangesInSharedMemory() {
++  if (!IsDrawResolutionScaled()) {
++    return;
++  }
++  // Collect the ranges of consecutive scaled resolve pages first: invalidating
++  // them fires ScaledResolveGlobalWatchCallback, which modifies the bit vector.
++  std::vector<std::pair<uint32_t, uint32_t>> ranges;
++  {
++    auto global_lock = global_critical_region_.Acquire();
++    constexpr uint32_t kL2BlockCount = SharedMemory::kBufferSize >> (12 + 5 + 6);
++    static_assert(kL2BlockCount == sizeof(scaled_resolve_pages_l2_) / sizeof(uint64_t));
++    uint32_t run_page_first = UINT32_MAX;
++    uint32_t run_page_end = 0;
++    for (uint32_t i = 0; i < kL2BlockCount; ++i) {
++      uint64_t l2_block = scaled_resolve_pages_l2_[i];
++      uint32_t block_relative_index;
++      while (rex::bit_scan_forward(l2_block, &block_relative_index)) {
++        l2_block &= ~(UINT64_C(1) << block_relative_index);
++        uint32_t block_index = (i << 6) + block_relative_index;
++        uint32_t block = scaled_resolve_pages_[block_index];
++        uint32_t page_relative_index;
++        while (rex::bit_scan_forward(block, &page_relative_index)) {
++          block &= ~(UINT32_C(1) << page_relative_index);
++          uint32_t page = (block_index << 5) + page_relative_index;
++          if (run_page_first != UINT32_MAX && page == run_page_end) {
++            ++run_page_end;
++            continue;
++          }
++          if (run_page_first != UINT32_MAX) {
++            ranges.emplace_back(run_page_first << 12, (run_page_end - run_page_first) << 12);
++          }
++          run_page_first = page;
++          run_page_end = page + 1;
++        }
++      }
++    }
++    if (run_page_first != UINT32_MAX) {
++      ranges.emplace_back(run_page_first << 12, (run_page_end - run_page_first) << 12);
++    }
++  }
++  for (const std::pair<uint32_t, uint32_t>& range : ranges) {
++    // Exact range: not widening to the neighboring pages, which may contain
++    // valid data written by the GPU without scaling.
++    shared_memory().MemoryInvalidationCallback(range.first, range.second, true);
++  }
++}
++
+ uint32_t TextureCache::GuestToHostSwizzle(uint32_t guest_swizzle, uint32_t host_format_swizzle) {
+   uint32_t host_swizzle = 0;
+   for (uint32_t i = 0; i < 4; ++i) {
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -427,6 +427,15 @@
+   bool CanEndSubmissionImmediately() const;
+ 
+   void ClearTransientDescriptorPools();
++  // At the end of a frame, applies a pending RequestDrawResolutionScale
++  // request, recreating everything that depends on the draw resolution scale.
++  void ApplyDrawResolutionScaleRequest();
++  // Creates the texture cache and initializes the render target cache
++  // (previously shut down) for the draw resolution scale, cleaning up if
++  // failed.
++  bool CreateDrawResolutionScaleDependentCaches(uint32_t draw_resolution_scale_x,
++                                                uint32_t draw_resolution_scale_y,
++                                                RenderTargetCache::Path render_target_path);
+   bool IssueCopy_ReadbackResolvePath();
+   bool IssueDraw_MemexportReadbackFullPath(uint32_t total_size);
+   bool IssueDraw_MemexportReadbackFastPath(uint32_t total_size);
+@@ -611,6 +620,9 @@
+       texture_transient_descriptor_sets_free_;
+ 
+   std::unique_ptr<VulkanSharedMemory> shared_memory_;
++  // Number of the bindings the shared memory is split into, for the render
++  // target cache (also when reinitializing it for a different scale).
++  uint32_t shared_memory_binding_count_ = 0;
+ 
+   std::unique_ptr<VulkanPrimitiveProcessor> primitive_processor_;
+ 
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -909,6 +909,7 @@
+       SpirvShaderTranslator::GetSharedMemoryStorageBufferCountLog2(
+           device_properties.maxStorageBufferRange);
+   uint32_t shared_memory_binding_count = UINT32_C(1) << shared_memory_binding_count_log2;
++  shared_memory_binding_count_ = shared_memory_binding_count;
+ 
+   uint32_t draw_resolution_scale_x, draw_resolution_scale_y;
+   bool draw_resolution_scale_not_clamped =
+@@ -5540,8 +5541,146 @@
+ 
+       shared_memory_->ClearCache();
+     }
++
++    // Between frames, with the submission closed: nothing recorded refers to
++    // the objects that may be recreated for a different scale.
++    ApplyDrawResolutionScaleRequest();
++  }
++
++  return true;
++}
++
++void VulkanCommandProcessor::ApplyDrawResolutionScaleRequest() {
++  uint32_t requested_scale_x, requested_scale_y;
++  bool force_rebuild;
++  if (!TakeDrawResolutionScaleRequest(requested_scale_x, requested_scale_y, force_rebuild)) {
++    return;
+   }
++  uint32_t old_scale_x = texture_cache_->draw_resolution_scale_x();
++  uint32_t old_scale_y = texture_cache_->draw_resolution_scale_y();
++  if (!force_rebuild && requested_scale_x == old_scale_x && requested_scale_y == old_scale_y) {
++    return;
++  }
++  // The objects being destroyed may still be used by the GPU.
++  if (!AwaitAllQueueOperationsCompletion()) {
++    if (!device_lost_) {
++      // Retry at the end of one of the next frames.
++      RequestDrawResolutionScale(requested_scale_x, requested_scale_y, force_rebuild);
++    }
++    return;
++  }
++  // Nothing must have been queued after the submission.
++  assert_true(sparse_memory_binds_.empty());
++  assert_true(command_buffers_submitted_.empty());
+ 
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++
++  // The pipeline layouts and the shared memory and EDRAM descriptor set layout
++  // depend on the render target path, so it must stay the same.
++  RenderTargetCache::Path render_target_path = render_target_cache_->GetPath();
++
++  // Destroy everything that has the old scale baked in before creating
++  // anything for the new one, not to need memory for both at once (without
++  // sparse binding, the scaled resolve buffer is 512 MB per unit of the scale
++  // area, 2 GB at 2x).
++  pipeline_cache_->DestroyDrawResolutionScaleDependentObjects();
++  texture_cache_->InvalidateScaledResolveRangesInSharedMemory();
++  texture_cache_.reset();
++  render_target_cache_->Shutdown();
++
++  // Recreate for the new scale, or for 1x if not enough memory for it, for
++  // instance.
++  uint32_t new_scale_x = requested_scale_x;
++  uint32_t new_scale_y = requested_scale_y;
++  bool caches_created =
++      CreateDrawResolutionScaleDependentCaches(new_scale_x, new_scale_y, render_target_path);
++  if (!caches_created && (new_scale_x > 1 || new_scale_y > 1)) {
++    new_scale_x = 1;
++    new_scale_y = 1;
++    caches_created =
++        CreateDrawResolutionScaleDependentCaches(new_scale_x, new_scale_y, render_target_path);
++  }
++  if (!caches_created || !pipeline_cache_->CreateDrawResolutionScaleDependentObjects()) {
++    // Not able to continue - this has also succeeded at startup, though.
++    rex::FatalError("Failed to recreate the GPU emulation state for a draw resolution scale");
++  }
++
++  // The descriptor set for the fragment shader interlock path references the
++  // EDRAM buffer, which has been recreated.
++  if (render_target_path == RenderTargetCache::Path::kPixelShaderInterlock) {
++    VkDescriptorBufferInfo edram_descriptor_buffer_info;
++    edram_descriptor_buffer_info.buffer = render_target_cache_->edram_buffer();
++    edram_descriptor_buffer_info.offset = 0;
++    edram_descriptor_buffer_info.range = VK_WHOLE_SIZE;
++    VkWriteDescriptorSet write_descriptor_set_edram;
++    write_descriptor_set_edram.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++    write_descriptor_set_edram.pNext = nullptr;
++    write_descriptor_set_edram.dstSet = shared_memory_and_edram_descriptor_set_;
++    write_descriptor_set_edram.dstBinding = 1;
++    write_descriptor_set_edram.dstArrayElement = 0;
++    write_descriptor_set_edram.descriptorCount = 1;
++    write_descriptor_set_edram.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++    write_descriptor_set_edram.pImageInfo = nullptr;
++    write_descriptor_set_edram.pBufferInfo = &edram_descriptor_buffer_info;
++    write_descriptor_set_edram.pTexelBufferView = nullptr;
++    dfn.vkUpdateDescriptorSets(device, 1, &write_descriptor_set_edram, 0, nullptr);
++  }
++
++  // Drop the state referring to the destroyed objects (most of the rest is
++  // reset when the next submission and frame begin).
++  current_samplers_vertex_.clear();
++  current_samplers_pixel_.clear();
++  current_render_pass_ = VK_NULL_HANDLE;
++  current_framebuffer_ = nullptr;
++  current_guest_graphics_pipeline_ = VK_NULL_HANDLE;
++  current_guest_graphics_pipeline_layout_ = nullptr;
++  // Ranges written by scaled resolves have been invalidated in the shared
++  // memory, request vertex buffers again.
++  InvalidateAllVertexBufferResidency();
++  // Only used for downscaling scaled resolves for readback, recreated when
++  // needed. The resolve readback buffers themselves contain unscaled data, and
++  // are kept.
++  if (new_scale_x <= 1 && new_scale_y <= 1) {
++    resolve_downscale_buffer_size_ = 0;
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyBuffer, device, resolve_downscale_buffer_);
++    ui::vulkan::util::DestroyAndNullHandle(dfn.vkFreeMemory, device,
++                                           resolve_downscale_buffer_memory_);
++  }
++
++  if (new_scale_x != requested_scale_x || new_scale_y != requested_scale_y) {
++    REXGPU_WARN(
++        "GPU: draw resolution scale changed to {}x{} - failed to set up {}x{} (not enough GPU "
++        "memory?)",
++        new_scale_x, new_scale_y, requested_scale_x, requested_scale_y);
++  } else {
++    REXGPU_INFO("GPU: draw resolution scale changed to {}x{}", new_scale_x, new_scale_y);
++  }
++}
++
++bool VulkanCommandProcessor::CreateDrawResolutionScaleDependentCaches(
++    uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
++    RenderTargetCache::Path render_target_path) {
++  // The texture cache first, as its scaled resolve buffer is the largest
++  // allocation.
++  texture_cache_ =
++      VulkanTextureCache::Create(*register_file_, *shared_memory_, draw_resolution_scale_x,
++                                 draw_resolution_scale_y, *this, guest_shader_pipeline_stages_);
++  if (!texture_cache_) {
++    REXGPU_WARN("Failed to create the texture cache for {}x{} draw resolution scale",
++                draw_resolution_scale_x, draw_resolution_scale_y);
++    return false;
++  }
++  render_target_cache_->SetDrawResolutionScale(draw_resolution_scale_x, draw_resolution_scale_y);
++  if (!render_target_cache_->Initialize(shared_memory_binding_count_, render_target_path) ||
++      render_target_cache_->GetPath() != render_target_path) {
++    REXGPU_WARN("Failed to initialize the render target cache for {}x{} draw resolution scale",
++                draw_resolution_scale_x, draw_resolution_scale_y);
++    render_target_cache_->Shutdown();
++    texture_cache_.reset();
++    return false;
++  }
+   return true;
+ }
+ 
+diff --git a/include/rex/graphics/vulkan/pipeline_cache.h b/include/rex/graphics/vulkan/pipeline_cache.h
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -70,6 +70,15 @@
+   void ShutdownShaderStorage();
+   void EndSubmission();
+ 
++  // For changing the draw resolution scale at runtime, with the GPU idle and no
++  // pipeline in use. Destroy releases all pipelines, all shader translations
++  // and the translator, which have the scale baked in. Create, called once the
++  // render target cache has been reinitialized with the new scale, recreates
++  // the translator for its scale - translations and pipelines are then
++  // recreated on demand.
++  void DestroyDrawResolutionScaleDependentObjects();
++  bool CreateDrawResolutionScaleDependentObjects();
++
+   VulkanShader* LoadShader(xenos::ShaderType shader_type, const uint32_t* host_address,
+                            uint32_t dword_count);
+   // Analyze shader microcode on the translator thread.
+@@ -361,6 +370,13 @@
+       std::pair<const PipelineDescription, Pipeline>* pipeline,
+       PipelineCreationArguments& creation_arguments, bool for_placeholder = false);
+ 
++  // Creates the shader translator for the render target cache's draw
++  // resolution scale and the internal shaders it generates.
++  bool CreateTranslatorAndInternalShaders();
++  void StartCreationThreads();
++  void StopCreationThreads();
++  void DestroyAllPipelines();
++
+   // Can be called from creation threads - all needed data must be fully set up
+   // at the point of the call: shaders must be translated, and the pipeline
+   // layout and render pass object (unless dynamic rendering is used) must be
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -288,6 +288,36 @@
+ bool VulkanPipelineCache::Initialize() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+ 
++  if (!CreateTranslatorAndInternalShaders()) {
++    return false;
++  }
++
++  std::vector<uint32_t> placeholder_pixel_shader_spirv;
++  std::string placeholder_pixel_shader_compile_error;
++  if (command_processor_.CompileGlslToSpirv(
++          VK_SHADER_STAGE_FRAGMENT_BIT, kPlaceholderPixelShaderSource,
++          placeholder_pixel_shader_spirv, placeholder_pixel_shader_compile_error)) {
++    placeholder_pixel_shader_ = ui::vulkan::util::CreateShaderModule(
++        vulkan_device, placeholder_pixel_shader_spirv.data(),
++        placeholder_pixel_shader_spirv.size() * sizeof(uint32_t));
++  } else {
++    REXGPU_WARN("VulkanPipelineCache: Failed to compile placeholder pixel shader: {}",
++                placeholder_pixel_shader_compile_error);
++  }
++  if (placeholder_pixel_shader_ == VK_NULL_HANDLE) {
++    REXGPU_WARN(
++        "VulkanPipelineCache: Failed to create placeholder pixel shader - "
++        "async placeholder hot-swap will be unavailable");
++  }
++
++  StartCreationThreads();
++
++  return true;
++}
++
++bool VulkanPipelineCache::CreateTranslatorAndInternalShaders() {
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++
+   bool edram_fragment_shader_interlock =
+       render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
+ 
+@@ -340,24 +370,10 @@
+     }
+   }
+ 
+-  std::vector<uint32_t> placeholder_pixel_shader_spirv;
+-  std::string placeholder_pixel_shader_compile_error;
+-  if (command_processor_.CompileGlslToSpirv(
+-          VK_SHADER_STAGE_FRAGMENT_BIT, kPlaceholderPixelShaderSource,
+-          placeholder_pixel_shader_spirv, placeholder_pixel_shader_compile_error)) {
+-    placeholder_pixel_shader_ = ui::vulkan::util::CreateShaderModule(
+-        vulkan_device, placeholder_pixel_shader_spirv.data(),
+-        placeholder_pixel_shader_spirv.size() * sizeof(uint32_t));
+-  } else {
+-    REXGPU_WARN("VulkanPipelineCache: Failed to compile placeholder pixel shader: {}",
+-                placeholder_pixel_shader_compile_error);
+-  }
+-  if (placeholder_pixel_shader_ == VK_NULL_HANDLE) {
+-    REXGPU_WARN(
+-        "VulkanPipelineCache: Failed to create placeholder pixel shader - "
+-        "async placeholder hot-swap will be unavailable");
+-  }
++  return true;
++}
+ 
++void VulkanPipelineCache::StartCreationThreads() {
+   uint32_t logical_processor_count = rex::thread::logical_processor_count();
+   if (!logical_processor_count) {
+     logical_processor_count = 6;
+@@ -384,8 +400,6 @@
+       creation_threads_.push_back(std::move(creation_thread));
+     }
+   }
+-
+-  return true;
+ }
+ 
+ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_root,
+@@ -791,7 +805,7 @@
+   ProcessDeferredPipelineDestructions(false);
+ }
+ 
+-void VulkanPipelineCache::Shutdown() {
++void VulkanPipelineCache::StopCreationThreads() {
+   // Shut down creation threads before destroying any pipelines they may touch.
+   if (!creation_threads_.empty()) {
+     {
+@@ -815,16 +829,15 @@
+     creation_threads_shutdown_from_ = SIZE_MAX;
+   }
+   creation_completion_event_.reset();
++}
+ 
+-  ShutdownShaderStorage();
+-
++void VulkanPipelineCache::DestroyAllPipelines() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+ 
+   ProcessDeferredPipelineDestructions(true);
+ 
+-  // Destroy all pipelines.
+   last_pipeline_ = nullptr;
+   for (const auto& pipeline_pair : pipelines_) {
+     VkPipeline pipeline = pipeline_pair.second.pipeline.load(std::memory_order_acquire);
+@@ -833,6 +846,63 @@
+     }
+   }
+   pipelines_.clear();
++}
++
++void VulkanPipelineCache::DestroyDrawResolutionScaleDependentObjects() {
++  // The draw resolution scale is baked into the translated shaders (pixel
++  // position and resolved texture coordinate scaling, fragment shader interlock
++  // EDRAM addressing) and thus into the pipelines, and neither is keyed by the
++  // scale, so all of them are destroyed and recreated on demand.
++  StopCreationThreads();
++  DestroyAllPipelines();
++
++  // The guest shaders themselves (microcode, its analysis and the binding
++  // layouts, which don't depend on the scale) are kept, only their
++  // translations are destroyed.
++  std::vector<uint64_t> modifications;
++  for (const auto& shader_pair : shaders_) {
++    VulkanShader* shader = shader_pair.second;
++    modifications.clear();
++    for (const auto& translation_pair : shader->translations()) {
++      modifications.push_back(translation_pair.first);
++    }
++    for (uint64_t modification : modifications) {
++      shader->DestroyTranslation(modification);
++    }
++  }
++
++  // Internal shaders generated by the translator.
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
++                                         depth_only_fragment_shader_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
++                                         depth_float24_truncate_fragment_shader_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
++                                         depth_float24_round_fragment_shader_);
++
++  shader_translator_.reset();
++}
++
++bool VulkanPipelineCache::CreateDrawResolutionScaleDependentObjects() {
++  if (!CreateTranslatorAndInternalShaders()) {
++    return false;
++  }
++  StartCreationThreads();
++  return true;
++}
++
++void VulkanPipelineCache::Shutdown() {
++  StopCreationThreads();
++
++  ShutdownShaderStorage();
++
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++
++  DestroyAllPipelines();
+ 
+   // Destroy all internal shaders.
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyShaderModule, device,
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -15,6 +15,7 @@
+ #include <cstring>
+ #include <functional>
+ #include <memory>
++#include <optional>
+ #include <unordered_map>
+ 
+ #include <rex/graphics/flags.h>
+@@ -90,8 +91,12 @@
+   ~VulkanRenderTargetCache();
+ 
+   // Transient descriptor set layouts must be initialized in the command
+-  // processor.
+-  bool Initialize(uint32_t shared_memory_binding_count);
++  // processor. The path is chosen from the configuration unless
++  // required_path is specified - when reinitializing for a different draw
++  // resolution scale, the path must stay the same as other subsystems depend on
++  // it, even if the cvar choosing it has been changed since startup.
++  bool Initialize(uint32_t shared_memory_binding_count,
++                  std::optional<Path> required_path = std::nullopt);
+   void Shutdown(bool from_destructor = false);
+   void ClearCache() override;
+ 
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -193,7 +193,8 @@
+   Shutdown(true);
+ }
+ 
+-bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count) {
++bool VulkanRenderTargetCache::Initialize(uint32_t shared_memory_binding_count,
++                                         std::optional<Path> required_path) {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
+   const VkPhysicalDevice physical_device = vulkan_device->physical_device();
+@@ -207,7 +208,9 @@
+       device_properties.fragmentStoresAndAtomics && device_properties.sampleRateShading &&
+       device_properties.standardSampleLocations &&
+       shared_memory_binding_count < device_properties.maxPerStageDescriptorStorageBuffers;
+-  if (REXCVAR_GET(render_target_path_vulkan) == "fsi") {
++  if (required_path) {
++    path_ = *required_path;
++  } else if (REXCVAR_GET(render_target_path_vulkan) == "fsi") {
+     path_ = Path::kPixelShaderInterlock;
+   } else {
+     path_ = Path::kHostRenderTargets;
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -342,6 +342,18 @@
+   // Need to await submission completion before calling.
+   void ClearCommandAllocatorCache();
+ 
++  // At the end of a frame, applies a pending RequestDrawResolutionScale
++  // request, recreating everything that depends on the draw resolution scale.
++  void ApplyDrawResolutionScaleRequest();
++  // Creates the texture cache and initializes the render target cache
++  // (previously shut down) for the draw resolution scale, cleaning up if
++  // failed.
++  bool CreateDrawResolutionScaleDependentCaches(uint32_t draw_resolution_scale_x,
++                                                uint32_t draw_resolution_scale_y,
++                                                RenderTargetCache::Path render_target_path);
++  // Writes the bindless descriptors of the render target cache's EDRAM buffer.
++  void WriteEdramBindlessDescriptors();
++
+   // Request descriptors and automatically rebind the descriptor heap on the
+   // draw command list. Refer to D3D12DescriptorHeapPool::Request for partial /
+   // full update explanation. Doesn't work when bindless descriptors are used.
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -1573,42 +1573,7 @@
+             view_bindless_heap_cpu_start_,
+             uint32_t(SystemBindlessView::kSharedMemoryR32G32B32A32UintUAV)),
+         4);
+-    // kEdramRawSRV.
+-    render_target_cache_->WriteEdramRawSRVDescriptor(provider.OffsetViewDescriptor(
+-        view_bindless_heap_cpu_start_, uint32_t(SystemBindlessView::kEdramRawSRV)));
+-    // kEdramR32UintSRV.
+-    render_target_cache_->WriteEdramUintPow2SRVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32UintSRV)),
+-        2);
+-    // kEdramR32G32UintSRV.
+-    render_target_cache_->WriteEdramUintPow2SRVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32G32UintSRV)),
+-        3);
+-    // kEdramR32G32B32A32UintSRV.
+-    render_target_cache_->WriteEdramUintPow2SRVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32G32B32A32UintSRV)),
+-        4);
+-    // kEdramRawUAV.
+-    render_target_cache_->WriteEdramRawUAVDescriptor(provider.OffsetViewDescriptor(
+-        view_bindless_heap_cpu_start_, uint32_t(SystemBindlessView::kEdramRawUAV)));
+-    // kEdramR32UintUAV.
+-    render_target_cache_->WriteEdramUintPow2UAVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32UintUAV)),
+-        2);
+-    // kEdramR32G32UintUAV.
+-    render_target_cache_->WriteEdramUintPow2UAVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32G32UintUAV)),
+-        3);
+-    // kEdramR32G32B32A32UintUAV.
+-    render_target_cache_->WriteEdramUintPow2UAVDescriptor(
+-        provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+-                                      uint32_t(SystemBindlessView::kEdramR32G32B32A32UintUAV)),
+-        4);
++    WriteEdramBindlessDescriptors();
+     // kGammaRampTableSRV.
+     WriteGammaRampSRV(
+         false, provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
+@@ -1627,6 +1592,47 @@
+   return true;
+ }
+ 
++void D3D12CommandProcessor::WriteEdramBindlessDescriptors() {
++  assert_true(bindless_resources_used_);
++  const ui::d3d12::D3D12Provider& provider = GetD3D12Provider();
++  // kEdramRawSRV.
++  render_target_cache_->WriteEdramRawSRVDescriptor(provider.OffsetViewDescriptor(
++      view_bindless_heap_cpu_start_, uint32_t(SystemBindlessView::kEdramRawSRV)));
++  // kEdramR32UintSRV.
++  render_target_cache_->WriteEdramUintPow2SRVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32UintSRV)),
++      2);
++  // kEdramR32G32UintSRV.
++  render_target_cache_->WriteEdramUintPow2SRVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32G32UintSRV)),
++      3);
++  // kEdramR32G32B32A32UintSRV.
++  render_target_cache_->WriteEdramUintPow2SRVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32G32B32A32UintSRV)),
++      4);
++  // kEdramRawUAV.
++  render_target_cache_->WriteEdramRawUAVDescriptor(provider.OffsetViewDescriptor(
++      view_bindless_heap_cpu_start_, uint32_t(SystemBindlessView::kEdramRawUAV)));
++  // kEdramR32UintUAV.
++  render_target_cache_->WriteEdramUintPow2UAVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32UintUAV)),
++      2);
++  // kEdramR32G32UintUAV.
++  render_target_cache_->WriteEdramUintPow2UAVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32G32UintUAV)),
++      3);
++  // kEdramR32G32B32A32UintUAV.
++  render_target_cache_->WriteEdramUintPow2UAVDescriptor(
++      provider.OffsetViewDescriptor(view_bindless_heap_cpu_start_,
++                                    uint32_t(SystemBindlessView::kEdramR32G32B32A32UintUAV)),
++      4);
++}
++
+ void D3D12CommandProcessor::ShutdownContext() {
+   AwaitAllQueueOperationsCompletion();
+   InvalidateAllVertexBufferResidency();
+@@ -3505,8 +3511,123 @@
+ 
+       shared_memory_->ClearCache();
+     }
++
++    // Between frames, with the submission closed: nothing recorded refers to
++    // the objects that may be recreated for a different scale.
++    ApplyDrawResolutionScaleRequest();
++  }
++
++  return true;
++}
++
++void D3D12CommandProcessor::ApplyDrawResolutionScaleRequest() {
++  uint32_t requested_scale_x, requested_scale_y;
++  bool force_rebuild;
++  if (!TakeDrawResolutionScaleRequest(requested_scale_x, requested_scale_y, force_rebuild)) {
++    return;
++  }
++  // Scaled resolves need tiled resources and enough virtual address bits.
++  if (!D3D12TextureCache::ClampDrawResolutionScaleToMaxSupported(
++          requested_scale_x, requested_scale_y, GetD3D12Provider())) {
++    REXGPU_WARN(
++        "The requested draw resolution scale is not supported by the device, reducing to {}x{}",
++        requested_scale_x, requested_scale_y);
++  }
++  uint32_t old_scale_x = texture_cache_->draw_resolution_scale_x();
++  uint32_t old_scale_y = texture_cache_->draw_resolution_scale_y();
++  if (!force_rebuild && requested_scale_x == old_scale_x && requested_scale_y == old_scale_y) {
++    return;
++  }
++  // The objects being destroyed may still be used by the GPU.
++  if (!AwaitAllQueueOperationsCompletion()) {
++    if (!device_removed_) {
++      // Retry at the end of one of the next frames.
++      RequestDrawResolutionScale(requested_scale_x, requested_scale_y, force_rebuild);
++    }
++    return;
+   }
+ 
++  // The root signatures and the bindless descriptor layout depend on the render
++  // target path, so it must stay the same.
++  RenderTargetCache::Path render_target_path = render_target_cache_->GetPath();
++
++  // Destroy everything that has the old scale baked in before creating
++  // anything for the new one, not to need memory for both at once.
++  pipeline_cache_->DestroyDrawResolutionScaleDependentObjects();
++  texture_cache_->InvalidateScaledResolveRangesInSharedMemory();
++  texture_cache_.reset();
++  render_target_cache_->Shutdown();
++
++  // Recreate for the new scale, or for 1x if not enough memory for it, for
++  // instance.
++  uint32_t new_scale_x = requested_scale_x;
++  uint32_t new_scale_y = requested_scale_y;
++  bool caches_created =
++      CreateDrawResolutionScaleDependentCaches(new_scale_x, new_scale_y, render_target_path);
++  if (!caches_created && (new_scale_x > 1 || new_scale_y > 1)) {
++    new_scale_x = 1;
++    new_scale_y = 1;
++    caches_created =
++        CreateDrawResolutionScaleDependentCaches(new_scale_x, new_scale_y, render_target_path);
++  }
++  if (!caches_created) {
++    // Not able to continue - this has also succeeded at startup, though.
++    rex::FatalError("Failed to recreate the GPU emulation state for a draw resolution scale");
++  }
++  pipeline_cache_->CreateDrawResolutionScaleDependentObjects();
++
++  // The bindless descriptors of the EDRAM buffer, which has been recreated.
++  // With bindful descriptors, they're written when needed.
++  if (bindless_resources_used_) {
++    WriteEdramBindlessDescriptors();
++  }
++
++  // Drop the state referring to the destroyed objects (most of the rest is
++  // reset when the next submission and frame begin).
++  current_guest_pipeline_ = nullptr;
++  current_external_pipeline_ = nullptr;
++  current_graphics_root_signature_ = nullptr;
++  // Ranges written by scaled resolves have been invalidated in the shared
++  // memory, request vertex buffers again.
++  InvalidateAllVertexBufferResidency();
++  // Only used for downscaling scaled resolves for readback, recreated when
++  // needed. The resolve readback buffers themselves contain unscaled data, and
++  // are kept.
++  if (new_scale_x <= 1 && new_scale_y <= 1) {
++    resolve_downscale_buffer_size_ = 0;
++    resolve_downscale_buffer_.Reset();
++  }
++
++  if (new_scale_x != requested_scale_x || new_scale_y != requested_scale_y) {
++    REXGPU_WARN(
++        "GPU: draw resolution scale changed to {}x{} - failed to set up {}x{} (not enough GPU "
++        "memory?)",
++        new_scale_x, new_scale_y, requested_scale_x, requested_scale_y);
++  } else {
++    REXGPU_INFO("GPU: draw resolution scale changed to {}x{}", new_scale_x, new_scale_y);
++  }
++}
++
++bool D3D12CommandProcessor::CreateDrawResolutionScaleDependentCaches(
++    uint32_t draw_resolution_scale_x, uint32_t draw_resolution_scale_y,
++    RenderTargetCache::Path render_target_path) {
++  texture_cache_ =
++      D3D12TextureCache::Create(*register_file_, *shared_memory_, draw_resolution_scale_x,
++                                draw_resolution_scale_y, *this, bindless_resources_used_);
++  if (!texture_cache_) {
++    REXGPU_WARN("Failed to create the texture cache for {}x{} draw resolution scale",
++                draw_resolution_scale_x, draw_resolution_scale_y);
++    return false;
++  }
++  render_target_cache_->SetDrawResolutionScale(draw_resolution_scale_x, draw_resolution_scale_y);
++  if (!render_target_cache_->Initialize(render_target_path) ||
++      render_target_cache_->GetPath() != render_target_path) {
++    REXGPU_WARN("Failed to initialize the render target cache for {}x{} draw resolution scale",
++                draw_resolution_scale_x, draw_resolution_scale_y);
++    render_target_cache_->Shutdown();
++    texture_cache_.reset();
++    return false;
++  }
+   return true;
+ }
+ 
+diff --git a/include/rex/graphics/d3d12/pipeline_cache.h b/include/rex/graphics/d3d12/pipeline_cache.h
+--- a/include/rex/graphics/d3d12/pipeline_cache.h
++++ b/include/rex/graphics/d3d12/pipeline_cache.h
+@@ -63,6 +63,15 @@
+                                bool blocking);
+   void ShutdownShaderStorage();
+ 
++  // For changing the draw resolution scale at runtime, with the GPU idle and no
++  // pipeline in use. Destroy releases all pipelines, all shader translations
++  // and the translator, which have the scale baked in. Create, called once the
++  // render target cache has been reinitialized with the new scale, recreates
++  // the translator for its scale - translations and pipelines are then
++  // recreated on demand.
++  void DestroyDrawResolutionScaleDependentObjects();
++  void CreateDrawResolutionScaleDependentObjects();
++
+   void EndSubmission();
+   bool IsCreatingPipelines();
+ 
+@@ -265,6 +274,13 @@
+   D3D12Shader* LoadShader(xenos::ShaderType shader_type, const uint32_t* host_address,
+                           uint32_t dword_count, uint64_t data_hash);
+ 
++  // Creates the shader translator for the render target cache's draw
++  // resolution scale and the internal shaders it generates.
++  void CreateTranslatorAndInternalShaders();
++  void StartCreationThreads();
++  void StopCreationThreads();
++  void DestroyAllPipelines();
++
+   // Can be called from multiple threads.
+   bool TranslateAnalyzedShader(DxbcShaderTranslator& translator,
+                                D3D12Shader::D3D12Translation& translation,
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -90,10 +90,14 @@
+       register_file_(register_file),
+       render_target_cache_(render_target_cache),
+       bindless_resources_used_(bindless_resources_used) {
++  CreateTranslatorAndInternalShaders();
++}
++
++void PipelineCache::CreateTranslatorAndInternalShaders() {
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+ 
+   bool edram_rov_used =
+-      render_target_cache.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
++      render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
+ 
+   shader_translator_ = std::make_unique<DxbcShaderTranslator>(
+       provider.GetAdapterVendorID(), bindless_resources_used_, edram_rov_used,
+@@ -101,6 +105,7 @@
+       render_target_cache_.msaa_2x_supported(), render_target_cache_.draw_resolution_scale_x(),
+       render_target_cache_.draw_resolution_scale_y(), provider.GetGraphicsAnalysis() != nullptr);
+ 
++  depth_only_pixel_shader_.clear();
+   if (edram_rov_used) {
+     depth_only_pixel_shader_ = std::move(shader_translator_->CreateDepthOnlyPixelShader());
+   }
+@@ -136,6 +141,11 @@
+     }
+   }
+ 
++  StartCreationThreads();
++  return true;
++}
++
++void PipelineCache::StartCreationThreads() {
+   uint32_t logical_processor_count = rex::thread::logical_processor_count();
+   if (!logical_processor_count) {
+     // Pick some reasonable amount if couldn't determine the number of cores.
+@@ -165,10 +175,9 @@
+       creation_threads_.push_back(std::move(creation_thread));
+     }
+   }
+-  return true;
+ }
+ 
+-void PipelineCache::Shutdown() {
++void PipelineCache::StopCreationThreads() {
+   // Shut down all threads, before destroying the pipelines since they may be
+   // creating them.
+   if (!creation_threads_.empty()) {
+@@ -182,12 +191,19 @@
+     }
+     creation_threads_.clear();
+   }
++  {
++    std::lock_guard<std::mutex> lock(creation_request_lock_);
++    while (!creation_queue_.empty()) {
++      creation_queue_.pop();
++    }
++    creation_threads_busy_ = 0;
++    creation_completion_set_event_ = false;
++    creation_threads_shutdown_from_ = SIZE_MAX;
++  }
+   creation_completion_event_.reset();
++}
+ 
+-  // Shut down the persistent shader / pipeline storage.
+-  ShutdownShaderStorage();
+-
+-  // Destroy all pipelines.
++void PipelineCache::DestroyAllPipelines() {
+   current_pipeline_ = nullptr;
+   for (auto it : pipelines_) {
+     ID3D12PipelineState* state = it.second->state.load(std::memory_order_acquire);
+@@ -198,6 +214,49 @@
+   }
+   pipelines_.clear();
+   COUNT_profile_set("gpu/pipeline_cache/pipelines", 0);
++}
++
++void PipelineCache::DestroyDrawResolutionScaleDependentObjects() {
++  // The draw resolution scale is baked into the translated shaders (pixel
++  // position and resolved texture coordinate scaling, rasterizer-ordered view
++  // EDRAM addressing) and into the pipeline state objects (the slope-scaled
++  // depth bias), and neither is keyed by the scale, so all of them are
++  // destroyed and recreated on demand.
++  StopCreationThreads();
++  DestroyAllPipelines();
++
++  // The guest shaders themselves (microcode, its analysis and the binding
++  // layouts, which don't depend on the scale) are kept, only their
++  // translations are destroyed.
++  std::vector<uint64_t> modifications;
++  for (const auto& shader_pair : shaders_) {
++    D3D12Shader* shader = shader_pair.second;
++    modifications.clear();
++    for (const auto& translation_pair : shader->translations()) {
++      modifications.push_back(translation_pair.first);
++    }
++    for (uint64_t modification : modifications) {
++      shader->DestroyTranslation(modification);
++    }
++  }
++
++  depth_only_pixel_shader_.clear();
++  shader_translator_.reset();
++}
++
++void PipelineCache::CreateDrawResolutionScaleDependentObjects() {
++  CreateTranslatorAndInternalShaders();
++  StartCreationThreads();
++}
++
++void PipelineCache::Shutdown() {
++  StopCreationThreads();
++
++  // Shut down the persistent shader / pipeline storage.
++  ShutdownShaderStorage();
++
++  // Destroy all pipelines.
++  DestroyAllPipelines();
+ 
+   // Destroy all shaders.
+   if (bindless_resources_used_) {
+diff --git a/include/rex/graphics/d3d12/render_target_cache.h b/include/rex/graphics/d3d12/render_target_cache.h
+--- a/include/rex/graphics/d3d12/render_target_cache.h
++++ b/include/rex/graphics/d3d12/render_target_cache.h
+@@ -18,6 +18,7 @@
+ #include <deque>
+ #include <functional>
+ #include <memory>
++#include <optional>
+ #include <unordered_map>
+ #include <utility>
+ #include <vector>
+@@ -48,7 +49,11 @@
+         bindless_resources_used_(bindless_resources_used) {}
+   ~D3D12RenderTargetCache() override;
+ 
+-  bool Initialize();
++  // The path is chosen from the configuration unless required_path is
++  // specified - when reinitializing for a different draw resolution scale, the
++  // path must stay the same as other subsystems depend on it, even if the cvar
++  // choosing it has been changed since startup.
++  bool Initialize(std::optional<Path> required_path = std::nullopt);
+   void Shutdown(bool from_destructor = false);
+ 
+   void CompletedSubmissionUpdated();
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -170,11 +170,13 @@
+   Shutdown(true);
+ }
+ 
+-bool D3D12RenderTargetCache::Initialize() {
++bool D3D12RenderTargetCache::Initialize(std::optional<Path> required_path) {
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+   ID3D12Device* device = provider.GetDevice();
+ 
+-  if (REXCVAR_GET(render_target_path_d3d12) == "rtv") {
++  if (required_path) {
++    path_ = *required_path;
++  } else if (REXCVAR_GET(render_target_path_d3d12) == "rtv") {
+     path_ = Path::kHostRenderTargets;
+   } else if (REXCVAR_GET(render_target_path_d3d12) == "rov") {
+     path_ = Path::kPixelShaderInterlock;

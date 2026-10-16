@@ -1,0 +1,798 @@
+diff --git a/include/rex/graphics/gpu_stats.h b/include/rex/graphics/gpu_stats.h
+new file mode 100644
+--- /dev/null
++++ b/include/rex/graphics/gpu_stats.h
+@@ -0,0 +1,67 @@
++/**
++ * @file        rex/graphics/gpu_stats.h
++ *
++ * @brief       Running totals of the GPU emulation's work, for a performance
++ *              readout in Release builds.
++ *
++ * The counters only ever grow; a reader takes two snapshots some time apart
++ * and divides the difference by the number of frames in between. Adding is a
++ * relaxed atomic increment, cheap enough for every draw. (A function, not an
++ * inline access to the counters: the totals live in the runtime library and
++ * Windows DLLs export functions, not data.)
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++namespace rex::graphics::stats {
++
++enum class Counter : uint32_t {
++  kFrames,               // guest frames presented (swaps)
++  kDraws,                // guest draw calls
++  kResolves,             // guest resolves (EDRAM -> memory copies)
++  kReadbacks,            // resolves copied back to guest memory (readback_resolve)
++  kReadbackBytes,        //   bytes copied
++  kOcclusionQueries,     // guest occlusion queries completed
++  kGpuWaits,             // times the GPU thread blocked waiting for the host GPU
++  kGpuWaitMicros,        //   time spent blocked
++  kSubmissions,          // host command buffer submissions
++  kRenderTargetTransfers,// EDRAM ownership transfers between render targets
++  kUploadBytes,          // guest memory uploaded to the GPU's copy
++  kTextureLoads,         // textures (re)loaded from guest memory
++  kWatchFaults,          // CPU writes caught by the GPU memory write watch
++  kCount
++};
++
++struct Snapshot {
++  uint64_t values[size_t(Counter::kCount)] = {};
++  uint64_t time_us = 0;  // steady clock
++  uint64_t operator[](Counter c) const { return values[size_t(c)]; }
++};
++
++void Add(Counter counter, uint64_t amount = 1);
++
++// The current totals.
++Snapshot Read();
++
++// "draws", "resolves" ...
++const char* Name(Counter counter);
++
++// Measures how long the GPU thread blocks on the host GPU (kGpuWaits,
++// kGpuWaitMicros) for the lifetime of the object.
++class ScopedGpuWait {
++ public:
++  ScopedGpuWait();
++  ~ScopedGpuWait();
++  ScopedGpuWait(const ScopedGpuWait&) = delete;
++  ScopedGpuWait& operator=(const ScopedGpuWait&) = delete;
++
++ private:
++  uint64_t start_us_;
++};
++
++}  // namespace rex::graphics::stats
+diff --git a/src/core/gpu_stats.cpp b/src/core/gpu_stats.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/core/gpu_stats.cpp
+@@ -0,0 +1,64 @@
++/**
++ * @file        core/gpu_stats.cpp
++ * @brief       See rex/graphics/gpu_stats.h.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#include <rex/graphics/gpu_stats.h>
++
++#include <atomic>
++#include <chrono>
++
++namespace rex::graphics::stats {
++
++namespace {
++std::atomic<uint64_t> g_counters[size_t(Counter::kCount)];
++
++uint64_t NowMicros() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++}  // namespace
++
++void Add(Counter counter, uint64_t amount) {
++  g_counters[size_t(counter)].fetch_add(amount, std::memory_order_relaxed);
++}
++
++Snapshot Read() {
++  Snapshot snapshot;
++  for (size_t i = 0; i < size_t(Counter::kCount); ++i)
++    snapshot.values[i] = g_counters[i].load(std::memory_order_relaxed);
++  snapshot.time_us = NowMicros();
++  return snapshot;
++}
++
++const char* Name(Counter counter) {
++  switch (counter) {
++    case Counter::kFrames: return "frames";
++    case Counter::kDraws: return "draws";
++    case Counter::kResolves: return "resolves";
++    case Counter::kReadbacks: return "readbacks";
++    case Counter::kReadbackBytes: return "readback_bytes";
++    case Counter::kOcclusionQueries: return "occlusion_queries";
++    case Counter::kGpuWaits: return "gpu_waits";
++    case Counter::kGpuWaitMicros: return "gpu_wait_us";
++    case Counter::kSubmissions: return "submissions";
++    case Counter::kRenderTargetTransfers: return "rt_transfers";
++    case Counter::kUploadBytes: return "upload_bytes";
++    case Counter::kTextureLoads: return "texture_loads";
++    case Counter::kWatchFaults: return "watch_faults";
++    case Counter::kCount: break;
++  }
++  return "?";
++}
++
++ScopedGpuWait::ScopedGpuWait() : start_us_(NowMicros()) {}
++
++ScopedGpuWait::~ScopedGpuWait() {
++  Add(Counter::kGpuWaits);
++  Add(Counter::kGpuWaitMicros, NowMicros() - start_us_);
++}
++
++}  // namespace rex::graphics::stats
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -9,6 +9,7 @@
+     clock.cpp
+     cvar.cpp
+     exception_handler.cpp
++    gpu_stats.cpp
+     filesystem.cpp
+     filesystem_wildcard.cpp
+     hash.cpp
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -11,6 +11,7 @@
+ 
+ #pragma once
+ 
++#include <array>
+ #include <atomic>
+ #include <cstring>
+ #include <functional>
+@@ -167,6 +168,9 @@
+ 
+   virtual void MakeCoherent();
+   virtual void PrepareForWait();
++  // Called over and over while waiting for the guest to write more commands
++  // (results of work already sent to the host GPU can be delivered here).
++  virtual void PollWhileWaiting() {}
+   virtual void ReturnFromWait();
+ 
+   uint32_t ExecutePrimaryBuffer(uint32_t start_index, uint32_t end_index);
+@@ -245,6 +249,13 @@
+ 
+   uint32_t counter_ = 0;
+ 
++  // Resolves into a buffer the guest has presented with a swap: the guest's
++  // CPU doesn't read those, so readback_resolve skips them (a full-screen
++  // copy to host memory and into guest memory every frame otherwise).
++  bool IsPresentedFrontbuffer(uint32_t physical_address) const;
++  std::array<uint32_t, 4> presented_frontbuffers_ = {};
++  uint32_t presented_frontbuffer_next_ = 0;
++
+   uint32_t primary_buffer_ptr_ = 0;
+   uint32_t primary_buffer_size_ = 0;
+ 
+diff --git a/include/rex/graphics/flags.h b/include/rex/graphics/flags.h
+--- a/include/rex/graphics/flags.h
++++ b/include/rex/graphics/flags.h
+@@ -26,6 +26,8 @@
+ REXCVAR_DECLARE(bool, resolve_resolution_scale_fill_half_pixel_offset);
+ REXCVAR_DECLARE(bool, draw_resolution_scaled_texture_offsets);
+ REXCVAR_DECLARE(std::string, readback_resolve);
++REXCVAR_DECLARE(bool, readback_resolve_log);
++REXCVAR_DECLARE(bool, readback_resolve_skip_frontbuffer);
+ REXCVAR_DECLARE(bool, readback_resolve_half_pixel_offset);
+ REXCVAR_DECLARE(bool, readback_memexport);
+ REXCVAR_DECLARE(bool, readback_memexport_fast);
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -256,6 +256,8 @@
+   void OnGammaRamp256EntryTableValueWritten() override;
+   void OnGammaRampPWLValueWritten() override;
+   void OnPrimaryBufferEnd() override;
++  void PrepareForWait() override;
++  void PollWhileWaiting() override;
+ 
+   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                  uint32_t frontbuffer_height) override;
+@@ -440,6 +442,9 @@
+   void DisableHostOcclusionQueries();
+   uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
+   void WriteGuestOcclusionResult(uint32_t sample_count_address, uint64_t samples);
++  // Writes the results of ended queries whose submission has completed;
++  // with `wait`, submits and waits for all of them first.
++  void ProcessPendingOcclusionQueries(bool wait);
+   void InvalidateAllVertexBufferResidency();
+   void InvalidateVertexBufferResidency(uint32_t vfetch_index);
+   void InvalidateVertexBufferResidencyRange(uint32_t first_vfetch, uint32_t last_vfetch);
+@@ -741,6 +746,16 @@
+     uint32_t host_index = UINT32_MAX;
+     bool valid = false;
+   } active_occlusion_query_;
++  // Ended queries waiting for their submission to complete on the host GPU.
++  // The guest polls the sample count memory until the GPU has written it, as
++  // on the console, so the results are written when they're ready instead of
++  // stalling the GPU emulation at every query.
++  struct PendingOcclusionQuery {
++    uint32_t sample_count_address;
++    uint32_t host_index;
++    uint64_t submission;
++  };
++  std::deque<PendingOcclusionQuery> pending_occlusion_queries_;
+   struct VertexBufferState {
+     uint32_t address = UINT32_MAX;
+     uint32_t size = UINT32_MAX;
+diff --git a/include/rex/graphics/d3d12/command_processor.h b/include/rex/graphics/d3d12/command_processor.h
+--- a/include/rex/graphics/d3d12/command_processor.h
++++ b/include/rex/graphics/d3d12/command_processor.h
+@@ -211,6 +211,8 @@
+                  uint32_t frontbuffer_height) override;
+ 
+   void OnPrimaryBufferEnd() override;
++  void PrepareForWait() override;
++  void PollWhileWaiting() override;
+ 
+   Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
+                      const uint32_t* host_address, uint32_t dword_count) override;
+@@ -412,6 +414,9 @@
+   uint64_t NormalizeOcclusionSamples(uint64_t samples) const;
+   void WriteGuestOcclusionResult(xenos::xe_gpu_depth_sample_counts* sample_counts,
+                                  uint64_t samples);
++  // Writes the results of ended queries whose submission has completed;
++  // with `wait`, submits and waits for all of them first.
++  void ProcessPendingOcclusionQueries(bool wait);
+   void InvalidateAllVertexBufferResidency();
+   void InvalidateVertexBufferResidency(uint32_t vfetch_index);
+   void InvalidateVertexBufferResidencyRange(uint32_t first_vfetch, uint32_t last_vfetch);
+@@ -659,6 +664,14 @@
+     uint32_t host_index = UINT32_MAX;
+     bool valid = false;
+   } active_occlusion_query_;
++  // Ended queries waiting for their submission to complete on the host GPU
++  // (see the Vulkan command processor).
++  struct PendingOcclusionQuery {
++    uint32_t sample_count_address;
++    uint32_t host_index;
++    uint64_t submission;
++  };
++  std::deque<PendingOcclusionQuery> pending_occlusion_queries_;
+   struct VertexBufferState {
+     uint32_t address = UINT32_MAX;
+     uint32_t size = UINT32_MAX;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -22,6 +22,7 @@
+ #include <rex/perf/counter.h>
+ #include <rex/chrono/clock.h>
+ #include <rex/graphics/command_processor.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+@@ -45,6 +46,11 @@
+ REXCVAR_DEFINE_BOOL(occlusion_query_enable, true, "GPU", "Enable host occlusion query handling")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++REXCVAR_DEFINE_BOOL(readback_resolve_log, false, "GPU",
++                    "readback_resolve: log each new resolve destination that is copied back");
++REXCVAR_DEFINE_BOOL(readback_resolve_skip_frontbuffer, true, "GPU",
++                    "readback_resolve: don't copy back resolves into a buffer the game has "
++                    "presented (its CPU doesn't read the picture on screen)");
+ REXCVAR_DEFINE_STRING(readback_resolve, "none", "GPU",
+                       "Controls CPU readback of render-to-texture resolve results.\n"
+                       " none: Disable readback (default)\n"
+@@ -227,6 +233,7 @@
+         }
+ 
+         rex::thread::MaybeYield();
++        PollWhileWaiting();
+         loop_count++;
+         write_ptr_index = write_ptr_index_.load();
+       } while (worker_running_ && pending_fns_.empty() &&
+@@ -610,6 +617,19 @@
+ 
+ void CommandProcessor::PrepareForWait() {}
+ 
++bool CommandProcessor::IsPresentedFrontbuffer(uint32_t physical_address) const {
++  if (!physical_address || !REXCVAR_GET(readback_resolve_skip_frontbuffer)) {
++    return false;
++  }
++  physical_address &= 0x1FFFFFFF;
++  for (uint32_t address : presented_frontbuffers_) {
++    if (address == physical_address) {
++      return true;
++    }
++  }
++  return false;
++}
++
+ void CommandProcessor::ReturnFromWait() {}
+ 
+ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
+@@ -958,6 +978,12 @@
+   uint32_t frontbuffer_height = reader->ReadAndSwap<uint32_t>();
+   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
+ 
++  stats::Add(stats::Counter::kFrames);
++  if (const uint32_t physical = frontbuffer_ptr & 0x1FFFFFFF; !IsPresentedFrontbuffer(physical)) {
++    presented_frontbuffers_[presented_frontbuffer_next_] = physical;
++    presented_frontbuffer_next_ =
++        (presented_frontbuffer_next_ + 1) % uint32_t(presented_frontbuffers_.size());
++  }
+   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+ 
+   ++counter_;
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -34,6 +34,7 @@
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/vulkan/command_processor.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/vulkan/pipeline_cache.h>
+ #include <rex/graphics/vulkan/render_target_cache.h>
+ #include <rex/graphics/vulkan/shader.h>
+@@ -3613,8 +3614,10 @@
+   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+   if (edram_mode == xenos::EdramMode::kCopy) {
+     // Special copy handling.
++    stats::Add(stats::Counter::kResolves);
+     return IssueCopy();
+   }
++  stats::Add(stats::Counter::kDraws);
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 
+@@ -4419,6 +4422,10 @@
+     return true;
+   }
+ 
++  if (IsPresentedFrontbuffer(written_address)) {
++    return true;
++  }
++
+   ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     return true;
+@@ -4474,6 +4481,11 @@
+ 
+   bool is_scaled = texture_cache_->IsDrawResolutionScaled();
+   uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
++  if (REXCVAR_GET(readback_resolve_log) && !readback_buffers_.count(resolve_key)) {
++    REXGPU_INFO("Resolve readback: new destination {:08X}, {} bytes, format {}", written_address,
++                written_length,
++                uint32_t(register_file_->Get<reg::RB_COPY_DEST_INFO>().copy_dest_format));
++  }
+   ReadbackBuffer& readback = readback_buffers_[resolve_key];
+   readback.last_used_frame = frame_current_;
+   uint32_t write_index = readback.current_index;
+@@ -4682,6 +4694,8 @@
+     uint8_t* destination = memory_->TranslatePhysical(written_address);
+     if (destination) {
+       std::memcpy(destination, readback.mapped_data[read_index], written_length);
++      stats::Add(stats::Counter::kReadbacks);
++      stats::Add(stats::Counter::kReadbackBytes, written_length);
+     }
+   }
+ 
+@@ -4782,6 +4796,7 @@
+ 
+ void VulkanCommandProcessor::ShutdownOcclusionQueryResources() {
+   DisableHostOcclusionQueries();
++  pending_occlusion_queries_.clear();  // only left if the device was lost
+ 
+   const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+@@ -4817,6 +4832,7 @@
+ }
+ 
+ void VulkanCommandProcessor::DisableHostOcclusionQueries() {
++  ProcessPendingOcclusionQueries(true);
+   if (active_occlusion_query_.valid && occlusion_query_pool_ != VK_NULL_HANDLE) {
+     if (BeginSubmission(true)) {
+       deferred_command_buffer_.CmdVkEndQuery(occlusion_query_pool_,
+@@ -4883,16 +4899,30 @@
+                                            sizeof(uint64_t) * host_index, sizeof(uint64_t),
+                                            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+ 
+-  if (!EndSubmission(false)) {
+-    return false;
++  // The result is written to guest memory once this submission completes
++  // (ProcessPendingOcclusionQueries). Waiting for it here emptied the host
++  // GPU's queue at every query: one full stall per light flare per frame.
++  pending_occlusion_queries_.push_back(
++      PendingOcclusionQuery{sample_count_address, host_index, GetCurrentSubmission()});
++  return true;
++}
++
++void VulkanCommandProcessor::ProcessPendingOcclusionQueries(bool wait) {
++  if (pending_occlusion_queries_.empty()) {
++    return;
+   }
+-  if (!AwaitAllQueueOperationsCompletion()) {
+-    return false;
++  if (wait) {
++    // Submits the open submission if a pending query is in it, then waits.
++    // (The fence check itself delivers the results it can.)
++    CheckSubmissionFenceAndDeviceLoss(pending_occlusion_queries_.back().submission);
++  }
++  if (pending_occlusion_queries_.empty() ||
++      pending_occlusion_queries_.front().submission > submission_completed_ ||
++      occlusion_query_readback_mapping_ == nullptr) {
++    return;
+   }
+ 
+   const ui::vulkan::VulkanDevice* vulkan_device = GetVulkanDevice();
+-  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+-  const VkDevice device = vulkan_device->device();
+   if (!(vulkan_device->memory_types().host_coherent &
+         (uint32_t(1) << occlusion_query_readback_memory_type_))) {
+     VkMappedMemoryRange memory_range = {};
+@@ -4903,13 +4933,36 @@
+         std::min(rex::round_up(VkDeviceSize(sizeof(uint64_t) * kMaxOcclusionQueries),
+                                vulkan_device->properties().nonCoherentAtomSize),
+                  occlusion_query_readback_memory_size_);
+-    dfn.vkInvalidateMappedMemoryRanges(device, 1, &memory_range);
++    vulkan_device->functions().vkInvalidateMappedMemoryRanges(vulkan_device->device(), 1,
++                                                              &memory_range);
+   }
+ 
+   const uint64_t* results = reinterpret_cast<const uint64_t*>(occlusion_query_readback_mapping_);
+-  uint64_t samples = NormalizeOcclusionSamples(results[host_index]);
+-  WriteGuestOcclusionResult(sample_count_address, samples);
+-  return true;
++  while (!pending_occlusion_queries_.empty() &&
++         pending_occlusion_queries_.front().submission <= submission_completed_) {
++    const PendingOcclusionQuery& query = pending_occlusion_queries_.front();
++    WriteGuestOcclusionResult(query.sample_count_address,
++                              NormalizeOcclusionSamples(results[query.host_index]));
++    stats::Add(stats::Counter::kOcclusionQueries);
++    pending_occlusion_queries_.pop_front();
++  }
++}
++
++void VulkanCommandProcessor::PrepareForWait() {
++  // Out of guest commands: the guest may be polling for a query result, so
++  // send the queries' commands to the host GPU now.
++  if (!pending_occlusion_queries_.empty() && submission_open_ &&
++      pending_occlusion_queries_.back().submission >= GetCurrentSubmission()) {
++    EndSubmission(false);
++  }
++  CommandProcessor::PrepareForWait();
++}
++
++void VulkanCommandProcessor::PollWhileWaiting() {
++  if (!pending_occlusion_queries_.empty()) {
++    // Non-blocking: updates submission_completed_, then writes what's done.
++    CheckSubmissionFenceAndDeviceLoss(0);
++  }
+ }
+ 
+ uint64_t VulkanCommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
+@@ -4970,6 +5023,7 @@
+     // defined by vkQueueSubmit additionally include in the first
+     // synchronization scope all commands that occur earlier in submission
+     // order."
++    stats::ScopedGpuWait wait_stat;
+     VkResult wait_result =
+         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
+                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
+@@ -5038,6 +5092,8 @@
+ 
+   shared_memory_->CompletedSubmissionUpdated();
+ 
++  ProcessPendingOcclusionQueries(false);
++
+   primitive_processor_->CompletedSubmissionUpdated();
+ 
+   render_target_cache_->CompletedSubmissionUpdated();
+@@ -5419,6 +5475,7 @@
+           vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);
+       submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
+     }
++    stats::Add(stats::Counter::kSubmissions);
+     if (submit_result != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
+       if (submit_result == VK_ERROR_DEVICE_LOST && !device_lost_) {
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -20,6 +20,7 @@
+ #include <rex/dbg.h>
+ #include <rex/perf/counter.h>
+ #include <rex/graphics/d3d12/command_processor.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/d3d12/graphics_system.h>
+ #include <rex/graphics/d3d12/shader.h>
+ #include <rex/graphics/flags.h>
+@@ -2281,8 +2282,10 @@
+   xenos::EdramMode edram_mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
+   if (edram_mode == xenos::EdramMode::kCopy) {
+     // Special copy handling.
++    stats::Add(stats::Counter::kResolves);
+     return IssueCopy();
+   }
++  stats::Add(stats::Counter::kDraws);
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 
+@@ -2901,6 +2904,10 @@
+     return true;
+   }
+ 
++  if (IsPresentedFrontbuffer(written_address)) {
++    return true;
++  }
++
+   bool is_scaled = texture_cache_->IsDrawResolutionScaled();
+   uint64_t resolve_key = MakeReadbackResolveKey(written_address, written_length);
+   ReadbackBuffer& rb = readback_buffers_[resolve_key];
+@@ -3095,6 +3102,8 @@
+     uint8_t* destination = memory_->TranslatePhysical(written_address);
+     if (destination) {
+       std::memcpy(destination, static_cast<uint8_t*>(rb.mapped_data[read_index]), written_length);
++      stats::Add(stats::Counter::kReadbacks);
++      stats::Add(stats::Counter::kReadbackBytes, written_length);
+     }
+   }
+ 
+@@ -3118,6 +3127,7 @@
+                     SUCCEEDED(queue_operations_since_submission_fence_->SetEventOnCompletion(
+                         fence_value, fence_completion_event_)))) {
+         PROFILE_CMD_BUFFER_STALL();
++        stats::ScopedGpuWait wait_stat;
+         WaitForSingleObject(fence_completion_event_, INFINITE);
+         queue_operations_done_since_submission_signal_ = false;
+       } else {
+@@ -3137,6 +3147,7 @@
+     if (SUCCEEDED(
+             submission_fence_->SetEventOnCompletion(await_submission, fence_completion_event_))) {
+       PROFILE_CMD_BUFFER_STALL();
++      stats::ScopedGpuWait wait_stat;
+       WaitForSingleObject(fence_completion_event_, INFINITE);
+       submission_completed_ = submission_fence_->GetCompletedValue();
+     }
+@@ -3149,6 +3160,8 @@
+     return;
+   }
+ 
++  ProcessPendingOcclusionQueries(false);
++
+   // Reclaim command allocators.
+   while (command_allocator_submitted_first_) {
+     if (command_allocator_submitted_first_->last_usage_submission > submission_completed_) {
+@@ -3429,6 +3442,7 @@
+     command_list_->Close();
+     ID3D12CommandList* execute_command_lists[] = {command_list_};
+     direct_queue->ExecuteCommandLists(1, execute_command_lists);
++    stats::Add(stats::Counter::kSubmissions);
+     command_allocator_writable_first_->last_usage_submission = submission_current_;
+     if (command_allocator_submitted_last_) {
+       command_allocator_submitted_last_->next = command_allocator_writable_first_;
+@@ -4857,6 +4871,7 @@
+ 
+ void D3D12CommandProcessor::ShutdownOcclusionQueryResources() {
+   DisableHostOcclusionQueries();
++  pending_occlusion_queries_.clear();  // only left if the device was lost
+ 
+   if (occlusion_query_readback_ && occlusion_query_readback_mapping_) {
+     occlusion_query_readback_->Unmap(0, nullptr);
+@@ -4875,6 +4890,7 @@
+ }
+ 
+ void D3D12CommandProcessor::DisableHostOcclusionQueries() {
++  ProcessPendingOcclusionQueries(true);
+   if (active_occlusion_query_.valid && occlusion_query_heap_) {
+     uint32_t host_index = active_occlusion_query_.host_index;
+     // Clear before EndSubmission to prevent the EndSubmission safety net from issuing a second
+@@ -4921,6 +4937,7 @@
+ 
+ bool D3D12CommandProcessor::EndGuestOcclusionQuery(
+     uint32_t sample_count_address, xenos::xe_gpu_depth_sample_counts* sample_counts) {
++  (void)sample_counts;
+   if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
+       !active_occlusion_query_.valid || !occlusion_query_heap_ || !occlusion_query_readback_) {
+     return false;
+@@ -4939,23 +4956,51 @@
+       occlusion_query_heap_.Get(), D3D12_QUERY_TYPE_OCCLUSION, host_index, 1,
+       occlusion_query_readback_.Get(), sizeof(uint64_t) * host_index);
+ 
+-  if (!EndSubmission(false)) {
+-    return false;
+-  }
++  // The result is written to guest memory once this submission completes
++  // (ProcessPendingOcclusionQueries) instead of stalling here at every query.
++  pending_occlusion_queries_.push_back(
++      PendingOcclusionQuery{sample_count_address, host_index, submission_current_});
++  return true;
++}
+ 
+-  uint64_t query_submission = submission_current_ ? submission_current_ - 1 : 0;
+-  CheckSubmissionFence(query_submission);
+-  if (submission_completed_ < query_submission) {
+-    return false;
++void D3D12CommandProcessor::ProcessPendingOcclusionQueries(bool wait) {
++  if (pending_occlusion_queries_.empty()) {
++    return;
++  }
++  if (wait) {
++    // Submits the open submission if a pending query is in it, then waits.
++    // (The fence check itself delivers the results it can.)
++    CheckSubmissionFence(pending_occlusion_queries_.back().submission);
+   }
+   if (!occlusion_query_readback_mapping_) {
+-    return false;
++    return;
++  }
++  while (!pending_occlusion_queries_.empty() &&
++         pending_occlusion_queries_.front().submission <= submission_completed_) {
++    const PendingOcclusionQuery& query = pending_occlusion_queries_.front();
++    WriteGuestOcclusionResult(
++        memory_->TranslatePhysical<xenos::xe_gpu_depth_sample_counts*>(
++            query.sample_count_address),
++        NormalizeOcclusionSamples(occlusion_query_readback_mapping_[query.host_index]));
++    stats::Add(stats::Counter::kOcclusionQueries);
++    pending_occlusion_queries_.pop_front();
+   }
++}
+ 
+-  uint64_t samples = occlusion_query_readback_mapping_[host_index];
+-  samples = NormalizeOcclusionSamples(samples);
+-  WriteGuestOcclusionResult(sample_counts, samples);
+-  return true;
++void D3D12CommandProcessor::PrepareForWait() {
++  // Out of guest commands: the guest may be polling for a query result, so
++  // send the queries' commands to the host GPU now.
++  if (!pending_occlusion_queries_.empty() && submission_open_ &&
++      pending_occlusion_queries_.back().submission >= submission_current_) {
++    EndSubmission(false);
++  }
++  CommandProcessor::PrepareForWait();
++}
++
++void D3D12CommandProcessor::PollWhileWaiting() {
++  if (!pending_occlusion_queries_.empty()) {
++    CheckSubmissionFence(0);  // non-blocking; delivers finished results
++  }
+ }
+ 
+ uint64_t D3D12CommandProcessor::NormalizeOcclusionSamples(uint64_t samples) const {
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -24,6 +24,7 @@
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/graphics/flags.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/pipeline/shader/spirv_builder.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
+@@ -4551,6 +4552,10 @@
+     const std::vector<Transfer>* render_target_transfers,
+     const uint64_t* render_target_resolve_clear_values,
+     const Transfer::Rectangle* resolve_clear_rectangle) {
++  if (render_target_transfers) {
++    for (uint32_t i = 0; i < render_target_count; ++i)
++      stats::Add(stats::Counter::kRenderTargetTransfers, render_target_transfers[i].size());
++  }
+   assert_true(GetPath() == Path::kHostRenderTargets);
+ 
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+diff --git a/src/graphics/d3d12/render_target_cache.cpp b/src/graphics/d3d12/render_target_cache.cpp
+--- a/src/graphics/d3d12/render_target_cache.cpp
++++ b/src/graphics/d3d12/render_target_cache.cpp
+@@ -28,6 +28,7 @@
+ #include <rex/graphics/d3d12/render_target_cache.h>
+ #include <rex/graphics/d3d12/texture_cache.h>
+ #include <rex/graphics/flags.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/format/dxbc.h>
+ #include <rex/graphics/pipeline/shader/dxbc_translator.h>
+ #include <rex/graphics/util/draw.h>
+@@ -3798,6 +3799,10 @@
+     const std::vector<Transfer>* render_target_transfers,
+     const uint64_t* render_target_resolve_clear_values,
+     const Transfer::Rectangle* resolve_clear_rectangle) {
++  if (render_target_transfers) {
++    for (uint32_t i = 0; i < render_target_count; ++i)
++      stats::Add(stats::Counter::kRenderTargetTransfers, render_target_transfers[i].size());
++  }
+   assert_true(GetPath() == Path::kHostRenderTargets);
+ 
+   const ui::d3d12::D3D12Provider& provider = command_processor_.GetD3D12Provider();
+diff --git a/src/graphics/vulkan/shared_memory.cpp b/src/graphics/vulkan/shared_memory.cpp
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/graphics/vulkan/command_processor.h>
+ #include <rex/graphics/vulkan/deferred_command_buffer.h>
+ #include <rex/graphics/vulkan/shared_memory.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/util.h>
+@@ -273,6 +274,8 @@
+   if (upload_page_ranges.empty()) {
+     return true;
+   }
++  for (const auto& range : upload_page_ranges)
++    stats::Add(stats::Counter::kUploadBytes, uint64_t(range.second) << page_size_log2());
+   // upload_page_ranges are sorted, use them to determine the range for the
+   // ordering barrier.
+   Use(Usage::kTransferDestination,
+diff --git a/src/graphics/d3d12/shared_memory.cpp b/src/graphics/d3d12/shared_memory.cpp
+--- a/src/graphics/d3d12/shared_memory.cpp
++++ b/src/graphics/d3d12/shared_memory.cpp
+@@ -17,6 +17,7 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/shared_memory.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+@@ -306,6 +307,8 @@
+   if (upload_page_ranges.empty()) {
+     return true;
+   }
++  for (const auto& range : upload_page_ranges)
++    stats::Add(stats::Counter::kUploadBytes, uint64_t(range.second) << page_size_log2());
+   CommitUAVWritesAndTransitionBuffer(D3D12_RESOURCE_STATE_COPY_DEST);
+   command_processor_.SubmitBarriers();
+   auto& command_list = command_processor_.GetDeferredCommandList();
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/dbg.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/register_file.h>
+@@ -887,6 +888,7 @@
+   if (!PrepareTextureLoad(texture, pending_load, pending_ranges, pending_range_count)) {
+     return true;
+   }
++  stats::Add(stats::Counter::kTextureLoads);
+ 
+   std::pair<uint32_t, uint32_t> pending_range_pairs[2];
+   for (size_t i = 0; i < pending_range_count; ++i) {
+diff --git a/src/system/xmemory.cpp b/src/system/xmemory.cpp
+--- a/src/system/xmemory.cpp
++++ b/src/system/xmemory.cpp
+@@ -19,6 +19,8 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/graphics/gpu_stats.h>
++
+ #include <rex/assert.h>
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+@@ -558,6 +560,7 @@
+   auto physical_heap = static_cast<PhysicalHeap*>(heap);
+   if (physical_heap->TriggerCallbacks(std::move(global_lock_locked_once), virtual_address, 1,
+                                       is_write, false)) {
++    rex::graphics::stats::Add(rex::graphics::stats::Counter::kWatchFaults);
+     return true;
+   }
+ 

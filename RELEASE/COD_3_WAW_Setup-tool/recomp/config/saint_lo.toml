@@ -1,0 +1,24 @@
+# saint_lo.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x890C1950 = {}  # code-ref @0x89170A68
+0x891A4DD8 = {}  # code-ref @0x8922C880
+0x891A6960 = {}  # code-ref @0x8922D378
+0x891A7A00 = {}  # code-ref @0x890BF368
+0x891A7A18 = {}  # code-ref @0x890BF384
+0x891A7A30 = {}  # code-ref @0x890BF3A0
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89255310
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x8919062C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x8919075C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

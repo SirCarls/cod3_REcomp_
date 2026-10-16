@@ -1,0 +1,27 @@
+# hostage.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89037CF8 = {}  # code-ref @0x89083850
+0x89037D30 = {}  # code-ref @0x890838D0
+0x8903A560 = {}  # code-ref @0x890842D0
+0x890A1C38 = {}  # code-ref @0x891510A8
+0x89185328 = {}  # code-ref @0x8920D290
+0x89186EB0 = {}  # code-ref @0x8920DD88
+0x89187F50 = {}  # code-ref @0x8909F650
+0x89187F68 = {}  # code-ref @0x8909F66C
+0x89187F80 = {}  # code-ref @0x8909F688
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892350B0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89170E6C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89170F9C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

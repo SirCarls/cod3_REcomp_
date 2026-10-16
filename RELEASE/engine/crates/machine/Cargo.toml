@@ -1,0 +1,9 @@
+[package]
+name = "machine"
+description = "What this computer has (CPUs it may use, cores, shared-cache groups, E-cores, memory) and how many threads each kind of work gets: the same rules as the ReXGlue port's game/machine_profile.cpp."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

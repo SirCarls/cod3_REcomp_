@@ -1,0 +1,24 @@
+# island.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x890B5768 = {}  # code-ref @0x89163C98
+0x89196D88 = {}  # code-ref @0x8921E718
+0x89198910 = {}  # code-ref @0x8921F210
+0x891999B0 = {}  # code-ref @0x890B3180
+0x891999C8 = {}  # code-ref @0x890B319C
+0x891999E0 = {}  # code-ref @0x890B31B8
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89245098
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89182564
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89182694
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

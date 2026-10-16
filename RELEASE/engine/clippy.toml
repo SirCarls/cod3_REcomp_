@@ -1,0 +1,4 @@
+# Oldest Rust this workspace supports. Clippy won't suggest newer library
+# functions (such as `is_multiple_of`), so the code keeps building on the
+# toolchains users already have.
+msrv = "1.80"

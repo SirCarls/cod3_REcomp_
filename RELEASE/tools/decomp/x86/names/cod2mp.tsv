@@ -1,0 +1,38 @@
+# CoD2MP_s.exe 1.3 (SHA-1 d1d264373cfdd117b9d57e441916c43dd51caa62): names we identified and checked.
+# address	name	how	evidence
+# Quake III names where the function is Quake III's; CoD2's own name (from the Mac 1.3 build's symbols) in the evidence.
+00449F60	COM_SkipPath	shape	CoD2: Com_SkipPath (path in edx); last '/' only, like the Mac build's
+0044A040	Com_GetExtensionSubString	shape	CoD2's own name (Mac build); returns the last '.' of the last path component, or the end
+0044A070	COM_StripExtension	shape	CoD2: Com_StripExtension (in ecx, out eax); cuts at the last '.' after the last '/' or '\'
+0044A100	COM_DefaultExtension	CoD2x	CoD2x: Com_DefaultExtension; path in eax, maxSize and extension on the stack; strncpy 63 then Com_sprintf "%s%s"
+0044A650	Q_strncpyz	shape	CoD2: I_strncpyz (dest edi, src ecx, size esi); strncpy(size-1), dest[size-1]=0; no NULL checks
+0044A670	Q_stricmpn	call	CoD2x calls it Q_stricmp; n in eax (Info_ValueForKey passes 0x7FFFFFFF); CoD2: I_strnicmp
+0044A6D0	Q_strncmp	shape	CoD2: I_strncmp; same register use as 0x0044A670 without case folding
+0044A710	Q_stricmp	shape	CoD2: I_stricmp; cdecl wrapper: n = 0x7FFFFFFF, jumps to Q_stricmpn; passed to Com_StringContains
+0044A730	Q_strcmp	shape	CoD2: I_strcmp; cdecl, limit 0x7FFFFFFF; passed to Com_StringContains when case-sensitive
+0044A7F0	Q_strlwr	shape	CoD2: I_strlwr (s in eax); 'A'-'Z' only
+0044A820	Q_strupr	shape	CoD2: I_strupr (s in eax); 'a'-'z' only
+0044A850	Q_strcat	CoD2x	CoD2x: I_strncat; "I_strncat: already overflowed"; dest ebx, size eax, src on the stack
+0044A8A0	Q_PrintStrlen	shape	CoD2: I_DrawStrlen (s in edx); skips ^0-^9
+0044A8D0	Q_CleanStr	shape	CoD2: I_CleanStr (s in eax); drops ^0-^9 and bytes outside 0x20-0x7E
+0044A930	Com_sprintf	CoD2x	dest edi, size esi, format and arguments on the stack; _vsnprintf then dest[size-1]=0
+0044A990	va	CoD2x	two 1024-byte buffers from the thread block (TlsGetValue)
+0044AA00	Com_InitThreadData	call	called by Sys_InitMainThread (0x00462360) with the thread number in eax; fills the TLS block
+0044AA90	Info_ValueForKey	CoD2x	"Info_ValueForKey: oversize infostring" (8192); s in ecx, key on the stack
+0044AB90	Info_NextPair	shape	head edi, key edx, value esi
+0044ABE0	Info_RemoveKey	strings	"Info_RemoveKey: oversize infostring" (1024); s in eax, key in ebx
+0044ACE0	Info_RemoveKey_Big	strings	"Info_RemoveKey_Big: oversize infostring" (8192); s in ecx, key in ebx
+0044ADE0	Info_Validate	shape	s in esi; strchr '"' and ';'
+0044AE10	Info_SetValueForKey	CoD2x	s and value on the stack, key in eax; prints instead of Com_Error
+0044AFE0	Info_SetValueForKey_Big	CoD2x	s and value on the stack, key in ecx; final length check 1024 (sic)
+00421AA0	FS_HashFileName	shape	fname in eax, hashSize on the stack; (c*(i+119)) with tolower, '.' stops, '\' as '/'
+0042D600	Com_StringContains	call	called by Com_Filter with Q_strcmp/Q_stricmp: str1 eax, str2 and compare function on the stack
+0042D660	Com_Filter	CoD2x	filter in eax, name and casesensitive on the stack; returns al
+0042D860	Com_FilterPath	CoD2x	filter edx, name eax, casesensitive on the stack; 63 characters each, '\' and ':' as '/'
+0042D8F0	Com_HashKey	shape	string eax, maxlen ebx; c*(i+119), h^(h>>10)^(h>>20)
+00435A70	generateHashValue	CoD2x	CoD2x: Dvar_GenerateHashValue; "null name in generateHashValue"; name in eax
+004324C0	Com_Error	CoD2x	"recursive error after: %s"; cdecl (level, format, ...)
+00431EE0	Com_Printf	CoD2x	cdecl (format, ...)
+0057B5B6	tolower	CoD2x	C runtime (per-thread locale)
+0057B7D5	toupper	call	C runtime; mirror of tolower (0x0057B5B6), 'a' -> 'A' in the oracle
+0057BA4A	_vsnprintf	CoD2x	CoD2x: Q_vsnprintf; C runtime

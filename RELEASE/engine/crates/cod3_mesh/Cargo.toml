@@ -1,0 +1,10 @@
+[package]
+name = "cod3_mesh"
+description = "Call of Duty 3 mesh resources (vertex declarations, Xbox 360 buffers) to glTF 2.0."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kapf = { path = "../kapf" }

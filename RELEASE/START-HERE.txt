@@ -1,0 +1,28 @@
+Call of Duty 3 (Xbox 360) for PC, with World at War content
+==============================================================
+
+This folder is the whole project, without any game files. You bring your
+own game:
+
+  - your Call of Duty 3 disc image (Xbox 360, .iso), required;
+  - your Call of Duty: World at War installation, optional.
+
+Start:
+
+  Windows:  double-click setup.bat
+  Linux:    sh setup.sh
+
+The setup tool (COD3-setup-tool) asks for your disc image and an output
+folder. Before it downloads or installs anything, it lists each item, where
+it comes from and the folder it goes into, and waits for your approval.
+Then it extracts the game data from your disc and builds the playable game
+in the output folder. It takes 30 to 120 minutes the first time.
+
+Everything it makes stays in this folder: input/ (your discs), output/
+(the game, saves, logs), work/ (build files; work/tools keeps the
+downloaded tools) and config/ (its settings). Only Linux system packages
+and, on Windows, Visual Studio's Build Tools go where their own installers
+put them. "Where things go" in the setup tool lists every folder.
+
+Read README.md for the details, docs/ for how everything works, and
+LICENSE for the terms. Nothing in this folder comes from a game disc.

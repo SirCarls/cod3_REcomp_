@@ -1,0 +1,10 @@
+[package]
+name = "ff_t4"
+description = "Call of Duty: World at War (T4) fastfile reader: container, zone header, asset list, assets."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inflate = { path = "../inflate" }

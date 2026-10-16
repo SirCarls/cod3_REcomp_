@@ -1,0 +1,605 @@
+diff --git a/include/rex/graphics/gpu_stats.h b/include/rex/graphics/gpu_stats.h
+index f9ee9d4..8a46575 100644
+--- a/include/rex/graphics/gpu_stats.h
++++ b/include/rex/graphics/gpu_stats.h
+@@ -18,6 +18,11 @@
+ #include <cstddef>
+ #include <cstdint>
+ 
++// 2: kGpuThreadMicros, kSubmitMicros, kShaderTranslations,
++// kShaderTranslateMicros and ScopedMicros. A game built against either
++// version can test this to know which counters exist.
++#define REX_GRAPHICS_STATS_VERSION 2
++
+ namespace rex::graphics::stats {
+ 
+ enum class Counter : uint32_t {
+@@ -36,6 +41,15 @@ enum class Counter : uint32_t {
+   kWatchFaults,          // CPU writes caught by the GPU memory write watch
+   kTexturesReplaced,     // host textures created from a texture replacement pack
+   kTexturesNotInPack,    // textures that could have been replaced, but aren't in the pack
++  // The GPU emulation runs every guest command on one host thread. Its busy
++  // time per frame next to the frame time says whether that thread is what
++  // limits the frame rate (busy ~= frame time) or something else is.
++  kGpuThreadMicros,      // time the GPU thread spent executing guest commands
++                         //   (includes kGpuWaitMicros and the two below)
++  kSubmitMicros,         //   of which: turning the recorded commands into a
++                         //   host command buffer and submitting it
++  kShaderTranslations,   // guest shaders translated while a draw waited for them
++  kShaderTranslateMicros,//   time spent (the draw, and the frame, wait)
+   kCount
+ };
+ 
+@@ -66,4 +80,19 @@ class ScopedGpuWait {
+   uint64_t start_us_;
+ };
+ 
++// Adds the lifetime of the object, in microseconds, to a time counter
++// (kGpuThreadMicros, kSubmitMicros, kShaderTranslateMicros). Two clock reads
++// per object, so meant for whole batches of work, not for every draw.
++class ScopedMicros {
++ public:
++  explicit ScopedMicros(Counter counter);
++  ~ScopedMicros();
++  ScopedMicros(const ScopedMicros&) = delete;
++  ScopedMicros& operator=(const ScopedMicros&) = delete;
++
++ private:
++  Counter counter_;
++  uint64_t start_us_;
++};
++
+ }  // namespace rex::graphics::stats
+diff --git a/include/rex/thread/mutex.h b/include/rex/thread/mutex.h
+index 6e5755a..1f84517 100644
+--- a/include/rex/thread/mutex.h
++++ b/include/rex/thread/mutex.h
+@@ -62,13 +62,19 @@ class global_critical_region {
+   // to keep an instance of global_critical_region near the members requiring
+   // it to keep things readable.
+   static std::unique_lock<std::recursive_mutex> AcquireDirect() {
+-    return std::unique_lock<std::recursive_mutex>(mutex());
++    std::unique_lock<std::recursive_mutex> lock(mutex(), std::try_to_lock);
++    if (!lock.owns_lock()) LockContended(lock);
++    return lock;
+   }
+ 
+   // Acquires a lock on the global critical section.
+-  inline std::unique_lock<std::recursive_mutex> Acquire() {
+-    return std::unique_lock<std::recursive_mutex>(mutex());
+-  }
++  inline std::unique_lock<std::recursive_mutex> Acquire() { return AcquireDirect(); }
++
++  // Blocks until `lock` (of mutex(), not held) is taken, adding the time to
++  // the calling thread's global lock wait (rex/thread/thread_stats.h). Only
++  // reached when another thread holds the region, so the common case costs
++  // one try_lock.
++  static void LockContended(std::unique_lock<std::recursive_mutex>& lock);
+ 
+   // Acquires a deferred lock on the global critical section.
+   inline std::unique_lock<std::recursive_mutex> AcquireDeferred() {
+diff --git a/include/rex/thread/thread_stats.h b/include/rex/thread/thread_stats.h
+new file mode 100644
+index 0000000..f19dcf5
+--- /dev/null
++++ b/include/rex/thread/thread_stats.h
+@@ -0,0 +1,79 @@
++/**
++ * @file        rex/thread/thread_stats.h
++ *
++ * @brief       How long each host thread spends waiting, and on what, for an
++ *              in-engine profiler in Release builds.
++ *
++ * A thread's CPU time (from the OS) says how busy it is; it doesn't say why a
++ * thread that should be busy isn't. These totals add that: the time each
++ * thread spent blocked in a guest wait (an event, semaphore or thread the
++ * game waits on), a guest sleep, a contended guest spinlock (spinning counts
++ * as CPU time, so it is the one wait that looks like work) and the SDK's
++ * global lock.
++ *
++ * Totals only grow. A reader takes two snapshots some time apart and
++ * subtracts. Threads are keyed by their OS id (Linux tid, Windows thread id),
++ * so a reader can match them with the OS's own per-thread CPU times and
++ * names. A thread gets its slot the first time it waits; slots are never
++ * reused (a game makes a few dozen threads), and once all are taken further
++ * threads simply aren't counted.
++ *
++ * Cost: two clock reads per blocking wait; nothing on an uncontended lock.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++// A game built against SDKs with and without these totals can test this.
++#define REX_THREAD_STATS_VERSION 1
++
++namespace rex::thread_stats {
++
++enum class Wait : uint32_t {
++  kGuestObject,  // NtWaitFor*/KeWaitFor*: the game waits on one of its own objects
++  kGuestSleep,   // KeDelayExecutionThread with a delay
++  kSpinLock,     // spinning on a guest spinlock another thread holds
++  kGlobalLock,   // blocked on the SDK's global critical region
++  kCount
++};
++
++struct ThreadTotals {
++  uint32_t system_id = 0;  // OS thread id
++  uint64_t wait_us[size_t(Wait::kCount)] = {};
++  uint64_t waits[size_t(Wait::kCount)] = {};
++};
++
++// The most threads counted.
++inline constexpr size_t kMaxThreads = 512;
++
++// Adds a finished wait of the calling thread.
++void AddWait(Wait kind, uint64_t micros);
++
++// Copies the totals of every thread counted so far into `out` (up to
++// `max_threads`); returns how many were written.
++size_t Read(ThreadTotals* out, size_t max_threads);
++
++// "guest wait", "guest sleep", "spinlock", "global lock".
++const char* Name(Wait kind);
++
++// Steady clock in microseconds (the clock these totals use).
++uint64_t NowMicros();
++
++// Adds its own lifetime to the calling thread's totals.
++class ScopedWait {
++ public:
++  explicit ScopedWait(Wait kind) : kind_(kind), start_us_(NowMicros()) {}
++  ~ScopedWait() { AddWait(kind_, NowMicros() - start_us_); }
++  ScopedWait(const ScopedWait&) = delete;
++  ScopedWait& operator=(const ScopedWait&) = delete;
++
++ private:
++  Wait kind_;
++  uint64_t start_us_;
++};
++
++}  // namespace rex::thread_stats
+diff --git a/src/core/CMakeLists.txt b/src/core/CMakeLists.txt
+index 32920ec..52de147 100644
+--- a/src/core/CMakeLists.txt
++++ b/src/core/CMakeLists.txt
+@@ -18,6 +18,7 @@ add_library(rexcore OBJECT
+     mutex.cpp
+     ring_buffer.cpp
+     string_buffer.cpp
++    thread_stats.cpp
+     threading.cpp
+     timer_queue.cpp
+     utf8.cpp
+diff --git a/src/core/gpu_stats.cpp b/src/core/gpu_stats.cpp
+index dd51d19..c6f3507 100644
+--- a/src/core/gpu_stats.cpp
++++ b/src/core/gpu_stats.cpp
+@@ -51,6 +51,10 @@ const char* Name(Counter counter) {
+     case Counter::kWatchFaults: return "watch_faults";
+     case Counter::kTexturesReplaced: return "textures_replaced";
+     case Counter::kTexturesNotInPack: return "textures_not_in_pack";
++    case Counter::kGpuThreadMicros: return "gpu_thread_us";
++    case Counter::kSubmitMicros: return "submit_us";
++    case Counter::kShaderTranslations: return "shader_translations";
++    case Counter::kShaderTranslateMicros: return "shader_translate_us";
+     case Counter::kCount: break;
+   }
+   return "?";
+@@ -63,4 +67,10 @@ ScopedGpuWait::~ScopedGpuWait() {
+   Add(Counter::kGpuWaitMicros, NowMicros() - start_us_);
+ }
+ 
++ScopedMicros::ScopedMicros(Counter counter) : counter_(counter), start_us_(NowMicros()) {}
++
++ScopedMicros::~ScopedMicros() {
++  Add(counter_, NowMicros() - start_us_);
++}
++
+ }  // namespace rex::graphics::stats
+diff --git a/src/core/mutex.cpp b/src/core/mutex.cpp
+index d639924..9ecd639 100644
+--- a/src/core/mutex.cpp
++++ b/src/core/mutex.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <rex/thread/mutex.h>
++#include <rex/thread/thread_stats.h>
+ 
+ namespace rex::thread {
+ 
+@@ -18,4 +19,9 @@ std::recursive_mutex& global_critical_region::mutex() {
+   return global_mutex;
+ }
+ 
++void global_critical_region::LockContended(std::unique_lock<std::recursive_mutex>& lock) {
++  thread_stats::ScopedWait waited(thread_stats::Wait::kGlobalLock);
++  lock.lock();
++}
++
+ }  // namespace rex::thread
+diff --git a/src/core/thread_stats.cpp b/src/core/thread_stats.cpp
+new file mode 100644
+index 0000000..6f33495
+--- /dev/null
++++ b/src/core/thread_stats.cpp
+@@ -0,0 +1,93 @@
++/**
++ * @file        core/thread_stats.cpp
++ * @brief       See rex/thread/thread_stats.h.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#include <rex/thread/thread_stats.h>
++
++#include <atomic>
++#include <chrono>
++
++#include <rex/thread.h>
++
++namespace rex::thread_stats {
++
++namespace {
++
++// One per thread. Only its own thread writes it (relaxed adds); readers may
++// see a wait's time a moment before its count, which a once-a-second reader
++// doesn't notice.
++struct Slot {
++  std::atomic<uint32_t> system_id{0};
++  std::atomic<uint64_t> wait_us[size_t(Wait::kCount)] = {};
++  std::atomic<uint64_t> waits[size_t(Wait::kCount)] = {};
++};
++
++Slot g_slots[kMaxThreads];
++std::atomic<size_t> g_slots_used{0};
++
++// The calling thread's slot; nullptr until it first waits, and stays
++// nullptr (with t_full set) if every slot was taken.
++thread_local Slot* t_slot = nullptr;
++thread_local bool t_full = false;
++
++Slot* ThisThreadSlot() {
++  if (t_slot || t_full) return t_slot;
++  const size_t index = g_slots_used.fetch_add(1, std::memory_order_relaxed);
++  if (index >= kMaxThreads) {
++    t_full = true;
++    return nullptr;
++  }
++  t_slot = &g_slots[index];
++  // Published last: a reader skips slots whose id is still 0.
++  t_slot->system_id.store(rex::thread::current_thread_system_id(), std::memory_order_release);
++  return t_slot;
++}
++
++}  // namespace
++
++uint64_t NowMicros() {
++  return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                      std::chrono::steady_clock::now().time_since_epoch())
++                      .count());
++}
++
++void AddWait(Wait kind, uint64_t micros) {
++  Slot* slot = ThisThreadSlot();
++  if (!slot) return;
++  slot->wait_us[size_t(kind)].fetch_add(micros, std::memory_order_relaxed);
++  slot->waits[size_t(kind)].fetch_add(1, std::memory_order_relaxed);
++}
++
++size_t Read(ThreadTotals* out, size_t max_threads) {
++  size_t used = g_slots_used.load(std::memory_order_relaxed);
++  if (used > kMaxThreads) used = kMaxThreads;
++  size_t written = 0;
++  for (size_t i = 0; i < used && written < max_threads; ++i) {
++    const Slot& slot = g_slots[i];
++    const uint32_t id = slot.system_id.load(std::memory_order_acquire);
++    if (!id) continue;  // claimed, not yet published
++    ThreadTotals& t = out[written++];
++    t.system_id = id;
++    for (size_t k = 0; k < size_t(Wait::kCount); ++k) {
++      t.wait_us[k] = slot.wait_us[k].load(std::memory_order_relaxed);
++      t.waits[k] = slot.waits[k].load(std::memory_order_relaxed);
++    }
++  }
++  return written;
++}
++
++const char* Name(Wait kind) {
++  switch (kind) {
++    case Wait::kGuestObject: return "guest wait";
++    case Wait::kGuestSleep: return "guest sleep";
++    case Wait::kSpinLock: return "spinlock";
++    case Wait::kGlobalLock: return "global lock";
++    case Wait::kCount: break;
++  }
++  return "?";
++}
++
++}  // namespace rex::thread_stats
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 31d80cb..63483f9 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -793,7 +793,9 @@ class PosixCondition<Thread> : public PosixConditionBase {
+         pthread_setname_np(std::string(name).c_str());
+       }
+ #else
+-      pthread_setname_np(thread_, std::string(name).c_str());
++      // Linux refuses names over 15 characters outright ("Vulkan Pipelines"
++      // would stay unnamed), so keep the first 15.
++      pthread_setname_np(thread_, std::string(name).substr(0, 15).c_str());
+ #endif
+ #if REX_PLATFORM_ANDROID
+       SetAndroidPreApi26Name(name);
+@@ -1564,7 +1566,8 @@ void set_current_thread_name(const std::string_view name) {
+ #if defined(__APPLE__)
+   pthread_setname_np(std::string(name).c_str());
+ #else
+-  pthread_setname_np(pthread_self(), std::string(name).c_str());
++  // Linux refuses names over 15 characters (see PosixThread::set_name).
++  pthread_setname_np(pthread_self(), std::string(name.substr(0, 15)).c_str());
+ #endif
+ #if REX_PLATFORM_ANDROID
+   if (!android_pthread_getname_np_ && current_thread_) {
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index b2c793d..4c1662f 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -384,7 +384,13 @@ void CommandProcessor::WorkerThreadMain() {
+     assert_true(read_ptr_index_ != write_ptr_index);
+ 
+     // Execute. Note that we handle wraparound transparently.
+-    read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
++    {
++      // Busy time for the performance readout. Everything below runs on this
++      // one thread, so when it is close to the frame time this thread is what
++      // limits the frame rate, however idle the other cores are.
++      stats::ScopedMicros busy_time(stats::Counter::kGpuThreadMicros);
++      read_ptr_index_ = ExecutePrimaryBuffer(read_ptr_index_, write_ptr_index);
++    }
+ 
+     // TODO(benvanik): use reader->Read_update_freq_ and only issue after moving
+     //     that many indices.
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 9650a1f..c600bbf 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -3505,6 +3505,10 @@ bool D3D12CommandProcessor::EndSubmission(bool is_swap) {
+     // ExecuteCommandLists - the boundaries of ExecuteCommandLists are a full
+     // UAV and aliasing barrier, and subsystems of the emulator assume it
+     // happens between Xenia submissions.
++    // Time spent replaying the recorded commands into the command list and
++    // submitting it: the part of the GPU thread's work that another thread
++    // could take over (see gpu_stats.h).
++    stats::ScopedMicros submit_time(stats::Counter::kSubmitMicros);
+     ID3D12CommandAllocator* command_allocator =
+         command_allocator_writable_first_->command_allocator;
+     command_allocator->Reset();
+diff --git a/src/graphics/d3d12/pipeline_cache.cpp b/src/graphics/d3d12/pipeline_cache.cpp
+index fba0fd6..7214b74 100644
+--- a/src/graphics/d3d12/pipeline_cache.cpp
++++ b/src/graphics/d3d12/pipeline_cache.cpp
+@@ -30,6 +30,7 @@
+ #include <rex/dbg.h>
+ #include <rex/perf/counter.h>
+ #include <rex/filesystem.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/d3d12/command_processor.h>
+ #include <rex/graphics/d3d12/pipeline_cache.h>
+ #include <rex/graphics/d3d12/render_target_cache.h>
+@@ -987,6 +988,10 @@ bool PipelineCache::ConfigurePipeline(
+   if (!vertex_shader->is_translated() && !use_async) {
+     std::lock_guard<std::mutex> lock(translation_request_lock_);
+     if (!vertex_shader->is_translated()) {
++      // Done here, on the GPU thread, while the draw (and the frame) waits:
++      // counted for the performance readout, a cause of hitches.
++      stats::ScopedMicros translate_time(stats::Counter::kShaderTranslateMicros);
++      stats::Add(stats::Counter::kShaderTranslations);
+       if (!TranslateAnalyzedShader(*shader_translator_, *vertex_shader, dxbc_converter_, dxc_utils_,
+                                    dxc_compiler_)) {
+         REXGPU_ERROR("Failed to translate the vertex shader!");
+@@ -1013,6 +1018,8 @@ bool PipelineCache::ConfigurePipeline(
+     if (!pixel_shader->is_translated() && !use_async) {
+       std::lock_guard<std::mutex> lock(translation_request_lock_);
+       if (!pixel_shader->is_translated()) {
++        stats::ScopedMicros translate_time(stats::Counter::kShaderTranslateMicros);
++        stats::Add(stats::Counter::kShaderTranslations);
+         pixel_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+         if (!TranslateAnalyzedShader(*shader_translator_, *pixel_shader, dxbc_converter_,
+                                      dxc_utils_, dxc_compiler_)) {
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index c901c17..6fcac0a 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -5505,6 +5505,11 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
+ 
+     SubmitBarriers(true);
+ 
++    // Time spent replaying the recorded commands into a Vulkan command buffer
++    // and submitting it: the part of the GPU thread's work that another
++    // thread could take over (see gpu_stats.h).
++    stats::ScopedMicros submit_time(stats::Counter::kSubmitMicros);
++
+     assert_false(command_buffers_writable_.empty());
+     CommandBuffer command_buffer = command_buffers_writable_.back();
+     if (dfn.vkResetCommandPool(device, command_buffer.pool, 0) != VK_SUCCESS) {
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+index 4392da7..7dbdc25 100644
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -31,6 +31,7 @@
+ #include <rex/math.h>
+ #include <rex/thread.h>
+ #include <rex/memory.h>
++#include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/util/draw.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline_util.h>
+@@ -1089,6 +1090,10 @@ bool VulkanPipelineCache::EnsureShadersTranslated(VulkanShader::VulkanTranslatio
+                   xenos::VertexShaderExportMode::kPosition2VectorsEdgeKill);
+   assert_false(register_file_.Get<reg::SQ_PROGRAM_CNTL>().gen_index_vtx);
+   if (!vertex_shader->is_translated()) {
++    // Done here, on the GPU thread, while the draw (and the frame) waits:
++    // counted for the performance readout, a cause of hitches.
++    stats::ScopedMicros translate_time(stats::Counter::kShaderTranslateMicros);
++    stats::Add(stats::Counter::kShaderTranslations);
+     vertex_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+     if (!TranslateAnalyzedShader(*shader_translator_, *vertex_shader)) {
+       REXGPU_ERROR("Failed to translate the vertex shader!");
+@@ -1101,6 +1106,8 @@ bool VulkanPipelineCache::EnsureShadersTranslated(VulkanShader::VulkanTranslatio
+   }
+   if (pixel_shader != nullptr) {
+     if (!pixel_shader->is_translated()) {
++      stats::ScopedMicros translate_time(stats::Counter::kShaderTranslateMicros);
++      stats::Add(stats::Counter::kShaderTranslations);
+       pixel_shader->shader().AnalyzeUcode(ucode_disasm_buffer_);
+       if (!TranslateAnalyzedShader(*shader_translator_, *pixel_shader)) {
+         REXGPU_ERROR("Failed to translate the pixel shader!");
+diff --git a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+index 57fd161..b26859d 100644
+--- a/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
++++ b/src/kernel/xboxkrnl/xboxkrnl_threading.cpp
+@@ -38,6 +38,7 @@
+ #include <rex/system/xtypes.h>
+ #include <rex/thread/atomic.h>
+ #include <rex/thread/mutex.h>
++#include <rex/thread/thread_stats.h>
+ 
+ namespace rex::kernel::xboxkrnl {
+ using namespace rex::system;
+@@ -969,8 +970,13 @@ uint32_t xeKeKfAcquireSpinLock(PPCContext* ctx, X_KSPINLOCK* lock, bool change_i
+   uint32_t pcr_addr = static_cast<uint32_t>(ctx->r13.u64);
+   const uint32_t self = rex::byte_swap(pcr_addr);
+   assert_true(lock->prcb_of_owner.value != self);  // self-deadlock detection
+-  while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
+-    rex::thread::MaybeYield();
++  if (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value)) {
++    // Contended: another thread holds it. Spinning keeps this thread busy, so
++    // the in-engine profiler counts the time here as waiting, not work.
++    rex::thread_stats::ScopedWait spun(rex::thread_stats::Wait::kSpinLock);
++    do {
++      rex::thread::MaybeYield();
++    } while (!rex::thread::atomic_cas(0u, self, &lock->prcb_of_owner.value));
+   }
+   return old_irql;
+ }
+diff --git a/src/system/xobject.cpp b/src/system/xobject.cpp
+index d358f39..a276fe8 100644
+--- a/src/system/xobject.cpp
++++ b/src/system/xobject.cpp
+@@ -25,6 +25,7 @@
+ #include <rex/system/xnotifylistener.h>
+ #include <rex/system/xsemaphore.h>
+ #include <rex/system/xsymboliclink.h>
++#include <rex/thread/thread_stats.h>
+ #include <rex/system/xthread.h>
+ 
+ namespace rex::system {
+@@ -213,7 +214,13 @@ X_STATUS XObject::Wait(uint32_t wait_reason, uint32_t processor_mode, uint32_t a
+                                 : std::chrono::milliseconds::max();
+ 
+   XThread::CheckTitleTermination();
+-  auto result = rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  auto result = [&] {
++    // Time blocked, for the in-engine profiler (a zero time-out is a poll).
++    if (timeout_ms.count() == 0)
++      return rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++    thread_stats::ScopedWait waited(thread_stats::Wait::kGuestObject);
++    return rex::thread::Wait(wait_handle, alertable ? true : false, timeout_ms);
++  }();
+   XThread::CheckTitleTermination();
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+@@ -239,9 +246,12 @@ X_STATUS XObject::SignalAndWait(XObject* signal_object, XObject* wait_object, ui
+                                       TimeoutTicksToMs(*opt_timeout)))
+                                 : std::chrono::milliseconds::max();
+ 
+-  auto result =
+-      rex::thread::SignalAndWait(signal_object->GetWaitHandle(), wait_object->GetWaitHandle(),
+-                                 alertable ? true : false, timeout_ms);
++  auto result = [&] {
++    thread_stats::ScopedWait waited(thread_stats::Wait::kGuestObject);
++    return rex::thread::SignalAndWait(signal_object->GetWaitHandle(),
++                                      wait_object->GetWaitHandle(), alertable ? true : false,
++                                      timeout_ms);
++  }();
+   switch (result) {
+     case rex::thread::WaitResult::kSuccess:
+       wait_object->WaitCallback();
+@@ -274,8 +284,10 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+ 
+   XThread::CheckTitleTermination();
+   if (wait_type) {
+-    auto result =
+-        rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    auto result = [&] {
++      thread_stats::ScopedWait waited(thread_stats::Wait::kGuestObject);
++      return rex::thread::WaitAny(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    }();
+     XThread::CheckTitleTermination();
+     switch (result.first) {
+       case rex::thread::WaitResult::kSuccess:
+@@ -295,8 +307,10 @@ X_STATUS XObject::WaitMultiple(uint32_t count, XObject** objects, uint32_t wait_
+         return X_STATUS_UNSUCCESSFUL;
+     }
+   } else {
+-    auto result =
+-        rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    auto result = [&] {
++      thread_stats::ScopedWait waited(thread_stats::Wait::kGuestObject);
++      return rex::thread::WaitAll(std::move(wait_handles), alertable ? true : false, timeout_ms);
++    }();
+     XThread::CheckTitleTermination();
+     switch (result) {
+       case rex::thread::WaitResult::kSuccess:
+diff --git a/src/system/xthread.cpp b/src/system/xthread.cpp
+index f6f6f1a..a9be4fc 100644
+--- a/src/system/xthread.cpp
++++ b/src/system/xthread.cpp
+@@ -9,6 +9,7 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <optional>
+ #include <algorithm>
+ #include <atomic>
+ #include <cstring>
+@@ -35,6 +36,7 @@
+ #include <rex/system/xmutant.h>
+ #include <rex/system/xthread.h>
+ #include <rex/thread.h>
++#include <rex/thread/thread_stats.h>
+ #include <rex/vec128.h>
+ 
+ REXCVAR_DEFINE_BOOL(ignore_thread_priorities, true, "Kernel",
+@@ -465,9 +467,12 @@ X_STATUS XThread::Create() {
+     return X_STATUS_NO_MEMORY;
+   }
+ 
+-  // Set the thread name based on host ID (for easier debugging).
++  // Without a name of its own, a thread is named after the guest function it
++  // starts in, so it can be told apart in the OS's thread list, a debugger
++  // and the game's in-engine profiler (several threads running the same
++  // function are one kind of worker). 15 characters: Linux's limit.
+   if (thread_name_.empty()) {
+-    set_name(fmt::format("XThread{:04X}", thread_->system_id()));
++    set_name(fmt::format("XThread{:08X}", creation_params_.start_address));
+   }
+ 
+   if (creation_params_.creation_flags & 0x60) {
+@@ -1019,6 +1024,9 @@ X_STATUS XThread::Delay(uint32_t processor_mode, uint32_t alertable, uint64_t in
+   }
+   timeout_ms = chrono::Clock::ScaleGuestDurationMillis(timeout_ms);
+   CheckTitleTermination();
++  // Time asleep, for the in-engine profiler (a zero delay is a yield).
++  std::optional<thread_stats::ScopedWait> slept;
++  if (timeout_ms) slept.emplace(thread_stats::Wait::kGuestSleep);
+   if (alertable) {
+     auto result = rex::thread::AlertableSleep(std::chrono::milliseconds(timeout_ms));
+     CheckTitleTermination();

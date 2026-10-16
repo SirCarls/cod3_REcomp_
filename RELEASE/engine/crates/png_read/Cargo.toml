@@ -1,0 +1,13 @@
+[package]
+name = "png_read"
+description = "Reads 8-bit, non-interlaced PNG images as RGBA8."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inflate = { path = "../inflate" }
+
+[dev-dependencies]
+png_write = { path = "../png_write" }

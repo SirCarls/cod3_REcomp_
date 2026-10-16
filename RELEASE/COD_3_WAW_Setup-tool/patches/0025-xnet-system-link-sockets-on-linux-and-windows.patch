@@ -1,0 +1,3422 @@
+diff --git a/include/rex/net/socket.h b/include/rex/net/socket.h
+index f107c8a..fc9a5e9 100644
+--- a/include/rex/net/socket.h
++++ b/include/rex/net/socket.h
+@@ -1,17 +1,242 @@
+ /**
+  * @file        net/socket.h
+  * @brief       Platform-agnostic socket operations
++ *
++ * The guest uses the Xbox 360's Winsock numbers for socket options, ioctls,
++ * message flags and error codes. Windows shares them; Linux and macOS don't.
++ * These helpers translate them so a socket behaves the same on every host.
++ * Addresses here are IPv4 in host byte order (192.168.1.2 is 0xC0A80102).
+  */
+ #pragma once
+ 
++#include <cstddef>
+ #include <cstdint>
++#include <cstdio>
++#include <string>
++#include <string_view>
++#include <vector>
+ 
+ namespace rex::net {
+ 
+ using SocketHandle = int64_t;
+ constexpr SocketHandle kInvalidSocket = -1;
+ 
++// Winsock (and Xbox 360) numbers, as the guest passes them.
++namespace wsa {
++constexpr uint32_t kSolSocket = 0xFFFF;
++constexpr uint32_t kIpprotoTcp = 6;
++
++constexpr uint32_t kSoDebug = 0x0001;
++constexpr uint32_t kSoReuseAddr = 0x0004;
++constexpr uint32_t kSoKeepAlive = 0x0008;
++constexpr uint32_t kSoDontRoute = 0x0010;
++constexpr uint32_t kSoBroadcast = 0x0020;
++constexpr uint32_t kSoLinger = 0x0080;
++constexpr uint32_t kSoOobInline = 0x0100;
++constexpr uint32_t kSoDontLinger = ~kSoLinger;
++constexpr uint32_t kSoExclusiveAddrUse = ~kSoReuseAddr;
++constexpr uint32_t kSoSndBuf = 0x1001;
++constexpr uint32_t kSoRcvBuf = 0x1002;
++constexpr uint32_t kSoSndTimeo = 0x1005;
++constexpr uint32_t kSoRcvTimeo = 0x1006;
++// Xbox 360 only: turn the console's socket encryption off. Meaningless
++// between PCs, so they are accepted and ignored.
++constexpr uint32_t kSoXboxInsecure = 0x5801;
++constexpr uint32_t kSoXboxNoEncrypt = 0x5802;
++constexpr uint32_t kTcpNoDelay = 0x0001;
++
++constexpr uint32_t kFionbio = 0x8004667E;
++constexpr uint32_t kFionread = 0x4004667F;
++
++constexpr uint32_t kMsgOob = 0x1;
++constexpr uint32_t kMsgPeek = 0x2;
++constexpr uint32_t kMsgDontRoute = 0x4;
++
++constexpr uint32_t kEintr = 10004;
++constexpr uint32_t kEbadf = 10009;
++constexpr uint32_t kEacces = 10013;
++constexpr uint32_t kEfault = 10014;
++constexpr uint32_t kEinval = 10022;
++constexpr uint32_t kEmfile = 10024;
++constexpr uint32_t kEwouldblock = 10035;
++constexpr uint32_t kEinprogress = 10036;
++constexpr uint32_t kEalready = 10037;
++constexpr uint32_t kEnotsock = 10038;
++constexpr uint32_t kEdestaddrreq = 10039;
++constexpr uint32_t kEmsgsize = 10040;
++constexpr uint32_t kEprototype = 10041;
++constexpr uint32_t kEnoprotoopt = 10042;
++constexpr uint32_t kEprotonosupport = 10043;
++constexpr uint32_t kEsocktnosupport = 10044;
++constexpr uint32_t kEopnotsupp = 10045;
++constexpr uint32_t kEpfnosupport = 10046;
++constexpr uint32_t kEafnosupport = 10047;
++constexpr uint32_t kEaddrinuse = 10048;
++constexpr uint32_t kEaddrnotavail = 10049;
++constexpr uint32_t kEnetdown = 10050;
++constexpr uint32_t kEnetunreach = 10051;
++constexpr uint32_t kEnetreset = 10052;
++constexpr uint32_t kEconnaborted = 10053;
++constexpr uint32_t kEconnreset = 10054;
++constexpr uint32_t kEnobufs = 10055;
++constexpr uint32_t kEisconn = 10056;
++constexpr uint32_t kEnotconn = 10057;
++constexpr uint32_t kEshutdown = 10058;
++constexpr uint32_t kEtimedout = 10060;
++constexpr uint32_t kEconnrefused = 10061;
++constexpr uint32_t kEhostdown = 10064;
++constexpr uint32_t kEhostunreach = 10065;
++}  // namespace wsa
++
++// An IPv4 address and port, both in host byte order.
++struct SockAddrV4 {
++  uint32_t addr = 0;
++  uint16_t port = 0;
++};
++
++// How a guest socket option is applied on the host.
++enum class OptionKind : uint8_t {
++  kUnsupported,  // unknown here: refused with WSAENOPROTOOPT
++  kIgnored,      // accepted and ignored
++  kInt,          // a 32-bit integer or BOOL
++  kLinger,       // struct linger: l_onoff and l_linger, 16 bits each on Winsock
++  kDontLinger,   // Winsock's SO_DONTLINGER: SO_LINGER with l_onoff inverted
++  kTimeoutMs,    // milliseconds (a DWORD on Winsock, a timeval on POSIX)
++};
++
++struct HostOption {
++  OptionKind kind = OptionKind::kUnsupported;
++  int level = 0;
++  int name = 0;
++};
++
++// Maps a guest (Winsock) option level and name to the host's numbers. Only
++// the options listed here are passed to the host; anything else is refused.
++HostOption translate_socket_option(uint32_t level, uint32_t optname);
++
++// Opens a socket that child processes don't inherit (the game restarts
++// itself to switch between the campaign and multiplayer programs).
++// Returns kInvalidSocket on failure (see socket_last_error()).
++SocketHandle socket_open(int af, int type, int protocol);
+ int socket_close(SocketHandle handle);
+-int socket_ioctl(SocketHandle handle, uint32_t cmd, uint8_t* arg);
++
++// Sets a guest socket option. `value` is the option's 32-bit value as the
++// guest stores it (for SO_LINGER: l_onoff in the high 16 bits, l_linger in
++// the low 16). Returns 0 or a Winsock error code.
++uint32_t socket_set_option(SocketHandle handle, uint32_t level, uint32_t optname, uint32_t value);
++
++// Winsock ioctlsocket: FIONBIO (`*value` nonzero = non-blocking) and
++// FIONREAD (`*value` receives the bytes waiting). Returns 0 or a Winsock
++// error code; other commands give WSAEINVAL.
++uint32_t socket_ioctl(SocketHandle handle, uint32_t cmd, uint32_t* value);
++
++// Winsock message flags (MSG_OOB, MSG_PEEK, MSG_DONTROUTE) to the host's.
++// Returns false if `flags` has any other bit set.
++bool translate_message_flags(uint32_t flags, int* host_flags);
++
++// The Winsock error code of the calling thread's last failed socket call:
++// WSAGetLastError() on Windows, errno translated elsewhere.
++uint32_t socket_last_error();
++
++#if !defined(_WIN32)
++// An errno value as the Winsock error code Windows would give (POSIX only).
++uint32_t wsa_error_from_errno(int err);
++#endif
++
++// Fills `out` from the system's cryptographic random source.
++bool random_bytes(void* out, size_t length);
++
++// A network interface's IPv4 address, in host byte order.
++struct Ipv4Interface {
++  std::string name;  // the interface name (POSIX; empty on Windows)
++  uint32_t address = 0;
++  uint32_t netmask = 0;
++  bool up = false;
++  bool loopback = false;
++  bool broadcast = false;
++};
++
++// The host's IPv4 interfaces (empty if they can't be listed).
++std::vector<Ipv4Interface> list_ipv4_interfaces();
++
++// The local address the host would send from toward the default route, or
++// 0 if there is none. Nothing is sent: it asks the routing table only.
++uint32_t default_route_ipv4();
++
++constexpr uint32_t kIpv4Loopback = 0x7F000001;
++constexpr uint32_t kIpv4Broadcast = 0xFFFFFFFF;
++
++constexpr bool ipv4_is_loopback(uint32_t addr) {
++  return (addr >> 24) == 127;
++}
++
++// RFC 1918 private ranges and link-local 169.254.0.0/16.
++constexpr bool ipv4_is_private(uint32_t addr) {
++  return (addr >> 24) == 10 || (addr >> 20) == 0xAC1 || (addr >> 16) == 0xC0A8 ||
++         (addr >> 16) == 0xA9FE;
++}
++
++constexpr bool ipv4_is_multicast(uint32_t addr) {
++  return (addr >> 28) == 0xE;
++}
++
++// Whether a local-network-only game may exchange packets with `addr`: this
++// PC (loopback), the limited broadcast, private and link-local addresses,
++// and the subnet of `own` (the chosen interface's address and netmask).
++constexpr bool ipv4_is_lan_peer(uint32_t addr, uint32_t own, uint32_t netmask) {
++  if (!addr || ipv4_is_multicast(addr)) {
++    return false;
++  }
++  if (ipv4_is_loopback(addr) || addr == kIpv4Broadcast || ipv4_is_private(addr)) {
++    return true;
++  }
++  return own && netmask && (addr & netmask) == (own & netmask);
++}
++
++// The broadcast address of `own`'s subnet (the limited broadcast when the
++// netmask leaves no host bits).
++constexpr uint32_t ipv4_directed_broadcast(uint32_t own, uint32_t netmask) {
++  if (!netmask || netmask == 0xFFFFFFFF || netmask == 0xFFFFFFFE) {
++    return kIpv4Broadcast;
++  }
++  return own | ~netmask;
++}
++
++// Parses a dotted-quad IPv4 address ("192.168.1.2"); nothing else.
++inline bool parse_ipv4(std::string_view text, uint32_t* out) {
++  uint32_t result = 0;
++  size_t pos = 0;
++  for (int part = 0; part < 4; ++part) {
++    if (part) {
++      if (pos >= text.size() || text[pos] != '.') {
++        return false;
++      }
++      ++pos;
++    }
++    uint32_t value = 0;
++    size_t digits = 0;
++    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9' && digits < 3) {
++      value = value * 10 + uint32_t(text[pos] - '0');
++      ++pos;
++      ++digits;
++    }
++    if (!digits || value > 255) {
++      return false;
++    }
++    result = (result << 8) | value;
++  }
++  if (pos != text.size()) {
++    return false;
++  }
++  *out = result;
++  return true;
++}
++
++inline std::string format_ipv4(uint32_t addr) {
++  char text[16];
++  std::snprintf(text, sizeof(text), "%u.%u.%u.%u", (addr >> 24) & 0xFF, (addr >> 16) & 0xFF,
++                (addr >> 8) & 0xFF, addr & 0xFF);
++  return text;
++}
+ 
+ }  // namespace rex::net
+diff --git a/include/rex/system/xsocket.h b/include/rex/system/xsocket.h
+index a1b4443..e6ed0b4 100644
+--- a/include/rex/system/xsocket.h
++++ b/include/rex/system/xsocket.h
+@@ -14,6 +14,7 @@
+ #include <queue>
+ 
+ #include <rex/math.h>
++#include <rex/net/socket.h>
+ #include <rex/system/xobject.h>
+ #include <rex/types.h>
+ 
+@@ -95,25 +96,40 @@ class XSocket : public XObject {
+ 
+   uint64_t native_handle() const { return native_handle_; }
+   uint16_t bound_port() const { return bound_port_; }
+-
+-  X_STATUS Initialize(AddressFamily af, Type type, Protocol proto);
++  Type type() const { return type_; }
++  Protocol protocol() const { return proto_; }
++  // VDP sockets carry a 2-byte game data length before the data. The guest
++  // writes and reads it itself; on PCs VDP is sent as plain UDP.
++  bool is_vdp() const { return proto_ == X_IPPROTO_VDP; }
++  bool is_broadcast() const { return broadcast_socket_; }
++
++  // The methods below return 0 or a Winsock error code (WSAE*), which the
++  // caller passes to the guest through WSAGetLastError. Addresses are IPv4
++  // in host byte order.
++  uint32_t Initialize(AddressFamily af, Type type, Protocol proto);
+   X_STATUS Close();
+ 
+-  X_STATUS SetOption(uint32_t level, uint32_t optname, void* optval_ptr, uint32_t optlen);
+-  X_STATUS IOControl(uint32_t cmd, uint8_t* arg_ptr);
+-
+-  X_STATUS Connect(N_XSOCKADDR* name, int name_len);
+-  X_STATUS Bind(N_XSOCKADDR_IN* name, int name_len);
+-  X_STATUS Listen(int backlog);
+-  object_ref<XSocket> Accept(N_XSOCKADDR* name, int* name_len);
+-  int Shutdown(int how);
+-
+-  int Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags);
+-  int Send(const uint8_t* buf, uint32_t buf_len, uint32_t flags);
+-
+-  int RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* from,
+-               uint32_t* from_len);
+-  int SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* to, uint32_t to_len);
++  // `optval` points at the guest's value (big-endian), `optlen` bytes long.
++  uint32_t SetOption(uint32_t level, uint32_t optname, const uint8_t* optval, uint32_t optlen);
++  // `value` is in and out, in host byte order.
++  uint32_t IOControl(uint32_t cmd, uint32_t* value);
++
++  uint32_t Connect(const rex::net::SockAddrV4& to);
++  uint32_t Bind(const rex::net::SockAddrV4& name);
++  uint32_t Listen(int backlog);
++  object_ref<XSocket> Accept(rex::net::SockAddrV4* from, uint32_t* error);
++  int Shutdown(int how, uint32_t* error);
++
++  // These return the byte count, or -1 with `*error` set.
++  int Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags, uint32_t* error);
++  int Send(const uint8_t* buf, uint32_t buf_len, uint32_t flags, uint32_t* error);
++  // A datagram longer than `buf_len` fills the buffer and fails with
++  // WSAEMSGSIZE, as on Windows and the console; `*full_len` (if given)
++  // receives its real length.
++  int RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, rex::net::SockAddrV4* from,
++               uint32_t* error, uint32_t* full_len = nullptr);
++  int SendTo(const uint8_t* buf, uint32_t buf_len, uint32_t flags,
++             const rex::net::SockAddrV4* to, uint32_t* error);
+ 
+   struct packet {
+     // These values are in network byte order.
+diff --git a/src/core/socket_posix.cpp b/src/core/socket_posix.cpp
+index b4b885a..7436e9a 100644
+--- a/src/core/socket_posix.cpp
++++ b/src/core/socket_posix.cpp
+@@ -3,17 +3,340 @@
+ 
+ static_assert(REX_PLATFORM_LINUX || REX_PLATFORM_MAC, "This file is POSIX-only");
+ 
++#include <arpa/inet.h>
++#include <cerrno>
++#include <cstring>
++#include <fcntl.h>
++#include <ifaddrs.h>
++#include <net/if.h>
++#include <netinet/in.h>
++#include <netinet/tcp.h>
+ #include <sys/ioctl.h>
++#include <sys/socket.h>
++#include <sys/time.h>
+ #include <unistd.h>
+ 
++#if REX_PLATFORM_LINUX
++#include <sys/random.h>
++#else
++#include <stdlib.h>  // arc4random_buf
++#endif
++
++#include <random>
++
+ namespace rex::net {
+ 
++HostOption translate_socket_option(uint32_t level, uint32_t optname) {
++  if (level == wsa::kSolSocket) {
++    switch (optname) {
++      case wsa::kSoXboxInsecure:
++      case wsa::kSoXboxNoEncrypt:
++      // Binding without SO_REUSEADDR is already exclusive on POSIX.
++      case wsa::kSoExclusiveAddrUse:
++        return {OptionKind::kIgnored, 0, 0};
++      case wsa::kSoDebug:
++        return {OptionKind::kInt, SOL_SOCKET, SO_DEBUG};
++      case wsa::kSoReuseAddr:
++        return {OptionKind::kInt, SOL_SOCKET, SO_REUSEADDR};
++      case wsa::kSoKeepAlive:
++        return {OptionKind::kInt, SOL_SOCKET, SO_KEEPALIVE};
++      case wsa::kSoDontRoute:
++        return {OptionKind::kInt, SOL_SOCKET, SO_DONTROUTE};
++      case wsa::kSoBroadcast:
++        return {OptionKind::kInt, SOL_SOCKET, SO_BROADCAST};
++      case wsa::kSoLinger:
++        return {OptionKind::kLinger, SOL_SOCKET, SO_LINGER};
++      case wsa::kSoDontLinger:
++        return {OptionKind::kDontLinger, SOL_SOCKET, SO_LINGER};
++      case wsa::kSoOobInline:
++        return {OptionKind::kInt, SOL_SOCKET, SO_OOBINLINE};
++      case wsa::kSoSndBuf:
++        return {OptionKind::kInt, SOL_SOCKET, SO_SNDBUF};
++      case wsa::kSoRcvBuf:
++        return {OptionKind::kInt, SOL_SOCKET, SO_RCVBUF};
++      case wsa::kSoSndTimeo:
++        return {OptionKind::kTimeoutMs, SOL_SOCKET, SO_SNDTIMEO};
++      case wsa::kSoRcvTimeo:
++        return {OptionKind::kTimeoutMs, SOL_SOCKET, SO_RCVTIMEO};
++      default:
++        break;
++    }
++  } else if (level == wsa::kIpprotoTcp && optname == wsa::kTcpNoDelay) {
++    return {OptionKind::kInt, IPPROTO_TCP, TCP_NODELAY};
++  }
++  return {};
++}
++
++SocketHandle socket_open(int af, int type, int protocol) {
++#if defined(SOCK_CLOEXEC)
++  int fd = socket(af, type | SOCK_CLOEXEC, protocol);
++#else
++  int fd = socket(af, type, protocol);
++  if (fd >= 0) {
++    fcntl(fd, F_SETFD, FD_CLOEXEC);
++  }
++#endif
++#if REX_PLATFORM_MAC
++  if (fd >= 0) {
++    // macOS has no MSG_NOSIGNAL: don't let a broken connection raise SIGPIPE.
++    int one = 1;
++    setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
++  }
++#endif
++  return fd < 0 ? kInvalidSocket : SocketHandle(fd);
++}
++
+ int socket_close(SocketHandle handle) {
+   return close(static_cast<int>(handle));
+ }
+ 
+-int socket_ioctl(SocketHandle handle, uint32_t cmd, uint8_t* arg) {
+-  return ioctl(static_cast<int>(handle), cmd, arg);
++uint32_t socket_set_option(SocketHandle handle, uint32_t level, uint32_t optname, uint32_t value) {
++  HostOption option = translate_socket_option(level, optname);
++  int fd = static_cast<int>(handle);
++  int ret = 0;
++  switch (option.kind) {
++    case OptionKind::kUnsupported:
++      return wsa::kEnoprotoopt;
++    case OptionKind::kIgnored:
++      return 0;
++    case OptionKind::kInt: {
++      int host_value = static_cast<int>(value);
++      ret = setsockopt(fd, option.level, option.name, &host_value, sizeof(host_value));
++      break;
++    }
++    case OptionKind::kLinger:
++    case OptionKind::kDontLinger: {
++      linger host_linger = {};
++      host_linger.l_onoff = (value >> 16) != 0;
++      host_linger.l_linger = static_cast<int>(value & 0xFFFF);
++      if (option.kind == OptionKind::kDontLinger) {
++        // SO_DONTLINGER takes a BOOL: true turns lingering off.
++        host_linger.l_onoff = value == 0;
++        host_linger.l_linger = 0;
++      }
++      ret = setsockopt(fd, option.level, option.name, &host_linger, sizeof(host_linger));
++      break;
++    }
++    case OptionKind::kTimeoutMs: {
++      timeval host_timeout = {};
++      host_timeout.tv_sec = static_cast<time_t>(value / 1000);
++      host_timeout.tv_usec = static_cast<suseconds_t>((value % 1000) * 1000);
++      ret = setsockopt(fd, option.level, option.name, &host_timeout, sizeof(host_timeout));
++      break;
++    }
++  }
++  return ret == 0 ? 0 : socket_last_error();
++}
++
++uint32_t socket_ioctl(SocketHandle handle, uint32_t cmd, uint32_t* value) {
++  int fd = static_cast<int>(handle);
++  if (cmd == wsa::kFionbio) {
++    int flags = fcntl(fd, F_GETFL, 0);
++    if (flags < 0) {
++      return socket_last_error();
++    }
++    flags = *value ? (flags | O_NONBLOCK) : (flags & ~O_NONBLOCK);
++    return fcntl(fd, F_SETFL, flags) == 0 ? 0 : socket_last_error();
++  }
++  if (cmd == wsa::kFionread) {
++    int available = 0;
++    if (ioctl(fd, FIONREAD, &available) != 0) {
++      return socket_last_error();
++    }
++    *value = available > 0 ? static_cast<uint32_t>(available) : 0;
++    return 0;
++  }
++  return wsa::kEinval;
++}
++
++bool translate_message_flags(uint32_t flags, int* host_flags) {
++  if (flags & ~(wsa::kMsgOob | wsa::kMsgPeek | wsa::kMsgDontRoute)) {
++    return false;
++  }
++  int result = 0;
++  if (flags & wsa::kMsgOob) result |= MSG_OOB;
++  if (flags & wsa::kMsgPeek) result |= MSG_PEEK;
++  if (flags & wsa::kMsgDontRoute) result |= MSG_DONTROUTE;
++  *host_flags = result;
++  return true;
++}
++
++uint32_t wsa_error_from_errno(int err) {
++  switch (err) {
++    case 0:
++      return 0;
++    case EINTR:
++      return wsa::kEintr;
++    case EBADF:
++      return wsa::kEbadf;
++    case EACCES:
++    case EPERM:
++      return wsa::kEacces;
++    case EFAULT:
++      return wsa::kEfault;
++    case EINVAL:
++      return wsa::kEinval;
++    case EMFILE:
++    case ENFILE:
++      return wsa::kEmfile;
++#if EWOULDBLOCK != EAGAIN
++    case EWOULDBLOCK:
++#endif
++    case EAGAIN:
++      return wsa::kEwouldblock;
++    case EINPROGRESS:
++      return wsa::kEinprogress;
++    case EALREADY:
++      return wsa::kEalready;
++    case ENOTSOCK:
++      return wsa::kEnotsock;
++    case EDESTADDRREQ:
++      return wsa::kEdestaddrreq;
++    case EMSGSIZE:
++      return wsa::kEmsgsize;
++    case EPROTOTYPE:
++      return wsa::kEprototype;
++    case ENOPROTOOPT:
++      return wsa::kEnoprotoopt;
++    case EPROTONOSUPPORT:
++      return wsa::kEprotonosupport;
++    case ESOCKTNOSUPPORT:
++      return wsa::kEsocktnosupport;
++#if EOPNOTSUPP != ENOTSUP
++    case ENOTSUP:
++#endif
++    case EOPNOTSUPP:
++      return wsa::kEopnotsupp;
++    case EPFNOSUPPORT:
++      return wsa::kEpfnosupport;
++    case EAFNOSUPPORT:
++      return wsa::kEafnosupport;
++    case EADDRINUSE:
++      return wsa::kEaddrinuse;
++    case EADDRNOTAVAIL:
++      return wsa::kEaddrnotavail;
++    case ENETDOWN:
++      return wsa::kEnetdown;
++    case ENETUNREACH:
++      return wsa::kEnetunreach;
++    case ENETRESET:
++      return wsa::kEnetreset;
++    case ECONNABORTED:
++      return wsa::kEconnaborted;
++    case ECONNRESET:
++    case EPIPE:
++      return wsa::kEconnreset;
++    case ENOBUFS:
++    case ENOMEM:
++      return wsa::kEnobufs;
++    case EISCONN:
++      return wsa::kEisconn;
++    case ENOTCONN:
++      return wsa::kEnotconn;
++    case ESHUTDOWN:
++      return wsa::kEshutdown;
++    case ETIMEDOUT:
++      return wsa::kEtimedout;
++    case ECONNREFUSED:
++      return wsa::kEconnrefused;
++    case EHOSTDOWN:
++      return wsa::kEhostdown;
++    case EHOSTUNREACH:
++      return wsa::kEhostunreach;
++    default:
++      // Winsock has no exact match; WSAEINVAL is what most games handle.
++      return wsa::kEinval;
++  }
++}
++
++uint32_t socket_last_error() {
++  return wsa_error_from_errno(errno);
++}
++
++bool random_bytes(void* out, size_t length) {
++  auto* bytes = static_cast<uint8_t*>(out);
++#if REX_PLATFORM_LINUX
++  while (length) {
++    ssize_t got = getrandom(bytes, length, 0);
++    if (got < 0) {
++      if (errno == EINTR) {
++        continue;
++      }
++      break;
++    }
++    bytes += got;
++    length -= static_cast<size_t>(got);
++  }
++  if (!length) {
++    return true;
++  }
++  // Very old kernels lack getrandom: the C++ library's source then.
++  try {
++    std::random_device device;
++    while (length) {
++      uint32_t word = device();
++      size_t n = length < sizeof(word) ? length : sizeof(word);
++      std::memcpy(bytes, &word, n);
++      bytes += n;
++      length -= n;
++    }
++    return true;
++  } catch (...) {
++    return false;
++  }
++#else
++  arc4random_buf(bytes, length);
++  return true;
++#endif
++}
++
++std::vector<Ipv4Interface> list_ipv4_interfaces() {
++  std::vector<Ipv4Interface> result;
++  ifaddrs* list = nullptr;
++  if (getifaddrs(&list) != 0) {
++    return result;
++  }
++  for (ifaddrs* entry = list; entry; entry = entry->ifa_next) {
++    if (!entry->ifa_addr || entry->ifa_addr->sa_family != AF_INET) {
++      continue;
++    }
++    Ipv4Interface info;
++    info.name = entry->ifa_name ? entry->ifa_name : "";
++    info.address = ntohl(reinterpret_cast<const sockaddr_in*>(entry->ifa_addr)->sin_addr.s_addr);
++    if (entry->ifa_netmask && entry->ifa_netmask->sa_family == AF_INET) {
++      info.netmask =
++          ntohl(reinterpret_cast<const sockaddr_in*>(entry->ifa_netmask)->sin_addr.s_addr);
++    }
++    info.up = (entry->ifa_flags & IFF_UP) && (entry->ifa_flags & IFF_RUNNING);
++    info.loopback = (entry->ifa_flags & IFF_LOOPBACK) != 0;
++    info.broadcast = (entry->ifa_flags & IFF_BROADCAST) != 0;
++    result.push_back(std::move(info));
++  }
++  freeifaddrs(list);
++  return result;
++}
++
++uint32_t default_route_ipv4() {
++  int fd = static_cast<int>(socket_open(AF_INET, SOCK_DGRAM, 0));
++  if (fd < 0) {
++    return 0;
++  }
++  // Connecting a UDP socket only picks a route and a source address; no
++  // packet leaves the machine. 192.0.2.1 is a documentation-only address.
++  sockaddr_in target = {};
++  target.sin_family = AF_INET;
++  target.sin_port = htons(9);
++  target.sin_addr.s_addr = htonl(0xC0000201);
++  uint32_t result = 0;
++  if (connect(fd, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == 0) {
++    sockaddr_in local = {};
++    socklen_t local_len = sizeof(local);
++    if (getsockname(fd, reinterpret_cast<sockaddr*>(&local), &local_len) == 0) {
++      result = ntohl(local.sin_addr.s_addr);
++    }
++  }
++  close(fd);
++  return result;
+ }
+ 
+ }  // namespace rex::net
+diff --git a/src/core/socket_win.cpp b/src/core/socket_win.cpp
+index 87f1960..0e462b7 100644
+--- a/src/core/socket_win.cpp
++++ b/src/core/socket_win.cpp
+@@ -6,15 +6,222 @@ static_assert(REX_PLATFORM_WIN32, "This file is Windows-only");
+ #include "platform_win.h"
+ 
+ #include <WinSock2.h>
++#include <WS2tcpip.h>
++
++#ifndef SIO_UDP_CONNRESET
++#define SIO_UDP_CONNRESET _WSAIOW(IOC_VENDOR, 12)
++#endif
++
++// RtlGenRandom (advapi32): the system's cryptographic random source.
++extern "C" BOOLEAN NTAPI SystemFunction036(PVOID buffer, ULONG length);
+ 
+ namespace rex::net {
+ 
++HostOption translate_socket_option(uint32_t level, uint32_t optname) {
++  // Windows uses the guest's own Winsock numbers; only the options listed
++  // here reach the host, as on the other systems.
++  if (level == wsa::kSolSocket) {
++    switch (optname) {
++      case wsa::kSoXboxInsecure:
++      case wsa::kSoXboxNoEncrypt:
++        return {OptionKind::kIgnored, 0, 0};
++      case wsa::kSoDebug:
++      case wsa::kSoReuseAddr:
++      case wsa::kSoKeepAlive:
++      case wsa::kSoDontRoute:
++      case wsa::kSoBroadcast:
++      case wsa::kSoOobInline:
++      case wsa::kSoSndBuf:
++      case wsa::kSoRcvBuf:
++      case wsa::kSoExclusiveAddrUse:
++        return {OptionKind::kInt, SOL_SOCKET, static_cast<int>(optname)};
++      case wsa::kSoLinger:
++        return {OptionKind::kLinger, SOL_SOCKET, SO_LINGER};
++      case wsa::kSoDontLinger:
++        return {OptionKind::kDontLinger, SOL_SOCKET, SO_LINGER};
++      case wsa::kSoSndTimeo:
++        return {OptionKind::kTimeoutMs, SOL_SOCKET, SO_SNDTIMEO};
++      case wsa::kSoRcvTimeo:
++        return {OptionKind::kTimeoutMs, SOL_SOCKET, SO_RCVTIMEO};
++      default:
++        break;
++    }
++  } else if (level == wsa::kIpprotoTcp && optname == wsa::kTcpNoDelay) {
++    return {OptionKind::kInt, IPPROTO_TCP, TCP_NODELAY};
++  }
++  return {};
++}
++
++SocketHandle socket_open(int af, int type, int protocol) {
++  SOCKET s = socket(af, type, protocol);
++  if (s == INVALID_SOCKET) {
++    return kInvalidSocket;
++  }
++  SetHandleInformation(reinterpret_cast<HANDLE>(s), HANDLE_FLAG_INHERIT, 0);
++  if (type == SOCK_DGRAM) {
++    // Windows reports an ICMP "port unreachable" as WSAECONNRESET on a later
++    // receive; Linux and the console don't for unconnected UDP. Turn it off
++    // so every host behaves the same.
++    BOOL report = FALSE;
++    DWORD bytes = 0;
++    WSAIoctl(s, SIO_UDP_CONNRESET, &report, sizeof(report), nullptr, 0, &bytes, nullptr, nullptr);
++  }
++  return static_cast<SocketHandle>(s);
++}
++
+ int socket_close(SocketHandle handle) {
+   return closesocket(static_cast<SOCKET>(handle));
+ }
+ 
+-int socket_ioctl(SocketHandle handle, uint32_t cmd, uint8_t* arg) {
+-  return ioctlsocket(static_cast<SOCKET>(handle), cmd, reinterpret_cast<u_long*>(arg));
++uint32_t socket_set_option(SocketHandle handle, uint32_t level, uint32_t optname, uint32_t value) {
++  HostOption option = translate_socket_option(level, optname);
++  SOCKET s = static_cast<SOCKET>(handle);
++  int ret = 0;
++  switch (option.kind) {
++    case OptionKind::kUnsupported:
++      return wsa::kEnoprotoopt;
++    case OptionKind::kIgnored:
++      return 0;
++    case OptionKind::kInt:
++    case OptionKind::kTimeoutMs: {
++      DWORD host_value = value;
++      ret = setsockopt(s, option.level, option.name, reinterpret_cast<const char*>(&host_value),
++                       sizeof(host_value));
++      break;
++    }
++    case OptionKind::kLinger:
++    case OptionKind::kDontLinger: {
++      linger host_linger = {};
++      host_linger.l_onoff = static_cast<u_short>((value >> 16) != 0);
++      host_linger.l_linger = static_cast<u_short>(value & 0xFFFF);
++      if (option.kind == OptionKind::kDontLinger) {
++        host_linger.l_onoff = static_cast<u_short>(value == 0);
++        host_linger.l_linger = 0;
++      }
++      ret = setsockopt(s, option.level, option.name, reinterpret_cast<const char*>(&host_linger),
++                       sizeof(host_linger));
++      break;
++    }
++  }
++  return ret == 0 ? 0 : socket_last_error();
++}
++
++uint32_t socket_ioctl(SocketHandle handle, uint32_t cmd, uint32_t* value) {
++  if (cmd != wsa::kFionbio && cmd != wsa::kFionread) {
++    return wsa::kEinval;
++  }
++  u_long host_value = *value;
++  if (ioctlsocket(static_cast<SOCKET>(handle), static_cast<long>(cmd), &host_value) != 0) {
++    return socket_last_error();
++  }
++  *value = static_cast<uint32_t>(host_value);
++  return 0;
++}
++
++bool translate_message_flags(uint32_t flags, int* host_flags) {
++  if (flags & ~(wsa::kMsgOob | wsa::kMsgPeek | wsa::kMsgDontRoute)) {
++    return false;
++  }
++  *host_flags = static_cast<int>(flags);  // same numbers on Windows
++  return true;
++}
++
++uint32_t socket_last_error() {
++  return static_cast<uint32_t>(WSAGetLastError());
++}
++
++bool random_bytes(void* out, size_t length) {
++  auto* bytes = static_cast<uint8_t*>(out);
++  while (length) {
++    ULONG n = length > 0x10000 ? 0x10000 : static_cast<ULONG>(length);
++    if (!SystemFunction036(bytes, n)) {
++      return false;
++    }
++    bytes += n;
++    length -= n;
++  }
++  return true;
++}
++
++namespace {
++// Winsock must be started for the queries below; the guest may not have
++// called WSAStartup yet. Each scope starts and stops it once.
++struct WinsockScope {
++  bool ok;
++  WinsockScope() {
++    WSADATA data;
++    ok = WSAStartup(MAKEWORD(2, 2), &data) == 0;
++  }
++  ~WinsockScope() {
++    if (ok) {
++      WSACleanup();
++    }
++  }
++};
++}  // namespace
++
++std::vector<Ipv4Interface> list_ipv4_interfaces() {
++  std::vector<Ipv4Interface> result;
++  WinsockScope winsock;
++  if (!winsock.ok) {
++    return result;
++  }
++  SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
++  if (s == INVALID_SOCKET) {
++    return result;
++  }
++  // SIO_GET_INTERFACE_LIST needs only ws2_32 (Wine has it too).
++  INTERFACE_INFO list[64];
++  DWORD bytes = 0;
++  if (WSAIoctl(s, SIO_GET_INTERFACE_LIST, nullptr, 0, list, sizeof(list), &bytes, nullptr,
++               nullptr) == 0) {
++    size_t count = bytes / sizeof(INTERFACE_INFO);
++    if (count > 64) {
++      count = 64;
++    }
++    for (size_t i = 0; i < count; ++i) {
++      const INTERFACE_INFO& entry = list[i];
++      if (entry.iiAddress.Address.sa_family != AF_INET) {
++        continue;
++      }
++      Ipv4Interface info;
++      info.address = ntohl(entry.iiAddress.AddressIn.sin_addr.s_addr);
++      info.netmask = ntohl(entry.iiNetmask.AddressIn.sin_addr.s_addr);
++      info.up = (entry.iiFlags & IFF_UP) != 0;
++      info.loopback = (entry.iiFlags & IFF_LOOPBACK) != 0;
++      info.broadcast = (entry.iiFlags & IFF_BROADCAST) != 0;
++      result.push_back(std::move(info));
++    }
++  }
++  closesocket(s);
++  return result;
++}
++
++uint32_t default_route_ipv4() {
++  WinsockScope winsock;
++  if (!winsock.ok) {
++    return 0;
++  }
++  SOCKET s = socket(AF_INET, SOCK_DGRAM, 0);
++  if (s == INVALID_SOCKET) {
++    return 0;
++  }
++  // Connecting a UDP socket only picks a route and a source address; no
++  // packet leaves the machine. 192.0.2.1 is a documentation-only address.
++  sockaddr_in target = {};
++  target.sin_family = AF_INET;
++  target.sin_port = htons(9);
++  target.sin_addr.s_addr = htonl(0xC0000201);
++  uint32_t result = 0;
++  if (connect(s, reinterpret_cast<sockaddr*>(&target), sizeof(target)) == 0) {
++    sockaddr_in local = {};
++    int local_len = sizeof(local);
++    if (getsockname(s, reinterpret_cast<sockaddr*>(&local), &local_len) == 0) {
++      result = ntohl(local.sin_addr.s_addr);
++    }
++  }
++  closesocket(s);
++  return result;
+ }
+ 
+ }  // namespace rex::net
+diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
+index 2b222da..33858a7 100644
+--- a/src/kernel/xam/apps/xgi_app.cpp
++++ b/src/kernel/xam/apps/xgi_app.cpp
+@@ -9,7 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <cstring>
++
+ #include <rex/kernel/xam/apps/xgi_app.h>
++#include <rex/kernel/xam/xnet.h>
+ #include <rex/logging.h>
+ #include <rex/thread.h>
+ 
+@@ -113,6 +116,31 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+           "{:08X})",
+           session_ptr, flags, num_slots_public, num_slots_private, user_xuid, session_info_ptr,
+           nonce_ptr);
++
++      // System link: a hosted session gets a new key and this PC's address
++      // in its XSESSION_INFO, as on the console; a joined session's info
++      // comes from the host. Either way its key is registered with XNet.
++      constexpr uint32_t kSessionCreateHost = 0x00000001;
++      bool host = (flags & kSessionCreateHost) != 0;
++      if (session_info_ptr &&
++          xnet::GuestRangeValid(session_info_ptr, sizeof(X_XSESSION_INFO), host)) {
++        auto info = memory_->TranslateVirtual<X_XSESSION_INFO*>(session_info_ptr);
++        if (host) {
++          X_XNKID kid;
++          X_XNKEY key;
++          X_XNADDR address;
++          xnet::CreateKey(&kid, &key);
++          xnet::GetTitleXnAddr(&address);
++          std::memcpy(&info->session_id, &kid, sizeof(kid));
++          std::memcpy(&info->host_address, &address, sizeof(address));
++          std::memcpy(&info->key_exchange_key, &key, sizeof(key));
++        }
++        X_XNKID kid;
++        X_XNKEY key;
++        std::memcpy(&kid, &info->session_id, sizeof(kid));
++        std::memcpy(&key, &info->key_exchange_key, sizeof(key));
++        xnet::RegisterKey(kid, key);
++      }
+       return X_E_SUCCESS;
+     }
+     case 0x000B0011: {
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 58e36a4..09fa742 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -12,19 +12,30 @@
+ // Disable warnings about unused parameters for kernel functions
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
++#include <algorithm>
++#include <chrono>
++#include <cstddef>
+ #include <cstring>
++#include <deque>
++#include <mutex>
++#include <set>
++#include <string>
++#include <vector>
+ 
+ #if REX_PLATFORM_MAC
+ #include <sys/select.h>
+ #endif
+ 
+ #include <rex/chrono/clock.h>
++#include <rex/cvar.h>
++#include <rex/kernel/xam/xnet.h>
+ #include <rex/kernel/xam/module.h>
+ #include <rex/kernel/xam/private.h>
+ #include <rex/kernel/xboxkrnl/error.h>
+ #include <rex/kernel/xboxkrnl/threading.h>
+ #include <rex/logging.h>
+ #include <rex/hook.h>
++#include <rex/net/socket.h>
+ #include <rex/types.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
+@@ -44,6 +55,15 @@
+ #include <sys/socket.h>
+ #endif
+ 
++REXCVAR_DEFINE_STRING(net_interface, "", "Net",
++                      "System link: the network to play on. Empty picks the interface of the "
++                      "default route; otherwise an IPv4 address of this PC or an interface name "
++                      "(names on Linux only)");
++REXCVAR_DEFINE_BOOL(net_lan_only, true, "Net",
++                    "System link: exchange packets only with local network addresses (private, "
++                    "link-local and the chosen interface's subnet). Turn off to play over the "
++                    "internet, for example with a forwarded port");
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -61,14 +81,10 @@ enum {
+ };
+ 
+ // https://github.com/pmrowla/hl2sdk-csgo/blob/master/common/xbox/xboxstubs.h
+-typedef struct {
+-  // FYI: IN_ADDR should be in network-byte order.
+-  in_addr ina;                    // IP address (zero if not static/DHCP)
+-  in_addr inaOnline;              // Online IP address (zero if not online)
+-  rex::be<uint16_t> wPortOnline;  // Online port
+-  uint8_t abEnet[6];              // Ethernet MAC address
+-  uint8_t abOnline[20];           // Online identification
+-} XNADDR;
++// IN_ADDR values are big-endian in guest memory; here they are handled in
++// host byte order (192.168.1.2 is 0xC0A80102), as the guest's registers
++// hold them.
++using XNADDR = X_XNADDR;
+ 
+ typedef struct {
+   rex::be<int32_t> status;
+@@ -182,10 +198,429 @@ struct XNetStartupParams {
+ 
+ XNetStartupParams xnet_startup_params = {};
+ 
+-u32 NetDll_XNetStartup_entry(u32 caller, ppc_ptr_t<XNetStartupParams> params) {
+-  if (params) {
+-    assert_true(params->cfgSizeOfStruct == sizeof(XNetStartupParams));
+-    std::memcpy(&xnet_startup_params, params, sizeof(XNetStartupParams));
++//=============================================================================
++// System link (LAN) state and rules
++//=============================================================================
++// Security rules for everything below:
++// - Every pointer and length from the guest is checked against mapped guest
++//   memory (GuestRangeValid) before the host reads or writes through it.
++// - Nothing from the network is trusted: a datagram's length is the host's,
++//   never a field inside it; VDP headers are checked before the guest sees
++//   them; a datagram too big for the guest's buffer fails with WSAEMSGSIZE.
++// - Sockets bind only where the guest asks. With net_lan_only (the default)
++//   packets are exchanged only with local network addresses.
++// - Nothing here reads files or runs commands.
++
++using rex::net::SockAddrV4;
++namespace wsa = rex::net::wsa;
++
++namespace {
++
++// XNetGetConnectStatus results.
++constexpr uint32_t kConnectStatusConnected = 2;
++constexpr uint32_t kConnectStatusLost = 3;
++
++// XNQOSINFO flags.
++constexpr uint8_t kQosComplete = 0x01;
++constexpr uint8_t kQosTargetContacted = 0x02;
++
++// QoS has no probe between PCs: a reachable target is reported at this
++// round trip time and bandwidth.
++constexpr uint16_t kQosRttMs = 10;
++constexpr uint32_t kQosBitsPerSec = 10000000;
++
++// Table limits; each table drops its oldest entry when full.
++constexpr size_t kMaxKeys = 64;
++constexpr size_t kMaxPeers = 256;
++constexpr size_t kMaxQosBlocks = 256;
++constexpr size_t kMaxWarnedAddresses = 64;
++
++// Largest UDP payload over IPv4.
++constexpr uint32_t kMaxDatagram = 65507;
++
++struct TitleAddress {
++  uint32_t addr = rex::net::kIpv4Loopback;
++  uint32_t netmask = 0xFF000000;
++  bool broadcast = false;
++  bool lan = false;  // false when only the loopback address was found
++};
++
++struct KeyEntry {
++  X_XNKID kid;
++  X_XNKEY key;
++};
++
++struct PeerEntry {
++  uint32_t ina = 0;  // host byte order
++  X_XNADDR xnaddr;
++  X_XNKID kid;
++  uint64_t last_used = 0;
++};
++
++struct XNetState {
++  std::mutex mutex;
++  TitleAddress title;
++  std::string title_choice;  // net_interface when `title` was picked
++  std::chrono::steady_clock::time_point title_time;
++  bool title_valid = false;
++  std::vector<KeyEntry> keys;  // oldest first
++  X_XNKID created_kid = {};    // the newest XNetCreateKey result
++  bool has_created_kid = false;
++  std::vector<PeerEntry> peers;
++  uint64_t clock = 0;
++  std::deque<uint32_t> qos_blocks;  // XNQOS results, oldest first
++  std::set<uint32_t> warned;        // addresses already logged as blocked
++};
++
++XNetState& State() {
++  static XNetState state;
++  return state;
++}
++
++}  // namespace
++
++namespace xnet {
++
++bool GuestRangeValid(uint32_t address, uint32_t length, bool write) {
++  if (!address) {
++    return false;
++  }
++  if (!length) {
++    return true;
++  }
++  uint64_t last = uint64_t(address) + length - 1;
++  if (last > 0xFFFFFFFFull) {
++    return false;
++  }
++  auto heap = REX_KERNEL_MEMORY()->LookupHeap(address);
++  if (!heap) {
++    return false;
++  }
++  auto access = heap->QueryRangeAccess(address, static_cast<uint32_t>(last));
++  if (write) {
++    return access == rex::memory::PageAccess::kReadWrite;
++  }
++  return access != rex::memory::PageAccess::kNoAccess;
++}
++
++}  // namespace xnet
++
++using xnet::GuestRangeValid;
++
++namespace {
++
++uint8_t* GuestBytes(uint32_t address) {
++  return REX_KERNEL_MEMORY()->TranslateVirtual<uint8_t*>(address);
++}
++
++// Picks the interface system link uses. `note` says how, for the log.
++TitleAddress PickTitleAddress(const std::string& choice, std::string* note) {
++  auto interfaces = rex::net::list_ipv4_interfaces();
++  std::vector<rex::net::Ipv4Interface> usable;
++  for (auto& entry : interfaces) {
++    if (entry.up && !entry.loopback && entry.address &&
++        !rex::net::ipv4_is_loopback(entry.address)) {
++      usable.push_back(entry);
++    }
++  }
++  auto make = [](const rex::net::Ipv4Interface& entry) {
++    TitleAddress title;
++    title.addr = entry.address;
++    title.netmask = entry.netmask;
++    title.broadcast = entry.broadcast;
++    title.lan = true;
++    return title;
++  };
++  if (!choice.empty()) {
++    uint32_t wanted = 0;
++    bool by_address = rex::net::parse_ipv4(choice, &wanted);
++    for (auto& entry : usable) {
++      if (by_address ? entry.address == wanted : entry.name == choice) {
++        *note = "net_interface";
++        return make(entry);
++      }
++    }
++    *note = "net_interface '" + choice + "' is not an active interface of this PC; ";
++  }
++  // The interface of the default route, then a private one, then any.
++  uint32_t route = rex::net::default_route_ipv4();
++  const rex::net::Ipv4Interface* best = nullptr;
++  for (auto& entry : usable) {
++    if (entry.address == route) {
++      best = &entry;
++      break;
++    }
++  }
++  for (auto& entry : usable) {
++    if (!best && rex::net::ipv4_is_private(entry.address) && entry.broadcast) {
++      best = &entry;
++    }
++  }
++  if (!best && !usable.empty()) {
++    best = &usable.front();
++  }
++  if (!best) {
++    *note += "no network interface is up, so system link only reaches this PC";
++    return TitleAddress();
++  }
++  *note += "picked automatically; set net_interface to choose another";
++  return make(*best);
++}
++
++// The chosen address, looked up again every few seconds or when
++// net_interface changes. Called with the state locked.
++const TitleAddress& CurrentTitle(XNetState& state) {
++  auto now = std::chrono::steady_clock::now();
++  std::string choice = REXCVAR_GET(net_interface);
++  bool choice_changed = !state.title_valid || choice != state.title_choice;
++  if (choice_changed || now - state.title_time > std::chrono::seconds(5)) {
++    std::string note;
++    TitleAddress title = PickTitleAddress(choice, &note);
++    if (choice_changed || title.addr != state.title.addr) {
++      REXKRNL_INFO("XNet: system link address {} ({})", rex::net::format_ipv4(title.addr), note);
++    }
++    state.title = title;
++    state.title_choice = choice;
++    state.title_time = now;
++    state.title_valid = true;
++  }
++  return state.title;
++}
++
++uint32_t DirectedBroadcast(const TitleAddress& title) {
++  if (!title.lan || !title.broadcast) {
++    return rex::net::kIpv4Broadcast;
++  }
++  return rex::net::ipv4_directed_broadcast(title.addr, title.netmask);
++}
++
++// Whether system link may exchange packets with `addr`. Called with the
++// state locked.
++bool PeerAllowedLocked(XNetState& state, uint32_t addr) {
++  if (!REXCVAR_GET(net_lan_only)) {
++    return addr && !rex::net::ipv4_is_multicast(addr);
++  }
++  const TitleAddress& title = CurrentTitle(state);
++  return rex::net::ipv4_is_lan_peer(addr, title.lan ? title.addr : 0, title.netmask);
++}
++
++bool PeerAllowed(uint32_t addr, const char* what) {
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  if (PeerAllowedLocked(state, addr)) {
++    return true;
++  }
++  if (state.warned.size() < kMaxWarnedAddresses && state.warned.insert(addr).second) {
++    REXKRNL_WARN("XNet: {} {} blocked: not a local network address (net_lan_only)", what,
++                 rex::net::format_ipv4(addr));
++  }
++  return false;
++}
++
++// The XNADDR of the PC at `ina`. The console's MAC address field is how the
++// game tells players apart, so it is made from the address: every PC
++// computes the same XNADDR for a peer from its address alone.
++X_XNADDR MakeXnAddr(uint32_t ina) {
++  X_XNADDR xnaddr;
++  std::memset(&xnaddr, 0, sizeof(xnaddr));
++  xnaddr.ina = ina;
++  xnaddr.ina_online = 0;
++  xnaddr.port_online = 0;
++  // A locally administered, unicast MAC address.
++  xnaddr.enet[0] = 0x02;
++  xnaddr.enet[1] = 0x00;
++  xnaddr.enet[2] = uint8_t(ina >> 24);
++  xnaddr.enet[3] = uint8_t(ina >> 16);
++  xnaddr.enet[4] = uint8_t(ina >> 8);
++  xnaddr.enet[5] = uint8_t(ina);
++  return xnaddr;
++}
++
++PeerEntry* FindPeer(XNetState& state, uint32_t ina) {
++  for (auto& peer : state.peers) {
++    if (peer.ina == ina) {
++      return &peer;
++    }
++  }
++  return nullptr;
++}
++
++PeerEntry& AddPeer(XNetState& state, uint32_t ina, const X_XNADDR& xnaddr, const X_XNKID& kid) {
++  PeerEntry* peer = FindPeer(state, ina);
++  if (!peer) {
++    if (state.peers.size() >= kMaxPeers) {
++      // Forget the peer used longest ago.
++      auto oldest = std::min_element(
++          state.peers.begin(), state.peers.end(),
++          [](const PeerEntry& a, const PeerEntry& b) { return a.last_used < b.last_used; });
++      state.peers.erase(oldest);
++    }
++    state.peers.emplace_back();
++    peer = &state.peers.back();
++    peer->ina = ina;
++  }
++  peer->xnaddr = xnaddr;
++  peer->kid = kid;
++  peer->last_used = ++state.clock;
++  return *peer;
++}
++
++void SetError(uint32_t error) {
++  XThread::SetLastError(error);
++}
++
++object_ref<XSocket> LookupSocket(uint32_t socket_handle) {
++  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  if (!socket) {
++    SetError(wsa::kEnotsock);
++  }
++  return socket;
++}
++
++// Reads a guest sockaddr_in. Returns 0 or a Winsock error code.
++uint32_t ReadGuestSockaddr(uint32_t address, uint32_t length, SockAddrV4* out) {
++  if (length < sizeof(XSOCKADDR_IN) || !GuestRangeValid(address, sizeof(XSOCKADDR_IN), false)) {
++    return wsa::kEfault;
++  }
++  const uint8_t* bytes = GuestBytes(address);
++  if (memory::load_and_swap<uint16_t>(bytes + 0) != XSocket::X_AF_INET) {
++    return wsa::kEafnosupport;
++  }
++  out->port = memory::load_and_swap<uint16_t>(bytes + 2);
++  out->addr = memory::load_and_swap<uint32_t>(bytes + 4);
++  return 0;
++}
++
++// Writes a guest sockaddr_in and its length (16). `length_address` holds
++// the buffer's size on entry. Returns 0 or a Winsock error code.
++uint32_t CheckGuestSockaddrOut(uint32_t address, uint32_t length_address) {
++  if (!address) {
++    return 0;
++  }
++  if (!GuestRangeValid(length_address, 4, true)) {
++    return wsa::kEfault;
++  }
++  uint32_t length = memory::load_and_swap<uint32_t>(GuestBytes(length_address));
++  if (length < sizeof(XSOCKADDR_IN) || !GuestRangeValid(address, sizeof(XSOCKADDR_IN), true)) {
++    return wsa::kEfault;
++  }
++  return 0;
++}
++
++void WriteGuestSockaddr(uint32_t address, uint32_t length_address, const SockAddrV4& addr) {
++  if (!address) {
++    return;
++  }
++  uint8_t* bytes = GuestBytes(address);
++  memory::store_and_swap<uint16_t>(bytes + 0, XSocket::X_AF_INET);
++  memory::store_and_swap<uint16_t>(bytes + 2, addr.port);
++  memory::store_and_swap<uint32_t>(bytes + 4, addr.addr);
++  std::memset(bytes + 8, 0, 8);
++  memory::store_and_swap<uint32_t>(GuestBytes(length_address), sizeof(XSOCKADDR_IN));
++}
++
++// A VDP datagram starts with the game data's length (2 bytes, big-endian),
++// which can't be more than what follows it.
++bool VdpHeaderValid(const uint8_t* data, uint32_t length) {
++  if (length < 2) {
++    return false;
++  }
++  uint32_t game_data_length = memory::load_and_swap<uint16_t>(data);
++  return game_data_length <= length - 2;
++}
++
++// sendto for datagram sockets: checks the destination and the VDP header.
++// Returns the bytes sent, or -1 with the guest's last error set.
++int SendDatagram(XSocket* socket, const uint8_t* data, uint32_t length, uint32_t flags,
++                 const SockAddrV4* to) {
++  uint32_t error = 0;
++  if (socket->type() != XSocket::X_SOCK_DGRAM) {
++    int ret = socket->Send(data, length, flags, &error);
++    if (ret < 0) {
++      SetError(error);
++    }
++    return ret;
++  }
++  if (length > kMaxDatagram) {
++    SetError(wsa::kEmsgsize);
++    return -1;
++  }
++  if (socket->is_vdp() && !VdpHeaderValid(data, length)) {
++    SetError(wsa::kEinval);
++    return -1;
++  }
++  SockAddrV4 target;
++  if (to) {
++    target = *to;
++    if (target.addr == rex::net::kIpv4Broadcast) {
++      if (!socket->is_broadcast()) {
++        SetError(wsa::kEacces);
++        return -1;
++      }
++      // Send the broadcast on the chosen interface's network.
++      auto& state = State();
++      std::lock_guard<std::mutex> lock(state.mutex);
++      target.addr = DirectedBroadcast(CurrentTitle(state));
++    }
++    if (!PeerAllowed(target.addr, "send to")) {
++      SetError(wsa::kEhostunreach);
++      return -1;
++    }
++  }
++  int ret = socket->SendTo(data, length, flags, to ? &target : nullptr, &error);
++  if (ret < 0) {
++    SetError(error);
++  }
++  return ret;
++}
++
++}  // namespace
++
++namespace xnet {
++
++void GetTitleXnAddr(X_XNADDR* out) {
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  *out = MakeXnAddr(CurrentTitle(state).addr);
++}
++
++void CreateKey(X_XNKID* kid, X_XNKEY* key) {
++  if (!rex::net::random_bytes(kid->ab, sizeof(kid->ab)) ||
++      !rex::net::random_bytes(key->ab, sizeof(key->ab))) {
++    REXKRNL_ERROR("XNet: the system's random source failed");
++  }
++  // The top bits of an XNKID give its kind: 0 is a system link session.
++  kid->ab[0] &= 0x0F;
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  state.created_kid = *kid;
++  state.has_created_kid = true;
++}
++
++uint32_t RegisterKey(const X_XNKID& kid, const X_XNKEY& key) {
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  // Registering again moves the key to the newest place.
++  state.keys.erase(std::remove_if(state.keys.begin(), state.keys.end(),
++                                  [&](const KeyEntry& entry) {
++                                    return !std::memcmp(entry.kid.ab, kid.ab, sizeof(kid.ab));
++                                  }),
++                   state.keys.end());
++  if (state.keys.size() >= kMaxKeys) {
++    state.keys.erase(state.keys.begin());
++  }
++  state.keys.push_back({kid, key});
++  return 0;
++}
++
++}  // namespace xnet
++
++u32 NetDll_XNetStartup_entry(u32 caller, u32 params_ptr) {
++  if (params_ptr && GuestRangeValid(params_ptr, sizeof(XNetStartupParams), false)) {
++    auto params = GuestBytes(params_ptr);
++    if (params[0] == sizeof(XNetStartupParams)) {
++      std::memcpy(&xnet_startup_params, params, sizeof(XNetStartupParams));
++    }
+   }
+ 
+   auto xam = REX_KERNEL_STATE()->GetKernelModule<XamModule>("xam.xex");
+@@ -203,42 +638,57 @@ u32 NetDll_XNetStartup_entry(u32 caller, ppc_ptr_t<XNetStartupParams> params) {
+ }
+ 
+ u32 NetDll_XNetCleanup_entry(u32 caller, mapped_void params) {
+-  auto xam = REX_KERNEL_STATE()->GetKernelModule<XamModule>("xam.xex");
+-  // auto xnet = xam->xnet();
+-  // xam->set_xnet(nullptr);
+-
+-  // TODO: Shut down and delete.
+-  // delete xnet;
+-
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  state.keys.clear();
++  state.peers.clear();
++  state.has_created_kid = false;
++  state.title_valid = false;
+   return 0;
+ }
+ 
+-u32 NetDll_XNetGetOpt_entry(u32 one, u32 option_id, mapped_void buffer_ptr,
+-                            mapped_u32 buffer_size) {
+-  assert_true(one == 1);
++u32 NetDll_XNetGetOpt_entry(u32 one, u32 option_id, u32 buffer_ptr, u32 buffer_size_ptr) {
++  if (!GuestRangeValid(buffer_size_ptr, 4, true)) {
++    return wsa::kEfault;
++  }
++  auto buffer_size = GuestBytes(buffer_size_ptr);
+   switch (option_id) {
+     case 1:
+-      if (*buffer_size < sizeof(XNetStartupParams)) {
+-        *buffer_size = sizeof(XNetStartupParams);
+-        return 0x2738;  // WSAEMSGSIZE
++      if (memory::load_and_swap<uint32_t>(buffer_size) < sizeof(XNetStartupParams)) {
++        memory::store_and_swap<uint32_t>(buffer_size, sizeof(XNetStartupParams));
++        return wsa::kEmsgsize;
++      }
++      if (!GuestRangeValid(buffer_ptr, sizeof(XNetStartupParams), true)) {
++        return wsa::kEfault;
+       }
+-      std::memcpy(buffer_ptr, &xnet_startup_params, sizeof(XNetStartupParams));
++      std::memcpy(GuestBytes(buffer_ptr), &xnet_startup_params, sizeof(XNetStartupParams));
+       return 0;
+     default:
+       REXKRNL_ERROR("NetDll_XNetGetOpt: option {} unimplemented", option_id);
+-      return 0x2726;  // WSAEINVAL
++      return wsa::kEinval;
+   }
+ }
+ 
+-u32 NetDll_XNetRandom_entry(u32 caller, mapped_void buffer_ptr, u32 length) {
+-  // For now, constant values.
+-  // This makes replicating things easier.
+-  std::memset(buffer_ptr, 0xBB, length);
+-
++u32 NetDll_XNetRandom_entry(u32 caller, u32 buffer_ptr, u32 length) {
++  if (!length) {
++    return 0;
++  }
++  if (!GuestRangeValid(buffer_ptr, length, true)) {
++    return wsa::kEfault;
++  }
++  // The game makes session nonces and keys from these: they must differ
++  // between players.
++  if (!rex::net::random_bytes(GuestBytes(buffer_ptr), length)) {
++    REXKRNL_ERROR("XNet: the system's random source failed");
++    return wsa::kEinval;
++  }
+   return 0;
+ }
+ 
+ u32 NetDll_WSAStartup_entry(u32 caller, u16 version, ppc_ptr_t<X_WSADATA> data_ptr) {
++  if (data_ptr && !GuestRangeValid(data_ptr.guest_address(), sizeof(X_WSADATA), true)) {
++    return wsa::kEfault;
++  }
+ // TODO(benvanik): abstraction layer needed.
+ #if REX_PLATFORM_WIN32
+   WSADATA wsaData;
+@@ -316,37 +766,54 @@ u32 NetDll_WSARecvFrom_entry(u32 caller, u32 socket, ppc_ptr_t<XWSABUF> buffers_
+ 
+ // If the socket is a VDP socket, buffer 0 is the game data length, and buffer 1
+ // is the unencrypted game data.
+-u32 NetDll_WSASendTo_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XWSABUF> buffers,
+-                           u32 num_buffers, mapped_u32 num_bytes_sent, u32 flags,
+-                           ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len,
+-                           ppc_ptr_t<XWSAOVERLAPPED> overlapped, mapped_void completion_routine) {
+-  assert(!overlapped);
+-  assert(!completion_routine);
+-
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_WSASendTo_entry(u32 caller, u32 socket_handle, u32 buffers_ptr, u32 num_buffers,
++                           u32 num_bytes_sent_ptr, u32 flags, u32 to_ptr, u32 to_len,
++                           u32 overlapped, u32 completion_routine) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
++    return -1;
++  }
++  if (!num_buffers || num_buffers > 64 ||
++      !GuestRangeValid(buffers_ptr, num_buffers * sizeof(XWSABUF), false)) {
++    SetError(wsa::kEfault);
+     return -1;
+   }
+ 
+   // Our sockets implementation doesn't support multiple buffers, so we need
+   // to combine the buffers the game has given us!
+-  std::vector<uint8_t> combined_buffer_mem;
+-  uint32_t combined_buffer_size = 0;
+-  uint32_t combined_buffer_offset = 0;
++  auto buffers = reinterpret_cast<const XWSABUF*>(GuestBytes(buffers_ptr));
++  std::vector<uint8_t> combined;
+   for (uint32_t i = 0; i < num_buffers; i++) {
+-    combined_buffer_size += buffers[i].len;
+-    combined_buffer_mem.resize(combined_buffer_size);
+-    uint8_t* combined_buffer = combined_buffer_mem.data();
+-
+-    std::memcpy(combined_buffer + combined_buffer_offset,
+-                REX_KERNEL_MEMORY()->TranslateVirtual(buffers[i].buf_ptr), buffers[i].len);
+-    combined_buffer_offset += buffers[i].len;
++    uint32_t len = buffers[i].len;
++    uint32_t ptr = buffers[i].buf_ptr;
++    if (len > kMaxDatagram - combined.size()) {
++      SetError(wsa::kEmsgsize);
++      return -1;
++    }
++    if (len && !GuestRangeValid(ptr, len, false)) {
++      SetError(wsa::kEfault);
++      return -1;
++    }
++    const uint8_t* data = len ? GuestBytes(ptr) : nullptr;
++    combined.insert(combined.end(), data, data + len);
+   }
+ 
+-  N_XSOCKADDR_IN native_to(to_ptr);
+-  socket->SendTo(combined_buffer_mem.data(), combined_buffer_size, flags, &native_to, to_len);
++  SockAddrV4 to;
++  if (to_ptr) {
++    uint32_t error = ReadGuestSockaddr(to_ptr, to_len, &to);
++    if (error) {
++      SetError(error);
++      return -1;
++    }
++  }
++  int ret = SendDatagram(socket.get(), combined.data(), uint32_t(combined.size()), flags,
++                         to_ptr ? &to : nullptr);
++  if (ret < 0) {
++    return -1;
++  }
++  if (num_bytes_sent_ptr && GuestRangeValid(num_bytes_sent_ptr, 4, true)) {
++    memory::store_and_swap<uint32_t>(GuestBytes(num_bytes_sent_ptr), uint32_t(ret));
++  }
+ 
+   // TODO: Instantly complete overlapped
+ 
+@@ -435,32 +902,24 @@ struct XnAddrStatus {
+   static const uint32_t XNET_GET_XNADDR_TROUBLESHOOT = 0x00008000;
+ };
+ 
+-u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+-  // Just return a loopback address atm.
+-  addr_ptr->ina.s_addr = htonl(INADDR_LOOPBACK);
+-  addr_ptr->inaOnline.s_addr = 0;
+-  addr_ptr->wPortOnline = 0;
+-
++u32 NetDll_XNetGetTitleXnAddr_entry(u32 caller, u32 addr_ptr) {
++  if (!GuestRangeValid(addr_ptr, sizeof(XNADDR), true)) {
++    return XnAddrStatus::XNET_GET_XNADDR_NONE;
++  }
++  // The PC's LAN address. Never "pending": CoD3 waits in a loop until the
++  // address is ready (0x823C32E0).
+   // TODO(gibbed): A proper mac address.
+   // RakNet's 360 version appears to depend on abEnet to create "random" 64-bit
+   // numbers. A zero value will cause RakPeer::Startup to fail. This causes
+-  // 58411436 to crash on startup.
+-  // The 360-specific code is scrubbed from the RakNet repo, but there's still
+-  // traces of what it's doing which match the game code.
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L382
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4527
+-  // https://github.com/facebookarchive/RakNet/blob/master/Source/RakPeer.cpp#L4467
+-  // "Mac address is a poor solution because you can't have multiple connections
+-  // from the same system"
+-  std::memset(addr_ptr->abEnet, 0xCC, 6);
+-
+-  std::memset(addr_ptr->abOnline, 0, 20);
+-
++  // 58411436 to crash on startup. (abEnet is never zero here.)
++  xnet::GetTitleXnAddr(REX_KERNEL_MEMORY()->TranslateVirtual<XNADDR*>(addr_ptr));
+   return XnAddrStatus::XNET_GET_XNADDR_STATIC;
+ }
+ 
+-u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr) {
+-  addr_ptr.Zero();
++u32 NetDll_XNetGetDebugXnAddr_entry(u32 caller, u32 addr_ptr) {
++  if (GuestRangeValid(addr_ptr, sizeof(XNADDR), true)) {
++    std::memset(GuestBytes(addr_ptr), 0, sizeof(XNADDR));
++  }
+ 
+   // XNET_GET_XNADDR_NONE causes caller to gracefully return.
+   return XnAddrStatus::XNET_GET_XNADDR_NONE;
+@@ -471,23 +930,181 @@ u32 NetDll_XNetXnAddrToMachineId_entry(u32 caller, ppc_ptr_t<XNADDR> addr_ptr, m
+   return 1;
+ }
+ 
+-void NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, mapped_string string_out,
+-                                     u32 string_size) {
+-  rex::string::copy_truncating(string_out, "666.666.666.666", string_size);
++u32 NetDll_XNetInAddrToString_entry(u32 caller, u32 in_addr, u32 string_ptr, u32 string_size) {
++  std::string text = rex::net::format_ipv4(in_addr);
++  if (!string_size || !GuestRangeValid(string_ptr, string_size, true)) {
++    return wsa::kEfault;
++  }
++  if (string_size < text.size() + 1) {
++    GuestBytes(string_ptr)[0] = 0;
++    return wsa::kEmsgsize;
++  }
++  std::memcpy(GuestBytes(string_ptr), text.c_str(), text.size() + 1);
++  return 0;
+ }
+ 
+ // This converts a XNet address to an IN_ADDR. The IN_ADDR is used for
+-// subsequent socket calls (like a handle to a XNet address)
+-u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, ppc_ptr_t<XNADDR> xn_addr, mapped_void xid,
+-                                    mapped_void in_addr) {
+-  return 1;
++// subsequent socket calls (like a handle to a XNet address). Between PCs it
++// is the peer's own IPv4 address.
++u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, u32 xnaddr_ptr, u32 kid_ptr, u32 in_addr_ptr) {
++  if (!GuestRangeValid(xnaddr_ptr, sizeof(XNADDR), false) ||
++      !GuestRangeValid(kid_ptr, sizeof(X_XNKID), false) ||
++      !GuestRangeValid(in_addr_ptr, 4, true)) {
++    return wsa::kEfault;
++  }
++  XNADDR xnaddr;
++  std::memcpy(&xnaddr, GuestBytes(xnaddr_ptr), sizeof(xnaddr));
++  X_XNKID kid;
++  std::memcpy(&kid, GuestBytes(kid_ptr), sizeof(kid));
++  uint32_t ina = xnaddr.ina;
++  if (!ina || !PeerAllowed(ina, "peer")) {
++    return wsa::kEinval;
++  }
++  {
++    auto& state = State();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    AddPeer(state, ina, xnaddr, kid);
++  }
++  memory::store_and_swap<uint32_t>(GuestBytes(in_addr_ptr), ina);
++  return 0;
+ }
+ 
+-// Does the reverse of the above.
+-// FIXME: Arguments may not be correct.
+-u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, mapped_void in_addr, ppc_ptr_t<XNADDR> xn_addr,
+-                                    mapped_void xid) {
+-  return 1;
++// Does the reverse of the above: the XNADDR and key of the peer at an
++// address. A peer this PC hasn't looked up yet (a player joining this host)
++// gets the XNADDR every PC makes for that address and the newest key.
++u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, u32 xnaddr_ptr, u32 kid_ptr) {
++  if (!GuestRangeValid(xnaddr_ptr, sizeof(XNADDR), true) ||
++      (kid_ptr && !GuestRangeValid(kid_ptr, sizeof(X_XNKID), true))) {
++    return wsa::kEfault;
++  }
++  if (!in_addr || !PeerAllowed(in_addr, "peer")) {
++    return wsa::kEinval;
++  }
++  XNADDR xnaddr;
++  X_XNKID kid;
++  {
++    auto& state = State();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    PeerEntry* peer = FindPeer(state, in_addr);
++    if (peer) {
++      peer->last_used = ++state.clock;
++    } else {
++      // The newest registered key is the session's; failing that, the
++      // newest key made here.
++      if (state.keys.empty() && !state.has_created_kid) {
++        return wsa::kEinval;
++      }
++      const X_XNKID& newest = state.keys.empty() ? state.created_kid : state.keys.back().kid;
++      peer = &AddPeer(state, in_addr, MakeXnAddr(in_addr), newest);
++      REXKRNL_DEBUG("XNet: new peer {}", rex::net::format_ipv4(in_addr));
++    }
++    xnaddr = peer->xnaddr;
++    kid = peer->kid;
++  }
++  std::memcpy(GuestBytes(xnaddr_ptr), &xnaddr, sizeof(xnaddr));
++  if (kid_ptr) {
++    std::memcpy(GuestBytes(kid_ptr), &kid, sizeof(kid));
++  }
++  return 0;
++}
++
++// TSADDR: a title server's IN_ADDR and service id. Without Xbox Live it is
++// a plain address.
++u32 NetDll_XNetTsAddrToInAddr_entry(u32 caller, u32 tsaddr_ptr, u32 service_id, u32 kid_ptr,
++                                    u32 in_addr_ptr) {
++  if (!GuestRangeValid(tsaddr_ptr, 8, false) || !GuestRangeValid(in_addr_ptr, 4, true)) {
++    return wsa::kEfault;
++  }
++  uint32_t ina = memory::load_and_swap<uint32_t>(GuestBytes(tsaddr_ptr));
++  if (!ina || !PeerAllowed(ina, "server")) {
++    return wsa::kEinval;
++  }
++  memory::store_and_swap<uint32_t>(GuestBytes(in_addr_ptr), ina);
++  return 0;
++}
++
++u32 NetDll_XNetUnregisterInAddr_entry(u32 caller, u32 in_addr) {
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  auto it = std::find_if(state.peers.begin(), state.peers.end(),
++                         [&](const PeerEntry& peer) { return peer.ina == in_addr; });
++  if (it == state.peers.end()) {
++    return wsa::kEinval;
++  }
++  state.peers.erase(it);
++  return 0;
++}
++
++// There is no key exchange between PCs: a known peer is connected at once.
++u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) {
++  if (rex::net::ipv4_is_loopback(in_addr)) {
++    return 0;
++  }
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  PeerEntry* peer = FindPeer(state, in_addr);
++  if (!peer) {
++    return wsa::kEinval;
++  }
++  peer->last_used = ++state.clock;
++  return 0;
++}
++
++u32 NetDll_XNetGetConnectStatus_entry(u32 caller, u32 in_addr) {
++  if (rex::net::ipv4_is_loopback(in_addr)) {
++    return kConnectStatusConnected;
++  }
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  // A peer forgotten (unregistered or dropped from a full table) is "lost",
++  // so the game closes its connection instead of waiting on it.
++  return FindPeer(state, in_addr) ? kConnectStatusConnected : kConnectStatusLost;
++}
++
++u32 NetDll_XNetCreateKey_entry(u32 caller, u32 kid_ptr, u32 key_ptr) {
++  if (!GuestRangeValid(kid_ptr, sizeof(X_XNKID), true) ||
++      !GuestRangeValid(key_ptr, sizeof(X_XNKEY), true)) {
++    return wsa::kEfault;
++  }
++  X_XNKID kid;
++  X_XNKEY key;
++  xnet::CreateKey(&kid, &key);
++  std::memcpy(GuestBytes(kid_ptr), &kid, sizeof(kid));
++  std::memcpy(GuestBytes(key_ptr), &key, sizeof(key));
++  return 0;
++}
++
++u32 NetDll_XNetRegisterKey_entry(u32 caller, u32 kid_ptr, u32 key_ptr) {
++  if (!GuestRangeValid(kid_ptr, sizeof(X_XNKID), false) ||
++      !GuestRangeValid(key_ptr, sizeof(X_XNKEY), false)) {
++    return wsa::kEfault;
++  }
++  X_XNKID kid;
++  X_XNKEY key;
++  std::memcpy(&kid, GuestBytes(kid_ptr), sizeof(kid));
++  std::memcpy(&key, GuestBytes(key_ptr), sizeof(key));
++  return xnet::RegisterKey(kid, key);
++}
++
++u32 NetDll_XNetUnregisterKey_entry(u32 caller, u32 kid_ptr) {
++  if (!GuestRangeValid(kid_ptr, sizeof(X_XNKID), false)) {
++    return wsa::kEfault;
++  }
++  X_XNKID kid;
++  std::memcpy(&kid, GuestBytes(kid_ptr), sizeof(kid));
++  auto same_kid = [&](const X_XNKID& other) {
++    return !std::memcmp(other.ab, kid.ab, sizeof(kid.ab));
++  };
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  state.keys.erase(std::remove_if(state.keys.begin(), state.keys.end(),
++                                  [&](const KeyEntry& entry) { return same_kid(entry.kid); }),
++                   state.keys.end());
++  // Peers reached through that key go with it, as on the console.
++  state.peers.erase(std::remove_if(state.peers.begin(), state.peers.end(),
++                                   [&](const PeerEntry& peer) { return same_kid(peer.kid); }),
++                    state.peers.end());
++  return 0;
+ }
+ 
+ // https://www.google.com/patents/WO2008112448A1?cl=en
+@@ -505,13 +1122,22 @@ struct XEthernetStatus {
+   static const uint32_t XNET_ETHERNET_LINK_HALF_DUPLEX = 0x10;
+ };
+ 
++// A link while the PC has an active network interface. The system link
++// menus check this every second.
+ u32 NetDll_XNetGetEthernetLinkStatus_entry(u32 caller) {
+-  return 0;
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  if (!CurrentTitle(state).lan) {
++    return 0;
++  }
++  return XEthernetStatus::XNET_ETHERNET_LINK_ACTIVE | XEthernetStatus::XNET_ETHERNET_LINK_100MBPS |
++         XEthernetStatus::XNET_ETHERNET_LINK_FULL_DUPLEX;
+ }
+ 
+ u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle, mapped_u32 pdns) {
+   // TODO(gibbed): actually implement this
+-  if (pdns) {
++  // No name lookups: the port never contacts servers by name.
++  if (pdns && GuestRangeValid(pdns.guest_address(), 4, true)) {
+     auto dns_guest = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(XNDNS));
+     auto dns = REX_KERNEL_MEMORY()->TranslateVirtual<XNDNS*>(dns_guest);
+     dns->status = 1;  // non-zero = error
+@@ -519,8 +1145,9 @@ u32 NetDll_XNetDnsLookup_entry(u32 caller, mapped_string host, u32 event_handle,
+   }
+   if (event_handle) {
+     auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(event_handle);
+-    assert_not_null(ev);
+-    ev->Set(0, false);
++    if (ev) {
++      ev->Set(0, false);
++    }
+   }
+   return 0;
+ }
+@@ -535,7 +1162,7 @@ u32 NetDll_XNetDnsRelease_entry(u32 caller, ppc_ptr_t<XNDNS> dns) {
+ 
+ u32 NetDll_XNetQosServiceLookup_entry(u32 caller, u32 flags, u32 event_handle, mapped_u32 pqos) {
+   // Set pqos as some games will try accessing it despite non-successful result
+-  if (pqos) {
++  if (pqos && GuestRangeValid(pqos.guest_address(), 4, true)) {
+     auto qos_guest = REX_KERNEL_MEMORY()->SystemHeapAlloc(sizeof(XNQOS));
+     auto qos = REX_KERNEL_MEMORY()->TranslateVirtual<XNQOS*>(qos_guest);
+     qos->count = qos->count_pending = 0;
+@@ -543,8 +1170,9 @@ u32 NetDll_XNetQosServiceLookup_entry(u32 caller, u32 flags, u32 event_handle, m
+   }
+   if (event_handle) {
+     auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(event_handle);
+-    assert_not_null(ev);
+-    ev->Set(0, false);
++    if (ev) {
++      ev->Set(0, false);
++    }
+   }
+   return 0;
+ }
+@@ -553,42 +1181,142 @@ u32 NetDll_XNetQosRelease_entry(u32 caller, ppc_ptr_t<XNQOS> qos) {
+   if (!qos) {
+     return X_STATUS_INVALID_PARAMETER;
+   }
++  {
++    auto& state = State();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    auto it = std::find(state.qos_blocks.begin(), state.qos_blocks.end(), qos.guest_address());
++    if (it != state.qos_blocks.end()) {
++      state.qos_blocks.erase(it);
++    }
++  }
+   REX_KERNEL_MEMORY()->SystemHeapFree(qos.guest_address());
+   return 0;
+ }
+ 
+-u32 NetDll_XNetQosListen_entry(u32 caller, mapped_void id, mapped_void data, u32 data_size, u32 r7,
+-                               u32 flags) {
+-  return X_ERROR_FUNCTION_FAILED;
++// The host's QoS listener answers probes with a data block. Between PCs
++// there are no probes, so this only checks the arguments.
++u32 NetDll_XNetQosListen_entry(u32 caller, u32 kid_ptr, u32 data_ptr, u32 data_size,
++                               u32 bits_per_sec, u32 flags) {
++  constexpr uint32_t kQosListenSetData = 0x04;
++  if (!GuestRangeValid(kid_ptr, sizeof(X_XNKID), false)) {
++    return wsa::kEfault;
++  }
++  if ((flags & kQosListenSetData) && data_size &&
++      (data_size > 0x10000 || !GuestRangeValid(data_ptr, data_size, false))) {
++    return wsa::kEfault;
++  }
++  return 0;
++}
++
++// QoS probes: every target is answered at once. A target system link may
++// reach is "contacted" (CoD3 joins only contacted hosts); others are not.
++// The result block isn't freed by CoD3 (it doesn't import XNetQosRelease),
++// so the oldest blocks are freed once there are many.
++u32 NetDll_XNetQosLookup_entry(u32 caller, u32 xnaddr_count, u32 xnaddrs_ptr, u32 kids_ptr,
++                               u32 keys_ptr, u32 ina_count, u32 inas_ptr, u32 service_ids_ptr,
++                               u32 probe_count, u32 bits_per_sec, u32 flags, u32 event_handle,
++                               u32 result_ptr) {
++  constexpr uint32_t kMaxTargets = 1024;
++  if (xnaddr_count > kMaxTargets || ina_count > kMaxTargets ||
++      !GuestRangeValid(result_ptr, 4, true) ||
++      (xnaddr_count && !GuestRangeValid(xnaddrs_ptr, xnaddr_count * 4, false)) ||
++      (ina_count && !GuestRangeValid(inas_ptr, ina_count * 4, false))) {
++    return wsa::kEfault;
++  }
++  uint32_t count = xnaddr_count + ina_count;
++  uint32_t size = 8 + std::max(count, 1u) * uint32_t(sizeof(XNQOSINFO));
++  uint32_t block = REX_KERNEL_MEMORY()->SystemHeapAlloc(size);
++  if (!block) {
++    return wsa::kEnobufs;
++  }
++  uint8_t* bytes = GuestBytes(block);
++  std::memset(bytes, 0, size);
++  auto qos = reinterpret_cast<XNQOS*>(bytes);
++  qos->count = count;
++  qos->count_pending = 0;
++  auto infos = reinterpret_cast<XNQOSINFO*>(bytes + offsetof(XNQOS, info));
++  for (uint32_t i = 0; i < count; ++i) {
++    uint32_t ina = 0;
++    if (i < xnaddr_count) {
++      uint32_t xnaddr_ptr = memory::load_and_swap<uint32_t>(GuestBytes(xnaddrs_ptr + i * 4));
++      if (GuestRangeValid(xnaddr_ptr, sizeof(XNADDR), false)) {
++        ina = memory::load_and_swap<uint32_t>(GuestBytes(xnaddr_ptr));
++      }
++    } else {
++      ina = memory::load_and_swap<uint32_t>(GuestBytes(inas_ptr + (i - xnaddr_count) * 4));
++    }
++    XNQOSINFO& info = infos[i];
++    info.flags = kQosComplete;
++    if (ina && PeerAllowed(ina, "QoS probe to")) {
++      uint16_t probes = static_cast<uint16_t>(std::clamp(probe_count, 1u, 0xFFFFu));
++      info.flags = kQosComplete | kQosTargetContacted;
++      info.probes_xmit = probes;
++      info.probes_recv = probes;
++      info.rtt_min_in_msecs = kQosRttMs;
++      info.rtt_med_in_msecs = kQosRttMs;
++      info.up_bits_per_sec = kQosBitsPerSec;
++      info.down_bits_per_sec = kQosBitsPerSec;
++    }
++  }
++  {
++    auto& state = State();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    state.qos_blocks.push_back(block);
++    if (state.qos_blocks.size() > kMaxQosBlocks) {
++      REX_KERNEL_MEMORY()->SystemHeapFree(state.qos_blocks.front());
++      state.qos_blocks.pop_front();
++    }
++  }
++  memory::store_and_swap<uint32_t>(GuestBytes(result_ptr), block);
++  if (event_handle) {
++    auto ev = REX_KERNEL_OBJECTS()->LookupObject<XEvent>(event_handle);
++    if (ev) {
++      ev->Set(0, false);
++    }
++  }
++  return 0;
+ }
+ 
+-u32 NetDll_inet_addr_entry(mapped_string addr_ptr) {
++u32 NetDll_inet_addr_entry(u32 addr_ptr) {
++  // A dotted address is at most 15 characters; read no further.
+   if (!addr_ptr) {
+     return -1;
+   }
+-
+-  uint32_t addr = inet_addr(addr_ptr);
+-  // https://docs.microsoft.com/en-us/windows/win32/api/winsock2/nf-winsock2-inet_addr#return-value
++  char text[16] = {};
++  for (uint32_t i = 0; i < sizeof(text); ++i) {
++    if (!GuestRangeValid(addr_ptr + i, 1, false)) {
++      return -1;
++    }
++    text[i] = static_cast<char>(GuestBytes(addr_ptr + i)[0]);
++    if (!text[i]) {
++      break;
++    }
++  }
++  if (text[15]) {
++    return -1;
++  }
+   // Based on console research it seems like x360 uses old version of inet_addr
+   // In case of empty string it return 0 instead of -1
+-  if (addr == -1 && !addr_ptr.value().length()) {
++  if (!text[0]) {
+     return 0;
+   }
+-
+-  return rex::byte_swap(addr);
++  uint32_t addr = 0;
++  if (!rex::net::parse_ipv4(text, &addr)) {
++    return -1;
++  }
++  // The result is an IN_ADDR: network order in guest memory.
++  return addr;
+ }
+ 
+ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+   XSocket* socket = new XSocket(REX_KERNEL_STATE());
+-  X_STATUS result =
++  uint32_t error =
+       socket->Initialize(XSocket::AddressFamily((uint32_t)af), XSocket::Type((uint32_t)type),
+                          XSocket::Protocol((uint32_t)protocol));
+ 
+-  if (XFAILED(result)) {
++  if (error) {
+     socket->Release();
+-
+-    uint32_t error = xboxkrnl::xeRtlNtStatusToDosError(result);
+-    XThread::SetLastError(error);
++    SetError(error);
+     return -1;
+   }
+ 
+@@ -596,10 +1324,8 @@ u32 NetDll_socket_entry(u32 caller, u32 af, u32 type, u32 protocol) {
+ }
+ 
+ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+@@ -611,86 +1337,98 @@ u32 NetDll_closesocket_entry(u32 caller, u32 socket_handle) {
+ }
+ 
+ i32 NetDll_shutdown_entry(u32 caller, u32 socket_handle, i32 how) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+-  auto ret = socket->Shutdown(how);
++  uint32_t error = 0;
++  auto ret = socket->Shutdown(how, &error);
+   if (ret == -1) {
+-#if REX_PLATFORM_WIN32
+-    uint32_t error_code = WSAGetLastError();
+-    XThread::SetLastError(error_code);
+-#else
+-    XThread::SetLastError(0x0);
+-#endif
++    SetError(error);
+   }
+   return ret;
+ }
+ 
+-u32 NetDll_setsockopt_entry(u32 caller, u32 socket_handle, u32 level, u32 optname,
+-                            mapped_void optval_ptr, u32 optlen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_setsockopt_entry(u32 caller, u32 socket_handle, u32 level, u32 optname, u32 optval_ptr,
++                            u32 optlen) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
++    return -1;
++  }
++  // Every option the host knows is 4 bytes; read no more than that.
++  uint32_t read_length = std::min(optlen, 4u);
++  if (read_length && !GuestRangeValid(optval_ptr, read_length, false)) {
++    SetError(wsa::kEfault);
+     return -1;
+   }
+ 
+-  X_STATUS status = socket->SetOption(level, optname, optval_ptr, optlen);
+-  return XSUCCEEDED(status) ? 0 : -1;
++  uint32_t error =
++      socket->SetOption(level, optname, read_length ? GuestBytes(optval_ptr) : nullptr, optlen);
++  if (error) {
++    SetError(error);
++    return -1;
++  }
++  return 0;
+ }
+ 
+-u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, mapped_void arg_ptr) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_ioctlsocket_entry(u32 caller, u32 socket_handle, u32 cmd, u32 arg_ptr) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+-
+-  X_STATUS status = socket->IOControl(cmd, arg_ptr);
+-  if (XFAILED(status)) {
+-    XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
++  if (!GuestRangeValid(arg_ptr, 4, true)) {
++    SetError(wsa::kEfault);
+     return -1;
+   }
+ 
+-  // TODO
++  // The argument is a u_long, big-endian in guest memory.
++  uint32_t value = memory::load_and_swap<uint32_t>(GuestBytes(arg_ptr));
++  uint32_t error = socket->IOControl(cmd, &value);
++  if (error) {
++    SetError(error);
++    return -1;
++  }
++  memory::store_and_swap<uint32_t>(GuestBytes(arg_ptr), value);
+   return 0;
+ }
+ 
+-u32 NetDll_bind_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR_IN> name, u32 namelen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_bind_entry(u32 caller, u32 socket_handle, u32 name_ptr, u32 namelen) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+-  N_XSOCKADDR_IN native_name(name);
+-  X_STATUS status = socket->Bind(&native_name, namelen);
+-  if (XFAILED(status)) {
+-    XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
++  // Bound exactly where the guest asks.
++  SockAddrV4 name;
++  uint32_t error = ReadGuestSockaddr(name_ptr, namelen, &name);
++  if (!error) {
++    error = socket->Bind(name);
++  }
++  if (error) {
++    SetError(error);
+     return -1;
+   }
+ 
+   return 0;
+ }
+ 
+-u32 NetDll_connect_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR> name, u32 namelen) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_connect_entry(u32 caller, u32 socket_handle, u32 name_ptr, u32 namelen) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+-  N_XSOCKADDR native_name(name);
+-  X_STATUS status = socket->Connect(&native_name, namelen);
+-  if (XFAILED(status)) {
+-    XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
++  SockAddrV4 name;
++  uint32_t error = ReadGuestSockaddr(name_ptr, namelen, &name);
++  if (!error && !PeerAllowed(name.addr, "connect to")) {
++    error = wsa::kEhostunreach;
++  }
++  if (!error) {
++    error = socket->Connect(name);
++  }
++  if (error) {
++    SetError(error);
+     return -1;
+   }
+ 
+@@ -698,49 +1436,45 @@ u32 NetDll_connect_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR> nam
+ }
+ 
+ u32 NetDll_listen_entry(u32 caller, u32 socket_handle, i32 backlog) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+ 
+-  X_STATUS status = socket->Listen(backlog);
+-  if (XFAILED(status)) {
+-    XThread::SetLastError(xboxkrnl::xeRtlNtStatusToDosError(status));
++  uint32_t error = socket->Listen(backlog);
++  if (error) {
++    SetError(error);
+     return -1;
+   }
+ 
+   return 0;
+ }
+ 
+-u32 NetDll_accept_entry(u32 caller, u32 socket_handle, ppc_ptr_t<XSOCKADDR> addr_ptr,
+-                        mapped_u32 addrlen_ptr) {
+-  if (!addr_ptr) {
+-    // WSAEFAULT
+-    XThread::SetLastError(0x271E);
++u32 NetDll_accept_entry(u32 caller, u32 socket_handle, u32 addr_ptr, u32 addrlen_ptr) {
++  auto socket = LookupSocket(socket_handle);
++  if (!socket) {
+     return -1;
+   }
+-
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
+-  if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
++  uint32_t error = CheckGuestSockaddrOut(addr_ptr, addrlen_ptr);
++  if (error) {
++    SetError(error);
+     return -1;
+   }
+ 
+-  N_XSOCKADDR native_addr(addr_ptr);
+-  int native_len = *addrlen_ptr;
+-  auto new_socket = socket->Accept(&native_addr, &native_len);
+-  if (new_socket) {
+-    addr_ptr->address_family = native_addr.address_family;
+-    std::memcpy(addr_ptr->sa_data, native_addr.sa_data, *addrlen_ptr - 2);
+-    *addrlen_ptr = native_len;
+-
+-    return new_socket->handle();
+-  } else {
++  SockAddrV4 from;
++  auto new_socket = socket->Accept(&from, &error);
++  if (!new_socket) {
++    SetError(error);
++    return -1;
++  }
++  if (!PeerAllowed(from.addr, "connection from")) {
++    new_socket->Close();
++    new_socket->Release();
++    SetError(wsa::kEconnaborted);
+     return -1;
+   }
++  WriteGuestSockaddr(addr_ptr, addrlen_ptr, from);
++  return new_socket->handle();
+ }
+ 
+ struct x_fd_set {
+@@ -749,23 +1483,35 @@ struct x_fd_set {
+ };
+ 
+ struct host_set {
+-  uint32_t count;
++  uint32_t count = 0;
+   object_ref<XSocket> sockets[64];
+ 
+-  void Load(const x_fd_set* guest_set) {
+-    assert_true(guest_set->fd_count < 64);
+-    this->count = guest_set->fd_count;
+-    for (uint32_t i = 0; i < this->count; ++i) {
++  // Returns 0 or a Winsock error code.
++  uint32_t Load(const x_fd_set* guest_set) {
++    uint32_t guest_count = guest_set->fd_count;
++    if (guest_count > 64) {
++      return wsa::kEinval;
++    }
++    this->count = 0;
++    for (uint32_t i = 0; i < guest_count; ++i) {
+       auto socket_handle = static_cast<X_HANDLE>(guest_set->fd_array[i]);
+       if (socket_handle == -1) {
+-        this->count = i;
+         break;
+       }
+       // Convert from Xenia -> native
+       auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
+-      assert_not_null(socket);
+-      this->sockets[i] = socket;
++      if (!socket) {
++        return wsa::kEnotsock;
++      }
++#if !REX_PLATFORM_WIN32
++      // A POSIX fd_set only holds descriptors below FD_SETSIZE.
++      if (socket->native_handle() >= FD_SETSIZE) {
++        return wsa::kEinval;
++      }
++#endif
++      this->sockets[this->count++] = socket;
+     }
++    return 0;
+   }
+ 
+   void Store(x_fd_set* guest_set) {
+@@ -776,10 +1522,11 @@ struct host_set {
+     }
+   }
+ 
+-  void Store(fd_set* native_set) {
++  void Store(fd_set* native_set, int* max_fd) {
+     FD_ZERO(native_set);
+     for (uint32_t i = 0; i < this->count; ++i) {
+       FD_SET(this->sockets[i]->native_handle(), native_set);
++      *max_fd = std::max(*max_fd, static_cast<int>(this->sockets[i]->native_handle()));
+     }
+   }
+ 
+@@ -795,133 +1542,188 @@ struct host_set {
+   }
+ };
+ 
+-i32 NetDll_select_entry(i32 caller, i32 nfds, ppc_ptr_t<x_fd_set> readfds,
+-                        ppc_ptr_t<x_fd_set> writefds, ppc_ptr_t<x_fd_set> exceptfds,
+-                        mapped_void timeout_ptr) {
+-  host_set host_readfds = {};
+-  fd_set native_readfds = {};
+-  if (readfds) {
+-    host_readfds.Load(readfds);
+-    host_readfds.Store(&native_readfds);
+-  }
+-  host_set host_writefds = {};
+-  fd_set native_writefds = {};
+-  if (writefds) {
+-    host_writefds.Load(writefds);
+-    host_writefds.Store(&native_writefds);
+-  }
+-  host_set host_exceptfds = {};
+-  fd_set native_exceptfds = {};
+-  if (exceptfds) {
+-    host_exceptfds.Load(exceptfds);
+-    host_exceptfds.Store(&native_exceptfds);
++i32 NetDll_select_entry(i32 caller, i32 nfds, u32 readfds_ptr, u32 writefds_ptr,
++                        u32 exceptfds_ptr, u32 timeout_ptr) {
++  const u32 set_ptrs[3] = {readfds_ptr, writefds_ptr, exceptfds_ptr};
++  host_set host_sets[3];
++  fd_set native_sets[3] = {};
++  x_fd_set* guest_sets[3] = {};
++  int max_fd = -1;
++  for (int i = 0; i < 3; ++i) {
++    if (!set_ptrs[i]) {
++      continue;
++    }
++    if (!GuestRangeValid(set_ptrs[i], sizeof(x_fd_set), true)) {
++      SetError(wsa::kEfault);
++      return -1;
++    }
++    guest_sets[i] = REX_KERNEL_MEMORY()->TranslateVirtual<x_fd_set*>(set_ptrs[i]);
++    uint32_t error = host_sets[i].Load(guest_sets[i]);
++    if (error) {
++      SetError(error);
++      return -1;
++    }
++    host_sets[i].Store(&native_sets[i], &max_fd);
+   }
+   timeval* timeout_in = nullptr;
+   timeval timeout;
+   if (timeout_ptr) {
+-    timeout = {static_cast<int32_t>(timeout_ptr.as_array<int32_t>()[0]),
+-               static_cast<int32_t>(timeout_ptr.as_array<int32_t>()[1])};
+-    chrono::Clock::ScaleGuestDurationTimeval(reinterpret_cast<int32_t*>(&timeout.tv_sec),
+-                                             reinterpret_cast<int32_t*>(&timeout.tv_usec));
++    if (!GuestRangeValid(timeout_ptr, 8, false)) {
++      SetError(wsa::kEfault);
++      return -1;
++    }
++    int32_t seconds = memory::load_and_swap<int32_t>(GuestBytes(timeout_ptr));
++    int32_t microseconds = memory::load_and_swap<int32_t>(GuestBytes(timeout_ptr + 4));
++    chrono::Clock::ScaleGuestDurationTimeval(&seconds, &microseconds);
++    timeout = {};
++    timeout.tv_sec = seconds;
++    timeout.tv_usec = microseconds;
+     timeout_in = &timeout;
+   }
+-  int ret = select(nfds, readfds ? &native_readfds : nullptr, writefds ? &native_writefds : nullptr,
+-                   exceptfds ? &native_exceptfds : nullptr, timeout_in);
+-  if (readfds) {
+-    host_readfds.UpdateFrom(&native_readfds);
+-    host_readfds.Store(readfds);
+-  }
+-  if (writefds) {
+-    host_writefds.UpdateFrom(&native_writefds);
+-    host_writefds.Store(writefds);
++  // Winsock ignores nfds; POSIX needs the highest descriptor plus one.
++  int ret = select(max_fd + 1, guest_sets[0] ? &native_sets[0] : nullptr,
++                   guest_sets[1] ? &native_sets[1] : nullptr,
++                   guest_sets[2] ? &native_sets[2] : nullptr, timeout_in);
++  if (ret < 0) {
++    SetError(rex::net::socket_last_error());
++    return -1;
+   }
+-  if (exceptfds) {
+-    host_exceptfds.UpdateFrom(&native_exceptfds);
+-    host_exceptfds.Store(exceptfds);
++  for (int i = 0; i < 3; ++i) {
++    if (guest_sets[i]) {
++      host_sets[i].UpdateFrom(&native_sets[i]);
++      host_sets[i].Store(guest_sets[i]);
++    }
+   }
+ 
+   // TODO(gibbed): modify ret to be what's actually copied to the guest fd_sets?
+   return ret;
+ }
+ 
+-u32 NetDll_recv_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_recv_entry(u32 caller, u32 socket_handle, u32 buf_ptr, u32 buf_len, u32 flags) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
++    return -1;
++  }
++  if (buf_len && !GuestRangeValid(buf_ptr, buf_len, true)) {
++    SetError(wsa::kEfault);
+     return -1;
+   }
+ 
+-  return socket->Recv(buf_ptr, buf_len, flags);
++  uint32_t error = 0;
++  int ret = socket->Recv(buf_len ? GuestBytes(buf_ptr) : nullptr, buf_len, flags, &error);
++  if (ret < 0) {
++    SetError(error);
++  }
++  return ret;
+ }
+ 
+-u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len,
+-                          u32 flags, ppc_ptr_t<XSOCKADDR_IN> from_ptr, mapped_u32 fromlen_ptr) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, u32 buf_ptr, u32 buf_len, u32 flags,
++                          u32 from_ptr, u32 fromlen_ptr) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+-
+-  N_XSOCKADDR_IN native_from;
+-  if (from_ptr) {
+-    native_from = *from_ptr;
+-  }
+-  uint32_t native_fromlen = fromlen_ptr ? fromlen_ptr.value() : 0;
+-  int ret =
+-      socket->RecvFrom(buf_ptr, buf_len, flags, &native_from, fromlen_ptr ? &native_fromlen : 0);
+-
+-  if (from_ptr) {
+-    from_ptr->sin_family = native_from.sin_family;
+-    from_ptr->sin_port = native_from.sin_port;
+-    from_ptr->sin_addr = native_from.sin_addr;
+-    std::memset(from_ptr->x_sin_zero, 0, sizeof(from_ptr->x_sin_zero));
++  if (buf_len && !GuestRangeValid(buf_ptr, buf_len, true)) {
++    SetError(wsa::kEfault);
++    return -1;
+   }
+-  if (fromlen_ptr) {
+-    *fromlen_ptr = native_fromlen;
++  uint32_t error = CheckGuestSockaddrOut(from_ptr, fromlen_ptr);
++  if (error) {
++    SetError(error);
++    return -1;
+   }
+-
+-  if (ret == -1) {
+-// TODO: Better way of getting the error code
+-#if REX_PLATFORM_WIN32
+-    uint32_t error_code = WSAGetLastError();
+-    XThread::SetLastError(error_code);
+-#else
+-    XThread::SetLastError(0x0);
+-#endif
++  uint8_t* buf = buf_len ? GuestBytes(buf_ptr) : nullptr;
++  bool datagram = socket->type() == XSocket::X_SOCK_DGRAM;
++
++  // Datagrams from addresses system link may not use, and VDP datagrams
++  // with a bad header, are dropped here; the next one is read instead.
++  for (int dropped = 0;; ++dropped) {
++    SockAddrV4 from;
++    uint32_t full_len = 0;
++    int ret = socket->RecvFrom(buf, buf_len, flags, &from, &error, &full_len);
++    if (ret < 0 && error != wsa::kEmsgsize) {
++      SetError(error);
++      return -1;
++    }
++    bool drop = false;
++    if (datagram) {
++      if (!PeerAllowed(from.addr, "packet from")) {
++        drop = true;
++      } else if (socket->is_vdp() && buf_len >= 2 && full_len) {
++        // The header is checked against the datagram's real length.
++        drop = !VdpHeaderValid(buf, full_len);
++      }
++    }
++    if (drop) {
++      if (flags & wsa::kMsgPeek) {
++        // A peeked datagram is still queued: read it to discard it.
++        uint8_t scratch[2];
++        uint32_t ignored = 0;
++        socket->RecvFrom(scratch, sizeof(scratch), flags & ~wsa::kMsgPeek, nullptr, &ignored);
++      }
++      if (dropped >= 255) {
++        // Don't spin on a flood; the guest polls again.
++        SetError(wsa::kEwouldblock);
++        return -1;
++      }
++      continue;
++    }
++    WriteGuestSockaddr(from_ptr, fromlen_ptr, from);
++    if (ret < 0) {
++      SetError(error);
++      return -1;
++    }
++    return ret;
+   }
+-
+-  return ret;
+ }
+ 
+-u32 NetDll_send_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_send_entry(u32 caller, u32 socket_handle, u32 buf_ptr, u32 buf_len, u32 flags) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
++    return -1;
++  }
++  if (buf_len && !GuestRangeValid(buf_ptr, buf_len, false)) {
++    SetError(wsa::kEfault);
+     return -1;
+   }
+ 
+-  return socket->Send(buf_ptr, buf_len, flags);
++  uint32_t error = 0;
++  int ret = socket->Send(buf_len ? GuestBytes(buf_ptr) : nullptr, buf_len, flags, &error);
++  if (ret < 0) {
++    SetError(error);
++  }
++  return ret;
+ }
+ 
+-u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, mapped_void buf_ptr, u32 buf_len, u32 flags,
+-                        ppc_ptr_t<XSOCKADDR_IN> to_ptr, u32 to_len) {
+-  auto socket = REX_KERNEL_OBJECTS()->LookupObject<XSocket>(socket_handle);
++u32 NetDll_sendto_entry(u32 caller, u32 socket_handle, u32 buf_ptr, u32 buf_len, u32 flags,
++                        u32 to_ptr, u32 to_len) {
++  auto socket = LookupSocket(socket_handle);
+   if (!socket) {
+-    // WSAENOTSOCK
+-    XThread::SetLastError(0x2736);
+     return -1;
+   }
+-
+-  N_XSOCKADDR_IN native_to(to_ptr);
+-  return socket->SendTo(buf_ptr, buf_len, flags, &native_to, to_len);
++  if (buf_len && !GuestRangeValid(buf_ptr, buf_len, false)) {
++    SetError(wsa::kEfault);
++    return -1;
++  }
++  SockAddrV4 to;
++  if (to_ptr) {
++    uint32_t error = ReadGuestSockaddr(to_ptr, to_len, &to);
++    if (error) {
++      SetError(error);
++      return -1;
++    }
++  }
++  return SendDatagram(socket.get(), buf_len ? GuestBytes(buf_ptr) : nullptr, buf_len, flags,
++                      to_ptr ? &to : nullptr);
+ }
+ 
+-u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, ppc_ptr_t<x_fd_set> fd_set) {
+-  const uint8_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
+-  for (uint8_t i = 0; i < max_fd_count; i++) {
++u32 NetDll___WSAFDIsSet_entry(u32 socket_handle, u32 fd_set_ptr) {
++  if (!GuestRangeValid(fd_set_ptr, sizeof(x_fd_set), false)) {
++    return 0;
++  }
++  auto fd_set = REX_KERNEL_MEMORY()->TranslateVirtual<const x_fd_set*>(fd_set_ptr);
++  const uint32_t max_fd_count = std::min((uint32_t)fd_set->fd_count, uint32_t(64));
++  for (uint32_t i = 0; i < max_fd_count; i++) {
+     if (fd_set->fd_array[i] == socket_handle) {
+       return 1;
+     }
+@@ -985,6 +1787,14 @@ REX_EXPORT(__imp__NetDll_send, rex::kernel::xam::NetDll_send_entry)
+ REX_EXPORT(__imp__NetDll_sendto, rex::kernel::xam::NetDll_sendto_entry)
+ REX_EXPORT(__imp__NetDll___WSAFDIsSet, rex::kernel::xam::NetDll___WSAFDIsSet_entry)
+ REX_EXPORT(__imp__NetDll_WSASetLastError, rex::kernel::xam::NetDll_WSASetLastError_entry)
++REX_EXPORT(__imp__NetDll_XNetConnect, rex::kernel::xam::NetDll_XNetConnect_entry)
++REX_EXPORT(__imp__NetDll_XNetCreateKey, rex::kernel::xam::NetDll_XNetCreateKey_entry)
++REX_EXPORT(__imp__NetDll_XNetGetConnectStatus, rex::kernel::xam::NetDll_XNetGetConnectStatus_entry)
++REX_EXPORT(__imp__NetDll_XNetQosLookup, rex::kernel::xam::NetDll_XNetQosLookup_entry)
++REX_EXPORT(__imp__NetDll_XNetRegisterKey, rex::kernel::xam::NetDll_XNetRegisterKey_entry)
++REX_EXPORT(__imp__NetDll_XNetTsAddrToInAddr, rex::kernel::xam::NetDll_XNetTsAddrToInAddr_entry)
++REX_EXPORT(__imp__NetDll_XNetUnregisterInAddr, rex::kernel::xam::NetDll_XNetUnregisterInAddr_entry)
++REX_EXPORT(__imp__NetDll_XNetUnregisterKey, rex::kernel::xam::NetDll_XNetUnregisterKey_entry)
+ 
+ REX_EXPORT_STUB(__imp__NetDll_UpnpActionCalculateWorkBufferSize);
+ REX_EXPORT_STUB(__imp__NetDll_UpnpActionCreate);
+@@ -1030,25 +1840,17 @@ REX_EXPORT_STUB(__imp__NetDll_XHttpSetStatusCallback);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpShutdown);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpStartup);
+ REX_EXPORT_STUB(__imp__NetDll_XHttpWriteData);
+-REX_EXPORT_STUB(__imp__NetDll_XNetConnect);
+-REX_EXPORT_STUB(__imp__NetDll_XNetCreateKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseLookup);
+ REX_EXPORT_STUB(__imp__NetDll_XNetDnsReverseRelease);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetBroadcastVersionStatus);
+-REX_EXPORT_STUB(__imp__NetDll_XNetGetConnectStatus);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetSystemLinkPort);
+ REX_EXPORT_STUB(__imp__NetDll_XNetGetXnAddrPlatform);
+ REX_EXPORT_STUB(__imp__NetDll_XNetInAddrToServer);
+ REX_EXPORT_STUB(__imp__NetDll_XNetQosGetListenStats);
+-REX_EXPORT_STUB(__imp__NetDll_XNetQosLookup);
+-REX_EXPORT_STUB(__imp__NetDll_XNetRegisterKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetReplaceKey);
+ REX_EXPORT_STUB(__imp__NetDll_XNetServerToInAddr);
+ REX_EXPORT_STUB(__imp__NetDll_XNetSetOpt);
+ REX_EXPORT_STUB(__imp__NetDll_XNetStartupEx);
+-REX_EXPORT_STUB(__imp__NetDll_XNetTsAddrToInAddr);
+-REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterInAddr);
+-REX_EXPORT_STUB(__imp__NetDll_XNetUnregisterKey);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadContinue);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetParseTime);
+ REX_EXPORT_STUB(__imp__NetDll_XmlDownloadGetReceivedDataSize);
+diff --git a/src/system/xsocket.cpp b/src/system/xsocket.cpp
+index 2d13ac8..0cedf08 100644
+--- a/src/system/xsocket.cpp
++++ b/src/system/xsocket.cpp
+@@ -9,11 +9,13 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
+ #include <cstring>
+ 
+ #include <rex/kernel/xam/module.h>
+ #include <rex/platform.h>
+ #include <rex/system/kernel_state.h>
++#include <rex/system/xmemory.h>
+ #include <rex/system/xsocket.h>
+ // #include <rex/system/xnet.h>
+ 
+@@ -33,6 +35,43 @@
+ 
+ namespace rex::system {
+ 
++namespace {
++
++sockaddr_in ToHost(const rex::net::SockAddrV4& addr) {
++  sockaddr_in host = {};
++  host.sin_family = AF_INET;
++  host.sin_port = htons(addr.port);
++  host.sin_addr.s_addr = htonl(addr.addr);
++  return host;
++}
++
++rex::net::SockAddrV4 FromHost(const sockaddr_in& host) {
++  rex::net::SockAddrV4 addr;
++  addr.addr = ntohl(host.sin_addr.s_addr);
++  addr.port = ntohs(host.sin_port);
++  return addr;
++}
++
++#if REX_PLATFORM_WIN32
++using HostSocket = SOCKET;
++using HostLength = int;
++constexpr int kNoSignal = 0;
++#else
++using HostSocket = int;
++using HostLength = socklen_t;
++#if defined(MSG_NOSIGNAL)
++// A send on a broken connection must fail, not raise SIGPIPE.
++constexpr int kNoSignal = MSG_NOSIGNAL;
++#else
++constexpr int kNoSignal = 0;  // macOS: SO_NOSIGPIPE is set when it's opened
++#endif
++#endif
++
++// Largest buffer passed to the host in one call (the largest IPv4 datagram).
++constexpr uint32_t kMaxTransfer = 0x10000;
++
++}  // namespace
++
+ XSocket::XSocket(KernelState* kernel_state) : XObject(kernel_state, kObjectType) {}
+ 
+ XSocket::XSocket(KernelState* kernel_state, uint64_t native_handle)
+@@ -42,26 +81,46 @@ XSocket::~XSocket() {
+   Close();
+ }
+ 
+-X_STATUS XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
++uint32_t XSocket::Initialize(AddressFamily af, Type type, Protocol proto) {
+   af_ = af;
+   type_ = type;
+   proto_ = proto;
+ 
+-  if (proto == Protocol::X_IPPROTO_VDP) {
+-    // VDP is a layer on top of UDP.
+-    proto = Protocol::X_IPPROTO_UDP;
++  // Only IPv4 TCP and UDP (and VDP, sent as UDP) reach the host.
++  if (af != X_AF_INET) {
++    return rex::net::wsa::kEafnosupport;
+   }
+-
+-  native_handle_ = socket(af, type, proto);
+-  if (native_handle_ == -1) {
+-    return X_STATUS_UNSUCCESSFUL;
++  int host_proto = 0;
++  if (type == X_SOCK_DGRAM) {
++    if (proto != 0 && proto != X_IPPROTO_UDP && proto != X_IPPROTO_VDP) {
++      return rex::net::wsa::kEprotonosupport;
++    }
++    host_proto = IPPROTO_UDP;
++  } else if (type == X_SOCK_STREAM) {
++    if (proto != 0 && proto != X_IPPROTO_TCP) {
++      return rex::net::wsa::kEprotonosupport;
++    }
++    host_proto = IPPROTO_TCP;
++  } else {
++    return rex::net::wsa::kEsocktnosupport;
+   }
+ 
+-  return X_STATUS_SUCCESS;
++  auto handle = rex::net::socket_open(AF_INET, type == X_SOCK_DGRAM ? SOCK_DGRAM : SOCK_STREAM,
++                                      host_proto);
++  if (handle == rex::net::kInvalidSocket) {
++    return rex::net::socket_last_error();
++  }
++  native_handle_ = static_cast<uint64_t>(handle);
++  return 0;
+ }
+ 
+ X_STATUS XSocket::Close() {
+-  int ret = rex::net::socket_close(native_handle_);
++  // Closed once: a second close could hit a descriptor reused since.
++  if (native_handle_ == uint64_t(-1)) {
++    return X_STATUS_SUCCESS;
++  }
++  int ret = rex::net::socket_close(static_cast<rex::net::SocketHandle>(native_handle_));
++  native_handle_ = uint64_t(-1);
+   if (ret != 0) {
+     return X_STATUS_UNSUCCESSFUL;
+   }
+@@ -69,83 +128,96 @@ X_STATUS XSocket::Close() {
+   return X_STATUS_SUCCESS;
+ }
+ 
+-X_STATUS XSocket::SetOption(uint32_t level, uint32_t optname, void* optval_ptr, uint32_t optlen) {
+-  if (level == 0xFFFF && (optname == 0x5801 || optname == 0x5802)) {
+-    // Disable socket encryption
+-    secure_ = false;
+-    return X_STATUS_SUCCESS;
++uint32_t XSocket::SetOption(uint32_t level, uint32_t optname, const uint8_t* optval,
++                            uint32_t optlen) {
++  auto option = rex::net::translate_socket_option(level, optname);
++  if (option.kind == rex::net::OptionKind::kIgnored) {
++    if (level == rex::net::wsa::kSolSocket && (optname == rex::net::wsa::kSoXboxInsecure ||
++                                               optname == rex::net::wsa::kSoXboxNoEncrypt)) {
++      // Disable socket encryption
++      secure_ = false;
++    }
++    return 0;
+   }
+-
+-  int ret = setsockopt(native_handle_, level, optname, (char*)optval_ptr, optlen);
+-  if (ret < 0) {
+-    // TODO: WSAGetLastError()
+-    return X_STATUS_UNSUCCESSFUL;
++  if (option.kind == rex::net::OptionKind::kUnsupported) {
++    return rex::net::wsa::kEnoprotoopt;
+   }
+-
+-  // SO_BROADCAST
+-  if (level == 0xFFFF && optname == 0x0020) {
+-    broadcast_socket_ = true;
++  // Every supported option is 4 bytes on Winsock (an int, BOOL, DWORD or
++  // two u_shorts), stored big-endian by the guest.
++  if (!optval || optlen < 4) {
++    return rex::net::wsa::kEfault;
+   }
+-
+-  return X_STATUS_SUCCESS;
+-}
+-
+-X_STATUS XSocket::IOControl(uint32_t cmd, uint8_t* arg_ptr) {
+-  int ret = rex::net::socket_ioctl(native_handle_, cmd, arg_ptr);
+-  if (ret < 0) {
+-    // TODO: Get last error
+-    return X_STATUS_UNSUCCESSFUL;
++  uint32_t value = rex::memory::load_and_swap<uint32_t>(optval);
++  uint32_t error = rex::net::socket_set_option(
++      static_cast<rex::net::SocketHandle>(native_handle_), level, optname, value);
++  if (error) {
++    return error;
+   }
+ 
+-  return X_STATUS_SUCCESS;
++  if (level == rex::net::wsa::kSolSocket && optname == rex::net::wsa::kSoBroadcast) {
++    broadcast_socket_ = value != 0;
++  }
++  return 0;
+ }
+ 
+-X_STATUS XSocket::Connect(N_XSOCKADDR* name, int name_len) {
+-  int ret = connect(native_handle_, (sockaddr*)name, name_len);
+-  if (ret < 0) {
+-    return X_STATUS_UNSUCCESSFUL;
+-  }
++uint32_t XSocket::IOControl(uint32_t cmd, uint32_t* value) {
++  return rex::net::socket_ioctl(static_cast<rex::net::SocketHandle>(native_handle_), cmd, value);
++}
+ 
+-  return X_STATUS_SUCCESS;
++uint32_t XSocket::Connect(const rex::net::SockAddrV4& to) {
++  sockaddr_in host = ToHost(to);
++  int ret = connect(static_cast<HostSocket>(native_handle_), reinterpret_cast<sockaddr*>(&host),
++                    sizeof(host));
++  return ret == 0 ? 0 : rex::net::socket_last_error();
+ }
+ 
+-X_STATUS XSocket::Bind(N_XSOCKADDR_IN* name, int name_len) {
+-  int ret = bind(native_handle_, (sockaddr*)name, name_len);
+-  if (ret < 0) {
+-    return X_STATUS_UNSUCCESSFUL;
++uint32_t XSocket::Bind(const rex::net::SockAddrV4& name) {
++  sockaddr_in host = ToHost(name);
++  int ret = bind(static_cast<HostSocket>(native_handle_), reinterpret_cast<sockaddr*>(&host),
++                 sizeof(host));
++  if (ret != 0) {
++    return rex::net::socket_last_error();
+   }
+ 
+   bound_ = true;
+-  bound_port_ = name->sin_port;
+-
+-  return X_STATUS_SUCCESS;
+-}
+-
+-X_STATUS XSocket::Listen(int backlog) {
+-  int ret = listen(native_handle_, backlog);
+-  if (ret < 0) {
+-    return X_STATUS_UNSUCCESSFUL;
++  bound_port_ = name.port;
++  // Port 0 means "any": remember the one the host picked.
++  sockaddr_in local = {};
++  HostLength local_len = sizeof(local);
++  if (getsockname(static_cast<HostSocket>(native_handle_), reinterpret_cast<sockaddr*>(&local),
++                  &local_len) == 0) {
++    bound_port_ = ntohs(local.sin_port);
+   }
++  return 0;
++}
+ 
+-  return X_STATUS_SUCCESS;
++uint32_t XSocket::Listen(int backlog) {
++  int ret = listen(static_cast<HostSocket>(native_handle_), backlog);
++  return ret == 0 ? 0 : rex::net::socket_last_error();
+ }
+ 
+-object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
+-  sockaddr n_sockaddr;
+-  socklen_t n_name_len = sizeof(sockaddr);
+-  uintptr_t ret = accept(native_handle_, &n_sockaddr, &n_name_len);
+-  if (ret == -1) {
+-    std::memset(name, 0, *name_len);
+-    *name_len = 0;
++object_ref<XSocket> XSocket::Accept(rex::net::SockAddrV4* from, uint32_t* error) {
++  sockaddr_in host = {};
++  HostLength host_len = sizeof(host);
++  auto ret = accept(static_cast<HostSocket>(native_handle_), reinterpret_cast<sockaddr*>(&host),
++                    &host_len);
++#if REX_PLATFORM_WIN32
++  bool failed = ret == INVALID_SOCKET;
++#else
++  bool failed = ret < 0;
++#endif
++  if (failed) {
++    *error = rex::net::socket_last_error();
+     return nullptr;
+   }
+-
+-  std::memcpy(name, &n_sockaddr, n_name_len);
+-  *name_len = n_name_len;
++  *error = 0;
++  if (from) {
++    *from = FromHost(host);
++  }
+ 
+   // Create a kernel object to represent the new socket, and copy parameters
+   // over.
+-  auto socket = object_ref<XSocket>(new XSocket(kernel_state_, ret));
++  auto socket = object_ref<XSocket>(new XSocket(kernel_state_, static_cast<uint64_t>(ret)));
+   socket->af_ = af_;
+   socket->type_ = type_;
+   socket->proto_ = proto_;
+@@ -153,16 +225,27 @@ object_ref<XSocket> XSocket::Accept(N_XSOCKADDR* name, int* name_len) {
+   return socket;
+ }
+ 
+-int XSocket::Shutdown(int how) {
+-  return shutdown(native_handle_, how);
++int XSocket::Shutdown(int how, uint32_t* error) {
++  int ret = shutdown(static_cast<HostSocket>(native_handle_), how);
++  *error = ret == 0 ? 0 : rex::net::socket_last_error();
++  return ret == 0 ? 0 : -1;
+ }
+ 
+-int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags) {
+-  return recv(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags);
++int XSocket::Recv(uint8_t* buf, uint32_t buf_len, uint32_t flags, uint32_t* error) {
++  int host_flags = 0;
++  if (!rex::net::translate_message_flags(flags, &host_flags)) {
++    *error = rex::net::wsa::kEopnotsupp;
++    return -1;
++  }
++  int ret = static_cast<int>(recv(static_cast<HostSocket>(native_handle_),
++                                  reinterpret_cast<char*>(buf),
++                                  std::min(buf_len, kMaxTransfer), host_flags));
++  *error = ret < 0 ? rex::net::socket_last_error() : 0;
++  return ret < 0 ? -1 : ret;
+ }
+ 
+-int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* from,
+-                      uint32_t* from_len) {
++int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, rex::net::SockAddrV4* from,
++                      uint32_t* error, uint32_t* full_len) {
+   // Pop from secure packets first
+   // TODO(DrChat): Enable when I commit XNet
+   /*
+@@ -186,30 +269,64 @@ int XSocket::RecvFrom(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADD
+   }
+   */
+ 
+-  sockaddr_in nfrom;
+-  socklen_t nfromlen = sizeof(sockaddr_in);
+-  int ret = recvfrom(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+-                     (sockaddr*)&nfrom, &nfromlen);
++  int host_flags = 0;
++  if (!rex::net::translate_message_flags(flags, &host_flags)) {
++    *error = rex::net::wsa::kEopnotsupp;
++    return -1;
++  }
++  buf_len = std::min(buf_len, kMaxTransfer);
++#if defined(MSG_TRUNC) && !REX_PLATFORM_WIN32
++  // Linux: MSG_TRUNC returns the datagram's real length, so a datagram too
++  // big for the buffer can fail with WSAEMSGSIZE like it does on Windows.
++  if (type_ == X_SOCK_DGRAM) {
++    host_flags |= MSG_TRUNC;
++  }
++#endif
++  sockaddr_in host = {};
++  HostLength host_len = sizeof(host);
++  int ret = static_cast<int>(recvfrom(static_cast<HostSocket>(native_handle_),
++                                      reinterpret_cast<char*>(buf), buf_len, host_flags,
++                                      reinterpret_cast<sockaddr*>(&host), &host_len));
++  if (ret < 0) {
++    *error = rex::net::socket_last_error();
++    if (*error == rex::net::wsa::kEmsgsize && from) {
++      // Windows: the buffer holds the start of the datagram.
++      *from = FromHost(host);
++    }
++    if (full_len) {
++      *full_len = 0;
++    }
++    return -1;
++  }
+   if (from) {
+-    from->sin_family = nfrom.sin_family;
+-    from->sin_addr = ntohl(nfrom.sin_addr.s_addr);  // BE <- BE
+-    from->sin_port = nfrom.sin_port;
+-    std::memset(from->x_sin_zero, 0, sizeof(from->x_sin_zero));
++    *from = FromHost(host);
+   }
+-
+-  if (from_len) {
+-    *from_len = nfromlen;
++  if (full_len) {
++    *full_len = static_cast<uint32_t>(ret);
+   }
+-
++  if (static_cast<uint32_t>(ret) > buf_len) {
++    *error = rex::net::wsa::kEmsgsize;
++    return -1;
++  }
++  *error = 0;
+   return ret;
+ }
+ 
+-int XSocket::Send(const uint8_t* buf, uint32_t buf_len, uint32_t flags) {
+-  return send(native_handle_, reinterpret_cast<const char*>(buf), buf_len, flags);
++int XSocket::Send(const uint8_t* buf, uint32_t buf_len, uint32_t flags, uint32_t* error) {
++  int host_flags = 0;
++  if (!rex::net::translate_message_flags(flags, &host_flags)) {
++    *error = rex::net::wsa::kEopnotsupp;
++    return -1;
++  }
++  int ret = static_cast<int>(send(static_cast<HostSocket>(native_handle_),
++                                  reinterpret_cast<const char*>(buf),
++                                  std::min(buf_len, kMaxTransfer), host_flags | kNoSignal));
++  *error = ret < 0 ? rex::net::socket_last_error() : 0;
++  return ret < 0 ? -1 : ret;
+ }
+ 
+-int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_IN* to,
+-                    uint32_t to_len) {
++int XSocket::SendTo(const uint8_t* buf, uint32_t buf_len, uint32_t flags,
++                    const rex::net::SockAddrV4* to, uint32_t* error) {
+   // Send 2 copies of the packet: One to XNet (for network security) and an
+   // unencrypted copy for other Xenia hosts.
+   // TODO(DrChat): Enable when I commit XNet.
+@@ -221,15 +338,26 @@ int XSocket::SendTo(uint8_t* buf, uint32_t buf_len, uint32_t flags, N_XSOCKADDR_
+   }
+   */
+ 
+-  sockaddr_in nto;
++  int host_flags = 0;
++  if (!rex::net::translate_message_flags(flags, &host_flags)) {
++    *error = rex::net::wsa::kEopnotsupp;
++    return -1;
++  }
++  if (buf_len > kMaxTransfer) {
++    *error = rex::net::wsa::kEmsgsize;
++    return -1;
++  }
++  sockaddr_in host = {};
+   if (to) {
+-    nto.sin_addr.s_addr = to->sin_addr;
+-    nto.sin_family = to->sin_family;
+-    nto.sin_port = to->sin_port;
++    host = ToHost(*to);
+   }
+-
+-  return sendto(native_handle_, reinterpret_cast<char*>(buf), buf_len, flags,
+-                to ? (sockaddr*)&nto : nullptr, to_len);
++  int ret = static_cast<int>(sendto(static_cast<HostSocket>(native_handle_),
++                                    reinterpret_cast<const char*>(buf), buf_len,
++                                    host_flags | kNoSignal,
++                                    to ? reinterpret_cast<sockaddr*>(&host) : nullptr,
++                                    to ? static_cast<HostLength>(sizeof(host)) : 0));
++  *error = ret < 0 ? rex::net::socket_last_error() : 0;
++  return ret < 0 ? -1 : ret;
+ }
+ 
+ bool XSocket::QueuePacket(uint32_t src_ip, uint16_t src_port, const uint8_t* buf, size_t len) {
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 7bd264b..87e1819 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -8,6 +8,7 @@ add_executable(unit_tests
+     core/fiber_test.cpp
+     core/filesystem_test.cpp
+     core/hash_test.cpp
++    core/net_socket_test.cpp
+     core/stream_test.cpp
+     core/chrono_test.cpp
+     ppc/import_function_test.cpp
+@@ -37,6 +38,10 @@ target_link_libraries(unit_tests PRIVATE
+     rexruntime
+     Catch2::Catch2WithMain
+ )
++if(WIN32)
++    # core/net_socket_test.cpp calls Winsock directly.
++    target_link_libraries(unit_tests PRIVATE ws2_32)
++endif()
+ 
+ # ReXApp is shipped as source for recomp projects, rather than compiled into
+ # rexui. Keep its SDK-consumer compilation path covered by the test build.
+diff --git a/include/rex/kernel/xam/xnet.h b/include/rex/kernel/xam/xnet.h
+new file mode 100644
+index 0000000..53f1c3d
+--- /dev/null
++++ b/include/rex/kernel/xam/xnet.h
+@@ -0,0 +1,60 @@
++/**
++ * @file        kernel/xam/xnet.h
++ * @brief       System link (LAN) networking shared by the XNet calls and the
++ *              XGI session messages.
++ *
++ * The console's secure network layer (XNet) gives every peer an XNADDR and
++ * encrypts traffic with session keys. Between PCs there is no Xbox Live and
++ * no encryption: an XNADDR holds the PC's real LAN IPv4 address, and the
++ * IN_ADDR the game sends to is that address. Keys are kept only so the game
++ * gets back what it registered.
++ */
++#pragma once
++
++#include <cstdint>
++
++#include <rex/types.h>
++
++namespace rex::kernel::xam {
++
++// Guest structures, laid out (big-endian) as on the console.
++struct X_XNADDR {
++  rex::be<uint32_t> ina;          // the PC's IPv4 address
++  rex::be<uint32_t> ina_online;   // Xbox Live address: always 0
++  rex::be<uint16_t> port_online;  // Xbox Live port: always 0
++  uint8_t enet[6];                // the console's MAC address; here made from `ina`
++  uint8_t online[20];             // Xbox Live identification: always 0
++};
++static_assert(sizeof(X_XNADDR) == 36, "XNADDR is 36 bytes");
++
++struct X_XNKID {
++  uint8_t ab[8];
++};
++struct X_XNKEY {
++  uint8_t ab[16];
++};
++
++struct X_XSESSION_INFO {
++  X_XNKID session_id;
++  X_XNADDR host_address;
++  X_XNKEY key_exchange_key;
++};
++static_assert(sizeof(X_XSESSION_INFO) == 60, "XSESSION_INFO is 60 bytes");
++
++namespace xnet {
++
++// True when [address, address + length) is mapped guest memory the host may
++// read (or write, with `write`). A null address is never valid.
++bool GuestRangeValid(uint32_t address, uint32_t length, bool write);
++
++// This PC's system link address (what XNetGetTitleXnAddr returns).
++void GetTitleXnAddr(X_XNADDR* out);
++
++// A new random system link key pair (XNetCreateKey).
++void CreateKey(X_XNKID* kid, X_XNKEY* key);
++
++// Registers a key pair (XNetRegisterKey). Returns 0 or a Winsock error code.
++uint32_t RegisterKey(const X_XNKID& kid, const X_XNKEY& key);
++
++}  // namespace xnet
++}  // namespace rex::kernel::xam
+diff --git a/tests/unit/core/net_socket_test.cpp b/tests/unit/core/net_socket_test.cpp
+new file mode 100644
+index 0000000..2f08275
+--- /dev/null
++++ b/tests/unit/core/net_socket_test.cpp
+@@ -0,0 +1,251 @@
++/**
++ * @file        core/net_socket_test.cpp
++ * @brief       Tests for the guest (Winsock) to host socket translation
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <catch2/catch_test_macros.hpp>
++
++#include <array>
++#include <cstring>
++
++#include <rex/net/socket.h>
++#include <rex/platform.h>
++
++#if REX_PLATFORM_WIN32
++#include <WinSock2.h>
++#include <WS2tcpip.h>
++#else
++#include <arpa/inet.h>
++#include <cerrno>
++#include <netinet/in.h>
++#include <netinet/tcp.h>
++#include <sys/socket.h>
++#include <unistd.h>
++#endif
++
++namespace net = rex::net;
++namespace wsa = rex::net::wsa;
++
++namespace {
++
++#if REX_PLATFORM_WIN32
++struct WinsockInit {
++  WinsockInit() {
++    WSADATA data;
++    WSAStartup(MAKEWORD(2, 2), &data);
++  }
++  ~WinsockInit() { WSACleanup(); }
++};
++using HostSocket = SOCKET;
++using HostLength = int;
++#else
++struct WinsockInit {};
++using HostSocket = int;
++using HostLength = socklen_t;
++#endif
++
++// A UDP socket on 127.0.0.1 with a port the system picks.
++struct LoopbackUdp {
++  net::SocketHandle handle = net::kInvalidSocket;
++  uint16_t port = 0;
++
++  LoopbackUdp() {
++    handle = net::socket_open(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
++    if (handle == net::kInvalidSocket) {
++      return;
++    }
++    sockaddr_in addr = {};
++    addr.sin_family = AF_INET;
++    addr.sin_addr.s_addr = htonl(net::kIpv4Loopback);
++    bind(static_cast<HostSocket>(handle), reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
++    HostLength len = sizeof(addr);
++    getsockname(static_cast<HostSocket>(handle), reinterpret_cast<sockaddr*>(&addr), &len);
++    port = ntohs(addr.sin_port);
++  }
++  ~LoopbackUdp() {
++    if (handle != net::kInvalidSocket) {
++      net::socket_close(handle);
++    }
++  }
++};
++
++}  // namespace
++
++TEST_CASE("Winsock socket options map to the host's numbers", "[net]") {
++  auto broadcast = net::translate_socket_option(wsa::kSolSocket, wsa::kSoBroadcast);
++  CHECK(broadcast.kind == net::OptionKind::kInt);
++  CHECK(broadcast.level == SOL_SOCKET);
++  CHECK(broadcast.name == SO_BROADCAST);
++
++  auto reuse = net::translate_socket_option(0xFFFF, 0x0004);
++  CHECK(reuse.kind == net::OptionKind::kInt);
++  CHECK(reuse.level == SOL_SOCKET);
++  CHECK(reuse.name == SO_REUSEADDR);
++
++  auto rcvbuf = net::translate_socket_option(0xFFFF, 0x1002);
++  CHECK(rcvbuf.level == SOL_SOCKET);
++  CHECK(rcvbuf.name == SO_RCVBUF);
++
++  auto nodelay = net::translate_socket_option(6, 1);
++  CHECK(nodelay.kind == net::OptionKind::kInt);
++  CHECK(nodelay.level == IPPROTO_TCP);
++  CHECK(nodelay.name == TCP_NODELAY);
++
++  CHECK(net::translate_socket_option(0xFFFF, 0x0080).kind == net::OptionKind::kLinger);
++  CHECK(net::translate_socket_option(0xFFFF, ~0x0080u).kind == net::OptionKind::kDontLinger);
++  CHECK(net::translate_socket_option(0xFFFF, 0x1006).kind == net::OptionKind::kTimeoutMs);
++
++  // The console's encryption switches are accepted and ignored.
++  CHECK(net::translate_socket_option(0xFFFF, 0x5801).kind == net::OptionKind::kIgnored);
++  CHECK(net::translate_socket_option(0xFFFF, 0x5802).kind == net::OptionKind::kIgnored);
++
++  // Anything else is refused, never passed through with guest numbers.
++  CHECK(net::translate_socket_option(0xFFFF, 0x1234).kind == net::OptionKind::kUnsupported);
++  CHECK(net::translate_socket_option(0, 4).kind == net::OptionKind::kUnsupported);
++  CHECK(net::translate_socket_option(1, 6).kind == net::OptionKind::kUnsupported);
++}
++
++TEST_CASE("Winsock message flags map to the host's", "[net]") {
++  int host = -1;
++  CHECK(net::translate_message_flags(0, &host));
++  CHECK(host == 0);
++  CHECK(net::translate_message_flags(wsa::kMsgPeek, &host));
++  CHECK(host == MSG_PEEK);
++  CHECK(net::translate_message_flags(wsa::kMsgOob | wsa::kMsgDontRoute, &host));
++  CHECK(host == (MSG_OOB | MSG_DONTROUTE));
++  CHECK_FALSE(net::translate_message_flags(0x8, &host));  // MSG_WAITALL: not supported
++}
++
++#if !REX_PLATFORM_WIN32
++TEST_CASE("errno values become Winsock error codes", "[net]") {
++  CHECK(net::wsa_error_from_errno(0) == 0);
++  CHECK(net::wsa_error_from_errno(EAGAIN) == 10035);
++  CHECK(net::wsa_error_from_errno(EWOULDBLOCK) == 10035);
++  CHECK(net::wsa_error_from_errno(EMSGSIZE) == 10040);
++  CHECK(net::wsa_error_from_errno(ENOPROTOOPT) == 10042);
++  CHECK(net::wsa_error_from_errno(EADDRINUSE) == 10048);
++  CHECK(net::wsa_error_from_errno(EADDRNOTAVAIL) == 10049);
++  CHECK(net::wsa_error_from_errno(ENETUNREACH) == 10051);
++  CHECK(net::wsa_error_from_errno(ECONNRESET) == 10054);
++  CHECK(net::wsa_error_from_errno(EHOSTUNREACH) == 10065);
++  CHECK(net::wsa_error_from_errno(EACCES) == 10013);
++  CHECK(net::wsa_error_from_errno(EINVAL) == 10022);
++}
++#endif
++
++TEST_CASE("IPv4 text and address classes", "[net]") {
++  uint32_t addr = 0;
++  CHECK(net::parse_ipv4("192.168.1.20", &addr));
++  CHECK(addr == 0xC0A80114);
++  CHECK(net::format_ipv4(addr) == "192.168.1.20");
++  CHECK(net::format_ipv4(0) == "0.0.0.0");
++  CHECK(net::parse_ipv4("255.255.255.255", &addr));
++  CHECK(addr == net::kIpv4Broadcast);
++  CHECK_FALSE(net::parse_ipv4("", &addr));
++  CHECK_FALSE(net::parse_ipv4("1.2.3", &addr));
++  CHECK_FALSE(net::parse_ipv4("1.2.3.4.5", &addr));
++  CHECK_FALSE(net::parse_ipv4("256.1.1.1", &addr));
++  CHECK_FALSE(net::parse_ipv4("1.2.3.4 ", &addr));
++  CHECK_FALSE(net::parse_ipv4("eth0", &addr));
++  CHECK_FALSE(net::parse_ipv4("1111.1.1.1", &addr));
++
++  CHECK(net::ipv4_is_private(0x0A000001));        // 10.0.0.1
++  CHECK(net::ipv4_is_private(0xAC100001));        // 172.16.0.1
++  CHECK(net::ipv4_is_private(0xAC1FFFFF));        // 172.31.255.255
++  CHECK_FALSE(net::ipv4_is_private(0xAC200001));  // 172.32.0.1
++  CHECK(net::ipv4_is_private(0xC0A80101));        // 192.168.1.1
++  CHECK(net::ipv4_is_private(0xA9FE0001));        // 169.254.0.1
++  CHECK_FALSE(net::ipv4_is_private(0x08080808));  // 8.8.8.8
++  CHECK(net::ipv4_is_loopback(0x7F000001));
++  CHECK(net::ipv4_is_multicast(0xE0000001));
++}
++
++TEST_CASE("Local-network-only peers", "[net]") {
++  const uint32_t own = 0xC0A80114;        // 192.168.1.20
++  const uint32_t mask = 0xFFFFFF00;       // /24
++  CHECK(net::ipv4_is_lan_peer(0xC0A80115, own, mask));
++  CHECK(net::ipv4_is_lan_peer(0x0A000002, own, mask));  // another private range
++  CHECK(net::ipv4_is_lan_peer(0x7F000001, own, mask));
++  CHECK(net::ipv4_is_lan_peer(0xFFFFFFFF, own, mask));
++  CHECK(net::ipv4_is_lan_peer(0xC0A801FF, own, mask));  // directed broadcast
++  CHECK_FALSE(net::ipv4_is_lan_peer(0x08080808, own, mask));
++  CHECK_FALSE(net::ipv4_is_lan_peer(0, own, mask));
++  CHECK_FALSE(net::ipv4_is_lan_peer(0xE0000001, own, mask));
++  // A LAN on a public range (or a VPN interface) counts through its subnet.
++  CHECK(net::ipv4_is_lan_peer(0x64400005, 0x64400002, 0xFFFFFF00));
++  CHECK_FALSE(net::ipv4_is_lan_peer(0x64400005, 0, 0));
++
++  CHECK(net::ipv4_directed_broadcast(own, mask) == 0xC0A801FF);
++  CHECK(net::ipv4_directed_broadcast(0x0A010203, 0xFF000000) == 0x0AFFFFFF);
++  CHECK(net::ipv4_directed_broadcast(own, 0xFFFFFFFF) == net::kIpv4Broadcast);
++  CHECK(net::ipv4_directed_broadcast(own, 0) == net::kIpv4Broadcast);
++}
++
++TEST_CASE("Guest socket options and ioctls work on a host socket", "[net]") {
++  [[maybe_unused]] WinsockInit winsock;
++  LoopbackUdp sock;
++  REQUIRE(sock.handle != net::kInvalidSocket);
++  auto host = static_cast<HostSocket>(sock.handle);
++
++  // setsockopt(s, SOL_SOCKET 0xFFFF, SO_BROADCAST 0x20, TRUE)
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x20, 1) == 0);
++  int value = 0;
++  HostLength value_len = sizeof(value);
++  getsockopt(host, SOL_SOCKET, SO_BROADCAST, reinterpret_cast<char*>(&value), &value_len);
++  CHECK(value != 0);
++
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x1002, 65536) == 0);  // SO_RCVBUF
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x0080, 0x00010005) == 0);  // SO_LINGER
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x1006, 250) == 0);         // SO_RCVTIMEO
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x5801, 1) == 0);           // ignored
++  CHECK(net::socket_set_option(sock.handle, 0xFFFF, 0x1234, 1) == 10042);       // WSAENOPROTOOPT
++
++  // ioctlsocket(s, FIONBIO, 1): an empty socket then says "would block".
++  uint32_t arg = 1;
++  CHECK(net::socket_ioctl(sock.handle, 0x8004667E, &arg) == 0);
++  char buffer[64];
++  sockaddr_in from = {};
++  HostLength from_len = sizeof(from);
++  int got = static_cast<int>(recvfrom(host, buffer, sizeof(buffer), 0,
++                                      reinterpret_cast<sockaddr*>(&from), &from_len));
++  CHECK(got < 0);
++  CHECK(net::socket_last_error() == 10035);
++
++  // A datagram to itself; FIONREAD then counts its bytes.
++  sockaddr_in self = {};
++  self.sin_family = AF_INET;
++  self.sin_port = htons(sock.port);
++  self.sin_addr.s_addr = htonl(net::kIpv4Loopback);
++  const char payload[] = "system link";
++  REQUIRE(sendto(host, payload, sizeof(payload), 0, reinterpret_cast<sockaddr*>(&self),
++                 sizeof(self)) == static_cast<int>(sizeof(payload)));
++  uint32_t waiting = 0;
++  for (int i = 0; i < 100 && !waiting; ++i) {
++    CHECK(net::socket_ioctl(sock.handle, 0x4004667F, &waiting) == 0);
++  }
++  CHECK(waiting >= sizeof(payload));
++
++  // Unknown ioctls are refused.
++  uint32_t unused = 0;
++  CHECK(net::socket_ioctl(sock.handle, 0x12345678, &unused) == 10022);
++}
++
++TEST_CASE("Random bytes differ between calls", "[net]") {
++  std::array<uint8_t, 32> a{};
++  std::array<uint8_t, 32> b{};
++  CHECK(net::random_bytes(a.data(), a.size()));
++  CHECK(net::random_bytes(b.data(), b.size()));
++  CHECK(a != b);
++}
++
++TEST_CASE("Interface listing and default route don't fail", "[net]") {
++  auto interfaces = net::list_ipv4_interfaces();
++  for (auto& entry : interfaces) {
++    CHECK(entry.address != 0);
++  }
++  uint32_t route = net::default_route_ipv4();
++  CHECK((route == 0 || !net::ipv4_is_multicast(route)));
++}

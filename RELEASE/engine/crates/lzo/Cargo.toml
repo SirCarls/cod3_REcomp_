@@ -1,0 +1,9 @@
+[package]
+name = "lzo"
+description = "Dependency-free LZO1X decompressor (used by Call of Duty 3's NCH blocks)."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

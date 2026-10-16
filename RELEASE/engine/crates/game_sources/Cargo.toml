@@ -1,0 +1,9 @@
+[package]
+name = "game_sources"
+description = "Finds the player's Call of Duty installs (Steam on Windows and Linux, or any folder) and builds a new copy from their data archives, without ever touching an executable."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

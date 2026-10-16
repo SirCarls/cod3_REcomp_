@@ -1,0 +1,38 @@
+diff --git a/src/codegen/builders/context.cpp b/src/codegen/builders/context.cpp
+index f78e0d8..aa1be50 100644
+--- a/src/codegen/builders/context.cpp
++++ b/src/codegen/builders/context.cpp
+@@ -364,6 +364,13 @@ void BuilderContext::emit_mid_asm_hook() {
+     if (out.back() != '(')
+       out += ", ";
+ 
++    // "ctx" and "base" hand the hook the whole guest context and the guest
++    // memory base, for hooks that switch stacks or call guest functions.
++    if (reg == "ctx" || reg == "base") {
++      out += reg;
++      continue;
++    }
++
+     switch (reg[0]) {
+       case 'c':
+         if (reg == "ctr")
+diff --git a/src/codegen/function_graph.cpp b/src/codegen/function_graph.cpp
+index fc918bb..1735b32 100644
+--- a/src/codegen/function_graph.cpp
++++ b/src/codegen/function_graph.cpp
+@@ -424,6 +424,15 @@ std::string FunctionNode::emitCpp(const EmitContext& ctx) const {
+           if (out.back() != '(')
+             out += ", ";
+ 
++          if (reg == "ctx") {
++            emit_print(out, "PPCContext& ctx");
++            continue;
++          }
++          if (reg == "base") {
++            emit_print(out, "uint8_t* base");
++            continue;
++          }
++
+           switch (reg[0]) {
+             case 'c':
+               if (reg == "ctr")

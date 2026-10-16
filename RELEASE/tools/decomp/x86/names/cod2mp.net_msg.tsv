@@ -1,0 +1,55 @@
+# CoD2MP_s.exe 1.3: names for iw_pc::net::{msg, huffman, protocol_data} (helper pc-msg). address<tab>name<tab>how<tab>evidence
+# Quake III names (msg.c, huffman.c) where the function is Quake III's; identified from the machine code (shape, callers, strings).
+00443DE0	MSG_Init	shape	buffer in esi, data and size on the stack; zeroes the 24-byte msg_t; runs MSG_initHuffman once (flag 0x019A1B9C)
+00443E20	MSG_BeginReading	shape	msg in eax; zeroes overflowed, readcount, bit
+00443E30	MSG_GetUsedBitCount	shape	msg in eax; cursize*8 - ((-bit) & 7)
+00443E50	MSG_WriteBits	shape	msg eax, value edx, bits ecx; overflow when maxsize - cursize < 4; a bit at a byte boundary starts a byte at cursize
+00443EC0	MSG_WriteBit0	shape	msg eax; called by the delta writers for an unchanged value
+00443EF0	MSG_WriteBit1	shape	msg eax; called by MSG_WriteDeltaKey before the value
+00443F40	MSG_ReadBits	shape	msg edx, bits on the stack; overflowed and -1 when a new byte is needed at cursize
+00443FB0	MSG_ReadBit	shape	msg edx; one bit of MSG_ReadBits
+00444000	MSG_WriteBitsCompress	shape	from eax, to ebx, length ecx; walks msgHuff.compressor.loc[] through Huff_send; returns (bits+7)>>3
+00444050	MSG_ReadBitsCompress	shape	from eax, to and length on the stack; Huff_offsetReceive on msgHuff.decompressor.tree until length*8 bits
+004440B0	MSG_WriteByte	shape	msg eax, byte on the stack
+004440D0	MSG_WriteData	shape	msg eax, length ecx, data on the stack; all or nothing
+00444110	MSG_WriteShort	shape	msg eax, value on the stack
+00444140	MSG_WriteLong	shape	msg eax, value edi
+00444170	MSG_WriteInt64	shape	msg esi, value on the stack (two words), through the pointer at 0x00C93BB8
+004441B0	MSG_WriteString	strings	"MSG_WriteString: MAX_STRING_CHARS"; string eax, msg ebx
+00444270	MSG_WriteBigString	strings	"MSG_WriteString: BIG_INFO_STRING"; string ecx, msg ebx
+00444350	MSG_WriteAngle	shape	msg esi, float on the stack; __ftol2(f * 256/360) as a byte
+00444380	MSG_WriteAngle16	shape	msg esi, float on the stack; __ftol2(f * 65536/360) as a short
+004443C0	MSG_ReadByte	shape	msg ecx; -1 and overflowed at cursize
+004443E0	MSG_ReadShort	shape	msg eax; movsx
+00444410	MSG_ReadLong	shape	msg ecx
+00444440	MSG_ReadInt64	shape	msg esi; through the pointer at 0x00C93BB8
+00444480	MSG_ReadString	CoD2x	CoD2x: MSG_ReadString; msg edx; static buffer 0x019A6390 (1024)
+004444E0	MSG_ReadBigString	shape	msg edx; static buffer 0x019A4390 (8192); % becomes .
+00444540	MSG_ReadStringLine	CoD2x	CoD2x: MSG_ReadStringLine; msg edx; static buffer 0x019A3F90 (1024); stops at newline
+004445B0	MSG_ReadAngle16	shape	msg eax; fild short * 360/65536 in st(0)
+00444600	MSG_ReadData	shape	msg eax, dest edx, length ecx; fills 0xFF when short
+00444650	MSG_WriteDeltaKey	shape	msg eax, old ecx, new esi, key and bits on the stack; bit then WriteBits(new ^ key)
+004446A0	MSG_ReadDeltaKey	shape	msg edx, bits eax, key and old on the stack; kbitmask 0x005CF488
+00444720	MSG_WriteKey	shape	key eax, value edx, bits ecx, msg on the stack; jumps to MSG_WriteBits(value ^ key)
+00444730	MSG_ReadKey	shape	msg edx, bits eax, key on the stack; MSG_ReadBits ^ (key & kbitmask[bits])
+00444750	MSG_WriteDeltaKeyByte	shape	msg eax, key/old/new on the stack; bit then a raw byte (new ^ key)
+004447B0	MSG_ReadDeltaKeyByte	shape	msg eax, key and old on the stack
+00444840	MSG_WriteDeltaKeyShort	shape	msg eax, key edx, new ecx, old on the stack; bit then a raw short (new ^ key)
+004448B0	MSG_ReadDeltaKeyShort	shape	msg eax, key and old on the stack
+00444940	MSG_WriteReliableCommandToBuffer	strings	"WARNING: Reliable command is too long (%i/%i)..."; source eax, size ebx, dest on the stack (Ghidra starts it at 0x0044494D, after a jmp over padding)
+00447670	MSG_initHuffman	shape	Huff_Init(0x00C76AB0), then Huff_addRef into both trees freq times per symbol from the table at 0x0059CB58
+0043D4E0	Huff_Init	shape	esi = huffman_t (compressor, decompressor at +0x701C); memset 0x701C each, NYT node symbol 256
+0043CCC0	Huff_addRef	shape	huff eax, symbol (a byte) on the stack; new symbol splits the NYT node
+0043CBE0	Huff_increment	shape	Quake III static increment(huff, node); recursive up the parents
+0043CB30	Huff_swap	shape	Quake III static swap; huff ecx, nodes eax and esi
+0043CB80	Huff_swaplist	shape	Quake III static swaplist; nodes eax and ecx
+0043CF30	Huff_send	shape	Quake III static send(node, child, fout); recursive; bit position in the global 0x019A1B98
+0043CFC0	Huff_transmit	shape	(huff, ch, fout) cdecl; NYT code then 8 raw bits MSB first when loc[ch] is NULL
+0043D160	Huff_offsetTransmit	shape	huff ecx, ch eax, &offset esi, fout on the stack
+0043CE60	Huff_Receive	shape	node eax, fin edi, &ch on the stack
+0043CEC0	Huff_offsetReceive	shape	node eax, &offset ebx, fin edi, &ch on the stack
+0057F114	__ftol2	shape	MSVC 7.1 runtime: st(0) to a 64-bit integer, truncated (edx:eax)
+0059CB58	msg_hData	data	the 256 int32 Huffman frequencies (the same as Quake III's; read at run time by iw_pc::net::protocol_data)
+005CF488	kbitmask	data	33 masks (1 << n) - 1, n = 0..32
+00C76AB0	msgHuff	data	huffman_t: compressor, decompressor at 0x00C7DACC
+019A1B98	Huff_bloc	data	the Huffman coder's bit position (global)

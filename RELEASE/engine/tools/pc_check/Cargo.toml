@@ -1,0 +1,13 @@
+[package]
+name = "pc_check"
+description = "Answers tools/decomp/x86/pcdecomp.py check: runs the PC games' Rust ports on the checker's test cases."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+iw_pc = { path = "../../crates/iw_pc" }
+# For `pcdecomp.py check --against cod3`: Call of Duty 3's ports run against the PC originals.
+cod3_game = { path = "../../crates/cod3_game" }

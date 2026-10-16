@@ -1,0 +1,10 @@
+[package]
+name = "cod3_assets"
+description = "Call of Duty 3 resource objects: materials (MAT) and models (MLTI)."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+kapf = { path = "../kapf" }

@@ -1,0 +1,10 @@
+# Line endings: shell scripts must keep LF (they run on Linux); Windows
+# batch files keep CRLF. Everything else is normalised to LF in the repo.
+* text=auto eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.patch text eol=lf -whitespace
+*.png binary
+*.ico binary

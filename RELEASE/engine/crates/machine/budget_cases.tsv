@@ -1,0 +1,24 @@
+# Test machines and the thread budgets both engines must give them.
+# Checked by engine/crates/machine/tests/budget_cases.rs (Rust) and
+# tools/check_budgets.cpp (the ReXGlue port's machine_profile.cpp). The rules
+# are in docs/SCALING.md; change them in both places and here together.
+#
+# allowed: logical CPUs the process may use; quota: a container's CPU limit
+# (0 = none); cores: physical cores. Then the ReXGlue port's budget
+# (own_cores, draw_workers, pool, spin) and the Rust engine's (workers,
+# background_max).
+#
+# name	allowed	quota	cores	own_cores	draw_workers	pool	spin	workers	background_max
+one CPU (a small VM, or taskset to one CPU)	1	0	1	no	0	1	no	1	1
+2 cores, no SMT	2	0	2	no	0	1	no	1	1
+2 cores, 4 threads	4	0	2	no	0	2	no	3	1
+4 cores, no SMT	4	0	4	yes	0	1	no	3	1
+4 cores, 8 threads	8	0	4	yes	1	2	yes	6	3
+6 cores, 12 threads	12	0	6	yes	2	5	yes	10	5
+8 cores, 16 threads	16	0	8	yes	2	9	yes	14	7
+12 cores, 24 threads (Ryzen 9 5900X)	24	0	12	yes	4	15	yes	22	11
+16 cores, 32 threads	32	0	16	yes	5	22	yes	30	15
+6 P-cores (12 threads) + 8 E-cores	20	0	14	yes	3	12	yes	18	9
+64 cores, 128 threads	128	0	64	yes	8	115	yes	126	63
+container: 16 CPUs, quota 3.5	16	3.5	8	no	0	1	no	2	1
+container: 8 CPUs, quota 6	8	6	4	yes	0	2	yes	5	2

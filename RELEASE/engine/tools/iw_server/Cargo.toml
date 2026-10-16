@@ -1,0 +1,16 @@
+[package]
+name = "iw_server"
+description = "A LAN server for Call of Duty 2 1.3 and United Offensive 1.51 that the games' own PC clients can find and join."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "iw-server"
+path = "src/main.rs"
+
+[dependencies]
+iw_pc = { path = "../../crates/iw_pc" }
+game_sources = { path = "../../crates/game_sources" }

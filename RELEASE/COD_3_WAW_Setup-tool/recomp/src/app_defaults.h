@@ -1,0 +1,66 @@
+// cod3 - the settings the game starts with when the player hasn't chosen
+// otherwise. Cod3App::OnPreSetup applies them to settings still at their
+// built-in value; the F2 window's Reset buttons go back to them.
+//
+// Settings not listed here default to the SDK's own built-in value.
+
+#pragma once
+
+namespace cod3 {
+
+struct AppDefault {
+  const char* cvar;
+  const char* value;
+};
+
+// Keyboard binds, World at War style (controller button <- keys).
+inline constexpr AppDefault kKeybindDefaults[] = {
+    {"keybind_right_trigger", "LMB"},         // fire
+    {"keybind_left_trigger", "RMB"},          // aim down sights
+    {"keybind_a", "Space"},                   // jump
+    {"keybind_b", "C"},                       // crouch (hold: prone)
+    {"keybind_x", "R,F"},                     // reload / use
+    {"keybind_y", "1,2"},                     // switch weapon
+    {"keybind_right_shoulder", "G"},          // frag grenade
+    {"keybind_left_shoulder", "4"},           // smoke grenade
+    {"keybind_rstick_press", "V,MMB"},        // melee
+    {"keybind_lstick_press", "Shift"},        // sprint / hold breath (SDK patch 0007; the SDK's F clashed with use)
+    {"keybind_back", "Tab"},                  // objectives
+    {"keybind_start", "Escape,Return"},       // pause menu
+};
+
+// Keyboard and mouse on; raw mouse aim replaces the SDK's mouse-to-stick
+// emulation (cod3_raw_mouse defaults to on).
+inline constexpr AppDefault kControlDefaults[] = {
+    {"mnk_mode", "true"},
+    {"mnk_mouse", "false"},
+};
+
+// Known-good GPU settings for this title (Xenia compatibility notes for
+// 415607E1): reading back resolves stops lens flares glowing through walls.
+inline constexpr AppDefault kVideoDefaults[] = {
+    {"readback_resolve", "fast"},
+    // Keep geometry the CPU hasn't touched on the GPU between frames. On,
+    // the SDK's default, every vertex and index buffer the game draws from is
+    // copied and uploaded again each frame (10-17 MB a frame); CPU writes are
+    // still caught by the write watch either way. Xenia's default is off.
+    {"clear_memory_page_state", "false"},
+};
+
+// The value from the tables above, or nullptr.
+inline const char* AppDefaultFor(const char* cvar) {
+  auto find = [cvar](const auto& table) -> const char* {
+    for (const auto& d : table) {
+      const char* a = d.cvar;
+      const char* b = cvar;
+      while (*a && *a == *b) ++a, ++b;
+      if (*a == *b) return d.value;
+    }
+    return nullptr;
+  };
+  if (const char* v = find(kKeybindDefaults)) return v;
+  if (const char* v = find(kControlDefaults)) return v;
+  return find(kVideoDefaults);
+}
+
+}  // namespace cod3

@@ -1,0 +1,25 @@
+# falaise.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89078388 = {}  # code-ref @0x89060DBC
+0x8909AEA0 = {}  # code-ref @0x89149E58
+0x8917DD68 = {}  # code-ref @0x892059E0
+0x8917F8F0 = {}  # code-ref @0x892064D8
+0x89180990 = {}  # code-ref @0x890988B8
+0x891809A8 = {}  # code-ref @0x890988D4
+0x891809C0 = {}  # code-ref @0x890988F0
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892250C0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x891695BC
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x891696EC
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

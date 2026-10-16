@@ -1,0 +1,191 @@
+# Codegen overrides for default.xex
+# Call of Duty 3 (USA, Europe) - Title ID 415607E1, media 2E07093A,
+# SHA-1 681724c40e250e584e6585dd903e05afa00a8634
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (CRT)
+#   setjmp 0x82351CC0: codegen turns each call into a host setjmp keyed by the
+#     guest jmp_buf address (seven callers, among them sub_824A6150 at
+#     0x824A61DC, the script thread scheduler).
+#   longjmp 0x8234EEC0: deliberately NOT configured as longjmp_address. It is
+#     recompiled as a plain function and replaced by a hook in
+#     src/game/script_threads.cpp: on a script thread's fiber a longjmp is the
+#     thread yielding; anywhere else it is a host longjmp through the same map.
+# ---------------------------------------------------------------------------
+setjmp_address = 0x82351CC0
+
+# ---------------------------------------------------------------------------
+# Function boundaries the analyzer cannot discover on its own
+# ---------------------------------------------------------------------------
+[functions]
+# C++ "this"-adjustor thunks that live outside every .pdata range and are only
+# reached through tail branches.
+0x822D2140 = { size = 8 }   # addi r3,r3,4 ; b 0x822CBA28
+0x822D0498 = { size = 4 }   # b 0x822D0118
+
+
+# Functions only reachable through data pointers (vtable this-adjustor thunks,
+# callbacks) that have no .pdata entry. Found by tools/find_missing_funcs.py;
+# codegen discovers their extent itself.
+0x820A4948 = {}  # code-ref @0x824BB170
+0x820D3E88 = {}  # vtable @0x82001C38
+0x8216D720 = {}  # vtable @0x820286E8
+0x8216D920 = {}  # vtable @0x82028710
+0x8216DBB8 = {}  # vtable @0x820286EC
+0x821D8700 = {}  # vtable @0x820307F8
+0x821D8718 = {}  # vtable @0x82030814
+0x821D8738 = {}  # vtable @0x8203080C
+0x821D88D0 = {}  # vtable @0x82030860
+0x821D88F0 = {}  # vtable @0x82030864
+0x821D8910 = {}  # vtable @0x82030868
+0x821D8930 = {}  # vtable @0x8203086C
+0x821D8950 = {}  # vtable @0x82030870
+0x821D8970 = {}  # vtable @0x82030874
+0x821D8990 = {}  # vtable @0x82030878
+0x821D89B0 = {}  # vtable @0x8203087C
+0x821D89D0 = {}  # vtable @0x82030880
+0x821D89F0 = {}  # vtable @0x82030884
+0x821DA270 = {}  # code-ref @0x821DC8B0
+0x821DFAC8 = {}  # vtable @0x8203079C
+0x822C27F8 = {}  # vtable @0x82049BB0
+0x822CA850 = {}  # vtable @0x82049C44
+0x822CAB78 = {}  # vtable @0x82049FE0
+0x822D0448 = {}  # vtable @0x8204AEA4
+0x822D0450 = {}  # vtable @0x8204AE90
+0x822D0488 = {}  # vtable @0x8204AEA8
+0x822D24E0 = {}  # vtable @0x8204AFA0
+0x822D2500 = {}  # vtable @0x8204AF6C
+0x822D2508 = {}  # vtable @0x8204AFB0
+0x822D2528 = {}  # vtable @0x8204AF98
+0x8231FDD8 = {}  # code-ref @0x8231FE0C
+0x82363D50 = {}  # code-ref @0x82364944
+0x82363D60 = {}  # code-ref @0x82364950
+0x82388110 = {}  # vtable @0x8205ED98
+0x82388318 = {}  # vtable @0x8205EDE8
+0x823C1F68 = {}  # vtable @0x82062798
+0x82498510 = {}  # pointer @0x825F6074
+0x82498BD0 = {}  # pointer @0x825F5F34
+0x824A4B00 = {}  # pointer @0x825F5F24
+0x824AFB18 = {}  # pointer @0x825F61F4
+
+# ---------------------------------------------------------------------------
+# Mid-function hooks
+# ---------------------------------------------------------------------------
+# Options > Gameplay: the page constructor sizes its item array for four
+# options (`li r5,4`). The panel has a fifth, unused row which we turn into
+# the Field of View selector, so make room for five items.
+[[midasm_hook]]
+address = 0x824DBC0C
+name = "Cod3GameplayItemCount"
+registers = ["r5"]
+after_instruction = true
+
+# Crosshair. CG_DrawCrosshair (0x824447C8) draws the infantry crosshair
+# itself and hands mounted guns and vehicles to 0x82439530. Both hooks sit
+# where the game has decided a crosshair is shown (cg_drawCrosshair on, not
+# in a menu or cutscene, cg_crosshairAlpha above its threshold). With the
+# custom crosshair enabled they record that for the HUD and skip the game's
+# own drawing by jumping to the epilogue.
+#
+# Infantry: right after the hit marker is drawn (so it stays). f29 is how far
+# the weapon is raised to the sights: 0 hip, 1 fully aimed. The game's own
+# crosshair color (white / red over an enemy / green over a friendly / black
+# over a dead body) is at r1+112, which the custom crosshair uses by default.
+[[midasm_hook]]
+address = 0x82444BB8
+name = "Cod3CrosshairHook"
+registers = ["f29", "r1", "base"]
+jump_address_on_true = 0x82444CC0
+
+# Mounted guns and vehicles: the first instruction of the normal (non-'T')
+# crosshair in 0x82439530.
+[[midasm_hook]]
+address = 0x824396D4
+name = "Cod3MountedCrosshairHook"
+registers = ["r1", "base"]
+jump_address_on_true = 0x82439814
+
+# Picture shape (src/game/ultrawide.cpp). The scene setup that RE_RenderScene
+# calls (sub_82430210) passes the projection's aspect ratio in f1 to
+# nglSetAspect: 16/9 from cg_widescreen, or 1.0 for the game's square renders.
+# A wider picture gets its own shape here; the vertical field of view stays
+# the game's (Hor+).
+[[midasm_hook]]
+address = 0x82430340
+name = "Cod3SceneAspectHook"
+registers = ["f1"]
+
+# Movie skip (src/game/cutscene_skip.cpp). In the movie loop's skip check
+# 0x824D0470, both "keep playing" paths meet at 0x824D050C; a true return
+# takes the game's own skip path at 0x824D04E4 (the hook sets r31, which that
+# path stores through, since a briefing skips from the minimum-time path).
+[[midasm_hook]]
+address = 0x824D050C
+name = "Cod3MovieSkipHook"
+registers = ["r31", "base"]
+jump_address_on_true = 0x824D04E4
+
+# The skip path itself (reached from the game's own button check and from the
+# hook above), only to log every skip the same way.
+[[midasm_hook]]
+address = 0x824D04E4
+name = "Cod3MovieSkipped"
+
+# A level's briefing while the level loads: the level loader makes
+# 0x824EECF8 the loading screen (draw the movie frame, present, advance) and
+# calls it while it works. On a skip the hook stops the movie, puts the plain
+# loading screen back and returns true: return at once, before the prologue.
+[[midasm_hook]]
+address = 0x824EECF8
+name = "Cod3LoadingMovieHook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# Where the movie loops start and end, so the skip prompt follows them
+# exactly: 0x824EF308 (logos, attract, bonus movies, the finale) and
+# 0x824EEBA0 (a level's briefing once the level has loaded; SV_SpawnServer).
+[[midasm_hook]]
+address = 0x824EF438
+name = "Cod3MovieLoopBegin"
+
+[[midasm_hook]]
+address = 0x824EF518
+name = "Cod3MovieLoopEnd"
+
+[[midasm_hook]]
+address = 0x824EEC08
+name = "Cod3BriefingLoopBegin"
+
+[[midasm_hook]]
+address = 0x824EECD0
+name = "Cod3MovieLoopEnd"
+
+# Frame rate limit (src/game/frame_rate.cpp). Com_Frame (0x82536DD0) turns
+# com_maxfps into a minimum number of milliseconds per frame (r30) and then
+# busy-waits on the clock until that many have passed. Here, both paths have
+# joined: r11 = com_maxfps->integer. The hook waits on the host clock (exact
+# rates, sleeps instead of spinning), counts the frame for cg_drawFPS and sets
+# r30 to 1 so the game's own loop doesn't add a second, rounded wait.
+[[midasm_hook]]
+address = 0x82536EE0
+name = "Cod3FrameLimiterHook"
+registers = ["r11", "r30"]
+
+# ---------------------------------------------------------------------------
+# Script thread resume (src/game/script_threads.cpp)
+# sub_824A6150 resumes a suspended script thread by switching r1 to the
+# thread's saved frame (0x824A63AC), reloading every register and branching
+# into the middle of the level's yield function (blr at 0x824A6480). The
+# hooks below run that thread's host fiber instead; a thread that runs to its
+# end continues the engine at 0x824A62A8, right after the start call.
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x824A63AC
+name = "cod3_script_resume_prepare"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x824A6480
+name = "cod3_script_resume"
+registers = ["ctx", "base"]
+jump_address_on_true = 0x824A62A8

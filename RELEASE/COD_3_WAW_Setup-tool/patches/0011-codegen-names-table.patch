@@ -1,0 +1,106 @@
+diff --git a/include/rex/codegen/config.h b/include/rex/codegen/config.h
+index 8200139..9d0c938 100644
+--- a/include/rex/codegen/config.h
++++ b/include/rex/codegen/config.h
+@@ -109,6 +109,11 @@ struct RecompilerConfig {
+ 
+   // === Manual overrides ===
+   std::unordered_map<uint32_t, FunctionConfig> functions;  ///< Function/chunk configuration
++  /// [names]: readable names for functions the analysis finds by itself
++  /// (0x82536DD0 = "Com_Frame"). Unlike [functions] they add or change no
++  /// function; a name for an address that isn't a function start is reported
++  /// and skipped.
++  std::unordered_map<uint32_t, std::string> functionNames;
+   std::unordered_map<uint32_t, JumpTable> switchTables;
+   std::unordered_map<uint32_t, MidAsmHook> midAsmHooks;
+   uint32_t longJmpAddress = 0;
+diff --git a/src/codegen/analyze.cpp b/src/codegen/analyze.cpp
+index c5f3d14..b17bdac 100644
+--- a/src/codegen/analyze.cpp
++++ b/src/codegen/analyze.cpp
+@@ -17,6 +17,9 @@
+ #include <rex/codegen/analysis_errors.h>
+ #include <rex/codegen/analyze.h>
+ #include <rex/codegen/phases.h>
++#include <string>
++#include <unordered_map>
++
+ #include <rex/logging.h>
+ 
+ #include "codegen_logging.h"
+@@ -82,6 +85,31 @@ Result<void> Analyze(CodegenContext& ctx, ProgressReporter* reporter) {
+     return validateResult;
+   }
+ 
++  // 7. Readable names ([names]): only for functions the analysis found.
++  {
++    size_t named = 0, missing = 0;
++    std::unordered_map<std::string, uint32_t> used;
++    for (const auto& [address, name] : ctx.Config().functionNames) {
++      if (!ctx.graph.getFunction(address)) {
++        ++missing;
++        REXCODEGEN_DEBUG("[names] 0x{:08X} ({}) is not a function start; skipped", address, name);
++        continue;
++      }
++      auto [it, inserted] = used.emplace(name, address);
++      if (!inserted) {
++        REXCODEGEN_ERROR("[names] {} is given to both 0x{:08X} and 0x{:08X}", name, it->second,
++                         address);
++        return Err(ErrorCategory::Config, "duplicate name in [names]: " + name);
++      }
++      ctx.graph.setFunctionName(address, name);
++      ++named;
++    }
++    if (named || missing) {
++      REXCODEGEN_INFO("[names] {} functions named, {} skipped (not function starts)", named,
++                      missing);
++    }
++  }
++
+   REXCODEGEN_TRACE("Analyze: complete - {} functions ready for code generation",
+                    ctx.graph.functionCount());
+ 
+diff --git a/src/codegen/config.cpp b/src/codegen/config.cpp
+index 5da54a0..ac61be6 100644
+--- a/src/codegen/config.cpp
++++ b/src/codegen/config.cpp
+@@ -12,6 +12,7 @@
+ 
+ // TOML config file loading
+ 
++#include <cctype>
+ #include <algorithm>
+ #include <map>
+ #include <set>
+@@ -221,6 +222,31 @@ void ApplyToml(const toml::table& toml, RecompilerConfig& cfg, const std::string
+     }
+   }
+ 
++  // [names]
++  if (auto namesTable = toml["names"].as_table()) {
++    size_t added = 0;
++    for (auto& [key, value] : *namesTable) {
++      std::string keyStr(key.str());
++      auto addrOpt = ParseHexAddress(keyStr);
++      auto name = value.value<std::string>();
++      auto isIdentifier = [](const std::string& n) {
++        if (n.empty() || std::isdigit(static_cast<unsigned char>(n[0]))) return false;
++        for (char c : n)
++          if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return false;
++        return true;
++      };
++      if (!addrOpt || !name || !isIdentifier(*name)) {
++        REXCODEGEN_ERROR("Invalid [names] entry: {} (expected 0xADDRESS = \"CIdentifier\")", keyStr);
++        continue;
++      }
++      cfg.functionNames.insert_or_assign(*addrOpt, *name);
++      ++added;
++    }
++    if (added > 0) {
++      REXCODEGEN_DEBUG("[config]   [names] added/updated {} entries from {}", added, filePath);
++    }
++  }
++
+   // --- Arrays of tables: deduplicated by primary key (address), last wins ---
+ 
+   // [[invalid_instructions]] -- keyed by "data" address

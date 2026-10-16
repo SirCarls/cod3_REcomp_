@@ -1,0 +1,24 @@
+# laison.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x890A1BD0 = {}  # code-ref @0x89151320
+0x89186978 = {}  # code-ref @0x8920E730
+0x89188500 = {}  # code-ref @0x8920F228
+0x891895A0 = {}  # code-ref @0x8909F5E8
+0x891895B8 = {}  # code-ref @0x8909F604
+0x891895D0 = {}  # code-ref @0x8909F620
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892350A0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89172154
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89172284
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

@@ -1,0 +1,11 @@
+[package]
+name = "newcopy"
+description = "Builds a new copy of Call of Duty / United Offensive / Call of Duty 2 for the Rust engine from a Steam or other install: data archives only."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+game_sources = { path = "../../crates/game_sources" }

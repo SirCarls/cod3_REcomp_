@@ -1,0 +1,171 @@
+diff --git a/src/core/dynlib_win.cpp b/src/core/dynlib_win.cpp
+index a402c75..baa22b6 100644
+--- a/src/core/dynlib_win.cpp
++++ b/src/core/dynlib_win.cpp
+@@ -27,7 +27,25 @@ DynamicLibrary& DynamicLibrary::operator=(DynamicLibrary&& other) noexcept {
+ bool DynamicLibrary::Load(const std::filesystem::path& path, SymbolResolution /*mode*/) {
+   // Windows resolves all imports at load time; mode is informational only.
+   Close();
++  if (path.is_absolute()) {
++    // A library given by its full path (the GPU plugin next to the
++    // executable) finds the DLLs it needs in its own folder first, whatever
++    // the current directory is (a launcher or Wine may start the program from
++    // elsewhere).
++    handle_ = static_cast<void*>(LoadLibraryExW(path.c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH));
++    return handle_ != nullptr;
++  }
+   handle_ = static_cast<void*>(LoadLibraryW(path.c_str()));
++  if (!handle_ && !path.has_parent_path() && !path.has_extension()) {
++    // Codegen registers recompiled guest DLLs by their bare CMake target name
++    // ("game_level"), which LoadLibrary completes to "game_level.dll". A
++    // MinGW build names the file "libgame_level.dll", so try that too.
++    // (The POSIX loader does the same for "lib<name>.so".)
++    const std::wstring alt = L"lib" + path.wstring() + L".dll";
++    handle_ = static_cast<void*>(LoadLibraryW(alt.c_str()));
++  }
++  // On failure GetLastError() still tells the caller why; nothing is called
++  // in between.
+   return handle_ != nullptr;
+ }
+ 
+diff --git a/src/core/filesystem_win.cpp b/src/core/filesystem_win.cpp
+index c5a2c5d..6361216 100644
+--- a/src/core/filesystem_win.cpp
++++ b/src/core/filesystem_win.cpp
+@@ -43,9 +43,24 @@ std::filesystem::path to_path(const std::u16string_view source) {
+ namespace filesystem {
+ 
+ std::filesystem::path GetExecutablePath() {
+-  wchar_t* path;
+-  auto error = _get_wpgmptr(&path);
+-  return !error ? std::filesystem::path(path) : std::filesystem::path();
++  // Ask Windows itself: the C runtime's _get_wpgmptr only knows the path
++  // when the program started through the wide entry point, which depends on
++  // the compiler (MSVC, MinGW) and its options.
++  std::wstring path(MAX_PATH, L'\0');
++  for (;;) {
++    DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
++    if (length == 0) {
++      break;
++    }
++    if (length < path.size()) {
++      path.resize(length);
++      return std::filesystem::path(path);
++    }
++    path.resize(path.size() * 2);  // longer than MAX_PATH: try a bigger buffer
++  }
++  wchar_t* crt_path;
++  auto error = _get_wpgmptr(&crt_path);
++  return !error ? std::filesystem::path(crt_path) : std::filesystem::path();
+ }
+ 
+ std::filesystem::path GetExecutableFolder() {
+diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
+index 754fa13..75a69be 100644
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -21,6 +21,17 @@
+ #include <rex/logging.h>
+ #include <rex/platform.h>
+ #include <rex/platform/dynlib.h>
++#include <rex/string.h>
++
++#if REX_PLATFORM_WIN32
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#endif
+ 
+ namespace rex::system {
+ 
+@@ -45,6 +56,51 @@ std::string PluginFileName(std::string_view name) {
+ #endif
+ }
+ 
++// The file names the plugin can have next to the executable. A MinGW build
++// of the SDK names its DLLs with CMake's "lib" prefix (librexgpu-xenos.dll),
++// an MSVC build without it; both are accepted.
++std::vector<std::filesystem::path> PluginCandidates(std::string_view name) {
++  auto folder = rex::filesystem::GetExecutableFolder();
++  std::vector<std::filesystem::path> candidates;
++  candidates.push_back(folder / PluginFileName(name));
++#if REX_PLATFORM_WIN32
++  candidates.push_back(folder / ("lib" + PluginFileName(name)));
++#endif
++  return candidates;
++}
++
++// Why the last library load failed, in Windows' words (" (error N: text)").
++// On Linux and macOS the loader itself prints dlopen's message.
++std::string LoadErrorText() {
++#if REX_PLATFORM_WIN32
++  DWORD code = GetLastError();
++  wchar_t* text = nullptr;
++  DWORD length = FormatMessageW(
++      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
++      nullptr, code, 0, reinterpret_cast<wchar_t*>(&text), 0, nullptr);
++  std::string message = fmt::format("error {}", code);
++  if (length && text) {
++    std::wstring_view wide(text, length);
++    while (!wide.empty() && (wide.back() == L'\r' || wide.back() == L'\n' || wide.back() == L' ')) {
++      wide.remove_suffix(1);
++    }
++    message += ": " + rex::string::to_utf8(std::u16string_view(
++                          reinterpret_cast<const char16_t*>(wide.data()), wide.size()));
++  }
++  if (text) {
++    LocalFree(text);
++  }
++  if (code == ERROR_MOD_NOT_FOUND || code == ERROR_PROC_NOT_FOUND) {
++    // Windows reports the plugin's own name even when what is missing is a
++    // DLL the plugin imports.
++    message += "; the plugin file exists, so a DLL it needs is missing or too old next to the executable";
++  }
++  return " (" + message + ")";
++#else
++  return "";
++#endif
++}
++
+ // Plugins stay loaded for process lifetime: guest threads may still be in
+ // plugin code pages at shutdown.
+ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+@@ -55,18 +111,29 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+ }  // namespace
+ 
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
+-  auto path = rex::filesystem::GetExecutableFolder() / PluginFileName(name);
+-  if (!std::filesystem::exists(path)) {
++  auto candidates = PluginCandidates(name);
++  std::filesystem::path path;
++  for (const auto& candidate : candidates) {
++    if (std::filesystem::exists(candidate)) {
++      path = candidate;
++      break;
++    }
++  }
++  if (path.empty()) {
++    std::string searched;
++    for (const auto& candidate : candidates) {
++      searched += (searched.empty() ? "" : ", ") + candidate.string();
++    }
+     REXSYS_ERROR(
+-        "GPU plugin '{}' not found at {}. Stage it next to the executable "
++        "GPU plugin '{}' not found; looked for {}. Stage it next to the executable "
+         "(GPU_PLUGINS {} in rexglue_configure_target).",
+-        name, path.string(), name);
++        name, searched, name);
+     return nullptr;
+   }
+ 
+   platform::DynamicLibrary library;
+   if (!library.Load(path, platform::SymbolResolution::kImmediate)) {
+-    REXSYS_ERROR("GPU plugin '{}' failed to load: {}", name, path.string());
++    REXSYS_ERROR("GPU plugin '{}' failed to load: {}{}", name, path.string(), LoadErrorText());
+     return nullptr;
+   }
+ 

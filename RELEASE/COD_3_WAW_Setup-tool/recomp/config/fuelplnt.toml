@@ -1,0 +1,25 @@
+# fuelplnt.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x890634C0 = {}  # code-ref @0x8904A01C
+0x890855D8 = {}  # code-ref @0x89139BD0
+0x8916FEA0 = {}  # code-ref @0x891F7C40
+0x89171A28 = {}  # code-ref @0x891F8738
+0x89172AC8 = {}  # code-ref @0x89082FF0
+0x89172AE0 = {}  # code-ref @0x8908300C
+0x89172AF8 = {}  # code-ref @0x89083028
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89215108
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x8915B6F4
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x8915B824
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

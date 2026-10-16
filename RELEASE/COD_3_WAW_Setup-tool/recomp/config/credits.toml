@@ -1,0 +1,25 @@
+# credits.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x8903EDA8 = {}  # code-ref @0x89033DFC
+0x89057158 = {}  # code-ref @0x89107698
+0x8913E698 = {}  # code-ref @0x891C6570
+0x89140220 = {}  # code-ref @0x891C7068
+0x891412C0 = {}  # code-ref @0x89054B70
+0x891412D8 = {}  # code-ref @0x89054B8C
+0x891412F0 = {}  # code-ref @0x89054BA8
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x891E62A0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89129E74
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89129FA4
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

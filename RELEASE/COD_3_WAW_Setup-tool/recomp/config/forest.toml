@@ -1,0 +1,25 @@
+# forest.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89031948 = {}  # code-ref @0x89063698
+0x89085F38 = {}  # code-ref @0x891358F0
+0x8916A498 = {}  # code-ref @0x891F2298
+0x8916C020 = {}  # code-ref @0x891F2D90
+0x8916D0C0 = {}  # code-ref @0x89083950
+0x8916D0D8 = {}  # code-ref @0x8908396C
+0x8916D0F0 = {}  # code-ref @0x89083988
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89215078
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89155C74
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89155DA4
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

@@ -1,0 +1,14 @@
+# The multiplayer program, codmp_xenonf.xex, as a second ReXGlue target next
+# to cod3 (docs/MULTIPLAYER.md). It has a folder of its own because the
+# codegen writes generated/rexglue.cmake next to its manifest.
+
+[project]
+name = "cod3mp"
+sdk_version = "0.10.0"
+game_root = "../assets"
+
+[entrypoint]
+file_path = "../assets/codmp_xenonf.xex"
+out_directory_path = "generated/codmp"
+# names_mp.toml: readable function names (tools/name_mp_functions.py, SDK patch 0011).
+includes = ["config/codmp.toml", "config/names_mp.toml"]

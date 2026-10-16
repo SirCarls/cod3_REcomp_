@@ -1,0 +1,10 @@
+[package]
+name = "png_write"
+description = "Writes RGBA8 images as PNG files."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+miniz_oxide = "0.8"

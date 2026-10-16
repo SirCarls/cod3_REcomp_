@@ -1,0 +1,25 @@
+# CoD2MP_s.exe 1.3: names for iw_pc::net::{oob, netchan} (helper pc-oob). address<tab>name<tab>how<tab>evidence
+004210D0	Cmd_TokenizeStringInternal	CoD2x	CoD2x: Cmd_TokenizeStringInternal; text ecx, out buffer eax, limit and argv on the stack, returns argc; SV_ConnectionlessPacket calls it (0, 0x00B17A80) on its line
+00448910	NET_OutOfBandPrint	CoD2x	CoD2x: NET_OutOfBandPrint; text eax (already formatted), sock and netadr on the stack; "OOB Packet is %i bytes - too large to send"
+00448A70	NET_OutOfBandData	CoD2x	CoD2x: NET_OutOfBandData; data eax, length ecx, sock and netadr on the stack; no compression
+0045B430	SV_ConnectionlessPacket	CoD2x	CoD2x: SV_ConnectionlessPacket; netadr and msg on the stack; "SV packet %s : %s"
+0045A880	SVC_Status	CoD2x	CoD2x: SVC_Status; called for "getstatus"
+0045A750	SV_VoicePacket	call	called for "v" by SV_ConnectionlessPacket
+0045AE80	SVC_Info	CoD2x	CoD2x: SVC_Info; "infoResponse\n"
+00452DE0	SV_GetChallenge	CoD2x	CoD2x: SV_GetChallenge; "challengeResponse %i"
+00453C20	SV_DirectConnect	CoD2x	CoD2x: SV_DirectConnect; "SV_DirectConnect()\n"
+00453630	SV_AuthorizeIpPacket	strings	"SV_AuthorizeIpPacket: not from authorize server"; called for "ipAuthorize"
+004B8AC0	SVC_RemoteCommand	call	called for "rcon" by SV_ConnectionlessPacket
+004BD9B0	PbPassConnectString	call	called with the packet and the address string before SV_DirectConnect
+00452C10	SV_UpdateLastTimeMasterServerCommunicated	CoD2x	CoD2x name; called for getstatus, getinfo, getchallenge, ipAuthorize
+0057A751	atol	call	C runtime atol (cdecl); SVC_Info calls it on scr_friendlyfire / scr_killcam text, SVC_Status on fs_restrict
+0043B9A0	FS_iwIwd	strings	"%s/iw_%02d", "localized_", "_iw%02d"; name edi, base folder ebx; called by SVC_Info / SVC_Status for each referenced iwd
+004373A0	Dvar_FindVar	shape	name on the stack; generateHashValue (0x00435A70), hash table 0x00C5C5D0, chain at +0x20
+0043A9D0	Dvar_InfoString	shape	flags on the stack; walks the dvar list (head 0x00C5C5C4, next +0x1C, flags +4), Info_SetValueForKey into 0x00C67E00
+00448650	NET_CompareAdrSigned	strings	"NET_CompareAdrSigned: bad address type"; a eax, b edx; 0 when the same (type, then port and address bytes)
+00467100	Sys_IsLANAddress	shape	netadr on the stack; loopback, bot and IPX are LAN; 10.x, 127.x, 169.254.x, 172.16-31.x, 192.168.x, local subnets
+00452C80	SV_AuthorizeRequest	strings	"getIpAuthorize %i %i.%i.%i.%i \"%s\" %i%s"; netadr on the stack, challenge esi, PB hash edi
+004B87A0	SV_MasterAddress	strings	"Couldn't resolve address: cod2master.activision.com"; caches the master server's netadr at 0x019A6FE8
+004485B0	NET_CompareBaseAdrSigned	strings	"NET_CompareBaseAdrSigned: bad address type"; a eax, b edx; 0 when the same machine (loopback and bot by port)
+004B34E0	CL_ServerInfoPacket	CoD2x	CoD2x: CL_ServerInfoPacket; netadr and msg on the stack; "Different protocol info packet: %s"
+004B3300	CL_SetServerInfo	shape	server esi, info edi, ping on the stack; Info_ValueForKey of clients, hostname ... pb into serverInfo_t

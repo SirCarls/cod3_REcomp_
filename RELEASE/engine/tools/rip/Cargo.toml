@@ -1,0 +1,16 @@
+[package]
+name = "rip"
+description = "Rips CoD3 and WaW assets from the user's own files into open formats."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ff_t4 = { path = "../../crates/ff_t4" }
+kapf = { path = "../../crates/kapf" }
+xenos = { path = "../../crates/xenos" }
+cod3_mesh = { path = "../../crates/cod3_mesh" }
+cod3_assets = { path = "../../crates/cod3_assets" }
+png_write = { path = "../../crates/png_write" }
+png_read = { path = "../../crates/png_read" }

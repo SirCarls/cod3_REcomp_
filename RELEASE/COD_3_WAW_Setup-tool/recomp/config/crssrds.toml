@@ -1,0 +1,24 @@
+# crssrds.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x890AB5F8 = {}  # code-ref @0x8915A798
+0x89190730 = {}  # code-ref @0x89218188
+0x891922B8 = {}  # code-ref @0x89218C80
+0x89193358 = {}  # code-ref @0x890A9010
+0x89193370 = {}  # code-ref @0x890A902C
+0x89193388 = {}  # code-ref @0x890A9048
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892350D0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x8917BF0C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x8917C03C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

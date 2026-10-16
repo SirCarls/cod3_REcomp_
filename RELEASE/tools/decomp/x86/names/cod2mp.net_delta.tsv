@@ -1,0 +1,18 @@
+# CoD2MP_s.exe 1.3: names for iw_pc::net::delta. address<tab>name<tab>how<tab>evidence
+# Quake III names (msg.c) where the function is Quake III's; identified from the machine code.
+00445180	MSG_WriteDeltaField	shape	from in eax, to in ecx, msg in edx, netField_t on the stack; the float/angle/integer cases of Quake III's field writer, plus bits -99
+00445480	MSG_WriteDeltaStruct	shape	"W|%3i: #%-3i remove\n"; numFields in eax; the last changed field + 1 as a raw byte, then MSG_WriteDeltaField for each
+00445680	MSG_WriteDeltaEntity	shape	MSG_WriteDeltaStruct with the entity table 0x59BDA0, 59 fields, 10 index bits
+004456C0	MSG_WriteDeltaClient	shape	MSG_WriteDeltaStruct with the client table 0x59C398, 22 fields, 6 index bits, change bit; a zeroed state for a NULL from
+00445C60	MSG_WriteDeltaHudElems	shape	count in ecx (31), msg, from, to on the stack; elements in use in 5 bits, then per element its last changed field index in 5 bits and MSG_WriteDeltaField up to it
+00445EC0	MSG_WriteDeltaPlayerstate	shape	msg in ebx, from (NULL: 0x26A8 zero bytes), to on the stack; Quake III's player state writer (field table 0x59C4A0, stats, ammo, objectives) plus HUD elements
+00444B10	MSG_WriteDeltaUsercmdKey	shape	msg in eax, from in edx, to in ecx, key on the stack; the time as a byte or long, then Quake III's key-coded command (short and long forms, movement as 4 direction bits)
+00444EC0	MSG_ReadDeltaUsercmdKey	shape	msg in ebx, key, from, to on the stack; copies from, then reads what 0x444B10 writes
+00445700	MSG_ReadDeltaField	shape	msg in edx, from, to, netField_t, print flag on the stack; reads what MSG_WriteDeltaField writes ("%s:%i " / "%s:%f " for cl_shownet)
+00445A40	MSG_ReadDeltaStruct	shape	"%3i: #%-3i remove\n"; msg in ebx, to in eax, from, number, numFields, table on the stack; the field count as a raw byte, MSG_ReadDeltaField up to it, the rest copied
+00445BE0	MSG_ReadDeltaEntity	shape	MSG_ReadDeltaStruct with the entity table 0x59BDA0, 59 fields; from in ecx, number in eax, to on the stack
+00445C00	MSG_ReadDeltaArchivedEntity	shape	MSG_ReadDeltaStruct with the archived entity table 0x59C068, 68 fields
+00445C20	MSG_ReadDeltaClient	shape	MSG_ReadDeltaStruct with the client table 0x59C398, 22 fields; a zeroed state for a NULL from
+00445990	MSG_ReadDeltaFields	shape	msg in eax, numFields in edx, from, to, table on the stack; one changed bit, then MSG_ReadDeltaField for every field or every field copied (objectives)
+00445DB0	MSG_ReadDeltaHudElems	shape	msg, from, to, count (31) on the stack; reads what MSG_WriteDeltaHudElems writes, zeroes the elements not sent
+00446CA0	MSG_ReadDeltaPlayerstate	shape	"%3i: playerstate ", "PS_STATS", "PS_AMMO", "PS_AMMOCLIP"; msg in ebx, from (NULL: zeros), to on the stack

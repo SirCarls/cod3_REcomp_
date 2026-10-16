@@ -1,0 +1,26 @@
+# chambois.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x89033D10 = {}  # code-ref @0x89051D94
+0x89038A58 = {}  # code-ref @0x8908E5C0
+0x890A9FB8 = {}  # code-ref @0x89158D50
+0x8918B528 = {}  # code-ref @0x89212E40
+0x8918D0B0 = {}  # code-ref @0x89213938
+0x8918E150 = {}  # code-ref @0x890A79D0
+0x8918E168 = {}  # code-ref @0x890A79EC
+0x8918E180 = {}  # code-ref @0x890A7A08
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x89235308
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89176D04
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89176E34
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

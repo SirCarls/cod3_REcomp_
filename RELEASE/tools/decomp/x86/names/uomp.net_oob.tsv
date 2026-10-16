@@ -1,0 +1,26 @@
+# CoDUOMP.exe 1.51: names for iw_pc::net::{oob, netchan} (helper pc-oob). address<tab>name<tab>how<tab>evidence
+0042C240	Cmd_TokenizeStringInternal	shape	same steps as CoD2's 0x004210D0 without the \" escape; text eax, limit on the stack; argc 0x009677C0, argv 0x00964DC0, text 0x009655C0 (globals); called by SV_ConnectionlessPacket (0x004623C0) with limit 0
+0044E140	NET_OutOfBandPrint	shape	sock ecx, netadr, format and arguments on the stack; vsprintf into a 0x8000-byte buffer after FF FF FF FF
+0044E240	NET_OutOfBandData	shape	data edx, sock ecx, netadr and length on the stack; then Huff_Compress(msg, 12) (0x00441FA0)
+00441FA0	Huff_Compress	shape	Quake III's adaptive coder (cdecl msg, offset); called by NET_OutOfBandData only
+00441D40	Huff_Decompress	shape	Quake III's adaptive decoder (cdecl msg, offset); called by SV_ConnectionlessPacket for "connect"
+004623C0	SV_ConnectionlessPacket	strings	"SV packet %s : %s", "bad connectionless packet from %s:\n%s\n"; netadr and msg on the stack
+00461190	SVC_Status	strings	"statusResponse\n%s\n%s"; called for "getstatus"
+004616F0	SVC_Info	strings	"infoResponse\n%s"; called for "getinfo"
+00458C50	SV_GetChallenge	strings	"challengeResponse %i"; called for "getchallenge"
+00459B20	SV_DirectConnect	strings	"SV_DirectConnect()\n"; called for "connect"
+00459590	SV_AuthorizeIpPacket	strings	"SV_AuthorizeIpPacket: not from authorize server"; called for "ipAuthorize"
+004620D0	SVC_RemoteCommand	call	called for "rcon" by SV_ConnectionlessPacket
+004BD500	PbPassConnectString	call	called with the packet and the address string before SV_DirectConnect
+0044DDE0	NET_AdrToString	shape	"%i.%i.%i.%i:%i", "loopback"; netadr on the stack; port through Quake III's _BigShort pointer (0x009C41AC)
+0056C695	atol	call	C runtime atol (cdecl); SVC_Info calls it on scr_friendlyfire / scr_killcam / g_timeoutsallowed / scr_allow_* text
+004403A0	FS_idPak	strings	"%s/mp_bin", "%s/pak%x", "%s/pakuo%x", "%s/mp_pak%x"; name edi, "main" ebx, base game on the stack
+0043D8F0	Cvar_FindVar	shape	name on the stack; generateHashValue (0x0043D860), hash table 0x009987A0, chain at +0x28
+0043ED30	Cvar_InfoString	shape	flags edi; walks the cvar list (head 0x04927E98, next +0x24, flags +0x10), Info_SetValueForKey into 0x00998BA0
+0044DEC0	NET_CompareAdrSigned	shape	same code as CoD2's 0x00448650 with Quake III's netadr (port at +0x12); a eax, b edx
+0046D2C0	Sys_IsLANAddress	call	called by SV_GetChallenge with the sender's netadr on the stack before answering at once
+00459020	SV_AuthorizeRequest	strings	"getIpAuthorize %i %i.%i.%i.%i %s %i"; netadr and challenge on the stack
+00460F40	SV_MasterAddress	strings	"coduomaster.activision.com"; caches the master server's netadr at 0x009CD930
+0044DD50	NET_CompareBaseAdrSigned	shape	same code as CoD2's 0x004485B0 except that two loopback addresses are always the same; port at +0x12
+004155F0	CL_ServerInfoPacket	strings	"Different protocol info packet: %s", "MAX_OTHER_SERVERS hit, dropping infoResponse"; netadr and msg on the stack
+00415180	CL_SetServerInfo	shape	server esi, info edi, ping on the stack; as CoD2's 0x004B3300 plus timeoutsallowed, jps, tnk

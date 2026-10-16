@@ -1,0 +1,14 @@
+# CoD2MP_s.exe 1.3: names for iw_pc::net::netchan (helper pc-oob). address<tab>name<tab>how<tab>evidence
+00447D50	Netchan_Setup	CoD2x	CoD2x: Netchan_Setup; chan edx, sock, netadr (5 words) and qport on the stack; zeroes 0x40040 bytes, outgoingSequence 1
+00447DB0	Netchan_TransmitNextFragment	strings	"[client %i] %s send %4i : s=%i fragment=%i,%i"; chan on the stack; sequence | 0x80000000, 32-bit fragment start
+00447FB0	Netchan_Transmit	strings	"Netchan_Transmit: length = %i"; length eax, chan ebx, data on the stack; >= 1300 bytes calls 0x00447DB0
+004481B0	Netchan_Process	strings	"%s:Out of order packet %i at %i", "%s:Dropped a message fragment"; chan eax, msg on the stack
+00448870	NET_SendPacket	call	sock and netadr on the stack, length esi, data edi; loopback 0x00448800, else Sys_SendPacket 0x00466F50
+00466F50	Sys_SendPacket	strings	"Sys_SendPacket: bad address type"; data eax, length ecx, netadr on the stack; wsock32 #20 (sendto)
+0045C8C0	SV_Netchan_Encode	shape	XOR loop; data eax, client and length on the stack; key challenge (+0x20820) ^ netchan.outgoingSequence (+0x6E6C4)
+0045C920	SV_Netchan_Decode	shape	XOR loop; client ecx, data and length on the stack; key challenge ^ serverId (+0xAE710) ^ messageAcknowledge (+0x20818)
+004127F0	CL_Netchan_Encode	shape	XOR loop; data edx, length on the stack; called by CL_WritePacket before Netchan_Transmit
+00412860	CL_Netchan_Decode	shape	XOR loop; data and length on the stack; called by CL_PacketEvent (0x0040F414) after reading reliableAcknowledge
+0045F370	SV_SendMessageToClient	shape	msg eax, client esi; MSG_WriteBitsCompress, SV_Netchan_Encode, Netchan_Transmit in that order
+00447670	MSG_initHuffman	call	builds the message Huffman tree (helper pc-msg's port); run once before the SV_SendMessageToClient check
+00444000	MSG_WriteBitsCompress	call	from eax, to ebx, length ecx -> bytes; called by SV_SendMessageToClient on the message after its first 4 bytes (helper pc-msg's port)

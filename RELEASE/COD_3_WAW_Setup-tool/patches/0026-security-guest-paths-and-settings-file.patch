@@ -1,0 +1,232 @@
+diff --git a/include/rex/filesystem/guest_name.h b/include/rex/filesystem/guest_name.h
+new file mode 100644
+--- /dev/null
++++ b/include/rex/filesystem/guest_name.h
+@@ -0,0 +1,49 @@
++/**
++ * @file        rex/filesystem/guest_name.h
++ * @brief       File and folder names from the guest, as parts of host paths.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#pragma once
++
++#include <string>
++#include <string_view>
++
++namespace rex::filesystem {
++
++// Whether a name the guest gives a file or folder can be one part of a host
++// path: not empty, not "." or "..", no separator ('/' or '\\'), no ':' (a
++// drive or a Windows stream) and no control character. Anything else could
++// reach outside the folder the guest's device is mounted on.
++inline bool IsPlainGuestName(std::string_view name) {
++  if (name.empty() || name.size() > 255 || name == "." || name == "..") {
++    return false;
++  }
++  for (unsigned char c : name) {
++    if (c < 0x20 || c == 0x7F || c == '/' || c == '\\' || c == ':') {
++      return false;
++    }
++  }
++  return true;
++}
++
++// `name` as one plain host path part: unchanged when IsPlainGuestName allows
++// it, else with each character it refuses replaced by '_' ("_" for an empty
++// name, "." or "..").
++inline std::string PlainGuestName(std::string_view name) {
++  if (IsPlainGuestName(name)) {
++    return std::string(name);
++  }
++  std::string out;
++  for (unsigned char c : name.substr(0, 255)) {
++    out += (c < 0x20 || c == 0x7F || c == '/' || c == '\\' || c == ':') ? '_' : char(c);
++  }
++  if (out.empty() || out == "." || out == "..") {
++    out = "_";
++  }
++  return out;
++}
++
++}  // namespace rex::filesystem
+diff --git a/src/core/cvar.cpp b/src/core/cvar.cpp
+--- a/src/core/cvar.cpp
++++ b/src/core/cvar.cpp
+@@ -535,13 +535,41 @@ std::vector<std::string> ListModifiedFlags() {
+   return result;
+ }
+ 
++// A TOML basic string: quotes, backslashes and control characters escaped,
++// so a value (a Windows path, text typed in a setting) can't break the file
++// or add lines of its own to it.
++static std::string TomlString(std::string_view value) {
++  std::string out = "\"";
++  for (char c : value) {
++    switch (c) {
++      case '"':
++        out += "\\\"";
++        break;
++      case '\\':
++        out += "\\\\";
++        break;
++      default:
++        if (static_cast<unsigned char>(c) < 0x20 || c == 0x7F) {
++          constexpr char kHex[] = "0123456789ABCDEF";
++          const auto u = static_cast<unsigned char>(c);
++          out += "\\u00";
++          out += kHex[u >> 4];
++          out += kHex[u & 0xF];
++        } else {
++          out += c;
++        }
++    }
++  }
++  return out + "\"";
++}
++
+ std::string SerializeToTOML() {
+   std::lock_guard lock(GetRegistryMutex());
+   std::string result;
+   for (const auto& entry : GetRegistryStorage()) {
+     if (entry.getter() != entry.default_value) {
+       if (entry.type == FlagType::String) {
+-        result += entry.name + " = \"" + entry.getter() + "\"\n";
++        result += entry.name + " = " + TomlString(entry.getter()) + "\n";
+       } else {
+         result += entry.name + " = " + entry.getter() + "\n";
+       }
+@@ -556,7 +584,7 @@ std::string SerializeToTOML(std::string_view category) {
+   for (const auto& entry : GetRegistryStorage()) {
+     if (entry.category == category && entry.getter() != entry.default_value) {
+       if (entry.type == FlagType::String) {
+-        result += entry.name + " = \"" + entry.getter() + "\"\n";
++        result += entry.name + " = " + TomlString(entry.getter()) + "\n";
+       } else {
+         result += entry.name + " = " + entry.getter() + "\n";
+       }
+diff --git a/src/filesystem/devices/host_path_device.cpp b/src/filesystem/devices/host_path_device.cpp
+--- a/src/filesystem/devices/host_path_device.cpp
++++ b/src/filesystem/devices/host_path_device.cpp
+@@ -15,6 +15,7 @@
+ 
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
++#include <rex/filesystem/guest_name.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/string/utf8.h>
+@@ -75,6 +76,11 @@ Entry* HostPathDevice::ResolvePath(const std::string_view path) {
+ 
+     auto* child = current_entry->GetChild(part);
+     if (!child) {
++      // Only a plain name is looked up on the host: a part like "D:" would
++      // name another drive's folder on Windows, outside this device.
++      if (!IsPlainGuestName(part)) {
++        return nullptr;
++      }
+       // Stat the exact name first: enumerating a directory of hundreds of
+       // archives costs milliseconds a walk. Only casing mismatch reaches
+       // the scan below.
+diff --git a/src/filesystem/devices/host_path_entry.cpp b/src/filesystem/devices/host_path_entry.cpp
+--- a/src/filesystem/devices/host_path_entry.cpp
++++ b/src/filesystem/devices/host_path_entry.cpp
+@@ -15,6 +15,7 @@
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/device.h>
+ #include <rex/filesystem/devices/host_path_device.h>
++#include <rex/filesystem/guest_name.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
+ #include <rex/memory/mapped_memory.h>
+@@ -87,6 +88,12 @@ bool HostPathEntry::Truncate() {
+ 
+ std::unique_ptr<Entry> HostPathEntry::CreateEntryInternal(const std::string_view name,
+                                                           uint32_t attributes) {
++  // The guest's name is one part of the host path, inside this folder.
++  if (!IsPlainGuestName(name)) {
++    REXFS_WARN("Refused to create '{}' in {}: not a plain file name", name,
++               rex::path_to_utf8(host_path_));
++    return nullptr;
++  }
+   auto full_path = host_path_ / rex::to_path(name);
+   if (attributes & kFileAttributeDirectory) {
+     if (!std::filesystem::create_directories(full_path)) {
+diff --git a/src/filesystem/entry.cpp b/src/filesystem/entry.cpp
+--- a/src/filesystem/entry.cpp
++++ b/src/filesystem/entry.cpp
+@@ -14,6 +14,7 @@
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/device.h>
+ #include <rex/filesystem/entry.h>
++#include <rex/filesystem/guest_name.h>
+ #include <rex/string.h>
+ 
+ namespace rex::filesystem {
+@@ -143,6 +144,20 @@ X_STATUS Entry::Rename(const std::filesystem::path& file_path) {
+     // Drop root path (for example, "game:").
+     path_parts.erase(path_parts.begin());
+   }
++  // A read-only device (the game's own files) keeps its names.
++  if (is_read_only()) {
++    return X_STATUS_ACCESS_DENIED;
++  }
++  // The new name stays on this device: no "..", drive or other part that
++  // could lead the host path out of its folder.
++  if (path_parts.empty()) {
++    return X_STATUS_OBJECT_NAME_INVALID;
++  }
++  for (std::string_view part : path_parts) {
++    if (!IsPlainGuestName(part)) {
++      return X_STATUS_OBJECT_NAME_INVALID;
++    }
++  }
+ 
+   X_STATUS status = RenameEntryInternal(path_parts);
+   if (status != X_STATUS_SUCCESS) {
+diff --git a/src/system/xam/content_manager.cpp b/src/system/xam/content_manager.cpp
+--- a/src/system/xam/content_manager.cpp
++++ b/src/system/xam/content_manager.cpp
+@@ -19,6 +19,7 @@
+ #include <rex/filesystem.h>
+ #include <rex/filesystem/devices/host_path_device.h>
+ #include <rex/filesystem/devices/stfs_container_device.h>
++#include <rex/filesystem/guest_name.h>
+ #include <rex/string.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/content_device.h>
+@@ -111,7 +112,8 @@ std::filesystem::path ContentManager::ResolvePackagePath(uint64_t xuid,
+   // Content path:
+   // content_root/xuid/title_id/content_type/data_file_name/
+   auto package_root = ResolvePackageRoot(used_xuid, data.content_type, data.title_id);
+-  return package_root / rex::to_path(data.file_name());
++  // The guest's name is one folder inside the package root.
++  return package_root / rex::to_path(rex::filesystem::PlainGuestName(data.file_name()));
+ }
+ 
+ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string_view file_name,
+@@ -128,7 +130,7 @@ std::filesystem::path ContentManager::ResolvePackageHeaderPath(const std::string
+   auto xuid_str = fmt::format("{:016X}", xuid);
+   auto title_id_str = fmt::format("{:08X}", title_id);
+   auto content_type_str = fmt::format("{:08X}", uint32_t(content_type));
+-  std::string final_name = std::string(file_name) + ".header";
++  std::string final_name = rex::filesystem::PlainGuestName(file_name) + ".header";
+ 
+   // Header root path:
+   // content_root/xuid/title_id/Headers/content_type/filename.header
+@@ -520,6 +522,13 @@ void ContentManager::CloseOpenedFilesFromContent(const std::string_view root_nam
+ 
+ static X_RESULT ExtractEntry(rex::filesystem::Entry* entry,
+                              const std::filesystem::path& base_path) {
++  // A package's own paths stay inside the folder it is installed to.
++  const std::string entry_path(entry->path());
++  for (std::string_view part : rex::string::utf8_split_path(entry_path)) {
++    if (!rex::filesystem::IsPlainGuestName(part)) {
++      return X_ERROR_ACCESS_DENIED;
++    }
++  }
+   auto dest_path = base_path / rex::to_path(rex::string::utf8_fix_path_separators(entry->path()));
+ 
+   if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {

@@ -1,0 +1,9 @@
+[package]
+name = "xenos"
+description = "Xbox 360 (Xenos) texture fetch constants, untiling and DDS output."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

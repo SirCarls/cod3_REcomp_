@@ -1,0 +1,9 @@
+[package]
+name = "inflate"
+description = "Dependency-free DEFLATE / zlib decoder (RFC 1950/1951) for the rippers."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

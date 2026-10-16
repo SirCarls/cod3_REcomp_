@@ -1,0 +1,50 @@
+# CoDUOMP.exe 1.51: names for iw_pc::net::{msg, huffman, protocol_data} (helper pc-msg). address<tab>name<tab>how<tab>evidence
+# Quake III names (msg.c, huffman.c); the same shapes as CoD2MP_s.exe's functions of the same name (cod2mp.net_msg.tsv) unless noted.
+004495F0	MSG_WriteBits	shape	byte for byte the same code as CoD2's 0x00443E50; msg eax, value edx, bits ecx
+00449660	MSG_WriteBit0	shape	msg eax
+00449690	MSG_WriteBit1	shape	msg eax
+004496E0	MSG_ReadBits	shape	msg edx, bits on the stack; no end check (reads on past cursize, never sets overflowed)
+00449740	MSG_ReadBit	shape	msg edx; no end check
+00449780	MSG_WriteBitsCompress	shape	from eax, to ebx, length ecx; msgHuff.compressor at 0x009A9FA8
+004497D0	MSG_ReadBitsCompress	shape	from eax, to and length on the stack; decompressor tree pointer at 0x009B0FCC
+00449830	MSG_WriteByte	shape	msg eax, byte on the stack
+00449850	MSG_WriteData	shape	msg eax, length ecx, data on the stack
+00449890	MSG_WriteShort	shape	msg eax, value on the stack
+004498C0	MSG_WriteLong	shape	msg eax, value edi
+004498F0	MSG_WriteString	strings	"MSG_WriteString: MAX_STRING_CHARS"; string ecx (NULL = empty), msg ebx; bytes above 0x7F become .
+004499F0	MSG_WriteBigString	strings	"MSG_WriteString: BIG_INFO_STRING"; string edx (NULL = empty), msg ebx
+00449B50	MSG_WriteAngle	shape	msg esi, float on the stack
+00449B80	MSG_WriteAngle16	shape	msg esi, float on the stack
+00449BC0	MSG_ReadByte	shape	msg ecx; -1 at cursize, overflowed never set
+00449BE0	MSG_ReadShort	shape	msg eax
+00449C10	MSG_ReadLong	shape	msg ecx
+00449C30	MSG_ReadString	shape	msg esi; static buffer 0x009A9BA8; stops after 1023 characters
+00449C80	MSG_ReadBigString	shape	msg edx; static buffer 0x009A77A8; stops after 8191 characters
+00449CE0	MSG_ReadStringLine	shape	msg edx; static buffer 0x009A97A8
+00449D40	MSG_ReadAngle16	shape	msg eax
+00449D90	MSG_ReadData	shape	msg eax, dest edx, length ecx
+00449E90	MSG_WriteDeltaKey	shape	msg eax, old ecx, new esi, key and bits on the stack
+00449EE0	MSG_ReadDeltaKey	shape	msg edx, bits eax, key and old on the stack; kbitmask 0x005C5698
+00449F80	MSG_WriteDeltaKeyByte	shape	msg eax, key/old/new on the stack
+00449FE0	MSG_ReadDeltaKeyByte	shape	msg eax, key and old on the stack
+0044A060	MSG_WriteDeltaKeyShort	shape	msg eax, key edx, new ecx, old on the stack
+0044A0D0	MSG_ReadDeltaKeyShort	shape	msg eax, key and old on the stack
+0044A150	MSG_WriteReliableCommandToBuffer	strings	"WARNING: Reliable command is too long (%i/%i)..."; source eax, size ebx, dest on the stack
+0044CF80	MSG_initHuffman	shape	Huff_Init(0x009A9FA8), Huff_addRef freq times per symbol from 0x005C58D0 into both trees; sets its flag 0x0389FD60 itself
+004420F0	Huff_Init	shape	esi = huffman_t
+00441870	Huff_addRef	shape	huff eax, symbol on the stack; 0x00441630-0x00441A70 is CoD2's 0x0043CA80-0x0043CEC0 instruction for instruction
+00441790	Huff_increment	shape	Quake III static increment
+004416E0	Huff_swap	shape	Quake III static swap
+00441730	Huff_swaplist	shape	Quake III static swaplist
+00441AE0	Huff_send	shape	Quake III static send(node, child, fout); bit position in the global 0x0389FD5C
+00441B70	Huff_transmit	shape	(huff, ch, fout) cdecl; NYT then 8 raw bits
+00441D10	Huff_offsetTransmit	shape	huff ecx, ch eax, &offset esi, fout on the stack
+00441A10	Huff_Receive	shape	node eax, fin edi, &ch on the stack
+00441A70	Huff_offsetReceive	shape	node eax, &offset ebx, fin edi, &ch on the stack
+00441FA0	Huff_Compress	shape	(msg, offset) cdecl; adaptive; NET_OutOfBandData (0x0044E240) calls it with 12 for connect
+00441D40	Huff_Decompress	shape	(msg, offset) cdecl; adaptive; SV_ConnectionlessPacket calls it with 12 for connect
+00570FD8	__ftol2	shape	MSVC 7.1 runtime: st(0) to a 64-bit integer, truncated (edx:eax)
+005C58D0	msg_hData	data	the 256 int32 Huffman frequencies (read at run time by iw_pc::net::protocol_data)
+005C5698	kbitmask	data	33 masks (1 << n) - 1, n = 0..32
+009A9FA8	msgHuff	data	huffman_t: compressor, decompressor at 0x009B0FC4
+0389FD5C	Huff_bloc	data	the Huffman coder's bit position (global)

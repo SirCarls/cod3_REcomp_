@@ -1,0 +1,14 @@
+# CoDUOMP.exe 1.51: names for iw_pc::net::netchan (helper pc-oob). address<tab>name<tab>how<tab>evidence
+0044D530	Netchan_Setup	shape	same steps as CoD2's 0x00447D50 with Quake III's layout (0x10040 bytes, outgoingSequence at +0x24)
+0044D590	Netchan_TransmitNextFragment	strings	"%s send %4i : s=%i fragment=%i,%i"; chan on the stack; 16-bit fragment start
+0044D790	Netchan_Transmit	strings	"Netchan_Transmit: length = %i"; length ecx, chan and data on the stack; client qport from net_qport (0x0491CD8C)
+0044D970	Netchan_Process	strings	"%s:Out of order packet %i at %i"; chan eax, msg on the stack; no incomingSequence update after reassembly
+0044E090	NET_SendPacket	call	sock ecx, length ebx, data eax, netadr on the stack; Sys_SendPacket 0x0046D0F0
+0046D0F0	Sys_SendPacket	strings	"Sys_SendPacket: bad address type"; data ecx, length edx, netadr on the stack
+00463640	SV_Netchan_Encode	shape	same code as CoD2's 0x0045C8C0; key challenge (+0x10620) ^ netchan.outgoingSequence (+0x9B064)
+004636A0	SV_Netchan_Decode	shape	same code as CoD2's 0x0045C920; reliableCommands[ack & 63]; serverId at +0xAB08C
+004173F0	CL_Netchan_Encode	shape	same code as CoD2's 0x004127F0; serverCommands[serverCommandSequence & 63]
+00417460	CL_Netchan_Decode	shape	same code as CoD2's 0x00412860 (found 2026-10-13): key challenge (0x04DC8988) ^ serverMessageSequence (0x04DD899C), reliableCommands (0x04DC899C)[reliableAcknowledge (0x04DC8998) & 63]; called by CL_Netchan_Process 0x00413300 after Netchan_Process
+00465DA0	SV_SendMessageToClient	shape	msg ecx, client esi; MSG_WriteBitsCompress, SV_Netchan_Encode, Netchan_Transmit in that order
+0044CF80	MSG_initHuffman	call	builds the message Huffman tree (helper pc-msg's port); run once before the SV_SendMessageToClient check
+00449780	MSG_WriteBitsCompress	call	from eax, to ebx, length ecx -> bytes; called by SV_SendMessageToClient on the message after its first 4 bytes (helper pc-msg's port)

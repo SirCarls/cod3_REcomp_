@@ -1,0 +1,24 @@
+# nightd.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x8908BCE8 = {}  # code-ref @0x8913B4B0
+0x89171AA8 = {}  # code-ref @0x891F9820
+0x89173630 = {}  # code-ref @0x891FA318
+0x891746D0 = {}  # code-ref @0x89089700
+0x891746E8 = {}  # code-ref @0x8908971C
+0x89174700 = {}  # code-ref @0x89089738
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892150A0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x8915D2FC
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x8915D42C
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

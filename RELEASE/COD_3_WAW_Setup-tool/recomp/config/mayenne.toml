@@ -1,0 +1,24 @@
+# mayenne.dll: functions reachable only through pointers (see tools/find_missing_funcs.py).
+[functions]
+0x8909AF18 = {}  # code-ref @0x89149398
+0x8917D688 = {}  # code-ref @0x89205098
+0x8917F210 = {}  # code-ref @0x89205B90
+0x891802B0 = {}  # code-ref @0x89098930
+0x891802C8 = {}  # code-ref @0x8909894C
+0x891802E0 = {}  # code-ref @0x89098968
+
+# ---------------------------------------------------------------------------
+# Script-thread yields: calls through the interface table at 0x892251E0
+# slots +76 / +80 (tools/find_yield_sites.py). See src/game/level_hooks.cpp.
+[[midasm_hook]]
+address = 0x89168E64
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+
+[[midasm_hook]]
+address = 0x89168F94
+name = "cod3_script_yield_returned"
+after_instruction = true
+return = true
+

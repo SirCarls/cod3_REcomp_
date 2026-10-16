@@ -1,0 +1,9 @@
+[package]
+name = "cod3_game"
+description = "Call of Duty 3's own code, decompiled into Rust and checked against the original."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

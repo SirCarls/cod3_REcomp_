@@ -1,0 +1,19 @@
+# CoDUOMP.exe 1.51: names for iw_pc::net::delta. address<tab>name<tab>how<tab>evidence
+# Quake III names (msg.c) where the function is Quake III's; identified from the machine code.
+0044AA60	MSG_WriteDeltaField	shape	the same machine code as CoD2's 0x445180 without the bits -99 case
+0044ACD0	MSG_WriteDeltaStruct	shape	"W|%3i: #%-3i remove\n"; CoD2's with a callback after the number
+0044AF00	MSG_WriteEntityTableFlag	shape	the callback MSG_WriteDeltaEntity passes: one bit, 1 when the entity's type (offset 4) is 12
+0044AF50	MSG_WriteDeltaEntity	shape	MSG_WriteDeltaStruct with table 0x58EC68, or 0x58EF38 for type 12, 60 fields, 10 index bits
+0044AFE0	MSG_WriteDeltaClient	shape	MSG_WriteDeltaStruct with the client table 0x58F538, 22 fields, 6 index bits, change bit
+0044B510	MSG_WriteDeltaHudElems	shape	count in ecx (63), from in ebx, msg and to on the stack; elements in use in 6 bits, then as CoD2's
+0044B7B0	MSG_WriteDeltaPlayerstate	shape	msg, from (NULL: 0x4504 zero bytes), to on the stack; CoD2's writer with UO's layout and table 0x58F640
+0044A360	MSG_WriteDeltaUsercmdKey	shape	msg in eax, from in edx, to in ecx, key on the stack; CoD2's coder with a button byte, up/down movement and a second byte (UO's 24-byte usercmd_t)
+0044A770	MSG_ReadDeltaUsercmdKey	shape	msg in edi, key in eax, from on the stack, to in esi; reads what 0x44A360 writes
+0044B030	MSG_ReadDeltaField	shape	CoD2's 0x445700 without the bits -99 case and without sign extension
+0044B280	MSG_ReadDeltaStruct	shape	"%3i: #%-3i remove\n"; msg in ebx, from, to, number, numFields, table on the stack; a field count past the table is clamped
+0044B420	MSG_ReadDeltaEntity	shape	the table flag bit (1: table 0x58EF38, else 0x58EC68), then MSG_ReadDeltaStruct; msg in eax, from on the stack, to in esi, number in edx
+0044B4A0	MSG_ReadDeltaArchivedEntity	shape	MSG_ReadDeltaStruct with table 0x58F208, 68 fields; msg on the stack, from in edx, to in ecx, number in eax
+0044B4C0	MSG_ReadDeltaClient	shape	MSG_ReadDeltaStruct with the client table 0x58F538, 22 fields; a zeroed state for a NULL from
+0044B1E0	MSG_ReadDeltaFields	shape	msg in edi, numFields in edx, from, to, table on the stack; CoD2's 0x445990 (not called: the player state reader has it inline)
+0044B690	MSG_ReadDeltaHudElems	shape	msg, from, to, count (63) on the stack; the count in 6 bits, the field index in 5 bits for a 30-field table
+0044C5C0	MSG_ReadDeltaPlayerstate	shape	"%3i: playerstate ", "PS_STATS"; msg in ebx, from (NULL: zeros), to on the stack; CoD2's reader with UO's layout

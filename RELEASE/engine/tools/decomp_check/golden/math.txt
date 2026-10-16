@@ -1,0 +1,1439 @@
+# The original game's answers, recorded by `python3 tools/decomp/decomp.py golden`
+# (seed 20261013) and replayed by `cargo test -p decomp_check`. Results of the
+# game's functions on random inputs; no game files. Format: tools/decomp/decomp.py.
+# AngleNormalize180 (math::angles::angle_normalize_180)
+AngleNormalize180 f:44146d0a	ok f:c2fc9900	ulps=0
+AngleNormalize180 f:7fc00000	ok f:00000000	ulps=0
+AngleNormalize180 f:43e67daf	ok f:42c9f630	ulps=0
+AngleNormalize180 f:43f36965	ok f:42fda430	ulps=0
+AngleNormalize180 f:c755b2b5	ok f:4154b200	ulps=0
+AngleNormalize180 f:43951770	ok f:c27747c0	ulps=0
+AngleNormalize180 f:c2c12f23	ok f:c2c12f00	ulps=0
+AngleNormalize180 f:43bab392	ok f:41565d80	ulps=0
+AngleNormalize180 f:4419a000	ok f:c2d300e0	ulps=0
+AngleNormalize180 f:c8741efd	ok f:c30bf740	ulps=0
+AngleNormalize180 f:48a33f23	ok f:c2ddcac0	ulps=0
+AngleNormalize180 f:43c4d9c9	ok f:4206cd60	ulps=0
+AngleNormalize180 f:4432500f	ok f:c0d80900	ulps=0
+AngleNormalize180 f:442476cf	ok f:c27893a0	ulps=0
+AngleNormalize180 f:c430f940	ok f:4141b600	ulps=0
+AngleNormalize180 f:c26c599c	ok f:c26c5680	ulps=0
+AngleNormalize180 f:c28e8ef0	ok f:c28e8c30	ulps=0
+AngleNormalize180 f:c9526bb2	ok f:c22c9e00	ulps=0
+AngleNormalize180 f:c32e4f46	ok f:c32e4f20	ulps=0
+AngleNormalize180 f:43c138d2	ok f:41d38240	ulps=0
+AngleNormalize180 f:43ba47be	ok f:4148eb00	ulps=0
+AngleNormalize180 f:00800000	ok f:00000000	ulps=0
+AngleNormalize180 f:42e08225	ok f:42e08170	ulps=0
+AngleNormalize180 f:4430dcb2	ok f:c148d480	ulps=0
+AngleNormalize180 f:c2b40000	ok f:c2b40000	ulps=0
+AngleNormalize180 f:c7c38f3e	ok f:c239eec0	ulps=0
+AngleNormalize180 f:4334028f	ok f:c333fe98	ulps=0
+AngleNormalize180 f:c73f40c8	ok f:bf47b000	ulps=0
+AngleNormalize180 f:4421d593	ok f:c29153c0	ulps=0
+AngleNormalize180 f:c4102bab	ok f:430f5278	ulps=0
+AngleNormalize180 f:c3b40000	ok f:00000000	ulps=0
+AngleNormalize180 f:c8827450	ok f:c24a0f80	ulps=0
+AngleNormalize180 f:c278e18e	ok f:c278dcc0	ulps=0
+AngleNormalize180 f:c2413bc7	ok f:c2413a40	ulps=0
+AngleNormalize180 f:4387d4d1	ok f:c2b0aea0	ulps=0
+AngleNormalize180 f:c7dd15c3	ok f:c31b85c0	ulps=0
+AngleNormalize180 f:c3d6fa9d	ok f:c28be930	ulps=0
+AngleNormalize180 f:442ca000	ok f:c1ec07c0	ulps=0
+AngleNormalize180 f:433f52af	ok f:c328adb8	ulps=0
+AngleNormalize180 f:43ef5e42	ok f:42ed7830	ulps=0
+AngleNormalize180 f:c3dbc98f	ok f:c29f25e0	ulps=0
+AngleNormalize180 f:4380b23b	ok f:c2cd3980	ulps=0
+AngleNormalize180 f:440f8331	ok f:c311f410	ulps=0
+AngleNormalize180 f:4220e31e	ok f:4220e240	ulps=0
+AngleNormalize180 f:ff7fc99e	ok f:00000000	ulps=0
+AngleNormalize180 f:44246bf0	ok f:c2794200	ulps=0
+AngleNormalize180 f:b3d6bf95	ok f:00000000	ulps=0
+AngleNormalize180 f:423732de	ok f:42372fa0	ulps=0
+AngleNormalize180 f:c8862807	ok f:c29072c0	ulps=0
+AngleNormalize180 f:43fc1031	ok f:43101fc8	ulps=0
+AngleNormalize180 f:42021217	ok f:42020e60	ulps=0
+AngleNormalize180 f:441f4b5e	ok f:c2a5a6e0	ulps=0
+AngleNormalize180 f:c2d59adb	ok f:c2d598a0	ulps=0
+AngleNormalize180 f:c333fd71	ok f:c333fd30	ulps=0
+AngleNormalize180 f:441d4e0b	ok f:c2b59230	ulps=0
+AngleNormalize180 f:f149f2ca	ok f:00000000	ulps=0
+AngleNormalize180 f:437a9583	ok f:c2dad630	ulps=0
+AngleNormalize180 f:4401a000	ok f:431e7ff0	ulps=0
+AngleNormalize180 f:43faa045	ok f:430d4050	ulps=0
+AngleNormalize180 f:438ab09e	ok f:c2a53ed0	ulps=0
+AngleNormalize180 f:c4211b20	ok f:42972930	ulps=0
+AngleNormalize180 f:c3e5d76e	ok f:c2c75ba0	ulps=0
+AngleNormalize180 f:c3a28b71	ok f:420ba880	ulps=0
+AngleNormalize180 f:c2cd8f34	ok f:c2cd8de0	ulps=0
+AngleNormalize180 f:c4196b53	ok f:42d4a6c0	ulps=0
+AngleNormalize180 f:c17b0943	ok f:c17b0400	ulps=0
+AngleNormalize180 f:441ef529	ok f:c2a857f0	ulps=0
+AngleNormalize180 f:c4226000	ok f:428d0270	ulps=0
+AngleNormalize180 f:7f800000	ok f:bbb40000	ulps=0
+AngleNormalize180 f:c3348000	ok f:43338008	ulps=0
+AngleNormalize180 f:41d1bad2	ok f:41d1b500	ulps=0
+AngleNormalize180 f:4426bfa0	ok f:c2540940	ulps=0
+AngleNormalize180 f:c0f18dce	ok f:c0f18600	ulps=0
+AngleNormalize180 f:c2fd833b	ok f:c2fd8270	ulps=0
+AngleNormalize180 f:48be27ae	ok f:c2a52580	ulps=0
+AngleNormalize180 f:425a0000	ok f:4259fda0	ulps=0
+AngleNormalize180 f:43a10755	ok f:c217c980	ulps=0
+AngleNormalize180 f:c4284d64	ok f:423b29c0	ulps=0
+AngleNormalize180 f:442e7c1f	ok f:c1b08740	ulps=0
+AngleNormalize180 f:4413e5d5	ok f:c30069e8	ulps=0
+AngleNormalize180 f:44009500	ok f:431a5330	ulps=0
+AngleNormalize180 f:c282f272	ok f:c282f230	ulps=0
+AngleNormalize180 f:441f73d6	ok f:c2a46370	ulps=0
+AngleNormalize180 f:c365236a	ok f:4302dd18	ulps=0
+AngleNormalize180 f:00000001	ok f:00000000	ulps=0
+AngleNormalize180 f:c30b1b00	ok f:c30b1a78	ulps=0
+AngleNormalize180 f:480cf379	ok f:c1d0d400	ulps=0
+AngleNormalize180 f:43b3feb8	ok f:bc340000	ulps=0
+AngleNormalize180 f:3f77b5d5	ok f:3f778000	ulps=0
+AngleNormalize180 f:c39c4d8f	ok f:423d9480	ulps=0
+AngleNormalize180 f:43a94000	ok f:c1ac0080	ulps=0
+AngleNormalize180 f:c279aab2	ok f:c279a740	ulps=0
+AngleNormalize180 f:42b30000	ok f:42b2fd40	ulps=0
+AngleNormalize180 f:4329de75	ok f:4329dd78	ulps=0
+AngleNormalize180 f:c347b3d4	ok f:43204d30	ulps=0
+AngleNormalize180 f:43aae17a	ok f:c191f140	ulps=0
+AngleNormalize180 f:494987b4	ok f:c14be800	ulps=0
+AngleNormalize180 f:435e0000	ok f:c30a0138	ulps=0
+AngleNormalize180 f:c3c8c756	ok f:c2263920	ulps=0
+AngleNormalize180 f:c403e979	ok f:c327a558	ulps=0
+# AngleSubtract (math::angles::angle_subtract)
+AngleSubtract f:435f4f6f f:c413740a	ok f:42ba3f30	ulps=0
+AngleSubtract f:47805850 f:43e3cc8b	ok f:42c20e00	ulps=0
+AngleSubtract f:43bc8824 f:c4145588	ok f:c2db3330	ulps=0
+AngleSubtract f:441b28af f:477d2ac2	ok f:c2dc3e00	ulps=0
+AngleSubtract f:c3e1bbd9 f:42d863f5	ok f:43205654	ulps=0
+AngleSubtract f:c3b00000 f:c4047ac0	ok f:4331eb00	ulps=0
+AngleSubtract f:c8248c35 f:c81e47ce	ok f:42799000	ulps=0
+AngleSubtract f:43e40577 f:c403ea6f	ok f:c2c096b0	ulps=0
+AngleSubtract f:4266f086 f:3f000000	ok f:4264f086	ulps=0
+AngleSubtract f:c7749b87 f:c40ba000	ok f:c30d0700	ulps=0
+AngleSubtract f:440d8c92 f:4333fd71	ok f:41d1a6c0	ulps=0
+AngleSubtract f:7149f2ca f:c3c18422	ok f:42f00000	ulps=0
+AngleSubtract f:43d6e709 f:430123e9	ok f:c26d5760	ulps=0
+AngleSubtract f:c3048000 f:c42c0279	ok f:c324761c	ulps=0
+AngleSubtract f:4400bdb8 f:c3a68a49	ok f:43000b70	ulps=0
+AngleSubtract f:c2922225 f:c354a596	ok f:430b9484	ulps=0
+AngleSubtract f:43b079a2 f:42fc0000	ok f:c3050cbc	ulps=0
+AngleSubtract f:4282b2ca f:c333fd71	ok f:c2e55254	ulps=0
+AngleSubtract f:432ec8cb f:7f7fc99e	ok f:43080000	ulps=0
+AngleSubtract f:43c27a9c f:bf800000	ok f:41efa9c0	ulps=0
+AngleSubtract f:495ff363 f:c108e662	ok f:41f60000	ulps=0
+AngleSubtract f:422a74f8 f:420df704	ok f:40e3efa0	ulps=0
+AngleSubtract f:4333fd71 f:c374ab70	ok f:428151c0	ulps=0
+AngleSubtract f:c405eda5 f:43e69efd	ok f:42a616e0	ulps=0
+AngleSubtract f:3f800000 f:42d30000	ok f:c2d10000	ulps=0
+AngleSubtract f:43ef338d f:4422affd	ok f:c32c58da	ulps=0
+AngleSubtract f:c941b73e f:4334028f	ok f:43202000	ulps=0
+AngleSubtract f:c401e762 f:c310cde1	ok f:c16cfa80	ulps=0
+AngleSubtract f:c3b6c0fa f:3bb40000	ok f:c0b06b80	ulps=0
+AngleSubtract f:bf800000 f:c3b40000	ok f:bf800000	ulps=0
+AngleSubtract f:44192e22 f:c865cadf	ok f:42f06800	ulps=0
+AngleSubtract f:c8704305 f:440a5d66	ok f:4193c000	ulps=0
+AngleSubtract f:49582b35 f:c904dc8b	ok f:42880000	ulps=0
+AngleSubtract f:4648e165 f:44016313	ok f:42c59a00	ulps=0
+AngleSubtract f:43acf82b f:c394dff3	ok f:c2989f88	ulps=0
+AngleSubtract f:43789487 f:c3c10d14	ok f:c2aaa2a0	ulps=0
+AngleSubtract f:7149f2ca f:c3d2b6d6	ok f:42f00000	ulps=0
+AngleSubtract f:ff7fc99e f:c41b3a38	ok f:43080000	ulps=0
+AngleSubtract f:42b99a20 f:494bac9b	ok f:c2138000	ulps=0
+AngleSubtract f:4230c604 f:44246000	ok f:42d56300	ulps=0
+AngleSubtract f:43da6cb9 f:c2b40000	ok f:4326d970	ulps=0
+AngleSubtract f:f149f2ca f:7f800000	ok f:ffc00000	ulps=0
+AngleSubtract f:ff7fc99e f:c39fc000	ok f:43080000	ulps=0
+AngleSubtract f:43018000 f:c93e2494	ok f:c2aa8000	ulps=0
+AngleSubtract f:43bd58fd f:4712d641	ok f:c3038f00	ulps=0
+AngleSubtract f:44225fbb f:43088c6d	ok f:4318f280	ulps=0
+AngleSubtract f:489c393f f:80000000	ok f:c2bc1000	ulps=0
+AngleSubtract f:c3260000 f:43a47ed0	ok f:c306fda0	ulps=0
+AngleSubtract f:c3538000 f:00000000	ok f:43148000	ulps=0
+AngleSubtract f:47010fae f:c42c2000	ok f:c2dfa400	ulps=0
+AngleSubtract f:c2f23c49 f:44062cae	ok f:4278bc90	ulps=0
+AngleSubtract f:48b9d99e f:4404c63e	ok f:c28c5000	ulps=0
+AngleSubtract f:42fbea9f f:4332578f	ok f:c25188fe	ulps=0
+AngleSubtract f:c39fbc63 f:c3c52462	ok f:42959ffc	ulps=0
+AngleSubtract f:c7a742a0 f:c3d6eb05	ok f:42e12c00	ulps=0
+AngleSubtract f:43fdc000 f:485070a8	ok f:c32f2000	ulps=0
+AngleSubtract f:4948986f f:490c2a2f	ok f:c31c0000	ulps=0
+AngleSubtract f:438e8000 f:493d75e2	ok f:425b8000	ulps=0
+AngleSubtract f:440b0f9d f:c4116467	ok f:42674040	ulps=0
+AngleSubtract f:43432938 f:44013e6a	ok f:4218be40	ulps=0
+AngleSubtract f:f149f2ca f:c31cd999	ok f:c2f00000	ulps=0
+AngleSubtract f:43080143 f:7fc00000	ok f:ffc00000	ulps=0
+AngleSubtract f:43b48000 f:4428dd9c	ok f:42362640	ulps=0
+AngleSubtract f:42baa314 f:c3b3df9d	ok f:42ba2188	ulps=0
+AngleSubtract f:c40dc000 f:48d139c4	ok f:426b8000	ulps=0
+AngleSubtract f:c334028f f:44299606	ok f:c30a5aa8	ulps=0
+AngleSubtract f:432134fe f:c40017b4	ok f:c239b0c0	ulps=0
+AngleSubtract f:43f1c66a f:442a602c	ok f:43220c24	ulps=0
+AngleSubtract f:c3d210a0 f:43f4c208	ok f:432a5ab0	ulps=0
+AngleSubtract f:c3cfe863 f:4400e039	ok f:4314ae58	ulps=0
+AngleSubtract f:c9058e5f f:7fc00000	ok f:ffc00000	ulps=0
+AngleSubtract f:c3a23746 f:442b6dc0	ok f:428bb4e8	ulps=0
+AngleSubtract f:441eef52 f:c3128394	ok f:42790370	ulps=0
+AngleSubtract f:43680000 f:c3693d90	ok f:42d27b20	ulps=0
+AngleSubtract f:4425de86 f:43f2d011	ok f:4331d9f6	ulps=0
+AngleSubtract f:c3cb7991 f:4900029b	ok f:430f6000	ulps=0
+AngleSubtract f:491a372a f:41b5c572	ok f:c31c2000	ulps=0
+AngleSubtract f:c3288000 f:c3d6feb6	ok f:c2c50528	ulps=0
+AngleSubtract f:434fc93c f:495e58a3	ok f:c2a4c000	ulps=0
+AngleSubtract f:49383250 f:441ae89a	ok f:41160000	ulps=0
+AngleSubtract f:43340000 f:c3750000	ok f:42820000	ulps=0
+AngleSubtract f:c20cec7b f:f149f2ca	ok f:42f00000	ulps=0
+AngleSubtract f:f149f2ca f:c428fb06	ok f:c2f00000	ulps=0
+AngleSubtract f:431e34c3 f:c79860b6	ok f:425e8000	ulps=0
+AngleSubtract f:c2f6a3d8 f:c1e80000	ok f:c2bca3d8	ulps=0
+AngleSubtract f:44036d19 f:43e90ef6	ok f:426e59e0	ulps=0
+AngleSubtract f:c1a16c79 f:c39b58fb	ok f:c28af734	ulps=0
+AngleSubtract f:3b340000 f:00800000	ok f:3b340000	ulps=0
+AngleSubtract f:441a0000 f:3bb40000	ok f:c2d002d0	ulps=0
+AngleSubtract f:4334028f f:00800000	ok f:c333fd71	ulps=0
+AngleSubtract f:4334028f f:c9281845	ok f:41828000	ulps=0
+AngleSubtract f:c91a5153 f:42be3aa9	ok f:c1a28000	ulps=0
+AngleSubtract f:43148b9e f:438265fd	ok f:c2e080b8	ulps=0
+AngleSubtract f:c1004d1f f:44340000	ok f:c1004d00	ulps=0
+AngleSubtract f:441d225d f:c4163ad8	ok f:431574d0	ulps=0
+AngleSubtract f:7f7fc99e f:49245bbd	ok f:c3080000	ulps=0
+AngleSubtract f:c3a1288e f:c3dbce64	ok f:42ea9758	ulps=0
+AngleSubtract f:44056901 f:c28003ee	ok f:c2f4b408	ulps=0
+AngleSubtract f:43904000 f:c2b848b4	ok f:41a522d0	ulps=0
+AngleSubtract f:c40453bc f:c3a0d695	ok f:43185e3a	ulps=0
+# AngleDelta (math::angles::angle_delta)
+AngleDelta f:3f800000 f:7fc00000	ok f:00000000	ulps=0
+AngleDelta f:c968a30d f:c1c40000	ok f:427e8800	ulps=0
+AngleDelta f:c3f743d4 f:c3a5620a	ok f:c323c320	ulps=0
+AngleDelta f:44163cf6 f:c3dc18b3	ok f:c21b6f40	ulps=0
+AngleDelta f:c3b40000 f:442b79fa	ok f:42086260	ulps=0
+AngleDelta f:00000001 f:43574d99	ok f:4310b370	ulps=0
+AngleDelta f:00000001 f:43e34000	ok f:c2bcff70	ulps=0
+AngleDelta f:3b340000 f:c30cf6e3	ok f:430cf730	ulps=0
+AngleDelta f:c398122a f:48ecc8c3	ok f:4226fe00	ulps=0
+AngleDelta f:c38e6f9b f:b3d6bf95	ok f:42964290	ulps=0
+AngleDelta f:442a9e45 f:c364df13	ok f:c328a818	ulps=0
+AngleDelta f:4184ff77 f:c3a78000	ok f:c1060880	ulps=0
+AngleDelta f:42fb150d f:420a8498	ok f:42b5d010	ulps=0
+AngleDelta f:43a18000 f:c3cdcf91	ok f:4169e080	ulps=0
+AngleDelta f:4827482d f:43c18578	ok f:c2b4ae60	ulps=0
+AngleDelta f:c3d5cda4 f:c3ec27ec	ok f:4232d040	ulps=0
+AngleDelta f:c18954f8 f:3f000000	ok f:c18d5400	ulps=0
+AngleDelta f:4402d147 f:4374799b	ok f:c2a26930	ulps=0
+AngleDelta f:48a2f3ef f:43a30558	ok f:4225c300	ulps=0
+AngleDelta f:442f42ef f:c333fd71	ok f:43210838	ulps=0
+AngleDelta f:c8ef85fe f:48489152	ok f:c2350e00	ulps=0
+AngleDelta f:c3340000 f:44041b68	ok f:41392f80	ulps=0
+AngleDelta f:c38a0575 f:00800000	ok f:42a7ea40	ulps=0
+AngleDelta f:c37514e7 f:c3a4114a	ok f:42a61a30	ulps=0
+AngleDelta f:43bd0000 f:442d1023	ok f:423702a0	ulps=0
+AngleDelta f:43e3c9f2 f:4326f532	ok f:c28ec470	ulps=0
+AngleDelta f:c1b40000 f:c8bed492	ok f:c321f040	ulps=0
+AngleDelta f:43da7bba f:c26f91c1	ok f:4308db50	ulps=0
+AngleDelta f:430c15d8 f:44262a2d	ok f:c32491d8	ulps=0
+AngleDelta f:c37d3c85 f:c3c90000	ok f:4314c2a8	ulps=0
+AngleDelta f:c41b2000 f:bf800000	ok f:42c90180	ulps=0
+AngleDelta f:43d66a76 f:c24fa040	ok f:42f177f0	ulps=0
+AngleDelta f:429bd247 f:c42fcaa6	ok f:42744ac0	ulps=0
+AngleDelta f:c0900000 f:43a28ce0	ok f:41f33cc0	ulps=0
+AngleDelta f:4290241b f:c383551b	ok f:c1ca2600	ulps=0
+AngleDelta f:43e184a2 f:c3bcdc7c	ok f:42d981e0	ulps=0
+AngleDelta f:c2b40000 f:429f618a	ok f:c329b078	ulps=0
+AngleDelta f:c3d4c850 f:410685c3	ok f:c293f120	ulps=0
+AngleDelta f:c744bf81 f:c4145d3e	ok f:c2bc18d0	ulps=0
+AngleDelta f:43c48000 f:7fc00000	ok f:00000000	ulps=0
+AngleDelta f:431c4874 f:431995df	ok f:402c9e00	ulps=0
+AngleDelta f:482646b8 f:43f8497d	ok f:c315b320	ulps=0
+AngleDelta f:c3495aeb f:c88d899b	ok f:c3047ec0	ulps=0
+AngleDelta f:4406e9f0 f:4113c2a1	ok f:432a6b80	ulps=0
+AngleDelta f:42f8a505 f:c3340000	ok f:c25eb700	ulps=0
+AngleDelta f:80000000 f:c3f3d512	ok f:42ff5280	ulps=0
+AngleDelta f:4208251f f:c3be02f1	ok f:42583ba0	ulps=0
+AngleDelta f:c3801747 f:42b2f567	ok f:41657b80	ulps=0
+AngleDelta f:c39dcbb7 f:c7ac85f7	ok f:43305608	ulps=0
+AngleDelta f:c41feda1 f:c7c8757e	ok f:42e68f20	ulps=0
+AngleDelta f:42ec0000 f:7f800000	ok f:00000000	ulps=0
+AngleDelta f:43bfc000 f:c383e891	ok f:c2915f00	ulps=0
+AngleDelta f:c31f4dbe f:43c6d716	ok f:43230548	ulps=0
+AngleDelta f:c4020f82 f:4423f560	ok f:c2c026a0	ulps=0
+AngleDelta f:439b15f7 f:c2b40000	ok f:4220afa0	ulps=0
+AngleDelta f:c39e33ba f:3f800000	ok f:422a65e0	ulps=0
+AngleDelta f:c3f7f5ea f:c3951014	ok f:43223528	ulps=0
+AngleDelta f:7149f2ca f:43325569	ok f:bbb40000	ulps=0
+AngleDelta f:41fba095 f:4383f4a1	ok f:42ff1770	ulps=0
+AngleDelta f:c8258dea f:44225707	ok f:42cdf320	ulps=0
+AngleDelta f:42980000 f:c3340000	ok f:c2d00110	ulps=0
+AngleDelta f:43cb8d98 f:49564a6a	ok f:c0f1e000	ulps=0
+AngleDelta f:40a00000 f:c3491b7e	ok f:c319e580	ulps=0
+AngleDelta f:c3d5c048 f:c3e8306e	ok f:421380a0	ulps=0
+AngleDelta f:c3a24a31 f:44193c52	ok f:430e7b50	ulps=0
+AngleDelta f:4419e000 f:c941f18b	ok f:43003b80	ulps=0
+AngleDelta f:c42db061 f:425a3944	ok f:c1ea7e00	ulps=0
+AngleDelta f:c94ebfad f:42da3694	ok f:43000e80	ulps=0
+AngleDelta f:c92ac229 f:441b4e59	ok f:43182ec0	ulps=0
+AngleDelta f:42f6490e f:c3c0a8e8	ok f:43147550	ulps=0
+AngleDelta f:c20c0000 f:44022dce	ok f:43244a20	ulps=0
+AngleDelta f:42c644f9 f:42b2c115	ok f:411c1800	ulps=0
+AngleDelta f:b3d6bf95 f:48b79ea5	ok f:4312d240	ulps=0
+AngleDelta f:c3a0a830 f:ff800000	ok f:bbb40000	ulps=0
+AngleDelta f:c6ce6107 f:c36b669d	ok f:42c5c6a0	ulps=0
+AngleDelta f:4423e1c1 f:c40837bb	ok f:42f0c990	ulps=0
+AngleDelta f:4388ffa4 f:c95df915	ok f:42e6a000	ulps=0
+AngleDelta f:44340000 f:c32f7ff3	ok f:432f7ee0	ulps=0
+AngleDelta f:4426456f f:4882ff93	ok f:c30b8120	ulps=0
+AngleDelta f:c30f34ef f:43193c7c	ok f:427e3ee0	ulps=0
+AngleDelta f:43e1b0b3 f:40ec790d	ok f:42a7fb20	ulps=0
+AngleDelta f:43603f52 f:442a2000	ok f:c2c080a0	ulps=0
+AngleDelta f:c432b5be f:497220a8	ok f:424a8000	ulps=0
+AngleDelta f:43b3feb8 f:c3cb7d0a	ok f:423bddc0	ulps=0
+AngleDelta f:43d11ce3 f:c3340000	ok f:c2f38e50	ulps=0
+AngleDelta f:43b40000 f:c4136317	ok f:c30273a0	ulps=0
+AngleDelta f:c3b4e69b f:42b60000	ok f:c2b99a60	ulps=0
+AngleDelta f:441a762a f:42810371	ok f:c326a9a0	ulps=0
+AngleDelta f:c94999bd f:c8fb84fc	ok f:42103a80	ulps=0
+AngleDelta f:43b0c000 f:c7469cd7	ok f:429cafe0	ulps=0
+AngleDelta f:43db8000 f:438dda2a	ok f:431b4ab0	ulps=0
+AngleDelta f:c4059cc6 f:43fe4b8c	ok f:4213daa0	ulps=0
+AngleDelta f:44094695 f:430d0e4a	ok f:42402c40	ulps=0
+AngleDelta f:42afd697 f:47dadca9	ok f:c1167800	ulps=0
+AngleDelta f:c3bbc000 f:43930000	ok f:424a0440	ulps=0
+AngleDelta f:4423cf47 f:bfef04be	ok f:c27b9640	ulps=0
+AngleDelta f:c35f112d f:4923b31f	ok f:c263fd00	ulps=0
+AngleDelta f:00800000 f:43a0758b	ok f:421c55e0	ulps=0
+AngleDelta f:4365526f f:44340000	ok f:c302ad48	ulps=0
+AngleDelta f:c3f94c7c f:c429733d	ok f:433332b0	ulps=0
+# AnglesSubtract (math::angles::angles_subtract)
+AnglesSubtract v:43e82be3440180984200d533 v:c3dbe10a44208f4dc4274d2e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c32fe628c2f875a8c194afe0	ulps=0 floats=1
+AnglesSubtract v:00000000c2665757c8601494 v:bf800000491b3279c31a51db b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:3f800000416e000041800000	ulps=0 floats=1
+AnglesSubtract v:42a500004415fe0dc3b40000 v:c400f2454334000080000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2f36dd8426fe0d080000000	ulps=0 floats=1
+AnglesSubtract v:c958d89b4414f6a8c362095a v:ff800000c3f300003bb40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:ffc000003fed50004305f53e	ulps=0 floats=1
+AnglesSubtract v:48bafc4ec3b6ec73c40e0000 v:4402d3aa439663ed434ffd83 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42ce400042557d00c25ff610	ulps=0 floats=1
+AnglesSubtract v:48f0513942e7e2e74333fd71 v:c95a881d440f3be8c4036a1e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c3246000c2c1fc58c165a180	ulps=0 floats=1
+AnglesSubtract v:0000000044150dcc440d9236 v:488bdcb3c885d58e43b3feb8 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42f4d000410a8000c319b498	ulps=0 floats=1
+AnglesSubtract v:c90e098d4334000043968000 v:441229a3c39408c93f000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42dd200042e82324c26e0000	ulps=0 floats=1
+AnglesSubtract v:c3a3738f441ad60b4416164d v:4408e00044242a0bc430fdb0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c31a6720c2154000c303b010	ulps=0 floats=1
+AnglesSubtract v:42d22f5443d9f63d43a68000 v:c3f70000c3826b4f4929d6b1 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2f1d0b0c1b9e740c3261000	ulps=0 floats=1
+AnglesSubtract v:c2bc18d443bbb5b7c937e76f v:c3dfdd2142a6aa61c4046f27 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c0ca4500c287d38441968000	ulps=0 floats=1
+AnglesSubtract v:44315bc5c3dabc7043b3feb8 v:43b3feb8c40344857149f2ca b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c128e5c042af3268c2f00000	ulps=0 floats=1
+AnglesSubtract v:4410a15d43c8e8f3c91c701d v:c93795ef4334028fc3313419 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43117000c30a30a9c318a000	ulps=0 floats=1
+AnglesSubtract v:c3b40000441fd2b1c4244ec2 v:c40c34dbc3b93b41c8ccb38e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c31f2c94c28c7d70c2d99000	ulps=0 floats=1
+AnglesSubtract v:425359d1c3fc83d74922c7cb v:43d906f4431679d84393520e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1a9bba04280fcf042bc2000	ulps=0 floats=1
+AnglesSubtract v:c229881a442c828243c5211c v:c396c683c2a6fc22c3340000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2c9aa0042562060c311bdc8	ulps=0 floats=1
+AnglesSubtract v:c387a70143c1bcecc905f09c v:c39b8000c40f23cc43e51b5f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:421ec7f8c2efedf0c297e000	ulps=0 floats=1
+AnglesSubtract v:489c542d43958000c3fd0355 v:3b340000442e00003c13d244 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42f2d000c2140000c31208fa	ulps=0 floats=1
+AnglesSubtract v:c3cd980c47337dafc9151002 v:439e8000441bbd5743636455 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1030180c205180043048000	ulps=0 floats=1
+AnglesSubtract v:488e0cc2430868aac41ac000 v:4256a4b5438d7b3a80000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1798000c3128dca42ca0000	ulps=0 floats=1
+AnglesSubtract v:44097371c369fc404377f536 v:c304a31e4333fd714973668c b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2163c80c257e6c042ee6000	ulps=0 floats=1
+AnglesSubtract v:ff800000c40634f443d2d62f v:490abb2b43f3400043d471a1 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:ffc000004262b0c0c04db900	ulps=0 floats=1
+AnglesSubtract v:7149f2cac8d6ef7943be877f v:c7e6327648e5ebb9c40015c7 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42f0000042bce000432d6618	ulps=0 floats=1
+AnglesSubtract v:43e6ac83c39b54e24407e943 v:4421a8c343ca9cf2440257cd b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:432eb5fa40838b0041b22ec0	ulps=0 floats=1
+AnglesSubtract v:c39bcbe2c37e8f1443627fe6 v:43d7b6f0c412c48f43800000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1b82d20c1dbe6c0c1ec00d0	ulps=0 floats=1
+AnglesSubtract v:481b7292c3f7396243e6cdfb v:441b1253c3aef862c2f75693 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:431e0000c3108200c306b8c0	ulps=0 floats=1
+AnglesSubtract v:495c24754347604143cced1f v:c2c0a32e421dc8f4c39af974 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:bec00000431fee04be4b6000	ulps=0 floats=1
+AnglesSubtract v:42b40000ff7fc99ec40c4000 v:439c6158c40d1d30c3ff8000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43093d5043080000c2480000	ulps=0 floats=1
+AnglesSubtract v:441ae000c3f98993c3cdf5a4 v:43fa480cc8412615c8d61ec4 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42eddfd040a80000c15c8000	ulps=0 floats=1
+AnglesSubtract v:441e9c9243ba026742c00eb4 v:43aa6175c418c0004839cbf4 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c284a144c2c1f660c29f9000	ulps=0 floats=1
+AnglesSubtract v:4334028fc3d9aa7443b73b07 v:441da000495b219a48510551 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2b4fae0c31cf00043293400	ulps=0 floats=1
+AnglesSubtract v:438b179b482b7b53c4082dec v:c404e50d43b6059ac3687283 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42b386d0c2ad8000423eeb50	ulps=0 floats=1
+AnglesSubtract v:b3d6bf95bff9df9c3b340000 v:c3f3849ac3f2a12343b40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42fe126842f69d0c3b340000	ulps=0 floats=1
+AnglesSubtract v:43eb9e714921fa4843b3feb8 v:c3f5400043950f7843e74d4e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2ec864042298000c2cd3a58	ulps=0 floats=1
+AnglesSubtract v:c30fed584907db8f44193fb7 v:489e3574c32d926c48967e85 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c31b900042ad0000c31f2800	ulps=0 floats=1
+AnglesSubtract v:c959992e43e868e043986e8b v:3b340000c8f1296c4323c875 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:429a400042a86000430d14a1	ulps=0 floats=1
+AnglesSubtract v:48c708ea440dbbe300800000 v:c3d0ba9dc3398000c4331165 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:4320c8004201be30c06e9b00	ulps=0 floats=1
+AnglesSubtract v:47c9bb05c2d8584a4163ff78 v:c3c6256d43b4000043fbc779 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:40150000c2d85848c3014efa	ulps=0 floats=1
+AnglesSubtract v:4331d7d7c41cc91343ab3804 v:c41280003b3400004346e3f0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:422f5f6042b9b600430f8c18	ulps=0 floats=1
+AnglesSubtract v:c286000043fe3a1544340000 v:c3f57ad6c4295d9fc3350750 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:427fd6b042d3d550c332f8b0	ulps=0 floats=1
+AnglesSubtract v:4411afcac30f000043340000 v:44290ecb43513ca4c41d77c2 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2baf80840f86b8042b3be10	ulps=0 floats=1
+AnglesSubtract v:44089d99c317b1153b340000 v:4928e8384973f29dc3c3746b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2c22000bfc0000041f74c50	ulps=0 floats=1
+AnglesSubtract v:ff7fc99e43881bc8c39c64b5 v:43dd2d96c29e29727fc00000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43080000c10b3b80ffc00000	ulps=0 floats=1
+AnglesSubtract v:7f800000c2cdbcc144286cc5 v:c924526fc3028000bf800000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:ffc0000041dd0cfcc23533b0	ulps=0 floats=1
+AnglesSubtract v:7f80000043c2a1aec3db9cda v:33d6bf9544138fe0c432a108 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:ffc00000431f03dcc2a96b28	ulps=0 floats=1
+AnglesSubtract v:431ecd42c927f00ec32fe1bd v:4326800042b5e26d3bb40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c0f657c0c0740000c32fe325	ulps=0 floats=1
+AnglesSubtract v:432a15f6c014f7b3c2c4ef22 v:c41ac3f3c40c6192c42613eb b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:428a4b80c320cd98c31a27e4	ulps=0 floats=1
+AnglesSubtract v:439e4b84434fd7fe43c316db v:c334028fc404519d43aa812e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:430899984188f3804244ad68	ulps=0 floats=1
+AnglesSubtract v:c3ad9cb2428bf4c94334028f v:c3e0c24e49360195493b4454 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42cc96704304b000c2828000	ulps=0 floats=1
+AnglesSubtract v:43c1a92fc340000043faa736 v:c3867579c329820e41fd2424 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c27f0ac0c1b3ef9042db53d0	ulps=0 floats=1
+AnglesSubtract v:42cc8632c38ff217c3e1dce6 v:437089bfc31d6ea7c2a21b4b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c30a46a6c3027587c12ac260	ulps=0 floats=1
+AnglesSubtract v:c8225d18c32cf384c39c2257 v:c406a6b743a54d3dc382c9ff b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2f38800c30f8dfec24ac2c0	ulps=0 floats=1
+AnglesSubtract v:c3ed83b5439d46e6c86b9bbb v:c31105b8487713a5c274c78d b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:41eff27041dfc000bfde0000	ulps=0 floats=1
+AnglesSubtract v:3bb40000c91012d8c89d9ca4 v:43ecf0d5c2579fe6c79ff560 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2e3c084c1fd0000c2498000	ulps=0 floats=1
+AnglesSubtract v:c3a23098c4234000c420a45a v:c3ea48bec417e0c33f000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:4310304cc235f3d04299dd30	ulps=0 floats=1
+AnglesSubtract v:43e1c02b43cd2f2d496e6d52 v:c2886350442e56dd43be0000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:431fb200429205ccc2cdc000	ulps=0 floats=1
+AnglesSubtract v:c842227b43b400003f800000 v:414a4d33440f903ec407e000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2ad20004311bf08c32f8000	ulps=0 floats=1
+AnglesSubtract v:c41191dc435b3084421e29cc v:f149f2ca42b40000ff800000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42f0000043013084ffc00000	ulps=0 floats=1
+AnglesSubtract v:432ecf73c3576c8cc93d6e8b v:c4090d4e43a1b4feb3d6bf95 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:40412b00c332d688c2e16000	ulps=0 floats=1
+AnglesSubtract v:c344000043800c0d40ad4df3 v:c3a309f942bb68d44327950b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:430213f2432263b0c3222a9b	ulps=0 floats=1
+AnglesSubtract v:43a89ce6c40526824205c04f v:c3034eec43ff8815c92771ad b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42d911704211574042a88000	ulps=0 floats=1
+AnglesSubtract v:c3ee1758c3b40000c4032b95 v:c9567a2a426bbd6c4430ecad b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c18c8000c26bbd70c3186108	ulps=0 floats=1
+AnglesSubtract v:4421f5ab437353d3c3b64a6c v:43b40000bf8000004406b825 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c29052a8c2e7585a43308a94	ulps=0 floats=1
+AnglesSubtract v:43e0091744224bb1c946815d v:43cbfda1c4193cb743cd091e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42205bb0c331de6042e04000	ulps=0 floats=1
+AnglesSubtract v:c415fcb443b3feb842bb664d v:431f38c642b40000c41c86c5 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c21cae60c2b40520be471000	ulps=0 floats=1
+AnglesSubtract v:c20b0d0a3f800000c3afc000 v:4292e05343bc8000c3bf4937 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2d866d8c180000041f89370	ulps=0 floats=1
+AnglesSubtract v:42a400004330b1b2442ebe4b v:bf800000c35b00d348ac78d0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42a60000420eca10c2a71000	ulps=0 floats=1
+AnglesSubtract v:c41fa81f43530000c2b40000 v:ff8000007fc00000c3b05f17 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:ffc00000ffc00000c2c283a4	ulps=0 floats=1
+AnglesSubtract v:43340000c90efc24442ee646 v:42dec3d64106bb817f7fc99e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42893c2a4235400043080000	ulps=0 floats=1
+AnglesSubtract v:c205550d43b3feb8c3d71018 v:bf80000044092d69c37de119 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c201550d432b47ccc3303f17	ulps=0 floats=1
+AnglesSubtract v:4424bb14c1888e3cc2de0000 v:438d82a4c8bc274542a03b2a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:417e708042f230004328e26b	ulps=0 floats=1
+AnglesSubtract v:48de7828c3882160441316ec v:490f89de43bdbe20c4258000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:4323600042888200432a5bb0	ulps=0 floats=1
+AnglesSubtract v:c85954a6c3f8ae51c4048234 v:436f41bb435a3ce1c33de8fc b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:4258a000408ccf80419f0160	ulps=0 floats=1
+AnglesSubtract v:ff7fc99e48f1beb6494edcd5 v:c2e280134334000042fddc68 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43080000c2aca00042ccc000	ulps=0 floats=1
+AnglesSubtract v:48b485bdc22988664418e604 v:c3cd4cbc43f6fb34c4255290 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42220000c3305880c3271db0	ulps=0 floats=1
+AnglesSubtract v:c42adff843b13b57c4036d9d v:41d00000c3fbc93dc2b40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:41280200430a0928c2976ce8	ulps=0 floats=1
+AnglesSubtract v:c375b443c94c1b4e7fc00000 v:441c416fc4015ae6c333fd71 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c316ba0042624000ffc00000	ulps=0 floats=1
+AnglesSubtract v:438a5b7ac90607a6434949a9 v:c3d3a3cdc208859743cf7de0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1a00b80423f000043124de9	ulps=0 floats=1
+AnglesSubtract v:439045bb442f800043340000 v:c346e050c2637eb943640103 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42fed78c421b7ec0c240040c	ulps=0 floats=1
+AnglesSubtract v:c3350e984422e000c3d9c000 v:473d09664923de16c8d0ed7a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:41cc58004302200043005000	ulps=0 floats=1
+AnglesSubtract v:c402d5a8c3b3248143d774a6 v:43340000c2c8f775c42fdfa9 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:41854b0042cc657042599fc0	ulps=0 floats=1
+AnglesSubtract v:441758524383e5e4c88dd73c v:c36b7a15c78cbc9343d8ae58 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42f1b6b8c21c3800c22d0000	ulps=0 floats=1
+AnglesSubtract v:c34a643cc38991c1c270067a v:48bdc4924304ca85c39373db b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c23be000c23fb820c2fa33d0	ulps=0 floats=1
+AnglesSubtract v:4375107542315fb9ff800000 v:c2dd2b17c80f64c344142723 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c08b4000bf1c0000ffc00000	ulps=0 floats=1
+AnglesSubtract v:bf800000430a2a1742420000 v:c359b84b4386800044063433 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c30f47b5c302d5e9c30050cc	ulps=0 floats=1
+AnglesSubtract v:4952ccfbc2d4832d441d98a4 v:c2a9ca4a43ed60df432560c8 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2e6e000430afcac42d20390	ulps=0 floats=1
+AnglesSubtract v:c7bbe60c3bb40000c95535b0 v:434cc17b48ff3c654209c5d5 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:428e4c00c04a000041948000	ulps=0 floats=1
+AnglesSubtract v:43e300b047f615a0429c21fc v:43f0af4b43340000c2e42dd5 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1dae9b0432f4000c327d818	ulps=0 floats=1
+AnglesSubtract v:44240ed94879be0048940692 v:c36f0000441bfd9843b40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:432f3b64c2fff00042124000	ulps=0 floats=1
+AnglesSubtract v:c3837c714309d321c4215091 v:3bb40000c4067950c2e5bf89 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42c20b6cc2311e80c32a6280	ulps=0 floats=1
+AnglesSubtract v:4432d5b3c2d4cba442921089 v:c4031fd94291e9b4c2025808 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:431fd630c3335aac42d33c8d	ulps=0 floats=1
+AnglesSubtract v:43b40000c3a1b66843c1d986 v:c1b0000048ea8656c374d775 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:41b00000c1f10000c2aeeb00	ulps=0 floats=1
+AnglesSubtract v:441a6000c3efff134334028f v:42cc061bc9374ce6c3e85b41 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:431b7cf4429cc000c2968de0	ulps=0 floats=1
+AnglesSubtract v:42b40000438cf0fe43eb3ad5 v:c3b0f5d2c81e90354244e85f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:42a7d748c28a98004274ee48	ulps=0 floats=1
+AnglesSubtract v:c2e60000440dc000c96215d7 v:489db9124395b7144413866b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43147000c2b8dc50408e0000	ulps=0 floats=1
+AnglesSubtract v:000000013b3400004299a958 v:4945365d432e470d424c5bb1 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:4268c000c32e465941cdedfe	ulps=0 floats=1
+AnglesSubtract v:438b0000443400004252feed v:00000001c936103a434848a4 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c2a40000432ba000c31388e9	ulps=0 floats=1
+AnglesSubtract v:c183ad37c3262308c40a5dd7 v:c334028fc92c966cc41c93aa b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:43238ce8429140004291ae98	ulps=0 floats=1
+AnglesSubtract v:c333fd71c40ab62b441f39ac v:49536d5fc4040311440a656f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:c1cf8000c1d6634042a6a1e8	ulps=0 floats=1
+AnglesSubtract v:0080000048ff18c2c3fe3b77 v:c32c2a85c4eb88af44246000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok n: b:432c2a8543225000c2abede0	ulps=0 floats=1
+# VectorNormalize (math::vector::normalize)
+VectorNormalize b:c0a0a679c45a982fc6afcccd	ok f:46afeec4 b:b969c337bd1f09e4bf7fce94	ulps=0 floats=1
+VectorNormalize b:c2b4e20c00000000c2c37dd0	ok f:43052b2d b:bf2ddcc700000000bf3be764	ulps=0 floats=1
+VectorNormalize b:b69beff5c2a6a5c2428864cf	ok f:42d75906 b:b3395fd8bf461b3b3f22243a	ulps=0 floats=1
+VectorNormalize b:c0bd8dbd59bf993bc2980e87	ok f:59bf993b b:a67d448c3f7fffffa84b2ac8	ulps=0 floats=1
+VectorNormalize b:c2a9f707c2070fb57f7fc99e	ok f:7f800000 b:800000008000000000000000	ulps=0 floats=1
+VectorNormalize b:c17a548ec1832434f435d894	ok f:7f800000 b:800000008000000080000000	ulps=0 floats=1
+VectorNormalize b:ec7570b241e3e9bdc2a2ec94	ok f:7f800000 b:800000000000000080000000	ulps=0 floats=1
+VectorNormalize b:c715e959c2b4ec9a422e79a0	ok f:4715e97b b:bf7fffc5bb1a7ab13a94f908	ulps=0 floats=1
+VectorNormalize b:c294e966c25fb2bd4594e257	ok f:4594e99f b:bc7fff9ebc4048783f7ff37c	ulps=0 floats=1
+VectorNormalize b:c5bfe28942680fc84227fe0e	ok f:45bfe5e0 b:bf7ffb8c3c1aca403be01be7	ulps=0 floats=1
+VectorNormalize b:c6891e5cc163b173c0b014ad	ok f:46891e5f b:bf7ffffbba548d19b9a45eff	ulps=0 floats=1
+VectorNormalize b:428884955e90e9ddc68c7b61	ok f:5e90e9dd b:23712b243f7fffffa7782bda	ulps=0 floats=1
+VectorNormalize b:000000000000000000000000	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize b:4545f8b045055388c60b43f0	ok f:461782a6 b:3ea740673e614677bf6b4f6d	ulps=0 floats=1
+VectorNormalize b:c334028f4213dfdc45e8821d	ok f:45e89444 b:bcc623183ba2c3f73f7fec05	ulps=0 floats=1
+VectorNormalize b:c6a19b36c6d3f2a7470d2b05	ok f:47422253 b:bed51b3cbf0bbecc3f3a27ab	ulps=0 floats=1
+VectorNormalize b:41baa1f5c67660cd46be322f	ok f:46e29b0a b:3a52d786bf0b2b2d3f56de15	ulps=0 floats=1
+VectorNormalize b:468b2ec6ef35e13e4716ed33	ok f:7f800000 b:000000008000000000000000	ulps=0 floats=1
+VectorNormalize b:01f23c3b422d06427f7fc99e	ok f:7f800000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize b:4334028f41fc323640076b08	ok f:4336c305 b:3f7c253d3e30a1203c3daf2a	ulps=0 floats=1
+VectorNormalize b:c1b87991c2b40000c1de8d69	ok f:42c1f71d b:be73796cbf6d917abe92dd6e	ulps=0 floats=1
+VectorNormalize b:46572c79c284e6196be7d341	ok f:7f800000 b:000000008000000000000000	ulps=0 floats=1
+VectorNormalize b:4702319041e4377746d1a4f8	ok f:4727259a b:3f4767203a2ec44f3f208b59	ulps=0 floats=1
+VectorNormalize b:46422fec2e1564a3e38f7959	ok f:7f800000 b:000000000000000080000000	ulps=0 floats=1
+VectorNormalize b:c5593af77f7fc99e468bd0db	ok f:7f800000 b:800000000000000000000000	ulps=0 floats=1
+VectorNormalize b:78acc88600000001c0a55e35	ok f:7f800000 b:000000000000000080000000	ulps=0 floats=1
+VectorNormalize b:c6697930c2bac63ec5aa0ff7	ok f:46787ada b:bf708a12bbc06d51beaf358f	ulps=0 floats=1
+VectorNormalize b:4211ba9b405fcc643fbd252f	ok f:42128498 b:3f7e9f143dc383623d253d62	ulps=0 floats=1
+VectorNormalize b:422c93adc22af079c7118ed1	ok f:47118ede b:3a97c276ba9651d3bf7fffe9	ulps=0 floats=1
+VectorNormalize b:051f538142b9566942a8de20	ok f:42fabb45 b:01a2ac8c3f3d3b603f2c6a7f	ulps=0 floats=1
+VectorNormalize b:43b3feb8423c7106c1761b6e	ok f:43b5b14d b:3f7d9bb03e04c128bd2d6114	ulps=0 floats=1
+VectorNormalize b:af4b017c42472feff94d5a2a	ok f:7f800000 b:800000000000000080000000	ulps=0 floats=1
+VectorNormalize b:c08947a947151135c66c63b4	ok f:47205aba b:b8db29953f6dfafcbebcb191	ulps=0 floats=1
+VectorNormalize b:c284b50bc18b0e7743340000	ok f:4340a05d b:beb05e16bdb8ce443f6f3833	ulps=0 floats=1
+VectorNormalize b:42c73de8c20636e8c22680fa	ok f:42e21f76 b:3f619134be97f2acbebc80eb	ulps=0 floats=1
+VectorNormalize b:c7120aa7428d40a9565283af	ok f:565283af b:b03198be2babc5da3f800000	ulps=0 floats=1
+VectorNormalize b:42c63a7643b40000c6dc4602	ok f:46dc4af4 b:3b665bf23c512d19bf7ffa41	ulps=0 floats=1
+VectorNormalize b:c70b2664c70517f7c7019d45	ok f:47681cf5 b:bf19784fbf12ca54bf0ef3f9	ulps=0 floats=1
+VectorNormalize b:5688f7d9469a375042aa6362	ok f:5688f7d9 b:3f8000002f901e5c2b9f3b5a	ulps=0 floats=1
+VectorNormalize b:41a23116c23afecd46a5a391	ok f:46a5a3b0 b:3a7aabeabb1080c83f7fffcf	ulps=0 floats=1
+VectorNormalize b:c0fdf32fc2bed03300000001	ok f:42bf78e6 b:bda9c43fbf7f1e7300000000	ulps=0 floats=1
+VectorNormalize b:46f19c9c420b2c18c2a21ce0	ok f:46f19cdc b:3f7fffbc3a9375a2bb2bc41f	ulps=0 floats=1
+VectorNormalize b:c2873c22422a95514167b54d	ok f:42a27cac b:bf5510633f0660bc3e368785	ulps=0 floats=1
+VectorNormalize b:c287e5e4469bbcd99beb635e	ok f:469bbd14 b:bb5f62ee3f7fff9e94c17693	ulps=0 floats=1
+VectorNormalize b:c27ed438c585d6cfc1f97e89	ok f:4585db82 b:bc73ad8ebf7ff703bbee93a2	ulps=0 floats=1
+VectorNormalize b:c2712d35c2197a59c1735b2a	ok f:429222d6 b:bf533ee0bf066e42be552796	ulps=0 floats=1
+VectorNormalize b:c29562fd42b19e06c1ed4cee	ok f:42ef8c8e b:bf1fa5503f3dd0aabe7d98d8	ulps=0 floats=1
+VectorNormalize b:c225c3a7c2a65d76c19fd22e	ok f:42be1d1a b:bedf3645bf600562be573583	ulps=0 floats=1
+VectorNormalize b:4292ccea4079c6cac1c263ee	ok f:429ad50d b:3f72b8613d4e7d96bea0b3e8	ulps=0 floats=1
+VectorNormalize b:470eba0e4685f1cdc709de5c	ok f:47516ff0 b:3f2e75503ea3b938bf28851d	ulps=0 floats=1
+VectorNormalize b:469782ab0e4e02dba91792cf	ok f:469782ab b:3f800000072e0b2da2000da3	ulps=0 floats=1
+VectorNormalize b:c6c69bb842b40000c2899a6c	ok f:46c69c39 b:bf7fff593b68031fbb315d55	ulps=0 floats=1
+VectorNormalize b:c334028f46eaff2341ac16d4	ok f:46eb003a b:bbc418633f7ffed03a3b7776	ulps=0 floats=1
+VectorNormalize b:c0757f2dc2c47b18c63a09ba	ok f:463a0b5a b:b9a8e75cbc072e2ebf7ffdc3	ulps=0 floats=1
+VectorNormalize b:44340000c1b5adfac21d8535	ok f:44345bc1 b:3f7f7dc4bd00f009bd5f956f	ulps=0 floats=1
+VectorNormalize b:4620d0dc423f2594c283479c	ok f:4620d224 b:3f7ffdf53b98230cbbd0f9b6	ulps=0 floats=1
+VectorNormalize b:988faf0cc0b11abc467ecdc7	ok f:467ecdc8 b:91905bb9b9b1ef933f7fffff	ulps=0 floats=1
+VectorNormalize b:46733852428db64bc2c4c622	ok f:46733a36 b:3f7ffe023b952760bbcf1b6e	ulps=0 floats=1
+VectorNormalize b:ba3c4c20414dafec423fe4ef	ok f:4246aa22 b:b772a4093e8486523f774698	ulps=0 floats=1
+VectorNormalize b:41bc421894cf7f88c3340000	ok f:43358820 b:3e04be2e91124f28bf7dd704	ulps=0 floats=1
+VectorNormalize b:c6956dda460e2c7cc28d33f1	ok f:46a57a2b b:bf672c443edbf2d8bb5a7256	ulps=0 floats=1
+VectorNormalize b:429feed9c50bfa17c20c51da	ok f:450c1551 b:3d122336bf7fce3ebc803750	ulps=0 floats=1
+VectorNormalize b:c20110614660d58f4612dfbb	ok f:4686473e b:baf60f1a3f5652693f0c01ba	ulps=0 floats=1
+VectorNormalize b:46f8a51143b3feb8c5bd4a84	ok f:46fd1fa8 b:3f7b78613c360a54be3f712b	ulps=0 floats=1
+VectorNormalize b:c707b159c6d11226c277463e	ok f:472b4a3a b:bf4acc6cbf1c3b8cbab8c7ed	ulps=0 floats=1
+VectorNormalize b:c239eb0046888de4ff800000	ok f:7f800000 b:80000000000000007fc00000	ulps=0 floats=1
+VectorNormalize b:46b3432946eb63eb49607b04	ok f:4960abbe b:3ccc426f3d061b6b3f7fc87b	ulps=0 floats=1
+VectorNormalize b:46f0f26ec6095ba6c2a32556	ok f:46fa8b74 b:3f76317abe8c5949bb26b2b7	ulps=0 floats=1
+VectorNormalize b:c7103e6f4279288142259630	ok f:47103e82 b:bf7fffdf3add195d3a92f062	ulps=0 floats=1
+VectorNormalize b:c2ac6768429f7121c1f6d5d8	ok f:42f2cd51 b:bf35c6793f281bd3be822053	ulps=0 floats=1
+VectorNormalize b:41e09a06c6ab19dd9406645b	ok f:46ab19e6 b:3aa80603bf7ffff38cc9137c	ulps=0 floats=1
+VectorNormalize b:4240d61143a24d2fc6937516	ok f:46937acb b:3b275d9d3c8cdd37bf7ff618	ulps=0 floats=1
+VectorNormalize b:e9436348c646650742beb5aa	ok f:7f800000 b:800000008000000000000000	ulps=0 floats=1
+VectorNormalize b:41e5b6f8c6d80b5ac6d31b5d	ok f:471707e9 b:3a42af6abf371976bf32ea38	ulps=0 floats=1
+VectorNormalize b:c1e402adc7dc0713c2b6ee57	ok f:47dc0718 b:b984a4d8bf7ffffaba54d6a0	ulps=0 floats=1
+VectorNormalize b:c283d45ec1c370d5c21af14e	ok f:42a0864d b:bf523cebbe9bd775bef71914	ulps=0 floats=1
+VectorNormalize b:425daaf5429bb013425939ac	ok f:42dbd12c b:3f0113e33f3550923efcfb49	ulps=0 floats=1
+VectorNormalize b:4284d651c5ffcf92c1f6b219	ok f:45ffd231 b:3c04ee1bbf7ffd61bb76de46	ulps=0 floats=1
+VectorNormalize b:429a4340c2aaf1d5421e4348	ok f:42f37a00 b:3f223285bf33bcc33ea66739	ulps=0 floats=1
+VectorNormalize b:4434000041afafb646389cdf	ok f:4638f49f b:3d7924143af32b9d3f7f868b	ulps=0 floats=1
+VectorNormalize b:f149f2cac5ee356ec2a7014c	ok f:7f800000 b:800000008000000080000000	ulps=0 floats=1
+VectorNormalize b:000000000000000000000000	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize b:000000000000000000000000	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize b:42b400004612ad4dc28a4e86	ok f:4612b00b b:3c1d11843f7ffb37bbf15fa1	ulps=0 floats=1
+VectorNormalize b:428015fa40cd5533427b1a6c	ok f:42b3d0f6 b:3f365a4a3d9229e53f32bea8	ulps=0 floats=1
+VectorNormalize b:6ad5875d4596b6264198f2e3	ok f:7f800000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize b:422c55dfc0d563a146d4cb92	ok f:46d4cba4 b:3acf5342b9805b6c3f7fffea	ulps=0 floats=1
+VectorNormalize b:4635443e42a1345c3b340000	ok f:4635455d b:3f7ffe6a3be3a943347e3481	ulps=0 floats=1
+VectorNormalize b:4333fd714bbcc589c6eb5ea0	ok f:4bbcc593 b:36f4173a3f7ffff2ba9f98b3	ulps=0 floats=1
+VectorNormalize b:fadebee8c334028f424f8269	ok f:7f800000 b:800000008000000000000000	ulps=0 floats=1
+VectorNormalize b:46b2940646718aea419724ff	ok f:46d7952e b:3f540ed33f0f69d63a337b20	ulps=0 floats=1
+VectorNormalize b:42678d58461bcbae4283bcfb	ok f:461bcd39 b:3bbe3bbe3f7ffd773bd87604	ulps=0 floats=1
+VectorNormalize b:4281250bc283b71142b16255	ok f:42ffea2b b:3f01300fbf03c24d3f317176	ulps=0 floats=1
+VectorNormalize b:c24ef7ba00800000c2c509c8	ok f:42de8f5d b:beee109d00012677bf62a4bc	ulps=0 floats=1
+VectorNormalize b:d7b7dd54c183c29b11f427d2	ok f:57b7dd54 b:bf800000a937741c000002a8	ulps=0 floats=1
+VectorNormalize b:c286b612425b10a04237f320	ok f:42c47a87 b:bf2f854e3f0eb6dd3eefacf2	ulps=0 floats=1
+VectorNormalize b:4686178d94021e9dc297a00a	ok f:468617e3 b:3f7fff5c8cf869e8bb90bc35	ulps=0 floats=1
+VectorNormalize b:c07c4a5ab1c2305bc709a4a2	ok f:4709a4a2 b:b8ea9d84aa349593bf800000	ulps=0 floats=1
+VectorNormalize b:cc91748b42825f0342536fc3	ok f:4c91748b b:bf800000356573bd353a1033	ulps=0 floats=1
+VectorNormalize b:46af6de8c1549ec5c679f75c	ok f:46d765da b:3f507f5ab9fcb2e2bf148ad0	ulps=0 floats=1
+# VectorNormalize2 (math::vector::normalized)
+VectorNormalize2 v:4645150042b4000016a8a738 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46451649 b:3f7ffe543be9ce290fdb1116	ulps=0 floats=1
+VectorNormalize2 v:c5373fd4c2b1caa4b3d6bf95 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45375562 b:bf7fe1e7bcf842ecae15eee9	ulps=0 floats=1
+VectorNormalize2 v:c6203eae42b40000c38d605e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46204fd9 b:bf7fe4953c0fb847bce1c31f	ulps=0 floats=1
+VectorNormalize2 v:c21344acc6f36c95c5565414 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46f4e4e9 b:ba99f261bf7e769bbde00c51	ulps=0 floats=1
+VectorNormalize2 v:470d5e3abf2ec6d4c6c2fb26 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:472bb97f b:3f52bee9b7824664bf1155bb	ulps=0 floats=1
+VectorNormalize2 v:c48f0e22c6ee0fdfbf800000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46ee3ad7 b:bd19b9debf7fd1d3b8098c3f	ulps=0 floats=1
+VectorNormalize2 v:43b3feb8c6545f32c6d0418e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46e9c827 b:3c4519f2bee88e24bf640c5d	ulps=0 floats=1
+VectorNormalize2 v:41db89cf7944cbbe46c0bbb2 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c7101f52c69eb88d46e6318e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4748ca3a b:bf37c037beca5d0c3f12be89	ulps=0 floats=1
+VectorNormalize2 v:405e934d41844b71c4b3aac3 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:44b3adf1 b:3b1e8ee63c3c7cf5bf7ffb78	ulps=0 floats=1
+VectorNormalize2 v:42a1cc14c1af066ac5d652df b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45d656f7 b:3c413eb9bb510b3fbf7ffb1c	ulps=0 floats=1
+VectorNormalize2 v:c29f76e6c5ca51dec25aabde b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45ca57a4 b:bc49c06bbf7ff8b2bc0a5460	ulps=0 floats=1
+VectorNormalize2 v:c24a450ac69b02ab45ae6292 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46a10660 b:bb20c92bbf7670263e8a9ebe	ulps=0 floats=1
+VectorNormalize2 v:a4e54f61c2a8ed6333d6bf95 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42a8ed63 b:a1adc0debf80000030a2b83b	ulps=0 floats=1
+VectorNormalize2 v:42b87dd0c6f77a4f46e89e55 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4729d242 b:3b0b0eb0bf3a88423f2f5513	ulps=0 floats=1
+VectorNormalize2 v:c6ed096646eb701e3f800000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:47270bc5 b:bf35a17e3f3467e137c4295c	ulps=0 floats=1
+VectorNormalize2 v:72eb176bc2c50b3341c0144c b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000008000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c2991323b50c4309d4ab656d b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:54ab656d b:ad64a2839fd17f4dbf800000	ulps=0 floats=1
+VectorNormalize2 v:000000000000000000000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c1f13cc0423a17bdc704ce76 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4704ce81 b:ba6881983ab35b85bf7fffeb	ulps=0 floats=1
+VectorNormalize2 v:6c6cf458c18088eeaad33a39 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000008000000080000000	ulps=0 floats=1
+VectorNormalize2 v:31d9561cc1b10466c716d7d0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4716d7d2 b:2a386c81ba1635dfbf7ffffd	ulps=0 floats=1
+VectorNormalize2 v:c2681f09429b8716c2a8830e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4300818b b:bee7350a3f1aea4ebf27d92f	ulps=0 floats=1
+VectorNormalize2 v:42b4e06447015c494296f2a3 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:47015c7f b:3b32f91d3f7fff953b155bfd	ulps=0 floats=1
+VectorNormalize2 v:45b0a1269389779a46dfb424 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46e4052b b:3e464da38c1a55e13f7b2761	ulps=0 floats=1
+VectorNormalize2 v:9c87403c4650e091c683dc37 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46a835b6 b:954dd6ee3f1ef230bf48ade2	ulps=0 floats=1
+VectorNormalize2 v:41e12ce64225b73840d77ff6 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:424a2592 b:3f0e94f13f51dd0c3e087489	ulps=0 floats=1
+VectorNormalize2 v:c1183bf5c63e475442aaac79 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:463e488a b:ba4ccf65bf7ffe603be59e32	ulps=0 floats=1
+VectorNormalize2 v:42a749b9c6f0a9ebc29343f6 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46f0aa52 b:3b31f27cbf7fff92bb1ca61f	ulps=0 floats=1
+VectorNormalize2 v:c5b96fb0c218904cc4a665f2 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45be0c80 b:bf79c96cbbcd81b4be602462	ulps=0 floats=1
+VectorNormalize2 v:00000001c1c927d2429841f2 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42a058fb b:00000000bea0935b3f731587	ulps=0 floats=1
+VectorNormalize2 v:4195e26942b2be3946c665fe b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46c66652 b:3a4166483b66a2f53f7fff93	ulps=0 floats=1
+VectorNormalize2 v:423638ce42ac3331a5b3c65a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42c2d165 b:3eef72bd3f624766a26c3b8c	ulps=0 floats=1
+VectorNormalize2 v:fc9d8794422e227d42ad62ac b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:800000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c6a13e8146b3d32341ed5a16 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46f187a5 b:bf2ae7833f3e991e3a7b925c	ulps=0 floats=1
+VectorNormalize2 v:4707d31946934ebbc1ba6ae8 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:471a8273 b:3f610aae3ef4113aba1a6efa	ulps=0 floats=1
+VectorNormalize2 v:45ec73a97f7fc99e42b40000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c29d0d0246b72dedc6e250d3 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4711946c b:bb0a15f93f210f28bf46fc8c	ulps=0 floats=1
+VectorNormalize2 v:41c2e4e2420af02e464cc65f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:464cc6a6 b:3af3a56b3b2db1713f7fffa7	ulps=0 floats=1
+VectorNormalize2 v:3f14913ac20c67bd46f1b1f9 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46f1b203 b:379d5c35ba94b70d3f7ffff5	ulps=0 floats=1
+VectorNormalize2 v:000000000000000000000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:45e4043ac2b5b08dc707ceb4 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:470ac43c b:3e525347bb2797c3bf7a8a7d	ulps=0 floats=1
+VectorNormalize2 v:4253c800c6c3287f426a60e7 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46c328bf b:3b0ae6eabf7fffac3b19b916	ulps=0 floats=1
+VectorNormalize2 v:c70b9fb342aec641c2576a13 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:470b9fd9 b:bf7fffba3b20393fbac57ae6	ulps=0 floats=1
+VectorNormalize2 v:c6b5ee304213c9e0a2ff8bc6 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46b5ee3f b:bf7fffec3acff52b9bb3cb0d	ulps=0 floats=1
+VectorNormalize2 v:4171b428e731245e42301006 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000008000000000000000	ulps=0 floats=1
+VectorNormalize2 v:415af76b3f5985bf46aa0fbd b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46aa0fbf b:3a24cf2b3823b8ed3f7ffffd	ulps=0 floats=1
+VectorNormalize2 v:46a4a497ff800000c6847f5a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000007fc0000080000000	ulps=0 floats=1
+VectorNormalize2 v:ece2638fc20c1e6d40c0d038 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:800000008000000000000000	ulps=0 floats=1
+VectorNormalize2 v:464f423bc6add39fc2b02a48 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46ca5fbc b:3f0316eebf5be359bb5ed8a4	ulps=0 floats=1
+VectorNormalize2 v:000000000000000000000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c211dd9f41e40955c1ba1ea5 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:424f3673 b:bf34358a3f0cdd02bee5f0d5	ulps=0 floats=1
+VectorNormalize2 v:4186c66445bfa8587fc00000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7fc00000 b:7fc000007fc000007fc00000	ulps=0 floats=1
+VectorNormalize2 v:c20c98a242b78713c23a3958 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42d978d3 b:bea581343f580abfbedb374f	ulps=0 floats=1
+VectorNormalize2 v:000000000000000000000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:46e452c1459fc23fc5cf2eee b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46ed81c0 b:3f7619f23e2c32bcbe5f50bd	ulps=0 floats=1
+VectorNormalize2 v:429f60cbc7008d59183b2d7d b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:47008d72 b:3b1eb16ebf7fffce10ba5f8a	ulps=0 floats=1
+VectorNormalize2 v:c62be6fc45e761c942c4cc90 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:464f367d b:bf5460323f0eee083bf32266	ulps=0 floats=1
+VectorNormalize2 v:c10146e446d6e4b5c674ace8 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46f746cb b:b985d66b3f5e7975befd4ea0	ulps=0 floats=1
+VectorNormalize2 v:428641a141d1a05c41ebf1dc b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:429bb9dd b:3f5cb4ab3eac4dc33ec1efb1	ulps=0 floats=1
+VectorNormalize2 v:c69c7036c26f35b34710f908 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4724ba6f b:bef31de9bab9dffa3f614c6c	ulps=0 floats=1
+VectorNormalize2 v:4247f3c3428668c7c6a6b59a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46a6b5ee b:3b1985d33b4e65efbf7fff7e	ulps=0 floats=1
+VectorNormalize2 v:42adeb8c46b9cc44417fc46b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46b9cc98 b:3b6fa1f33f7fff8c3a3033bd	ulps=0 floats=1
+VectorNormalize2 v:468f1b8642026dee41e4530a b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:468f1ba0 b:3f7fffd13ae951e83acc385c	ulps=0 floats=1
+VectorNormalize2 v:0de1112342670aaac177273f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:426f293f b:0af0e9da3f774f12be844707	ulps=0 floats=1
+VectorNormalize2 v:4157f5a8c2bc72d04295fff0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42f25dce b:3de41b94bf470c903f1e7002	ulps=0 floats=1
+VectorNormalize2 v:7f800000c2b7b15bc22bf508 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:7fc000008000000080000000	ulps=0 floats=1
+VectorNormalize2 v:418020cd414436be4334028f b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:433522fe b:3db515483d8aa77c3f7e685b	ulps=0 floats=1
+VectorNormalize2 v:4580313b4234a3cfc1f544fd b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45803423 b:3f7ffa323c345a59bbf4e13e	ulps=0 floats=1
+VectorNormalize2 v:42b40000beb5bfdc467fd536 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:467fd633 b:3bb41d69b7b5dd8e3f7fff03	ulps=0 floats=1
+VectorNormalize2 v:ab04aebf4156122ac217677e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:422095a6 b:a85384f63eaaa224bf715d71	ulps=0 floats=1
+VectorNormalize2 v:c24fd602c1cd4a3b45bebcfc b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45bebf2f b:bc0b77b6bb89c2573f7ffd0d	ulps=0 floats=1
+VectorNormalize2 v:c2b8ec9943b3feb8c5b69ac2 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45b6f93a b:bc815d563d7bd52bbf7f7bd4	ulps=0 floats=1
+VectorNormalize2 v:c5e4bacdc52c1e5fc132e717 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:45f46256 b:bf6f99fcbeb44cb6babb67fa	ulps=0 floats=1
+VectorNormalize2 v:4184642ac1f1d1eec1a75e31 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42214204 b:3ed22c78bf3ff26fbf04d995	ulps=0 floats=1
+VectorNormalize2 v:462c51aabce3421faf2d9f9b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:462c51aa b:3f800000b628cf32a880f80e	ulps=0 floats=1
+VectorNormalize2 v:f356491c3b340000c695e98e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:800000000000000080000000	ulps=0 floats=1
+VectorNormalize2 v:000000000000000000000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:00000000 b:000000000000000000000000	ulps=0 floats=1
+VectorNormalize2 v:c286ec9b4221429b80000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:429d2e40 b:bf5bc0403f03527880000000	ulps=0 floats=1
+VectorNormalize2 v:c269c16dc28d533e08275254 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42b764c4 b:bf232676bf4546c604e990a3	ulps=0 floats=1
+VectorNormalize2 v:c71868a6c2ae9e6f1d525301 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:471868bf b:bf7fffd6bb12a71815b0a3c1	ulps=0 floats=1
+VectorNormalize2 v:c1e9bce840e846814105d821 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:41f9f7cc b:bf6f60d93e6de1693e8912f8	ulps=0 floats=1
+VectorNormalize2 v:c70f89e8470d7279c2ab1ef5 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:47498569 b:bf3657ba3f33af8cbad961a6	ulps=0 floats=1
+VectorNormalize2 v:c28e066442c0b675c22fe9e4 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42ff0a62 b:bf0e8f2b3f41700cbeb0934e	ulps=0 floats=1
+VectorNormalize2 v:c636061c4716624280000000 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:471d1e39 b:be944a453f75071080000000	ulps=0 floats=1
+VectorNormalize2 v:3f1bf86e4712877f42b36e05 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4712879a b:37883f343f7fffd13b1cbd58	ulps=0 floats=1
+VectorNormalize2 v:ff7fc99ec6f19ea2c64d5973 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:800000008000000080000000	ulps=0 floats=1
+VectorNormalize2 v:411873f542aadf5e0f5bba6e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42abee90 b:3de2ff223f7e6c330c23955e	ulps=0 floats=1
+VectorNormalize2 v:42b40000c1580fb0c26a5d9b b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:42d8797b b:3f54dd9ebdff82e4bf0a9433	ulps=0 floats=1
+VectorNormalize2 v:46639a5542b427c544fae0b0 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4665c1e6 b:3f7d99703bc8bb833e0bc42d	ulps=0 floats=1
+VectorNormalize2 v:c29f3fc2429d76dcc2c0a918 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:4313b5d7 b:bf09ffc03f0873d2bf26f3bd	ulps=0 floats=1
+VectorNormalize2 v:422a36ae468a2fd24295ee72 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:468a303e b:3b1da9fb3f7fff383b8ae090	ulps=0 floats=1
+VectorNormalize2 v:ff7fc99ec082701ec2b6ee50 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:800000008000000080000000	ulps=0 floats=1
+VectorNormalize2 v:c2c66d074234e38b4296888c b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:43047d2e b:bf3fb3ed3eaec28d3f116eda	ulps=0 floats=1
+VectorNormalize2 v:46ebf967d4b92de741fa503e b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:54b92de7 b:31a31c4ebf8000002cad05ac	ulps=0 floats=1
+VectorNormalize2 v:c281c7c8d06b9ba4471c1af7 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:506b9ba4 b:b18d0353bf80000036299dca	ulps=0 floats=1
+VectorNormalize2 v:42b4b412c5b8c63946be3ce7 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:46c3c469 b:3b6c4d29be719ff53f78c4fa	ulps=0 floats=1
+VectorNormalize2 v:c68102b9403a601cc1a8e267 b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:468102c0 b:bf7ffff23938ea4ebaa78fae	ulps=0 floats=1
+VectorNormalize2 v:c2c610c8c149f60159131cba b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:59131cba b:a92c556da7afb9183f800000	ulps=0 floats=1
+VectorNormalize2 v:42668873c532ccd37149f2ca b:cdcdcdcdcdcdcdcdcdcdcdcd	ok f:7f800000 b:000000008000000000000000	ulps=0 floats=1
+# VectorNormalizeFast (math::vector::normalize_fast)
+VectorNormalizeFast b:c1959e87c2944d8e45c415ae	ok n: b:bb430aa5bc41535f3f7f9d00	ulps=0 floats=1
+VectorNormalizeFast b:41b8bc554231a14347094582	ok n: b:3a2c41033aa5a0d93f7ffe53	ulps=0 floats=1
+VectorNormalizeFast b:c230e22a46c3872945da3489	ok n: b:badeaf493f76282d3e895a61	ulps=0 floats=1
+VectorNormalizeFast b:c6507269c2a21a08eb85df8c	ok n: b:7f8000007f8000007f800000	ulps=0 floats=1
+VectorNormalizeFast b:cc7c5e294291443241137973	ok n: b:bf7f923835931c3b341558a9	ulps=0 floats=1
+VectorNormalizeFast b:41f9cbfd469a9ca1c2989654	ok n: b:3ace8bc33f7faef2bb7c55d3	ulps=0 floats=1
+VectorNormalizeFast b:bf8000004333fd71c2c7add7	ok n: b:bb9eec103f5f78c9bef7ead7	ulps=0 floats=1
+VectorNormalizeFast b:c676e54942831d11c2bb387e	ok n: b:bf7f92033b87b861bbc1cc78	ulps=0 floats=1
+VectorNormalizeFast b:c0da7f69c232770e4257ad14	ok n: b:bdc6dca5bf226d483f444b3a	ulps=0 floats=1
+VectorNormalizeFast b:43340000c2c7f956418e3e01	ok n: b:3f5e9295bef7454b3dafe270	ulps=0 floats=1
+VectorNormalizeFast b:c2b1f23b7f800000ff800000	ok n: b:7f800000ff8000007f800000	ulps=0 floats=1
+VectorNormalizeFast b:c20db82e41003cfcc1502bbf	ok n: b:bf6ac8bb3e547332beac6fbf	ulps=0 floats=1
+VectorNormalizeFast b:42b40000d391fcba425143d1	ok n: b:2e9dc267bf7fe5fc2e37688a	ulps=0 floats=1
+VectorNormalizeFast b:c25542c4c61d05ce42428903	ok n: b:bbad9844bf7fa2373b9e5a24	ulps=0 floats=1
+VectorNormalizeFast b:c406a29d670d373ec6c2c23c	ok n: b:7f800000ff8000007f800000	ulps=0 floats=1
+VectorNormalizeFast b:461f35fc46dce16442bb582e	ok n: b:3ead981a3f70d5c23b4c44f3	ulps=0 floats=1
+VectorNormalizeFast b:c61c41b846fb82b942a045d7	ok n: b:be97c9493f7450a43b1baffe	ulps=0 floats=1
+VectorNormalizeFast b:419f8251c2c7d67942a077fb	ok n: b:3e1d40c0bf4502e23f1e32f1	ulps=0 floats=1
+VectorNormalizeFast b:465803ec33d6bf95c2041b77	ok n: b:3f7fa7aa2cfe27cfbb1c5977	ulps=0 floats=1
+VectorNormalizeFast b:42b72863c280b81c4334028f	ok n: b:3edcd92abe9b350e3f590d83	ulps=0 floats=1
+VectorNormalizeFast b:47146ac741e9331545530182	ok n: b:3f7ed18e3a4830ee3db5238f	ulps=0 floats=1
+VectorNormalizeFast b:c2938247c2a304f946683c6a	ok n: b:bba2969ebbb3af3a3f7ffa15	ulps=0 floats=1
+VectorNormalizeFast b:c54db1e4c19c1bfd42774ddb	ok n: b:bf7f80abbbc1e9053c9997f8	ulps=0 floats=1
+VectorNormalizeFast b:423f7e074268053000800000	ok n: b:3f22d0e63f45465d0001b354	ulps=0 floats=1
+VectorNormalizeFast b:45ca7c65452e8929470215d4	ok n: b:3e42d4c03da7f0043f7a55be	ulps=0 floats=1
+VectorNormalizeFast b:4173dea4427f458b42a5089c	ok n: b:3e13ce073f1ab71e3f480c29	ulps=0 floats=1
+VectorNormalizeFast b:45bdde0245a8a976429ba722	ok n: b:3f3f0fd53f29b9213c1ca1d8	ulps=0 floats=1
+VectorNormalizeFast b:b3d6bf95414faa6d42afef9e	ok n: b:b09a7a383e1561f13f7d1dbc	ulps=0 floats=1
+VectorNormalizeFast b:c2c05e8cc284f7e2bf1e3786	ok n: b:bf52954fbf118ed9bbad327a	ulps=0 floats=1
+VectorNormalizeFast b:000000000000000000000000	ok n: b:000000000000000000000000	ulps=0 floats=1
+VectorNormalizeFast b:4273450f44ffd074c6ab55d8	ok n: b:3b34be9d3dbe109dbf7e98f3	ulps=0 floats=1
+VectorNormalizeFast b:470466acc0eba51642459ed2	ok n: b:3f7fddf2b963b18e3abef3c0	ulps=0 floats=1
+VectorNormalizeFast b:837ebe44c334000046f8b291	ok n: b:80004171bbb8f6d43f7f8e69	ulps=0 floats=1
+VectorNormalizeFast b:c0a9f6314217f7204242b77a	ok n: b:bdaf341b3f1ca6f33f48b8d7	ulps=0 floats=1
+VectorNormalizeFast b:000000000000000000000000	ok n: b:000000000000000000000000	ulps=0 floats=1
+VectorNormalizeFast b:468a6e10421477f3c69b5f90	ok n: b:3f2a00ea3ab654f3bf3ecfba	ulps=0 floats=1
+VectorNormalizeFast b:c1d6f45f77612e7446aca7e9	ok n: b:7f800000ff800000ff800000	ulps=0 floats=1
+VectorNormalizeFast b:46cdf61742b40000c3d99e3b	ok n: b:3f7f841e3b5f4ef6bc86fd20	ulps=0 floats=1
+VectorNormalizeFast b:46375c16066ad7f642626786	ok n: b:3f7fe3cd0028f7a43b9dfb0e	ulps=0 floats=1
+VectorNormalizeFast b:c220cbc24434000042b40000	ok n: b:bd6281e53f7d8f3a3dfd8f3a	ulps=0 floats=1
+VectorNormalizeFast b:408e8c39c705cc5947054d69	ok n: b:38c10b68bf3532123f34862a	ulps=0 floats=1
+VectorNormalizeFast b:2b16b78d46af5109c69ace81	ok n: b:23a4f7be3f3fe4acbf2971b0	ulps=0 floats=1
+VectorNormalizeFast b:c2b49b4a4680da90c2aa8e4c	ok n: b:bbb327653f7fa278bba92f19	ulps=0 floats=1
+VectorNormalizeFast b:4334028f42ac357f41f2f9ed	ok n: b:3f63ec1b3eda0b7f3e19d2f1	ulps=0 floats=1
+VectorNormalizeFast b:421195a542a751fec5e93f5e	ok n: b:3b9fc4fc3c379f7ebf7ff94d	ulps=0 floats=1
+VectorNormalizeFast b:c2c5bbe142bc5f330925f158	ok n: b:bf3958083f309187059b8b75	ulps=0 floats=1
+VectorNormalizeFast b:c4277d08c1fd3a1a429cc1f7	ok n: b:bf7da0c6bd3fbb263ded60e3	ulps=0 floats=1
+VectorNormalizeFast b:c2acbeba42a24284c1f1bfab	ok n: b:bf34a0b33f29aa00be7cc7ba	ulps=0 floats=1
+VectorNormalizeFast b:47060f1f46536719464b5d6b	ok n: b:3f605a0e3eb0e4f23eaa2b27	ulps=0 floats=1
+VectorNormalizeFast b:3f000000415a05f742779754	ok n: b:3c0108283e5bc7e73f799649	ulps=0 floats=1
+VectorNormalizeFast b:41db00b3470aee3242aa58a9	ok n: b:3a49c5973f7fffc63b1cf194	ulps=0 floats=1
+VectorNormalizeFast b:42107426455b06bb420d1ce2	ok n: b:3c28a27a3f7fb0be3c24bc0b	ulps=0 floats=1
+VectorNormalizeFast b:c5107296c0ca6819c4c36ead	ok n: b:bf53d7a0bb146bedbf0f4eb4	ulps=0 floats=1
+VectorNormalizeFast b:00000001426b1bf4c6d42afc	ok n: b:000000003b0d9da7bf7f9840	ulps=0 floats=1
+VectorNormalizeFast b:c51780df4218d124425aad42	ok n: b:bf7fa8fb3c80f0373cb881d5	ulps=0 floats=1
+VectorNormalizeFast b:41884739c3b40000424d3c50	ok n: b:3d3f9b8cbf7d14a13e1047ed	ulps=0 floats=1
+VectorNormalizeFast b:c172b91dc2c50c9343340000	ok n: b:bd96badebef4bbb63f5f8ef2	ulps=0 floats=1
+VectorNormalizeFast b:c69dc881424caf620d8295dc	ok n: b:bf7fa0b73b25cea706539065	ulps=0 floats=1
+VectorNormalizeFast b:45efc6e841a8ce8d41f1eb40	ok n: b:3f7ff1cc3b3430653b811d8e	ulps=0 floats=1
+VectorNormalizeFast b:46d3363ac2b2dd02c638afe4	ok n: b:3f6a867bbb469b2fbecd12a1	ulps=0 floats=1
+VectorNormalizeFast b:42a8a9b642b40000c0d08f76	ok n: b:3f2e80643f3a3b26bd57c7b6	ulps=0 floats=1
+VectorNormalizeFast b:000000000000000000000000	ok n: b:000000000000000000000000	ulps=0 floats=1
+VectorNormalizeFast b:d025e1aa4178960cc2a214c9	ok n: b:bf7f9a2030bf8506b1f9bf0c	ulps=0 floats=1
+VectorNormalizeFast b:19efdcf8c217e6d2c1a4cdcf	ok n: b:17317879bf60c75fbef3df05	ulps=0 floats=1
+VectorNormalizeFast b:4287447bc71216e742820af9	ok n: b:3aecf064bf7fe5273ae3c991	ulps=0 floats=1
+VectorNormalizeFast b:c2b56925c2c63085c1ae23ba	ok n: b:bf2a9c30bf3a63d4be23c597	ulps=0 floats=1
+VectorNormalizeFast b:422510fcc29f25c4422d3a59	ok n: b:3ed3e5eabf4c4cce3ede6010	ulps=0 floats=1
+VectorNormalizeFast b:418b9fbd45c44461c27f0ba1	ok n: b:3b35d8173f7f9d80bc261567	ulps=0 floats=1
+VectorNormalizeFast b:000000000000000000000000	ok n: b:000000000000000000000000	ulps=0 floats=1
+VectorNormalizeFast b:c242ebfa4333fd71181052b8	ok n: b:be85b6253f76eff514460110	ulps=0 floats=1
+VectorNormalizeFast b:41c86c4542bddc1e420477c5	ok n: b:3e7729243f6a22643ea35bda	ulps=0 floats=1
+VectorNormalizeFast b:d0576970c6d07445424ecc1d	ok n: b:bf7fa50eb5f7633731756bd6	ulps=0 floats=1
+VectorNormalizeFast b:c22cebb5c0ffe8724298d627	ok n: b:befae089bdb9a36e3f5dbd0f	ulps=0 floats=1
+VectorNormalizeFast b:c2a1af85c1cbc7884719ce76	ok n: b:bb06669aba2964233f7fb3db	ulps=0 floats=1
+VectorNormalizeFast b:c28019687f800000c334028f	ok n: b:7f800000ff8000007f800000	ulps=0 floats=1
+VectorNormalizeFast b:c277df2d43340000c18bf962	ok n: b:bea5c9693f70c85dbdbb3da8	ulps=0 floats=1
+VectorNormalizeFast b:c6074876c2be8e5b44fecc5c	ok n: b:bf792c3dbc2f7d333e6aa6d7	ulps=0 floats=1
+VectorNormalizeFast b:44a4b20fc280ba9fc2c73acd	ok n: b:3f7e919cbd46f9bcbd99f958	ulps=0 floats=1
+VectorNormalizeFast b:46fb6cc1c1927bcd418004a6	ok n: b:3f7f91deba14e6053a0220f0	ulps=0 floats=1
+VectorNormalizeFast b:42a3a7a5c2c4a0eac2ad6dd9	ok n: b:3f076391bf22aae4bf0f7999	ulps=0 floats=1
+VectorNormalizeFast b:428bcad1c6843de042c399b8	ok n: b:3b873b1fbf7fda7f3bbd37da	ulps=0 floats=1
+VectorNormalizeFast b:42945b4ac7022f3a7fc00000	ok n: b:7fc000007fc000007fc00000	ulps=0 floats=1
+VectorNormalizeFast b:c2a6952cc0bde9dc468faab9	ok n: b:bb9462a4b9a92ae03f7ff213	ulps=0 floats=1
+VectorNormalizeFast b:4699ec7246defdd3c7098661	ok n: b:3ecbde2c3f13ac5abf3625f1	ulps=0 floats=1
+VectorNormalizeFast b:c256aeda423b7a71470031ae	ok n: b:bad602743abae3e43f7f9578	ulps=0 floats=1
+VectorNormalizeFast b:42b4cdd441963a88c22ab8a4	ok n: b:3f631f9b3e3cb710bed67527	ulps=0 floats=1
+VectorNormalizeFast b:33d6bf95424d4bbac66c7ae0	ok n: b:2ce878413b5e3cb5bf7ffea3	ulps=0 floats=1
+VectorNormalizeFast b:7149f2cac241eb68c6872fc0	ok n: b:ff8000007f8000007f800000	ulps=0 floats=1
+VectorNormalizeFast b:459cda73c11f989246b02d82	ok n: b:3e5e68e6b9e24c783f79cf91	ulps=0 floats=1
+VectorNormalizeFast b:c334028fc2c1609ac67f4012	ok n: b:bc343874bbc19a80bf7f8c7f	ulps=0 floats=1
+VectorNormalizeFast b:ac257f4f429872d8c286b9d1	ok n: b:a8cfe2453f3f7e42bf293b39	ulps=0 floats=1
+VectorNormalizeFast b:c21d413342a19ea642429314	ok n: b:bec4a2d53f4a18203ef34d4c	ulps=0 floats=1
+VectorNormalizeFast b:464ced3cc0e48eb142ab1289	ok n: b:3f7f8c02ba0e81e43bd5547f	ulps=0 floats=1
+VectorNormalizeFast b:b3d6bf95c6265aaac26f1154	ok n: b:ad24faddbf7f9a36bbb7a9c7	ulps=0 floats=1
+VectorNormalizeFast b:c6ed22cbc71a8cc6bf811cbe	ok n: b:bf1b9d35bf4ad6a6b7a973f4	ulps=0 floats=1
+VectorNormalizeFast b:c12e2588c2492378c5bd2fb8	ok n: b:baeb6d2abc07f54fbf7fc22e	ulps=0 floats=1
+VectorNormalizeFast b:46f709eb4637f95113e5be82	ok n: b:3f6fc1a13eb28cf30c5ef8bc	ulps=0 floats=1
+VectorNormalizeFast b:00000000c24b848c429a8dc1	ok n: b:00000000bf0cb32f3f55b2c4	ulps=0 floats=1
+VectorNormalizeFast b:c289e43f3c14ea1e456481b3	ok n: b:bc9a695d3626c14e3f7fe1f7	ulps=0 floats=1
+VectorNormalizeFast b:c1aa6a9ec2bc9c6942b40000	ok n: b:be250bf9bf36ab003f2e540d	ulps=0 floats=1
+# Vec2Normalize (math::vector::normalize_2d)
+Vec2Normalize b:40d2ce9ec237e1a9	ok f:4239c28f b:3e11424dbf7d6943	ulps=0 floats=1
+Vec2Normalize b:c27a28923e980321	ok f:427a294b b:bf7fff433b9b8f66	ulps=0 floats=1
+Vec2Normalize b:428e5758470a0e40	ok f:470a0e53 b:3b03f91d3f7fffdd	ulps=0 floats=1
+Vec2Normalize b:4219e429c28d7f3d	ok f:42a110b9 b:3ef498efbf60e5d7	ulps=0 floats=1
+Vec2Normalize b:c2811ad9abeb1003	ok f:42811ad9 b:bf800000a8e90d07	ulps=0 floats=1
+Vec2Normalize b:00000000d0991fe6	ok f:50991fe6 b:00000000bf800000	ulps=0 floats=1
+Vec2Normalize b:42b9cf9d4014d143	ok f:42b9de82 b:3f7feb7d3cccf7da	ulps=0 floats=1
+Vec2Normalize b:c13c044b46d32367	ok f:46d32368 b:b9e3f7393f7fffff	ulps=0 floats=1
+Vec2Normalize b:471b07907f7fc99e	ok f:7f800000 b:0000000000000000	ulps=0 floats=1
+Vec2Normalize b:4643b997463a1f46	ok f:46870bc8 b:3f3983553f306947	ulps=0 floats=1
+Vec2Normalize b:419e472f426e533b	ok f:427b1f06 b:3ea15a653f72f491	ulps=0 floats=1
+Vec2Normalize b:c3b40000c272db95	ok f:43b68abd b:bf7c6f65be2a4b41	ulps=0 floats=1
+Vec2Normalize b:3b340000c1387234	ok f:41387234 b:3979d43fbf800000	ulps=0 floats=1
+Vec2Normalize b:4280d93b1f74d87c	ok f:4280d93b b:3f8000001c733bb0	ulps=0 floats=1
+Vec2Normalize b:46f7c8a4419d7d06	ok f:46f7c8a7 b:3f7ffffd3a22b5e3	ulps=0 floats=1
+Vec2Normalize b:c250f8fac28b9098	ok f:42ae57fc b:bf196c84bf4cee95	ulps=0 floats=1
+Vec2Normalize b:c2328c59459ac89d	ok f:459aca39 b:bc13a57a3f7ffd57	ulps=0 floats=1
+Vec2Normalize b:c22299dfc694f27c	ok f:4694f292 b:bb0bbbbbbf7fffda	ulps=0 floats=1
+Vec2Normalize b:61942717463fd235	ok f:7f800000 b:0000000000000000	ulps=0 floats=1
+Vec2Normalize b:45088a59c1a0d86c	ok f:45088bd4 b:3f7ffd39bc16c741	ulps=0 floats=1
+Vec2Normalize b:46f9e79142252ccb	ok f:46f9e79f b:3f7ffff23aa93421	ulps=0 floats=1
+Vec2Normalize b:46779a72c29c8e59	ok f:46779b38 b:3f7fff34bba1dcfa	ulps=0 floats=1
+Vec2Normalize b:453df518c29e5632	ok f:453e0597 b:3f7fe9c7bcd55038	ulps=0 floats=1
+Vec2Normalize b:0000000000000000	ok f:00000000 b:0000000000000000	ulps=0 floats=1
+Vec2Normalize b:41ed409d4210d483	ok f:423b3601 b:3f2236e13f460bf5	ulps=0 floats=1
+Vec2Normalize b:c71a83d546e7751c	ok f:47410c9c b:bf4ce6733f19775f	ulps=0 floats=1
+Vec2Normalize b:428ca224c280e8b6	ok f:42bec685 b:3f3cb6f9bf2cfb61	ulps=0 floats=1
+Vec2Normalize b:c6b430b7c24fe0c0	ok f:46b430d5 b:bf7fffd5bb13aaf6	ulps=0 floats=1
+Vec2Normalize b:42257555c6348b11	ok f:46348b5d b:3b6a9be5bf7fff94	ulps=0 floats=1
+Vec2Normalize b:4090d0b1c6f529d6	ok f:46f529d6 b:3917375cbf800000	ulps=0 floats=1
+Vec2Normalize b:b95605afc6bcce14	ok f:46bcce14 b:b2111891bf800000	ulps=0 floats=1
+Vec2Normalize b:42bcafc5429a11ec	ok f:42f39933 b:3f464ae93f21e9e8	ulps=0 floats=1
+Vec2Normalize b:d98fa7da4270f28f	ok f:598fa7da b:bf8000002856b05c	ulps=0 floats=1
+Vec2Normalize b:42670191c7179736	ok f:47179741 b:3ac30e79bf7fffee	ulps=0 floats=1
+Vec2Normalize b:45b2a66bc1519b99	ok f:45b2a68a b:3f7fffd4bb162e2b	ulps=0 floats=1
+Vec2Normalize b:0000000000000000	ok f:00000000 b:0000000000000000	ulps=0 floats=1
+Vec2Normalize b:c220ab34c6e90ff1	ok f:46e90fff b:bab07b40bf7ffff1	ulps=0 floats=1
+Vec2Normalize b:c711e50dbf5dfeb9	ok f:4711e50d b:bf800000b7c2c425	ulps=0 floats=1
+Vec2Normalize b:c7075f974689e66b	ok f:4717ebd7 b:bf641d903ee85f86	ulps=0 floats=1
+Vec2Normalize b:c32c78dec694ed5a	ok f:4694eeea b:bc143afabf7ffd51	ulps=0 floats=1
+Vec2Normalize b:c276262144340000	ok f:4434a7ff b:bdae67463f7f11f0	ulps=0 floats=1
+Vec2Normalize b:c2a1e63940cd787b	ok f:42a26867 b:bf7f32cd3da1f083	ulps=0 floats=1
+Vec2Normalize b:55b1e41d41ed50d2	ok f:55b1e41d b:3f8000002baac22d	ulps=0 floats=1
+Vec2Normalize b:c334028fc227b8ab	ok f:4338d438 b:bf79534ebe684e0b	ulps=0 floats=1
+Vec2Normalize b:41e7bb85c6951206	ok f:46951211 b:3ac6fa5cbf7fffed	ulps=0 floats=1
+Vec2Normalize b:4286f52a42c1bb88	ok f:42ec1b0b b:3f12544b3f520e79	ulps=0 floats=1
+Vec2Normalize b:4274b925c6df6355	ok f:46df6376 b:3b0c3981bf7fffda	ulps=0 floats=1
+Vec2Normalize b:f9e6f33ec6a2df66	ok f:7f800000 b:8000000080000000	ulps=0 floats=1
+Vec2Normalize b:ebebabecc1f0d179	ok f:7f800000 b:8000000080000000	ulps=0 floats=1
+Vec2Normalize b:4202593fef679b32	ok f:7f800000 b:0000000080000000	ulps=0 floats=1
+Vec2Normalize b:46072ba6445e0f21	ok f:4607e192 b:3f7ea9423dd12dfc	ulps=0 floats=1
+Vec2Normalize b:c58501efc20e6864	ok f:45850320 b:bf7ffdb5bc090aa1	ulps=0 floats=1
+Vec2Normalize b:c70d5f6cc70cef2f	ok f:47479f19 b:bf354cddbf34bced	ulps=0 floats=1
+Vec2Normalize b:41fe83e742907f6c	ok f:429de301 b:3ece56653f6a4a77	ulps=0 floats=1
+Vec2Normalize b:470258b1c51ca51f	ok f:4702b6af b:3f7f47ebbd9964a0	ulps=0 floats=1
+Vec2Normalize b:4333fd71c664f77d	ok f:4664fbe9 b:3c4939bfbf7ffb0e	ulps=0 floats=1
+Vec2Normalize b:c074ce2690738c73	ok f:4074ce26 b:bf8000008f7eaf97	ulps=0 floats=1
+Vec2Normalize b:00000001427b6394	ok f:427b6394 b:000000003f7fffff	ulps=0 floats=1
+Vec2Normalize b:0000000146c564e7	ok f:46c564e7 b:000000003f800000	ulps=0 floats=1
+Vec2Normalize b:424d7e86f9a2f407	ok f:7f800000 b:0000000080000000	ulps=0 floats=1
+Vec2Normalize b:c2c65895c3b40000	ok f:43bab486 b:be87fb0cbf76ce65	ulps=0 floats=1
+Vec2Normalize b:c3b400005d899cf7	ok f:5d899cf7 b:a5a76d063f800000	ulps=0 floats=1
+Vec2Normalize b:457cf0c441db7685	ok f:457cf241 b:3f7ffe7f3bde1cc9	ulps=0 floats=1
+Vec2Normalize b:c29782efc0b3e188	ok f:4297ed91 b:bf7f4c53bd978cef	ulps=0 floats=1
+Vec2Normalize b:0000000000000000	ok f:00000000 b:0000000000000000	ulps=0 floats=1
+Vec2Normalize b:c21fff95c2a0b7e2	ok f:42b3871f b:bee426d7bf652da6	ulps=0 floats=1
+Vec2Normalize b:c60cf1719be33f70	ok f:460cf171 b:bf800000954e610e	ulps=0 floats=1
+Vec2Normalize b:42b8af9442b6d4d4	ok f:4301f049 b:3f35ee313f341a86	ulps=0 floats=1
+Vec2Normalize b:42341f6742800158	ok f:429c8362 b:3f134eef3f515f01	ulps=0 floats=1
+Vec2Normalize b:c28e5c2743b3feb8	ok f:43b77ad6 b:be46a0a93f7b2347	ulps=0 floats=1
+Vec2Normalize b:4225d505c62dd3d5	ok f:462dd424 b:3b74392dbf7fff8b	ulps=0 floats=1
+Vec2Normalize b:c2c75660c6f460be	ok f:46f4610f b:bb50d100bf7fffab	ulps=0 floats=1
+Vec2Normalize b:c76542d9c2944d41	ok f:476542e5 b:bf7ffff2baa59921	ulps=0 floats=1
+Vec2Normalize b:c6a121192f0f804d	ok f:46a12119 b:bf80000027e3fe21	ulps=0 floats=1
+Vec2Normalize b:45d69703458c340b	ok f:46002a6b b:3f564ffe3f0c05a4	ulps=0 floats=1
+Vec2Normalize b:46e7b893c26ae596	ok f:46e7b8b1 b:3f7fffdfbb01c108	ulps=0 floats=1
+Vec2Normalize b:46d40b7fc28571ee	ok f:46d40ba9 b:3f7fffcdbb211b48	ulps=0 floats=1
+Vec2Normalize b:b3d6bf952e809654	ok f:33d6bf98 b:bf7ffffd3a1949b2	ulps=0 floats=1
+Vec2Normalize b:467d23d342c1add9	ok f:467d24fb b:3f7ffed53bc3dd25	ulps=0 floats=1
+Vec2Normalize b:41b7575446da353f	ok f:46da3543 b:3a57182a3f7ffffb	ulps=0 floats=1
+Vec2Normalize b:d939b81bc08cf6ee	ok f:5939b81b b:bf800000a6c24f24	ulps=0 floats=1
+Vec2Normalize b:c2b7ee7f42c2bebe	ok f:4305efe0 b:bf2fc74c3f3a1cd6	ulps=0 floats=1
+Vec2Normalize b:4572e46c4289b058	ok f:4572ee2e b:3f7ff5b83c9118b3	ulps=0 floats=1
+Vec2Normalize b:c6b467534298cb05	ok f:46b46794 b:bf7fffa43b58d17d	ulps=0 floats=1
+Vec2Normalize b:c24b23cdc29f740e	ok f:42bd0e19 b:bf09893fbf57ea8d	ulps=0 floats=1
+Vec2Normalize b:41038481425de435	ok f:42605070 b:3e1618653f7d3c29	ulps=0 floats=1
+Vec2Normalize b:46918f25c1c59454	ok f:46918f2d b:3f7ffff2baadbea9	ulps=0 floats=1
+Vec2Normalize b:c5523c5b428c9cb2	ok f:4552481c b:bf7ff1b03cab2ee7	ulps=0 floats=1
+Vec2Normalize b:46e3b338428c7da6	ok f:46e3b363 b:3f7fffcf3b1df38f	ulps=0 floats=1
+Vec2Normalize b:427feee3428bf106	ok f:42bda0f6 b:3f2cc1743f3cec01	ulps=0 floats=1
+Vec2Normalize b:40a27ac446d0688f	ok f:46d0688f b:3947953b3f800000	ulps=0 floats=1
+Vec2Normalize b:456adf6dc68fff97	ok f:4692f5fb b:3e4c91ccbf7ad6ea	ulps=0 floats=1
+Vec2Normalize b:c2b269a946fde514	ok f:46fde553 b:bb33e4303f7fffc1	ulps=0 floats=1
+Vec2Normalize b:421265c94232f736	ok f:4267375e b:3f2216f93f462613	ulps=0 floats=1
+Vec2Normalize b:b813638ac68ffa3b	ok f:468ffa3b b:b1030865bf800000	ulps=0 floats=1
+Vec2Normalize b:c290f3f84254e907	ok f:42b3d836 b:bf4e55633f1788a0	ulps=0 floats=1
+Vec2Normalize b:c28b56e2464ebb1d	ok f:464ebbd8 b:bbac8b863f7fff18	ulps=0 floats=1
+Vec2Normalize b:c6b5511fc1f1ebb9	ok f:46b55129 b:bf7ffff1baaac870	ulps=0 floats=1
+Vec2Normalize b:72118639caf35e3a	ok f:7f800000 b:0000000080000000	ulps=0 floats=1
+Vec2Normalize b:c5b66356c6446d77	ok f:4658907e b:bed799a7bf683242	ulps=0 floats=1
+# Vec2DistanceSq (math::vector::distance_squared_2d)
+Vec2DistanceSq v:42a19669c7013cb8 v:46a1cdddc22ca2a9	ok f:4eb4e1c3	ulps=0
+Vec2DistanceSq v:46f9f7fec20eb51f v:41c54b4fda4febdb	ok f:7528df45	ulps=0
+Vec2DistanceSq v:c23218f1c333fd71 v:42b1959dc163cf1f	ok f:4730bf03	ulps=0
+Vec2DistanceSq v:c28945f1c2bffd19 v:4284ef81c2ad22b8	ok f:468f4c1c	ulps=0
+Vec2DistanceSq v:4719698d412c1487 v:4610117241532429	ok f:4e575699	ulps=0
+Vec2DistanceSq v:c11fa096414c0efd v:c1f5fb24c11d34e8	ok f:446b4fbb	ulps=0
+Vec2DistanceSq v:41d122d8c2ac94c5 v:468b59ad41e65dc3	ok f:4d9744de	ulps=0
+Vec2DistanceSq v:c69977aec0654d0e v:423656d9fd84233c	ok f:7f800000	ulps=0
+Vec2DistanceSq v:42a83d0b470918a6 v:c090d7e9c27a97f0	ok f:4e935d58	ulps=0
+Vec2DistanceSq v:a612d3a1c5d8d577 v:423372f144c37702	ok f:4c89e33f	ulps=0
+Vec2DistanceSq v:c29d347241a4392b v:c6885eca4697a02b	ok f:4e219b7a	ulps=0
+Vec2DistanceSq v:c20c2f9a8311b020 v:c6308ef5c5389473	ok f:4d01552b	ulps=0
+Vec2DistanceSq v:00800000c6b2e185 v:427709bec291a17a	ok f:4df866db	ulps=0
+Vec2DistanceSq v:a2030f7bc185dd5b v:42b017744223a35d	ok f:462d0af1	ulps=0
+Vec2DistanceSq v:c71178e242421326 v:424c97f5c2ba4da0	ok f:4ea5c946	ulps=0
+Vec2DistanceSq v:42735f7ac6c4a17d v:3bb4000042c8befd	ok f:4e183ce6	ulps=0
+Vec2DistanceSq v:c1239241cd69ee00 v:46a1be1cc3f9ad5e	ok f:5b55c2e1	ulps=0
+Vec2DistanceSq v:c2a4633b414c76aa v:0000000000000000	ok f:45d838ff	ulps=0
+Vec2DistanceSq v:46ecd1c243b40000 v:f149f2ca46bbb7c9	ok f:7f800000	ulps=0
+Vec2DistanceSq v:c665f4b9c25c9a62 v:43e3af0b4296997c	ok f:4d5b8ed8	ulps=0
+Vec2DistanceSq v:46f423a646baf88a v:4334028fbc2f98bf	ok f:4eb75ab4	ulps=0
+Vec2DistanceSq v:7f7fc99ec6773a7e v:46bf3809c28f89dd	ok f:7f800000	ulps=0
+Vec2DistanceSq v:46f02f70428cf74d v:c6e969364603dfc0	ok f:4f5f3634	ulps=0
+Vec2DistanceSq v:42c7728946f219f0 v:421fb635c1d1331a	ok f:4e65583b	ulps=0
+Vec2DistanceSq v:425ab41946642837 v:46ad0f4bc2afdf96	ok f:4e27dd24	ulps=0
+Vec2DistanceSq v:f2e442144704014f v:c3d2fbad46c92ada	ok f:7f800000	ulps=0
+Vec2DistanceSq v:c558b887c64ebd01 v:c2aaa19941bcee07	ok f:4d327641	ulps=0
+Vec2DistanceSq v:425ca54943340000 v:4282dc7a41097a51	ok f:46e65c12	ulps=0
+Vec2DistanceSq v:46ba8b6742b8ce4d v:c283892cc2acab23	ok f:4e08b0c6	ulps=0
+Vec2DistanceSq v:40e2341f458333eb v:42be4b03c20f7337	ok f:4b88da2b	ulps=0
+Vec2DistanceSq v:dffe7983c287bcc4 v:c2a30b6ac7106b75	ok f:7f800000	ulps=0
+Vec2DistanceSq v:c690a771c274f7ce v:426af9794334028f	ok f:4da48aad	ulps=0
+Vec2DistanceSq v:c6c64752c6e10954 v:c213b289c712761e	ok f:4e2b20a6	ulps=0
+Vec2DistanceSq v:c21419bdc70925ce v:0000000000000000	ok f:4e92f303	ulps=0
+Vec2DistanceSq v:c1942bc0c334028f v:41b6ebbec1dddee0	ok f:46c289be	ulps=0
+Vec2DistanceSq v:c2b70548c2c3b721 v:c688fcb2c6e5fd4c	ok f:4e8ae516	ulps=0
+Vec2DistanceSq v:c1bb0c4ac22f37fa v:c21410d7db76df4b	ok f:776e11e7	ulps=0
+Vec2DistanceSq v:46a9912a46cfc54f v:c640bc4641dc38c5	ok f:4ede4454	ulps=0
+Vec2DistanceSq v:0000000000000000 v:47141e45c7085971	ok f:4f1e522b	ulps=0
+Vec2DistanceSq v:425e109144340000 v:966cf5bb426d606f	ok f:48d69f85	ulps=0
+Vec2DistanceSq v:c1c5416dc2991917 v:4683bcfac6a5e300	ok f:4e2eb617	ulps=0
+Vec2DistanceSq v:42bf18fa4277572b v:4701119546d617a4	ok f:4eda837f	ulps=0
+Vec2DistanceSq v:640dafbbbbd2b688 v:41bf1ce5c286e929	ok f:7f800000	ulps=0
+Vec2DistanceSq v:3b34000042aa1551 v:c29baf94428b2459	ok f:45c4da51	ulps=0
+Vec2DistanceSq v:c182d366421a03a4 v:423860cf4252b622	ok f:45802512	ulps=0
+Vec2DistanceSq v:c61dff62c1d1ffcc v:c1ef09c580000000	ok f:4cc1e030	ulps=0
+Vec2DistanceSq v:42ae4753428124a2 v:c70e5cb1bd178c99	ok f:4e9f181e	ulps=0
+Vec2DistanceSq v:46e09842c214acf8 v:c2a8e0c94279d291	ok f:4e46342b	ulps=0
+Vec2DistanceSq v:f149f2cac2b20b51 v:42bf4e29c1b8235a	ok f:7f800000	ulps=0
+Vec2DistanceSq v:c68cb6ac45fda556 v:46a06028753d8d43	ok f:7f800000	ulps=0
+Vec2DistanceSq v:c619186c46007990 v:43b400008678801b	ok f:4d22e1f4	ulps=0
+Vec2DistanceSq v:c1b499596d648ac1 v:c08f4749c25c3060	ok f:7f800000	ulps=0
+Vec2DistanceSq v:0000000000000000 v:42497028c7048276	ok f:4e892dac	ulps=0
+Vec2DistanceSq v:4277db89c09313d4 v:0000000000000000	ok f:45714b5e	ulps=0
+Vec2DistanceSq v:4295800042559fa7 v:c29fd875c1e3bfe2	ok f:46ef463a	ulps=0
+Vec2DistanceSq v:4286be73c61e5b4d v:c2381048c1f31b57	ok f:4cc2c39e	ulps=0
+Vec2DistanceSq v:c2b2cefec2a5e00f v:4228ab66c6e62d78	ok f:4e4dccec	ulps=0
+Vec2DistanceSq v:c2480197c22d964f v:bf8000002384e4b1	ok f:4585e377	ulps=0
+Vec2DistanceSq v:4593ea0e4714f536 v:468462694264dba6	ok f:4ebe9af5	ulps=0
+Vec2DistanceSq v:c2127a21c0d9e989 v:23f55a5dc15b5273	ok f:44ad91a5	ulps=0
+Vec2DistanceSq v:41b481b342ab43b5 v:c28c879242bf7c53	ok f:46083d22	ulps=0
+Vec2DistanceSq v:471265da429e31f1 v:c2954c2ac19e150d	ok f:4ea81be3	ulps=0
+Vec2DistanceSq v:0000000000000000 v:424246b742b7afcb	ok f:4628a89d	ulps=0
+Vec2DistanceSq v:c2c7be9c4276cd40 v:47017e9c5e40170c	ok f:7d102294	ulps=0
+Vec2DistanceSq v:40f2c23ec6b8cb1a v:c6658496c21decb3	ok f:4e3871e9	ulps=0
+Vec2DistanceSq v:c08e3279400e5b43 v:470dce2fbf7242fe	ok f:4e9d2365	ulps=0
+Vec2DistanceSq v:42acd415c66cfc7f v:43b400004630feb3	ok f:4e2761af	ulps=0
+Vec2DistanceSq v:c2893edec1016f65 v:c21574d2c7042b09	ok f:4e886824	ulps=0
+Vec2DistanceSq v:c717f302410e2570 v:c211f0a3c1782fc4	ok f:4eb40a96	ulps=0
+Vec2DistanceSq v:46f044e2423c754f v:0000000000000000	ok f:4e61815d	ulps=0
+Vec2DistanceSq v:6aa6f41dc2405d86 v:42053b96c6e9cf7f	ok f:7f800000	ulps=0
+Vec2DistanceSq v:4298b4b34645cbe9 v:41ccfc07471301d2	ok f:4e14b666	ulps=0
+Vec2DistanceSq v:c6c390bdc2c2b31d v:c2ba3571c2a725f8	ok f:4e1449dd	ulps=0
+Vec2DistanceSq v:41d89c6cc27cd0b4 v:c5786ab5c58b01de	ok f:4c067076	ulps=0
+Vec2DistanceSq v:0000000000000000 v:2ce1f6e64632ee7d	ok f:4cfa2108	ulps=0
+Vec2DistanceSq v:c2c5c69cc26c7d5a v:42881e67c6a6f353	ok f:4dd8904d	ulps=0
+Vec2DistanceSq v:c24c319e7fc00000 v:46c96fa746c11751	ok f:7fc00000	ulps=0
+Vec2DistanceSq v:c2099b4a43b40000 v:426aa78146cb6cbf	ok f:4e1d35d2	ulps=0
+Vec2DistanceSq v:465e1c7ac6eeb988 v:c4dc660bc71253ae	ok f:4d907600	ulps=0
+Vec2DistanceSq v:428c7743c2666105 v:41fa4686be4f542e	ok f:459656df	ulps=0
+Vec2DistanceSq v:c1ae6ab1c6669fef v:c2abb0064292cbf1	ok f:4d51d712	ulps=0
+Vec2DistanceSq v:0000000000000000 v:c71691428b3acebb	ok f:4eb11d18	ulps=0
+Vec2DistanceSq v:c1b62abd44340000 v:46b4d543c6369140	ok f:4e24ac43	ulps=0
+Vec2DistanceSq v:46833077c2c0f7bf v:c2bbd73446876aac	ok f:4e0c6a18	ulps=0
+Vec2DistanceSq v:42b9fe31c0372efb v:3f1b037ec713b3c6	ok f:4eaa698e	ulps=0
+Vec2DistanceSq v:41abb6f74698b999 v:c8cf731043e7f684	ok f:52287678	ulps=0
+Vec2DistanceSq v:0000000000000000 v:c69c4cc142bfd5c3	ok f:4dbedc64	ulps=0
+Vec2DistanceSq v:3a2e66ac470d9453 v:438810f346eee59a	ok f:4bf5745a	ulps=0
+Vec2DistanceSq v:00000001466f93d2 v:46b12f55c707d227	ok f:4f344917	ulps=0
+Vec2DistanceSq v:c6a079d746cb857a v:7149f2ca46bdac06	ok f:7f800000	ulps=0
+Vec2DistanceSq v:41f63e2c414b58bd v:45de1a29c287ec96	ok f:4c3f0d64	ulps=0
+Vec2DistanceSq v:c123bf6a426f4d86 v:426151ecc04cce61	ok f:46034c32	ulps=0
+Vec2DistanceSq v:423f1f04c6e524f0 v:468514bc46e1f545	ok f:4f5b765f	ulps=0
+Vec2DistanceSq v:4164f2d9c6e5a700 v:45bb62c743b40000	ok f:4e5ba009	ulps=0
+Vec2DistanceSq v:84725e6cc24460c0 v:c270be27c24821be	ok f:4562732d	ulps=0
+Vec2DistanceSq v:423ba71fc080c3c9 v:41ed3bbbc696825f	ok f:4db0e731	ulps=0
+Vec2DistanceSq v:425635a041b34d73 v:41aa1cbfc22f39af	ok f:45a99c18	ulps=0
+Vec2DistanceSq v:86c4ee70c6ec723d v:c24048dd421817f3	ok f:4e5aef88	ulps=0
+Vec2DistanceSq v:4686e27fc1babaf1 v:c2b12b56428908ad	ok f:4d8f9b2d	ulps=0
+Vec2DistanceSq v:c29d4b51c208d237 v:42bf6f39ff800000	ok f:7f800000	ulps=0
+# Vec2Distance (math::vector::distance_2d)
+Vec2Distance v:46981c1f467790df v:426efb5f42b14cbe	ok f:46c34fee	ulps=0
+Vec2Distance v:46946d464704c70a v:c334028fc5190d06	ok f:4720daad	ulps=0
+Vec2Distance v:c282c19dc24674ea v:c278a8de45ef2172	ok f:45f0ae5d	ulps=0
+Vec2Distance v:46fe3a54c20745b6 v:4299d84146b7cc1e	ok f:471cb047	ulps=0
+Vec2Distance v:424f9f6194f09870 v:c1ad6004425cbbca	ok f:42b7f1b2	ulps=0
+Vec2Distance v:c6c75ae1460b4dbe v:c0bff699c29a6f54	ok f:46d353f7	ulps=0
+Vec2Distance v:45d8b413427523c4 v:c291f0a142363a53	ok f:45dafbfa	ulps=0
+Vec2Distance v:0000000000000000 v:40fc5e3c00800000	ok f:40fc5e3c	ulps=0
+Vec2Distance v:0000000000000000 v:c2b7c4b9468bc301	ok f:468bc37a	ulps=0
+Vec2Distance v:41e600bdc2b7b559 v:41f55b93c60fdf8b	ok f:460e7020	ulps=0
+Vec2Distance v:43b3feb842683922 v:410651214173b174	ok f:43b118ca	ulps=0
+Vec2Distance v:470744bf42343692 v:414ee04dc6c9f98b	ok f:4728df61	ulps=0
+Vec2Distance v:4604ec0e46d14801 v:c26372855b5a2f08	ok f:5b5a2f08	ulps=0
+Vec2Distance v:46a4ef69c238c70d v:c0666e66385c155f	ok f:46a4f6b6	ulps=0
+Vec2Distance v:c0df3aa142af6894 v:41b53a75c2a780f3	ok f:432dff57	ulps=0
+Vec2Distance v:9f0da584c2bf14ad v:52bf41d7c15efc2b	ok f:52bf41d7	ulps=0
+Vec2Distance v:40ac44649e906a39 v:c6b882254289ae24	ok f:46b88d1c	ulps=0
+Vec2Distance v:4719aba646908236 v:424f6aed42b112bc	ok f:47297ab4	ulps=0
+Vec2Distance v:008000003de07537 v:c6a20092c10166dd	ok f:46a20093	ulps=0
+Vec2Distance v:c27a99da8fde54ee v:46c325bf45e2d912	ok f:46cbb0e9	ulps=0
+Vec2Distance v:c265bfa14240a954 v:406277f1fef74ddd	ok f:7f800000	ulps=0
+Vec2Distance v:0000000000000000 v:c2a6a88ec1cce508	ok f:42ae5a50	ulps=0
+Vec2Distance v:47104cbac632bcc9 v:c24102a4c2a3cae1	ok f:47172552	ulps=0
+Vec2Distance v:3bb40000421c636e v:3f80000042c3a541	ok f:426aefb3	ulps=0
+Vec2Distance v:425d2faad59e51e0 v:2a3abd14c6c2dd29	ok f:559e51e0	ulps=0
+Vec2Distance v:426dab1c425bb980 v:c1fb39bec293928a	ok f:431d8851	ulps=0
+Vec2Distance v:427e80d0c2c78d59 v:c6cfd92fc6bda5b5	ok f:470c9ad6	ulps=0
+Vec2Distance v:0000000000000000 v:4269c27ac69530fa	ok f:46953128	ulps=0
+Vec2Distance v:c26d83df42962e3c v:7fc0000041e82a50	ok f:7fc00000	ulps=0
+Vec2Distance v:b26fecc346b02b5b v:c1bad87343a2f334	ok f:46ad9f94	ulps=0
+Vec2Distance v:46c3cdc37f800000 v:46fde645ac5f9ebe	ok f:7f800000	ulps=0
+Vec2Distance v:46c3acfbbf800000 v:c1bab3bc46f0937e	ok f:471b1d1a	ulps=0
+Vec2Distance v:c70f675a42a27fbe v:421b8c96c2ac0f69	ok f:470f8e9e	ulps=0
+Vec2Distance v:c68ddf1cc6e288b6 v:428dfed842684b62	ok f:4705fc55	ulps=0
+Vec2Distance v:c299ecc9c206386c v:c2908c42428fb454	ok f:42d305e6	ulps=0
+Vec2Distance v:c1dbc99bb3d6bf95 v:43340000428f28de	ok f:435b7961	ulps=0
+Vec2Distance v:ff7fc99ec29e8372 v:c2b1134c3b340000	ok f:7f800000	ulps=0
+Vec2Distance v:41d486cec2867b46 v:428f244646c71db6	ok f:46c7a445	ulps=0
+Vec2Distance v:c2958ffc4220c5ef v:420437644280d0b1	ok f:42dd0a83	ulps=0
+Vec2Distance v:c2ac3dca41d87dd8 v:c214ebf64716afb8	ok f:471694b0	ulps=0
+Vec2Distance v:410277b3421675ef v:c688f2cdc5c050fe	ok f:46914cf6	ulps=0
+Vec2Distance v:46a14a5d44340000 v:c591babe9a173400	ok f:46c5cd86	ulps=0
+Vec2Distance v:c62eff6e4269deb1 v:c22d975cc6d9d1bd	ok f:46eb08de	ulps=0
+Vec2Distance v:42c6f3f9c272885d v:4718cda1c6e2a17f	ok f:473dc80c	ulps=0
+Vec2Distance v:6918d33e41ac01ad v:c03ce90c46f3ec92	ok f:7f800000	ulps=0
+Vec2Distance v:c2a1a75746dd2356 v:429654d4c4f23b48	ok f:46ec47d8	ulps=0
+Vec2Distance v:beb5f200c0175504 v:c271f4b942bc1624	ok f:42e33fba	ulps=0
+Vec2Distance v:4657dd2942969bf3 v:c715399543b40000	ok f:474b31a7	ulps=0
+Vec2Distance v:41c89113c62fe9a3 v:ae338624d945fbeb	ok f:5945fbeb	ulps=0
+Vec2Distance v:42628e1bc29bec29 v:427bf86e00800000	ok f:429c7082	ulps=0
+Vec2Distance v:41ecb2e73f5fdd9c v:42c23923ff800000	ok f:7f800000	ulps=0
+Vec2Distance v:c2954e4e42c47ec9 v:ff7fc99e42053a25	ok f:7f800000	ulps=0
+Vec2Distance v:d77a1026c6c6c184 v:00000000c18ecfe6	ok f:577a1026	ulps=0
+Vec2Distance v:c253a66500800000 v:4057748fc5a77c9e	ok f:45a77efb	ulps=0
+Vec2Distance v:82fb8e45c7090490 v:c710cd5dc2505475	ok f:4747368c	ulps=0
+Vec2Distance v:bfede9945330e32c v:42a86cbaff7fc99e	ok f:7f800000	ulps=0
+Vec2Distance v:42bf92df470961b2 v:c5bb7862c7029ae7	ok f:47868566	ulps=0
+Vec2Distance v:a6a147d942b2546a v:c481b6b3440acd5f	ok f:448e31da	ulps=0
+Vec2Distance v:33d6bf95c21b907b v:4164360f809505ad	ok f:4225b247	ulps=0
+Vec2Distance v:4162a986471a51ba v:4283f0194715c8f5	ok f:44913d98	ulps=0
+Vec2Distance v:46fe0f8e423fa7c1 v:45e03855c295b985	ok f:46c60211	ulps=0
+Vec2Distance v:c1f7afde46803a28 v:3f8e60cd42c2a732	ok f:467eef22	ulps=0
+Vec2Distance v:c1cb3608c688bb38 v:415608b142b5109e	ok f:4689705f	ulps=0
+Vec2Distance v:c1ce588fc23b045d v:c682c8407149f2ca	ok f:7f800000	ulps=0
+Vec2Distance v:ff800000c2b85d5c v:c69c39ad4703a75a	ok f:7f800000	ulps=0
+Vec2Distance v:c6eb3d6046f408cf v:46da503c3f800000	ok f:4780c224	ulps=0
+Vec2Distance v:428857d2c2bff9ef v:c6607bbcc702e671	ok f:470e2f26	ulps=0
+Vec2Distance v:c5e6ccc3c2888f1c v:c5b41ec2c225e0ef	ok f:44cabf1b	ulps=0
+Vec2Distance v:c2374fb042617336 v:428cee7ec2af4135	ok f:43391656	ulps=0
+Vec2Distance v:42b9ffe5c29a5199 v:41c0270344ea030d	ok f:44f3cf33	ulps=0
+Vec2Distance v:c2864ac2421501b1 v:c6be98e1c5ed5e70	ok f:46c7352e	ulps=0
+Vec2Distance v:459869dcbf0577e8 v:c2a03945c2c15d12	ok f:459af237	ulps=0
+Vec2Distance v:c715e2d3c10a99cc v:42b68659c296f473	ok f:47163e25	ulps=0
+Vec2Distance v:4b4a40df4582f660 v:c22ed501c1d47aec	ok f:4b4a410c	ulps=0
+Vec2Distance v:0000000000000000 v:800000006c7103fb	ok f:7f800000	ulps=0
+Vec2Distance v:c18d198eff800000 v:c6d83163bfee517b	ok f:7f800000	ulps=0
+Vec2Distance v:46f3d7d9c28f7692 v:42c24382c1f370c4	ok f:46f315a3	ulps=0
+Vec2Distance v:c6f1589dbf800000 v:4260b746bf321b37	ok f:46f1c8f9	ulps=0
+Vec2Distance v:c69644eac6c22bc9 v:c29f9e16c6dacf99	ok f:4697a921	ulps=0
+Vec2Distance v:c3b40000429680bf v:46dbba1942b61e12	ok f:46de8a1b	ulps=0
+Vec2Distance v:c2ab923dc22122f7 v:c1298e77c706dd52	ok f:4706b51e	ulps=0
+Vec2Distance v:c250048842aeaa39 v:40bef0054676a2af	ok f:467545c9	ulps=0
+Vec2Distance v:c688d98d407574aa v:c3b4000042b34860	ok f:468609fb	ulps=0
+Vec2Distance v:0000000000000000 v:c2c76e06c6c79136	ok f:46c7919a	ulps=0
+Vec2Distance v:c1a1ceeb46592761 v:c7173cd0c2783917	ok f:4720b1a1	ulps=0
+Vec2Distance v:c2a8af5f46963d7e v:43b7c47761d488a0	ok f:7f800000	ulps=0
+Vec2Distance v:42a60a7a465b7910 v:425677dd42a737ab	ok f:465a2ac1	ulps=0
+Vec2Distance v:c6397daa40c58ba3 v:419364dfc269a08e	ok f:4639c810	ulps=0
+Vec2Distance v:c1f5a245428bda06 v:461cf8cac6cebb79	ok f:46ddb9b7	ulps=0
+Vec2Distance v:420571413b340000 v:42a762a7470f1693	ok f:470f169b	ulps=0
+Vec2Distance v:3b340000c67d427d v:4700ad6fc55eca82	ok f:4709d4aa	ulps=0
+Vec2Distance v:41fd0249c68193fc v:c716506cc2912b6b	ok f:4723af1b	ulps=0
+Vec2Distance v:c6d1e19bc19af935 v:457a49c842b2a9e3	ok f:46f12b36	ulps=0
+Vec2Distance v:4283c98abeaa556f v:0080000042830218	ok f:42ba4b81	ulps=0
+Vec2Distance v:0000000000000000 v:c29d2a50838d7f63	ok f:429d2a50	ulps=0
+Vec2Distance v:c4577db24195cb63 v:c65344079586d90b	ok f:4645cc3b	ulps=0
+Vec2Distance v:429c8ccf4270d905 v:c15dc698c6276605	ok f:46285871	ulps=0
+Vec2Distance v:c1de98d1c22ea57b v:b3d6bf9541d0265d	ok f:42960f8f	ulps=0
+Vec2Distance v:471353ad00800000 v:ff7fc99ec6f51b91	ok f:7f800000	ulps=0
+Vec2Distance v:4696eab342026d53 v:c29ccebfc70eebf9	ok f:4721dfdc	ulps=0
+# Distance (math::vector::distance)
+Distance v:c296a655c2acc171428aca38 v:46c7e7c5c2bea7f4b9d76967	ok f:46c87e9c	ulps=0
+Distance v:c20e91cb42920b25c7061cbb v:000000000000000000000000	ok f:47061cd4	ulps=0
+Distance v:c6151ca1c1bfd6487fc00000 v:c5da04ebc14637d1c27b8f4b	ok f:7fc00000	ulps=0
+Distance v:c272a0a9c6c1cf04469e029b v:c279b75f44d731f94262fd7f	ok f:47022d19	ulps=0
+Distance v:c21fadacc6d6ae49c2895ad1 v:c2a2dcf7c333fd7142c7a8b9	ok f:46d54769	ulps=0
+Distance v:41846ffec333fd716a519def v:4275c6a145e096b042bc158a	ok f:7f800000	ulps=0
+Distance v:c2ad0ae53ae9b8a8c65b2327 v:42483ed346eb8cf342b40000	ok f:47020b18	ulps=0
+Distance v:9d6b7b19c20d4bce435af43d v:9dcff054372738662e4a03c7	ok f:435dc902	ulps=0
+Distance v:454b54804547cecec699420f v:c2b1ac5d45e85199469bb24e	ok f:471be8b6	ulps=0
+Distance v:b85e8dfac334028f419effaa v:417d14e8c21360ebc6c34a7b	ok f:46c3730f	ulps=0
+Distance v:7e1c943446fef8a242c66c37 v:30264783466fcacb4215394c	ok f:7f800000	ulps=0
+Distance v:c103c5f245c23051252baea3 v:42be71d042ac126ec194a336	ok f:45bf873d	ulps=0
+Distance v:c579e95c46e93ae1c1eecd88 v:000000003b340000c652a2f7	ok f:4700db03	ulps=0
+Distance v:4713b1db467b1677c70e74ae v:d61ea185c255b3dac611913e	ok f:561ea185	ulps=0
+Distance v:c2c188b2c0a69f8ec283e785 v:0d804d3046bd4cb0427942be	ok f:46bd582a	ulps=0
+Distance v:c685bfdfc1beeefe46a5b2d2 v:c26ed708e745954a41b0011c	ok f:7f800000	ulps=0
+Distance v:46e37301c29af254c2bac69a v:c115b526c571a7c54279f0c8	ok f:46e57172	ulps=0
+Distance v:41dca236c6fad9e7c5b220f0 v:987b3036c2638856c6cc45c9	ok f:47148280	ulps=0
+Distance v:c1b6267bc27bf6baff800000 v:4334000046ecc61ac1b33ee7	ok f:7f800000	ulps=0
+Distance v:4707048cc036f983469a3b3b v:c2b50f1bc685df20c1d62720	ok f:47299bf6	ulps=0
+Distance v:c333fd714297970713efe8ce v:ebf67119c6a82362450bbee2	ok f:7f800000	ulps=0
+Distance v:c62fab1d46b8e90d42ad4531 v:c28cee6bc69c99e3c2983c6d	ok f:47303ee4	ulps=0
+Distance v:c2122ce6c5fbb6d042b43d0c v:ff7fc99ec1b92a59c4eb1508	ok f:7f800000	ulps=0
+Distance v:4285704c429484d24286182d v:425f9807425d370ac273f2c5	ok f:4301e1a7	ulps=0
+Distance v:c2814d5a46a70590bf800000 v:c695ff2eb3d6bf95c6afed3a	ok f:470e7878	ulps=0
+Distance v:000000000000000000000000 v:423c94447eb74cf200060252	ok f:7f800000	ulps=0
+Distance v:c172dd0ec1f0625742bc7719 v:000000000000000000000000	ok f:42c82173	ulps=0
+Distance v:463b68a41d4dbd2942211e05 v:4b99804bc2bde384c6dd81d5	ok f:4b9968e8	ulps=0
+Distance v:42a95ca8c2741217429d952a v:c3340000c2928c92917b8e69	ok f:438a3738	ulps=0
+Distance v:4253f5b4c3b40000429b0ade v:c708ab67c24bdec4468ee472	ok f:471a441d	ulps=0
+Distance v:fc7a3f6ac68c549a470cf52d v:84b51678470197f742a2bb9f	ok f:7f800000	ulps=0
+Distance v:187d2e24c235e071c284def6 v:c6d8a2cac29eceb4419fe7e3	ok f:46d8a31a	ulps=0
+Distance v:80000000c68853db4a1e5b95 v:41918058415268fac6b7f85c	ok f:4a1fcc6f	ulps=0
+Distance v:c28b3225c2c40110470754bf v:c48e84c4c2c2c60f41f97712	ok f:4707461d	ulps=0
+Distance v:428ee8bcc1c90fcbc6c92521 v:c2ae1ff1c5ef539bc4fd1f2d	ok f:46c2b001	ulps=0
+Distance v:40d2aa9c421de7a0c701780c v:429f741fc2b6a4abc69d69cb	ok f:464b100e	ulps=0
+Distance v:a459610dc7081d5c203c6ec3 v:468c8d1846ff03cdc208b5fd	ok f:47886a06	ulps=0
+Distance v:000000000000000000000000 v:c2a5718541b57442c2a2eb36	ok f:42ec9577	ulps=0
+Distance v:f73bede6c54fe0e0c59f4f23 v:c2a847a0c28d2cfdc69597d6	ok f:7f800000	ulps=0
+Distance v:428843e3c6e3de4d41e55b38 v:c24c7e22c71bae87c2835879	ok f:462701d6	ulps=0
+Distance v:4080e249c271133841aab493 v:c603ce7bc709070b429f2740	ok f:470cb575	ulps=0
+Distance v:c119f98f42160557c29b5568 v:c2b6e639c7028b7a429bbdec	ok f:4702b171	ulps=0
+Distance v:c2af8829c20133f1dd977b8b v:000000000000000000000000	ok f:5d977b8b	ulps=0
+Distance v:4168163d4626875cc57e3303 v:3bb40000418b70a841acc8b7	ok f:46321bea	ulps=0
+Distance v:c1c05128418066894333fd71 v:c2b40000420103f9c26303df	ok f:43764b61	ulps=0
+Distance v:c6d0cc8f424a68e941865e1a v:441eb9232180b26d462815a8	ok f:46e5a3a8	ulps=0
+Distance v:c251a71646d07f50c70d6359 v:c2a67d84c24b36304689604c	ok f:476a9bcf	ulps=0
+Distance v:c6e58fc44333fd71c6360298 v:000000000000000000000000	ok f:46f6f23a	ulps=0
+Distance v:c29aa625c70027fbc29fed69 v:40f9cd08c717e5a13f975762	ok f:45bdf64b	ulps=0
+Distance v:469de656c692b5f7df5d3e0c v:c1c3bbac3b340000462ca707	ok f:5f5d3e0c	ulps=0
+Distance v:7fc000004167a79e424ee090 v:c16cb3b7c2afde1cc70af430	ok f:7fc00000	ulps=0
+Distance v:42686199c130419ec68ed226 v:c692af8cc58207a1469cc171	ok f:4727aa73	ulps=0
+Distance v:46142dc9f9d2b8b9ddb4d702 v:c2613efcc4a6bc02c1f485ef	ok f:7f800000	ulps=0
+Distance v:426f26e6c6d96b4a429b98f5 v:c28e4ed4c26fd33541f83034	ok f:46d8f412	ulps=0
+Distance v:8e8ae41ec23ba9653e99ab61 v:c2850c084295e4de4428ec5d	ok f:442c60fe	ulps=0
+Distance v:426085abc258d3a2c2957b75 v:4069ee80e6c4afd4421afb72	ok f:7f800000	ulps=0
+Distance v:c24e90e8c254fddc429a1d0d v:4298ff7b46c02eafc5614530	ok f:46c2bc8d	ulps=0
+Distance v:4255d223c293b316c593ad3c v:c0cdcb89411cacb9452e84a2	ok f:45eaf52f	ulps=0
+Distance v:3bb400002edfd487c2b049c5 v:c254869d3f000000c66bd1f4	ok f:466a71c0	ulps=0
+Distance v:42c788da4139e27e42c48061 v:c159be204238ead142b2c185	ok f:42edbf1a	ulps=0
+Distance v:bfd39ed3c65c8b49c2bbb835 v:c2092681c2268233c2226f17	ok f:465be555	ulps=0
+Distance v:46b8245a417a04dec0337745 v:c2a1ce6d425b5399462efa03	ok f:46cc730f	ulps=0
+Distance v:42820284c26d7535c6f2856c v:c2c2ce6cc1d4f54dc665edf0	ok f:467f2045	ulps=0
+Distance v:00000000a7a78e6ac26df4f9 v:42b7afc7d3184fa842027f9a	ok f:53184fa8	ulps=0
+Distance v:42bc96bfc70397b1c54c36cf v:c0f75c69c2939e6b429b5dae	ok f:4703f412	ulps=0
+Distance v:42256bc642b213f543340000 v:41c6ec6cc12b49f0428600b7	ok f:43179f85	ulps=0
+Distance v:46f73a28c7017791c6dad024 v:bf2a687c42be1a3d4715b4aa	ok f:479d8aca	ulps=0
+Distance v:c665d1f0444fff9f7f7fc99e v:429061a0b75e4208c2a7e90a	ok f:7f800000	ulps=0
+Distance v:c293901641fa0e0f46b556a6 v:c203a6afc1fd7e8b7f800000	ok f:7f800000	ulps=0
+Distance v:c29ada9c42b791c3c29d4271 v:c5c58336c207dbee42af3fa2	ok f:45c333a1	ulps=0
+Distance v:c1c7d7664556cc783982562a v:466cab4cc282f26bc32fd6f9	ok f:46734f1f	ulps=0
+Distance v:46e85dd17f7fc99ec6ba9910 v:c5762fa946679aebc282056c	ok f:7f800000	ulps=0
+Distance v:c708e0ddc1d371324281ce0c v:4260a294c24317c733d6bf95	ok f:47091917	ulps=0
+Distance v:42109b1ec26fc3f3c256c2f6 v:bf026a81c4e03b7042abb76c	ok f:44d97d15	ulps=0
+Distance v:42a078a0460a370cc19046b0 v:419c30b55bd8404d00800000	ok f:5bd8404d	ulps=0
+Distance v:c23143c642c29306c69ed222 v:7149f2ca0541eecbb47993a5	ok f:7f800000	ulps=0
+Distance v:461cb0565efdeaf7c1c0aa36 v:047f0e1ec2243fd641f9b849	ok f:5efdeaf7	ulps=0
+Distance v:c6f723d8c0cd279cfe9a1b20 v:46cc022dc6ea79824258ab69	ok f:7f800000	ulps=0
+Distance v:42ba44ac8750c53ec493ab62 v:46e40581bf9e9fc343340000	ok f:46e38ae6	ulps=0
+Distance v:c6a97cf0c6499abc4219dcd6 v:4296fbf45e917ccdc150c933	ok f:5e917ccd	ulps=0
+Distance v:c28f85cfc50c1b73c718b285 v:99365678c6bd03d042721c9b	ok f:472f5581	ulps=0
+Distance v:413898fa46e8a2b341447cc2 v:428b489d42c7e52d419d7e44	ok f:46e7daec	ulps=0
+Distance v:4333fd71c615d3b8c6ddfbc4 v:000000000000000000000000	ok f:46ea499f	ulps=0
+Distance v:bd281bb2c6ab4310c282daa6 v:427f9709c5a68e26c18f8e1a	ok f:46819fe8	ulps=0
+Distance v:ff7fc99ec2938c10efdbb3f7 v:c2776781c1a2e890c1c66f7a	ok f:7f800000	ulps=0
+Distance v:c3b40000429e84134248ae1e v:4114a8147fc00000c672aa1d	ok f:7fc00000	ulps=0
+Distance v:3b340000422cde0e40d21e8c v:c2aad7d942b47726c6bb4937	ok f:46bb56bf	ulps=0
+Distance v:c6a9f8c3c258ab40c1f6647e v:000000000000000000000000	ok f:46a9f8f1	ulps=0
+Distance v:422f3fe44148d4df416f1955 v:c02faa45c2822973c333fd71	ok f:4356ed4b	ulps=0
+Distance v:c293e3ddc2c3b049429dd589 v:42753e834112e7514269a723	ok f:432db151	ulps=0
+Distance v:42673401429f3aa73b340000 v:c23369f63bb40000c28da7d6	ok f:4313f607	ulps=0
+Distance v:418a012bc1e9209442c451d5 v:b3d6bf9543b40000c24e4e55	ok f:43d0a7eb	ulps=0
+Distance v:c275b897c282b73946cb395b v:42a9659d46dcaaae4334028f	ok f:4715b57f	ulps=0
+Distance v:421969fbc7173fa3091d987f v:4589ac68796781c9c6792696	ok f:7f800000	ulps=0
+Distance v:46d0fd3a6dddc75933d6bf95 v:fd05ed7dc69b0b66c29a0371	ok f:7f800000	ulps=0
+Distance v:422ef642468e40dd4688c5bc v:4698fe5741e86ee342b55151	ok f:46f8f911	ulps=0
+Distance v:7e51f289421878d24292018b v:428f50ed800000004698f876	ok f:7f800000	ulps=0
+Distance v:42939295c2a5e62742206016 v:c3b4000092f479df42b5309f	ok f:43de4310	ulps=0
+Distance v:6f0ca35bc21981f043a2356a v:c2a70d9d429eb22c43873ba2	ok f:7f800000	ulps=0
+Distance v:428b44e541d11f91b3d6bf95 v:45c1401242883caf46022d71	ok f:4621796c	ulps=0
+# vectoyaw (math::yaw::vector_to_yaw)
+vectoyaw v:c49841e500000000bfd8376c	ok f:43340000	ulps=0
+vectoyaw v:0000000044a2eaba44042d50	ok f:42b40000	ulps=0
+vectoyaw v:0000000000000000c4800000	ok f:00000000	ulps=0
+vectoyaw v:000000003f80000000000000	ok f:42b40000	ulps=0
+vectoyaw v:c48dc67d7fc000004478d8ee	ok f:7fc00000	ulps=0
+vectoyaw v:447581664411ff6044a6e45c	ok f:41f5e958	ulps=0
+vectoyaw v:43a37a46bffe033b444c409f	ok f:43b3d37d	ulps=0
+vectoyaw v:0000000000000000c4800000	ok f:00000000	ulps=0
+vectoyaw v:0000000000000000c0251f25	ok f:00000000	ulps=0
+vectoyaw v:800116c2c1fe40aa33d6bf95	ok f:43870000	ulps=0
+vectoyaw v:c480000044350666000116c2	ok f:4310bc53	ulps=0
+vectoyaw v:bf8000003f80000000000000	ok f:43070029	ulps=0
+vectoyaw v:0000000000000000ff800000	ok f:00000000	ulps=0
+vectoyaw v:c49d25c84458571dc3bd7ca5	ok f:431175b8	ulps=0
+vectoyaw v:be0532080000000044a34955	ok f:43340000	ulps=0
+vectoyaw v:4434b38044694af7c476eb4f	ok f:4250f67b	ulps=0
+vectoyaw v:000116c2ff61b1e6c37d9ca7	ok f:43870000	ulps=0
+vectoyaw v:be7b0fbb44815594c433bf2c	ok f:42b406f3	ulps=0
+vectoyaw v:00000000000000003f4a68ce	ok f:00000000	ulps=0
+vectoyaw v:0000000000000000be92349a	ok f:00000000	ulps=0
+vectoyaw v:4348e0760000000043f69eed	ok f:00000000	ulps=0
+vectoyaw v:c48000004480000043de545c	ok f:43070029	ulps=0
+vectoyaw v:000000000000000044ac99ba	ok f:00000000	ulps=0
+vectoyaw v:c4b8999a44adb8cbff800000	ok f:4308bd56	ulps=0
+vectoyaw v:c420ef4744800000c0179f15	ok f:42f44f60	ulps=0
+vectoyaw v:0000000000000000c0ddf5c1	ok f:00000000	ulps=0
+vectoyaw v:c4b3dd9a4484abbbc4800000	ok f:430f9689	ulps=0
+vectoyaw v:c44b472844515443c4884528	ok f:430628bb	ulps=0
+vectoyaw v:000000004008e6334488643d	ok f:42b40000	ulps=0
+vectoyaw v:0000000000000000c4badda8	ok f:00000000	ulps=0
+vectoyaw v:c4845ee080000000c4aa46d5	ok f:43340000	ulps=0
+vectoyaw v:0000000000000000c3823548	ok f:00000000	ulps=0
+vectoyaw v:501502f9000116c244801000	ok f:00000000	ulps=0
+vectoyaw v:7f61b1e64442a7b1c3b0fadd	ok f:00000000	ulps=0
+vectoyaw v:44949e347fc00000c3c9b0fe	ok f:7fc00000	ulps=0
+vectoyaw v:3f8000003f7fff5800000000	ok f:4233ff12	ulps=0
+vectoyaw v:000000000000000043ad3af3	ok f:00000000	ulps=0
+vectoyaw v:3f6c0da600000000420b3522	ok f:00000000	ulps=0
+vectoyaw v:00000000000000003f2636db	ok f:00000000	ulps=0
+vectoyaw v:439bc36d7fc00000bec8eb89	ok f:7fc00000	ulps=0
+# vectoyaw_signed (math::yaw::vector_to_yaw_signed)
+vectoyaw_signed v:0000000000000000c44447a3	ok f:00000000	ulps=0
+vectoyaw_signed v:0000000000000000c457370a	ok f:00000000	ulps=0
+vectoyaw_signed v:00000000000000004318857d	ok f:00000000	ulps=0
+vectoyaw_signed v:0000000000000000449728ef	ok f:00000000	ulps=0
+vectoyaw_signed v:4033276ec43ee944c4391103	ok f:c2b39477	ulps=0
+vectoyaw_signed v:00000000000000007f800000	ok f:00000000	ulps=0
+vectoyaw_signed v:c3e3f6a8436cabbec4800000	ok f:431890da	ulps=0
+vectoyaw_signed v:8000000080000000c488c8db	ok f:00000000	ulps=0
+vectoyaw_signed v:44b93bcdc4a4079844a3eefd	ok f:c226199c	ulps=0
+vectoyaw_signed v:c459297d0000000044800000	ok f:43340000	ulps=0
+vectoyaw_signed v:c49789873fa8f1b5c4089dee	ok f:4333f007	ulps=0
+vectoyaw_signed v:00000000000000003d2fabe7	ok f:00000000	ulps=0
+vectoyaw_signed v:43815a1343dd36b6c00f0d68	ok f:426ebc1d	ulps=0
+vectoyaw_signed v:000116c27f80000044801000	ok f:42b40000	ulps=0
+vectoyaw_signed v:44b6661b446589c6c434fc9c	ok f:4200b6ae	ulps=0
+vectoyaw_signed v:000000000000000044addd21	ok f:00000000	ulps=0
+vectoyaw_signed v:33d6bf957f800000bf8ac512	ok f:42b40000	ulps=0
+vectoyaw_signed v:c4691a41c4489afe447d640f	ok f:c30b4931	ulps=0
+vectoyaw_signed v:0000000000000000c49150e9	ok f:00000000	ulps=0
+vectoyaw_signed v:3f8000003f7fff5800000000	ok f:4233ff12	ulps=0
+vectoyaw_signed v:0000000000000000c350f2db	ok f:00000000	ulps=0
+vectoyaw_signed v:3f800000bf80000000000000	ok f:c233ff5e	ulps=0
+vectoyaw_signed v:800000004028b2adbf466540	ok f:42b40000	ulps=0
+vectoyaw_signed v:c444f6fe448010007f61b1e6	ok f:42ff1ebb	ulps=0
+vectoyaw_signed v:bf96cfcec4839120000116c2	ok f:c2b420d6	ulps=0
+vectoyaw_signed v:44b06f7100000000c3d1ead4	ok f:00000000	ulps=0
+vectoyaw_signed v:0000000000000000c4461529	ok f:00000000	ulps=0
+vectoyaw_signed v:bf8000000000000000000000	ok f:43340000	ulps=0
+vectoyaw_signed v:444ecc3044801000c39cefa1	ok f:424c552f	ulps=0
+vectoyaw_signed v:c48a566a4018d197c32d8188	ok f:4333e05a	ulps=0
+vectoyaw_signed v:c00fa7c6c33b7517442b6b0b	ok f:c2b55f3e	ulps=0
+vectoyaw_signed v:43c9c69044af5244c3a4739b	ok f:4293e57e	ulps=0
+vectoyaw_signed v:43020626c409c64ec02d7954	ok f:c2997301	ulps=0
+vectoyaw_signed v:800000003f7fff5800000000	ok f:42b40000	ulps=0
+vectoyaw_signed v:c42ae15b3fb337233fc10917	ok f:4333e1f4	ulps=0
+vectoyaw_signed v:4435066644839cecc421e8ff	ok f:425def77	ulps=0
+vectoyaw_signed v:c4a2906244a6dd03c46d7022	ok f:4306406a	ulps=0
+vectoyaw_signed v:000000004499144cc02b75fa	ok f:42b40000	ulps=0
+vectoyaw_signed v:43e07d00447ff99a4380b903	ok f:4284a50b	ulps=0
+vectoyaw_signed v:000000000000000044a58f3e	ok f:00000000	ulps=0
+# AngleWrap180 (math::angles::angle_wrap_180)
+AngleWrap180 b:cdcdcdcd v:43b40000	ok n: b:00000000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43387b72	ok n: b:c32f848e	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c407b979	ok n: b:c336e5e4	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:800116c2	ok n: b:800116c2	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c3202b67	ok n: b:c3202b67	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c5df2037	ok n: b:c3960370	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42b40000	ok n: b:42b40000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42b40000	ok n: b:42b40000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c5fe99c1	ok n: b:c3633820	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c41a2d82	ok n: b:c3805b04	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:442a5726	ok n: b:c21a8da0	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43b5882b	ok n: b:40441600	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42d1373a	ok n: b:42d1373a	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43b66583	ok n: b:40996100	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:ff61b1e6	ok n: b:c3a60000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c5d630b9	ok n: b:c3bb0b90	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c49ae4c4	ok n: b:c401c988	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:00000000	ok n: b:00000000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c60095b6	ok n: b:c39ab6c0	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c4582b3f	ok n: b:c3fc567e	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43b40000	ok n: b:00000000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c3a954be	ok n: b:c3a954be	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:433e25d9	ok n: b:c329da28	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:4417b9e5	ok n: b:c2e230d8	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43f9585a	ok n: b:430ab0b4	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c3ef02c7	ok n: b:c3ef02c7	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c42a930a	ok n: b:c3a12614	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:44298deb	ok n: b:c2272150	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43e83d7c	ok n: b:42d0f5f0	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c52d8893	ok n: b:c3804498	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c6000d8a	ok n: b:c389b140	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c4e15d8b	ok n: b:c3b5762c	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42b40000	ok n: b:42b40000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:45f36a4f	ok n: b:c302b620	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42b40000	ok n: b:42b40000	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:42f2719c	ok n: b:42f2719c	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:45693176	ok n: b:43031760	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:43337bcc	ok n: b:43337bcc	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c420a15a	ok n: b:c38d42b4	ulps=0 floats=1
+AngleWrap180 b:cdcdcdcd v:c3fe0e91	ok n: b:c3fe0e91	ulps=0 floats=1
+# sin (math::crt::sin)
+sin d:418953a25570afd0	ok d:bfe5206c395272be	ulps=0
+sin d:c0c015b748f76744	ok d:3feefabfaba6e41e	ulps=0
+sin d:400d71b9c31d4ca0	ok d:bfe06c5571019f9d	ulps=0
+sin d:7ff8000000000000	ok d:7ff8000000000000	ulps=0
+sin d:40a276913775e108	ok d:3fe71670b879aa62	ulps=0
+sin d:c001946fc245cecc	ok d:bfe9eb5613f934aa	ulps=0
+sin d:c0668051eb851eb8	ok d:3fe9d3bd4114c993	ulps=0
+sin d:c00cfa32a8c09004	ok d:3fdd962272378207	ulps=0
+sin d:c008cddf30ebbad6	ok d:bfa505857a308276	ulps=0
+sin d:40568529662c9600	ok d:3feb5c17e5d8ab12	ulps=0
+sin d:c0c1f1dd51918081	ok d:bfefae5087c7cace	ulps=0
+sin d:c0056d15f19f3ccc	ok d:bfdc9a77330e0cd8	ulps=0
+sin d:c02229e3b63c8dc8	ok d:bfd5859688695426	ulps=0
+sin d:40b1c568d189b388	ok d:3fd7ef1bcc56b3f5	ulps=0
+sin d:c01c91a34c4b898a	ok d:bfe83b1babf681d7	ulps=0
+sin d:c010e5e663acba80	ok d:3fec443cff0d1755	ulps=0
+sin d:c1b150a60576de48	ok d:fff8000000000000	ulps=0
+sin d:3f76800000000000	ok d:3f767ff89590bbb6	ulps=0
+sin d:c175db681cd89c50	ok d:bfd3d9d9eb940d17	ulps=0
+sin d:c01fec9d849a1d1c	ok d:bfefbdeedac38ab6	ulps=0
+sin d:fff0000000000000	ok d:fff8000000000000	ulps=0
+sin d:c07d5e15a093ec80	ok d:3fef484a4bc4a4d5	ulps=0
+sin d:c0bd5cb6be081886	ok d:bfecc441bedb31cc	ulps=0
+sin d:bfe6e5c809e74b40	ok d:bfe4fe374eab52f2	ulps=0
+sin d:c021269b5bc80329	ok d:bfe8071a58bb466b	ulps=0
+sin d:c0b3d748aedf71e4	ok d:bfe3e81e279460cc	ulps=0
+sin d:c1a808bf7d4227d4	ok d:3feecb1da9887aca	ulps=0
+sin d:47eff933c78cdfad	ok d:fff8000000000000	ulps=0
+sin d:46293e5939a08cea	ok d:fff8000000000000	ulps=0
+sin d:c0230c04674dccbb	ok d:3fb939755c08eeeb	ulps=0
+sin d:40136f465fe0d50a	ok d:bfefa8835bb2e543	ulps=0
+sin d:c09dc87d32572718	ok d:bfe77e83dc576117	ulps=0
+sin d:400ba14e65abe870	ok d:bfd3a7ee11a13f97	ulps=0
+sin d:3fdaf5bf4189a180	ok d:3fda2b6e2999c882	ulps=0
+sin d:c0b15107d0f957e4	ok d:3fced5f9c4b9f98a	ulps=0
+sin d:40b22fb60ef98f7e	ok d:bfc07c1f5cfb6bd9	ulps=0
+sin d:c00e0d0b1c6cc29c	ok d:3fe274f2557dc3cc	ulps=0
+sin d:bffff6d0cef71ec0	ok d:bfed209700eee350	ulps=0
+sin d:8000000000000000	ok d:8000000000000000	ulps=0
+sin d:400b5c917d828940	ok d:bfd199de3bb70c17	ulps=0
+sin d:47eff933c78cdfad	ok d:fff8000000000000	ulps=0
+sin d:c17bce4c7a6d6370	ok d:bfed0ca2cacd8e4a	ulps=0
+sin d:c01c7a545f16bd73	ok d:bfe7bfb7e366b172	ulps=0
+sin d:402057a2313b0bd6	ok d:3fee6760e5f9d326	ulps=0
+sin d:bff93ced514b5258	ok d:bfefffd29f487c39	ulps=0
+sin d:c01cbd87b7095326	ok d:bfe91ab1059d23bb	ulps=0
+sin d:40b0fd33a19e711e	ok d:3fee3d0f0177a0e0	ulps=0
+sin d:4021729a1908aad6	ok d:3fe4a35b3dfc71aa	ulps=0
+sin d:c01f98d1d0379350	ok d:bfeff79cbfd857f5	ulps=0
+sin d:41a4aaec9f5b7df8	ok d:3fec1dccc6508e7e	ulps=0
+sin d:40227e2e10395d80	ok d:3fc6b4af17956c92	ulps=0
+sin d:7ff8000000000000	ok d:7ff8000000000000	ulps=0
+sin d:4002405689dda340	ok d:3fe84132044fdddb	ulps=0
+sin d:c0b7d393c6a3c933	ok d:3fef82b807130e3b	ulps=0
+sin d:c0bcd5295b472716	ok d:3fefff8ecaeb4192	ulps=0
+sin d:c008863f3d279604	ok d:bfb372b5b9bd09c0	ulps=0
+sin d:c0438edd3b798c00	ok d:bfef9f5341ae950f	ulps=0
+sin d:4196ff421f52ab30	ok d:bfe965bcca6b8405	ulps=0
+sin d:c020d56b08ff3919	ok d:bfeb1048064aadda	ulps=0
+sin d:c066800000000000	ok d:3fe9a30ada329793	ulps=0
+sin d:c01854ec4385d409	ok d:3fc9761d4f041d6e	ulps=0
+sin d:40a75d4b8a1aaed0	ok d:bfc2f5a23ad4929b	ulps=0
+sin d:c0c2d65df35ee829	ok d:bfa6cc6b0a4152fe	ulps=0
+sin d:40b7478391fb20d0	ok d:3fb6532daec6335b	ulps=0
+sin d:c7eff933c78cdfad	ok d:fff8000000000000	ulps=0
+sin d:c0c18518c9532e23	ok d:3fe9f7588453f9ea	ulps=0
+sin d:40b1687a938416dc	ok d:3fefbb434a462dc1	ulps=0
+sin d:40655ad62638c0c0	ok d:3fedbd342c0e8182	ulps=0
+sin d:c076800000000000	ok d:bfeeaf7006f5e878	ulps=0
+sin d:bfb8b74966203700	ok d:bfb8ad7629586e27	ulps=0
+sin d:c010aa8cd6b0c02f	ok d:3feb59a64610018a	ulps=0
+sin d:be7ad7f29abcaf48	ok d:be7ad7f29abcaf3b	ulps=0
+sin d:c09e7544e5fa3b3c	ok d:bfeff92132c9e576	ulps=0
+sin d:41a03add6386c8ba	ok d:bfdb9ab1d2b0a96a	ulps=0
+sin d:40021ec4dbd07fac	ok d:3fe897f2369f5ffa	ulps=0
+sin d:c01d6240c3ffc820	ok d:bfebf561b5d068c8	ulps=0
+sin d:c197a832b151cd4e	ok d:bfec65b3923f8139	ulps=0
+sin d:c020fea7b2e3f0b3	ok d:bfe99a23705cfb3e	ulps=0
+sin d:40b81d3fc4ccbb36	ok d:bf93fff7ed2c3bcd	ulps=0
+sin d:c0c317685b25895b	ok d:3fef00cd9e5282f6	ulps=0
+sin d:41a6848743641b50	ok d:bfcaea766ece5d5a	ulps=0
+sin d:3fe291af35c901b0	ok d:3fe18b5b2f9dd3ed	ulps=0
+sin d:40aa82cfbde2273c	ok d:3fdde03533e33aad	ulps=0
+sin d:c09ab8a3f68a5308	ok d:bfecfde23d1290c0	ulps=0
+sin d:4076800000000000	ok d:3feeaf7006f5e878	ulps=0
+sin d:4066800000000000	ok d:bfe9a30ada329793	ulps=0
+sin d:bfff58d1a0553ef0	ok d:bfed9ddda9524368	ulps=0
+sin d:c0232c2a37d07e5a	ok d:3fc49476a2630c8f	ulps=0
+sin d:401182ba415dd446	ok d:bfee3959431025ba	ulps=0
+sin d:bfe70158ac1540e0	ok d:bfe512fd61c6422d	ulps=0
+sin d:4019653a8e64cd4c	ok d:3fb0ccb6c59ff273	ulps=0
+sin d:3f76800000000000	ok d:3f767ff89590bbb6	ulps=0
+sin d:0000000000000000	ok d:0000000000000000	ulps=0
+sin d:c012a621bafe4de4	ok d:3feff5b34322e537	ulps=0
+sin d:4008c8cb91c2f244	ok d:3fa64a22d041eeb9	ulps=0
+sin d:c188894b87d570fc	ok d:bfc2bfc4b294db8f	ulps=0
+sin d:c018341aa2947f8a	ok d:3fcd77cebeeb2087	ulps=0
+sin d:c00cb5bd9f5f0558	ok d:3fdbac5eb7d22651	ulps=0
+sin d:c193b354bcac2f7a	ok d:3fe73d9a9e5e38c9	ulps=0
+sin d:3696d601ad376ab9	ok d:3696d601ad376ab9	ulps=0
+# cos (math::crt::cos)
+cos d:c018fed5fb2f0fea	ok d:3feffb2ce33bedd5	ulps=0
+cos d:402186a9bb98b0cc	ok d:bfe93ebebca24750	ulps=0
+cos d:c01c924776d622fc	ok d:3fe4e2d83272a6c0	ulps=0
+cos d:40667fae147ae148	ok d:bfe367f81630d855	ulps=0
+cos d:4004678568c5e400	ok d:bfea924c69892469	ulps=0
+cos d:c1a3033dee852518	ok d:bfe71e4d0cbc894b	ulps=0
+cos d:c0c02fc99cdb6607	ok d:3feff4334bda07de	ulps=0
+cos d:bfeda56f7a706140	ok d:3fe338c59437b449	ulps=0
+cos d:401f11d8a65aacf0	ok d:3fb6214c501fbb7a	ulps=0
+cos d:c0bd974e9700e9e2	ok d:bfe3347447468ee6	ulps=0
+cos d:c0ae2c62c39c3de0	ok d:bfd8a4c3a9889d8f	ulps=0
+cos d:400a6f209ae20b70	ok d:bfef93daa16a2e21	ulps=0
+cos d:c00aa57227ee1462	ok d:bfef6dd3b25032b4	ulps=0
+cos d:c0c00d7d9c6cb4b0	ok d:3feadaddcf2318f7	ulps=0
+cos d:401f4a676d16fe64	ok d:3fa008b24a272ff4	ulps=0
+cos d:c08f82ab76562220	ok d:bfefc77ed41f0f34	ulps=0
+cos d:40b01eb17658bdd8	ok d:3fcad73d71cc5a79	ulps=0
+cos d:c0b972802261c310	ok d:3fd9671dfe886b16	ulps=0
+cos d:40171952fd21313e	ok d:3febf3b1c979eae5	ulps=0
+cos d:c0bdf0030be97686	ok d:3fb8b260600a6d43	ulps=0
+cos d:401f96f1d7bf4050	ok d:bfa63a0d4a70a1c1	ulps=0
+cos d:c022a6df4007b01e	ok d:bfefd801229633f8	ulps=0
+cos d:40991ba698ef7040	ok d:bf8878d92c63bb80	ulps=0
+cos d:4021f61670e5a6b6	ok d:bfece53937a4295c	ulps=0
+cos d:c018cd0232d2385a	ok d:3fefe3cfb40bec6e	ulps=0
+cos d:c01965db8b2e619c	ok d:3fefee028ea7491f	ulps=0
+cos d:c01fe94a06746545	ok d:bfbf9f3cadd2a37c	ulps=0
+cos d:c021282c354f5b1b	ok d:bfe5353865994cd0	ulps=0
+cos d:c01d1eda9ac7df70	ok d:3fe15f310f10e746	ulps=0
+cos d:40b64895636f5172	ok d:3feb4d659aecdc26	ulps=0
+cos d:41a71a461c3fca50	ok d:3fedda6997d3e92d	ulps=0
+cos d:bf9a43d735e8fc00	ok d:3feffd4e2ffd4052	ulps=0
+cos d:47eff933c78cdfad	ok d:fff8000000000000	ulps=0
+cos d:c023b9766c4ca38d	ok d:bfecfc962630d0e9	ulps=0
+cos d:4023b9db41132890	ok d:bfecf9ea237bc417	ulps=0
+cos d:bff54e361a367508	ok d:3fce53a15653cc45	ulps=0
+cos d:bfe76b8204d1fe70	ok d:3fe7ce3913b9be03	ulps=0
+cos d:4022819f6f54750e	ok d:bfef87abb6c3e10b	ulps=0
+cos d:401d7ffad7e6c558	ok d:3fdd7f45ce6ff873	ulps=0
+cos d:bffd4531e73226d8	ok d:bfd05dc9f8487083	ulps=0
+cos d:4066800000000000	ok d:bfe32695bb1217c6	ulps=0
+cos d:41935bfe33a4e5d0	ok d:bfeef5022a1a8f6c	ulps=0
+cos d:c01f9f052de5a8d2	ok d:bfaa428edd4acd1e	ulps=0
+cos d:40a1832ccdea6b20	ok d:3faf4a14e2c9faf0	ulps=0
+cos d:c1abaf73107d1c82	ok d:fff8000000000000	ulps=0
+cos d:c6293e5939a08cea	ok d:fff8000000000000	ulps=0
+cos d:c011dd9c5944438e	ok d:bfcf2afd311c57af	ulps=0
+cos d:c1a5574af6846590	ok d:bfea38c9d3063bac	ulps=0
+cos d:401d03ac7e1159fc	ok d:3fe21436da68de23	ulps=0
+cos d:c0c03f3cbdc48b65	ok d:3feca23af1916c19	ulps=0
+cos d:c023412fc405f1ac	ok d:bfef588bdd1ce3a2	ulps=0
+cos d:bfee375bcf0407c0	ok d:3fe2c3555193781d	ulps=0
+cos d:4001e728c41279f8	ok d:bfe3cc4f5a0258d1	ulps=0
+cos d:7e37e43c8800759c	ok d:fff8000000000000	ulps=0
+cos d:c0218923485db3be	ok d:bfe957008bad990f	ulps=0
+cos d:c0c2c6c842f3bc07	ok d:3feea78864439dbc	ulps=0
+cos d:40abb84170e91390	ok d:bfd2fad3194744c6	ulps=0
+cos d:400b22698b5be014	ok d:bfef00e781e55114	ulps=0
+cos d:c1b0db4c6263637a	ok d:fff8000000000000	ulps=0
+cos d:c0b8592c5167a475	ok d:3feefa9d5ce58473	ulps=0
+cos d:40a42e33f8798be0	ok d:3fe837f7bf799647	ulps=0
+cos d:402314e672662e88	ok d:bfefc8e7ceaf167a	ulps=0
+cos d:40b99e8924fdc924	ok d:3fdc7926487f2ead	ulps=0
+cos d:bfe572c5e95ba8e0	ok d:3fe913be0407874e	ulps=0
+cos d:c0c0e6d354d85258	ok d:bfc11bcfb13db1f4	ulps=0
+cos d:c0b15900705df3b0	ok d:3fd6934ecb767a74	ulps=0
+cos d:c1a35888573e395e	ok d:bfd6a8a0868d25ba	ulps=0
+cos d:3f76800000000000	ok d:3fefffe05c0536d6	ulps=0
+cos d:40ae3f05d205d37c	ok d:3fdec594c636b8de	ulps=0
+cos d:c0222ba408bb2a96	ok d:bfee2c4bdd565137	ulps=0
+cos d:40ba6d3b679f288c	ok d:bfc7e37486b7e64b	ulps=0
+cos d:408db1f2e82257f0	ok d:3fb68ae21d8b7c08	ulps=0
+cos d:c0202de7399f8041	ok d:bfcde33f40ddb9ff	ulps=0
+cos d:c7eff933c78cdfad	ok d:fff8000000000000	ulps=0
+cos d:c1a09006de7cd4b0	ok d:3fef0b53ef2f4fff	ulps=0
+cos d:c0b81a68575ac57e	ok d:3fee61233eab4d32	ulps=0
+cos d:bfed28c78ef0b0a0	ok d:3fe39bdbfeecabe0	ulps=0
+cos d:7e37e43c8800759c	ok d:fff8000000000000	ulps=0
+cos d:bfe2223d1bf50d40	ok d:3feaff7e516c0dd5	ulps=0
+cos d:4023a6973105944a	ok d:bfed776f3a25b3ec	ulps=0
+cos d:c183e131d17e5f68	ok d:3fe2aa1c0fa09244	ulps=0
+cos d:c0b5e53075bc894b	ok d:3feaa0280baede57	ulps=0
+cos d:3f830a0430a7d000	ok d:3fefffa560e9e296	ulps=0
+cos d:c001b7df07db6470	ok d:bfe3365e1d58c183	ulps=0
+cos d:4002483a61a3fe5c	ok d:bfe4f78bed73cb5b	ulps=0
+cos d:4017f1f99bebd7fe	ok d:3fee99a0bd1e9b5b	ulps=0
+cos d:40199d2d6057ad80	ok d:3fefc4c92abce849	ulps=0
+cos d:bff9e48354f3af10	ok d:bfa84ea911fc0e7f	ulps=0
+cos d:c0c02578527e8682	ok d:bfc48684117c39a5	ulps=0
+cos d:c1a7b2263acd3b92	ok d:bfe2233f6f2fdc7c	ulps=0
+cos d:3fcf470acc9d7c40	ok d:3fef0ca4d55bdc26	ulps=0
+cos d:4021d83ffad1c08c	ok d:bfec0ba6b807c555	ulps=0
+cos d:411ba08201b81400	ok d:3fef8cdef37dbfab	ulps=0
+cos d:4002a1d87389bd64	ok d:bfe6011fdcce3d90	ulps=0
+cos d:40bd71c88fb1fbc0	ok d:bfdce0c156567969	ulps=0
+cos d:3fdeee86bbb41de0	ok d:3fec55b4fd5cad74	ulps=0
+cos d:c01f9121e7431c76	ok d:bfa352b227743353	ulps=0
+cos d:c1978652a9bb87e8	ok d:bfe94211d39c6697	ulps=0
+cos d:41833a4560c10968	ok d:bfe77342229567e3	ulps=0
+cos d:c0b92b12ac103b60	ok d:bfee3c630d81e40e	ulps=0

@@ -29,6 +29,17 @@ inline constexpr AppDefault kKeybindDefaults[] = {
     {"keybind_start", "Escape,Return"},       // pause menu
 };
 
+// [keybinds] The campaign only (Cod3App, after the table above): binoculars
+// (B) and sprint / hold breath (Shift) are keys of their own there
+// (game/keybinds/binds.h), so by default no key presses the controller's left
+// stick click or D-pad, and Shift+arrows press nothing. cod3mp keeps the table
+// above (its L3 is +sprintbreath); cod3.toml leaves these out while they are
+// at the campaign's default, so each program keeps its own.
+inline constexpr AppDefault kCampaignKeybindDefaults[] = {
+    {"keybind_lstick_press", ""}, {"keybind_dpad_up", ""},    {"keybind_dpad_down", ""},
+    {"keybind_dpad_left", ""},    {"keybind_dpad_right", ""},
+};
+
 // Keyboard and mouse on; raw mouse aim replaces the SDK's mouse-to-stick
 // emulation (cod3_raw_mouse defaults to on).
 inline constexpr AppDefault kControlDefaults[] = {

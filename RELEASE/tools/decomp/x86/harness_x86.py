@@ -28,6 +28,7 @@ import math
 import os
 import random
 import struct
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -449,6 +450,9 @@ class RustChecker:
         exe = next((p for p in (release / "pc_check.exe", release / "pc_check") if p.is_file()), None)
         if exe is None:
             raise SystemExit(f"pc_check isn't built in {release}: cargo build --release -p pc_check (in engine/)")
+        self._start(exe)
+
+    def _start(self, exe: Path) -> None:
         self.proc = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                      bufsize=1)
 
@@ -465,6 +469,34 @@ class RustChecker:
         if self.proc.stdin:
             self.proc.stdin.close()
         self.proc.wait(timeout=10)
+
+
+CPP = ENGINE / "cpp"
+
+
+def cpp_build_dir() -> Path:
+    return Path(os.environ.get("IW_CPP_BUILD_DIR") or CPP / "build")
+
+
+class CppChecker(RustChecker):
+    """Talks to pc_check_cpp (engine/cpp/pc_check), the C++ ports' answerer:
+    the same protocol, built with CMake (Release) into IW_CPP_BUILD_DIR or
+    engine/cpp/build."""
+
+    def __init__(self, build: bool = True):
+        out = cpp_build_dir()
+        if build:
+            if not (out / "CMakeCache.txt").is_file():
+                generator = ["-G", "Ninja"] if shutil.which("ninja") else []
+                subprocess.run(["cmake", "-S", str(CPP), "-B", str(out), "-DCMAKE_BUILD_TYPE=Release", *generator],
+                               check=True, stdout=subprocess.DEVNULL)
+            subprocess.run(["cmake", "--build", str(out), "--config", "Release", "--target", "pc_check_cpp"],
+                           check=True, stdout=subprocess.DEVNULL)
+        candidates = [out / "pc_check_cpp", out / "pc_check_cpp.exe", out / "Release" / "pc_check_cpp.exe"]
+        exe = next((p for p in candidates if p.is_file()), None)
+        if exe is None:
+            raise SystemExit(f"pc_check_cpp isn't built in {out}: cmake -S engine/cpp -B {out} && cmake --build {out}")
+        self._start(exe)
 
 
 def _short(line: str, keep: int = 96) -> str:

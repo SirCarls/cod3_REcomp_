@@ -1,14 +1,18 @@
-"""Tkinter front end: a sidebar with the pages Set up, Play, Textures, Tools,
-Log and About (and Mods & maps when waw.MODS_ENABLED), and a bar at the
-bottom with Build, Cancel, progress and status that stays on every page.
+"""Tkinter front end: game tabs across the top (Call of Duty 3, World at
+War, Call of Duty 2, United Offensive), each with its own header, its own
+sidebar of pages and its own main buttons in the bar at the bottom, which
+also has Cancel, progress and status on every page.
 
 All long-running work happens on worker threads; they talk to the UI only
 through a queue that the Tk main loop drains.
 
-Where things are: this file has the window, the sidebar, the bottom bar,
-building, settings and the Set up page; gui_pages.py has Play, Textures,
-Mods & maps, Tools and About; gui_log.py the Log page. Colors and styles:
-theme.py. Shared building blocks (scrolling, tooltips, dialogs): widgets.py.
+Where things are: this file has the window, the bottom bar, building,
+settings and Call of Duty 3's Set up page; gui_games.py the tabs, the
+headers and the World at War, Call of Duty 2 and United Offensive pages;
+gui_pages.py Play, Textures, Mods & maps, Tools and About; gui_log.py the
+Log page. Which tab has which pages: games.py. Colors and styles: theme.py;
+the headers' drawings: gui_art.py. Shared building blocks (scrolling,
+tooltips, dialogs): widgets.py.
 """
 from __future__ import annotations
 
@@ -26,8 +30,9 @@ from pathlib import Path
 from tkinter import colorchooser, filedialog, ttk
 from typing import Callable, Dict, List, Optional
 
-from . import common, inputs, map_packs, theme, upscale, waw, widgets
+from . import common, fonts, games, inputs, map_packs, pc_games, theme, upscale, waw, widgets
 from .common import IS_LINUX, IS_WINDOWS, Log, SetupError
+from .gui_games import HERO_H, Games
 from .gui_log import LogPage
 from .gui_pages import Pages
 from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline, fidelityfx_available
@@ -42,13 +47,12 @@ PATCH_TYPES = [("Patch downloads", "*.zip *.ZIP *.exe *.EXE")]
 # is moved to the new default (the project's own work/ folder).
 _USER = os.environ.get("USER") or os.environ.get("LOGNAME") or "user"
 OLD_WORK_DEFAULTS = {common.cache_dir() / "work", Path("/var/tmp") / f"{common.APP_ID}-{_USER}"}
-# The window's own settings, saved with the others but not part of a profile.
-UI_KEYS = ("ui_theme", "ui_accent", "ui_page", "ui_geometry", "ui_zoomed")
-# Pages in the sidebar: (key, label). Ctrl+1... picks them in this order.
-PAGES = [("setup", "Set up"), ("play", "Play"), ("textures", "Textures"), ("maps", "Mods & maps"),
-         ("tools", "Tools"), ("log", "Log"), ("about", "About")]
-SIDEBAR_W, SIDEBAR_COMPACT_W = 200, 116
-COMPACT_BELOW = 760   # window width (at 96 DPI) under which the sidebar gets narrow
+# The window's own settings, saved with the others but not part of a profile
+# (games.TabState writes the tab keys).
+UI_KEYS = ("ui_geometry", "ui_zoomed")
+SIDEBAR_W, SIDEBAR_COMPACT_W = 200, 132
+LABEL_W, LABEL_COMPACT_W = 190, 150   # the forms' label column
+COMPACT_BELOW = 860   # window width (at 96 DPI) under which the sidebar and tabs get narrow
 
 
 def desktop_scale(root: tk.Tk) -> float:
@@ -104,7 +108,7 @@ def format_duration(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
-class App(Pages, LogPage):
+class App(Pages, LogPage, Games):
     def __init__(self, root: tk.Tk, launcher: bool):
         self.root = root
         self.launcher = launcher
@@ -192,10 +196,16 @@ class App(Pages, LogPage):
         self.v_progress = tk.DoubleVar(value=0)
         self.v_cod3_windowed = tk.BooleanVar(value=s.get("cod3_windowed", False))
         self.v_cod3_args = tk.StringVar(value=s.get("cod3_args", ""))
-        # The window's look (theme.py): the game's F2 themes and an accent.
-        theme_id = s.get("ui_theme") if s.get("ui_theme") in theme.THEMES else theme.DEFAULT_THEME
-        self.accent = theme.normalize_accent(s.get("ui_accent"))
-        self.v_theme = tk.StringVar(value=theme.theme_label(theme_id))
+        # The game tabs (games.py): the one in view, and each one's last page,
+        # theme and accent (theme.py: each game's own colors, or one of the
+        # game's F2 themes).
+        self.page_lists = games.available_pages(["maps"] if waw.MODS_ENABLED else [])
+        self.page_order = self.page_lists[games.COD3]
+        self.tabs = games.TabState.from_settings(s, self.page_lists, list(theme.ALL_PALETTES), launcher=launcher)
+        self.accent = self.tabs.accent_for(self.tabs.game)
+        self.v_theme = tk.StringVar(value=theme.theme_label(self.tabs.theme_for(self.tabs.game)))
+        self._init_pc_settings(s)
+        self._last_out = self.v_out.get().strip()
 
         # The mouse wheel scrolls the page, never the value of a number box or
         # list under the pointer (that changed "Build threads" while scrolling).
@@ -205,18 +215,29 @@ class App(Pages, LogPage):
         root.title(common.APP_NAME)
         # Small windows (and small screens) work: the pages scroll.
         root.minsize(px(420), px(320))
-        theme.apply(root, theme_id, self.accent, px)
+        # The game's F2 font (from the project, for this program only) for
+        # the tabs, the main buttons and Call of Duty 3's title.
+        self._chrome_font = fonts.load_project_font(root, Path(__file__).resolve().parent.parent,
+                                                    common.config_dir())
+        if self._chrome_font:
+            theme.set_chrome_font(root, *self._chrome_font)
+        self._display_font = theme.set_game_fonts(root, self.tabs.game)
+        theme.apply(root, self.tabs.theme_for(self.tabs.game), self.accent, px)
         theme.listeners.append(self._on_theme)
 
         self._build_shell()
-        self.page_order = [k for k, _ in PAGES if k != "maps" or waw.MODS_ENABLED]
         self.pages: Dict[str, dict] = {}
         builders = {"setup": self._page_setup, "play": self._page_play, "textures": self._page_textures,
                     "maps": self._page_maps, "tools": self._page_tools, "log": self._page_log,
-                    "about": self._page_about}
-        labels = dict(PAGES)
-        for i, key in enumerate(self.page_order):
-            self._add_page(key, labels[key], builders[key], i)
+                    "about": self._page_about, "waw_content": self._page_waw_content,
+                    "waw_status": lambda t: self._page_status(t, games.WAW)}
+        for gid in pc_games.PC_GAMES:
+            builders[f"{gid}_copy"] = lambda t, g=gid: self._page_pc_copy(t, g)
+            builders[f"{gid}_server"] = lambda t, g=gid: self._page_pc_server(t, g)
+            builders[f"{gid}_status"] = lambda t, g=gid: self._page_status(t, g)
+        # Each page once (the log is in every tab's sidebar, but is one page).
+        for key in dict.fromkeys(k for gid in games.GAME_ORDER for k in self.page_lists[gid]):
+            self._add_page(key, builders[key])
         self._initial_size()
 
         self.v_iso.trace_add("write", lambda *a: (self._validate_iso(), self._update_build_state()))
@@ -227,48 +248,49 @@ class App(Pages, LogPage):
         self._set_packs(self.packs)
         self._update_build_state()
         self._bind_keys()
-        page = self._saved_ui.get("ui_page")
-        self.show_page("play" if launcher else page if page in self.pages else "setup")
+        self.show_game(self.tabs.game)
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._poll)
         root.after(50, lambda: widgets.title_bar_dark(root, not theme.current["light"]))
 
     # ------------------------------------------------------------------ window
     def _build_shell(self) -> None:
-        """Sidebar | divider | (page, banner, bottom bar)."""
+        """Game tabs | header | (sidebar, divider, (page, banner, bottom bar))."""
         root = self.root
         shell = self.shell = ttk.Frame(root)
         shell.pack(fill="both", expand=True)
-        shell.rowconfigure(0, weight=1)
+        shell.rowconfigure(2, weight=1)
         shell.columnconfigure(2, weight=1)
+        self.tabbar = self._build_tabbar(shell)
+        self.tabbar.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.hero = self._build_hero(shell)
+        self.hero.grid(row=1, column=0, columnspan=3, sticky="ew")
+        self._low = False
 
         sb = self.sidebar = ttk.Frame(shell, style="Sidebar.TFrame", width=px(SIDEBAR_W))
-        sb.grid(row=0, column=0, sticky="ns")
+        sb.grid(row=2, column=0, sticky="ns")
         sb.pack_propagate(False)
         divider = tk.Frame(shell, width=1)
         divider.c3w_role = "divider"
-        divider.grid(row=0, column=1, sticky="ns")
+        divider.grid(row=2, column=1, sticky="ns")
         theme.recolor(divider)
 
-        logo = ttk.Frame(sb, style="Sidebar.TFrame", padding=(px(18), px(20), px(10), px(18)))
-        logo.pack(side="top", fill="x")
-        self.lbl_logo = ttk.Label(logo, text="CALL OF DUTY 3", style="Logo.TLabel")
-        self.lbl_logo.pack(anchor="w")
-        self.lbl_logo_sub = ttk.Label(logo, text="Setup tool", style="SidebarDim.TLabel")
-        self.lbl_logo_sub.pack(anchor="w")
-        self.nav = ttk.Frame(sb, style="Sidebar.TFrame")
-        self.nav.pack(side="top", fill="x")
+        ttk.Frame(sb, style="Sidebar.TFrame", height=px(14)).pack(side="top", fill="x")
+        # Each tab's own pages (gui_games._build_navs); only the current tab's show.
+        self.nav_host = ttk.Frame(sb, style="Sidebar.TFrame")
+        self.nav_host.pack(side="top", fill="x")
+        self._build_navs()
 
-        # The look, at the sidebar's foot (also on Tools > Appearance).
+        # The look, at the sidebar's foot (also on Tools > Appearance): for the tab in view.
         foot = self.sidebar_foot = ttk.Frame(sb, style="Sidebar.TFrame", padding=(px(16), px(8), px(12), px(14)))
         foot.pack(side="bottom", fill="x")
         ttk.Label(foot, text="Theme", style="SidebarDim.TLabel").pack(anchor="w")
-        cb = ttk.Combobox(foot, textvariable=self.v_theme, state="readonly", width=16,
-                          values=[theme.THEMES[t].label for t in theme.THEME_ORDER])
+        cb = self.cb_theme = ttk.Combobox(foot, textvariable=self.v_theme, state="readonly", width=16,
+                                          values=[theme.THEMES[t].label for t in theme.THEME_ORDER])
         cb.pack(fill="x", pady=(px(2), px(6)))
-        cb.bind("<<ComboboxSelected>>", lambda e: self._set_theme(theme.theme_id_for_label(self.v_theme.get())))
-        tip(cb, lambda: theme.THEMES[theme.theme_id_for_label(self.v_theme.get())].description +
-            " The same themes as the game's F2 window.")
+        cb.bind("<<ComboboxSelected>>", lambda e: self._set_theme(theme.picker_id(self.v_theme.get(), self._own())))
+        tip(cb, lambda: theme.picker_description(theme.picker_id(self.v_theme.get(), self._own()), self._own()) +
+            " For this tab.")
         arow = ttk.Frame(foot, style="Sidebar.TFrame")
         arow.pack(fill="x")
         self.swatches: List[tk.Frame] = []
@@ -279,12 +301,12 @@ class App(Pages, LogPage):
         theme.recolor(sw)
         self.swatches.append(sw)
         tip(ttk.Button(arow, text="Accent color...", style="SidebarLink.TButton", cursor="hand2",
-                       command=self._pick_accent), "Pick the highlight color.").pack(side="left")
+                       command=self._pick_accent), "Pick this tab's highlight color.").pack(side="left")
         self.lbl_version = ttk.Label(foot, text=f"Version {TOOL_VERSION}", style="SidebarDim.TLabel")
         self.lbl_version.pack(anchor="w", pady=(px(10), 0))
 
         main = self.main = ttk.Frame(shell)
-        main.grid(row=0, column=2, sticky="nsew")
+        main.grid(row=2, column=2, sticky="nsew")
         main.rowconfigure(0, weight=1)
         main.columnconfigure(0, weight=1)
         self.content = ttk.Frame(main)
@@ -296,59 +318,80 @@ class App(Pages, LogPage):
         self._compact = False
         root.bind("<Configure>", self._on_root_resize, add="+")
 
-    def _add_page(self, key: str, label: str, builder: Callable, index: int) -> None:
-        """A page (it scrolls when the window is too small for it) and its
-        entry in the sidebar: a marker stripe and a button."""
+    def _add_page(self, key: str, builder: Callable) -> None:
+        """A page (it scrolls when the window is too small for it); its
+        sidebar buttons are made per tab (gui_games._build_navs)."""
         frame = ScrollFrame(self.content)
-        row = ttk.Frame(self.nav, style="Sidebar.TFrame")
-        row.pack(fill="x")
-        stripe = tk.Frame(row, width=px(4))
-        stripe.c3w_role = "stripe"
-        stripe.pack(side="left", fill="y")
-        btn = ttk.Button(row, text=label, style="Nav.TButton", command=lambda k=key: self.show_page(k))
-        btn.pack(side="left", fill="x", expand=True)
-        tip(btn, f"{label}  (Ctrl+{index + 1})" if index < 9 else label)
-        self.pages[key] = {"frame": frame, "button": btn, "stripe": stripe, "label": label,
-                           "scroll": frame, "on_show": None}
+        self.pages[key] = {"frame": frame, "label": games.PAGE_LABELS[key], "scroll": frame, "on_show": None}
         builder(frame.inner)
-        self._color_stripe(key)
 
     def show_page(self, key: str) -> None:
+        """Shows a page; a page of another tab switches to that tab."""
         if key not in self.pages:
             return
+        owner = games.owner_of(key, self.page_lists, prefer=self.tabs.game)
+        if owner is None:
+            return
+        if owner != getattr(self, "_shown_game", None):
+            self.show_game(owner, key)
+            return
+        self.tabs.show(owner, key)
         current = getattr(self, "page", None)
         if current and current != key:
             self.pages[current]["frame"].grid_remove()
         self.page = key
         p = self.pages[key]
         p["frame"].grid(row=0, column=0, sticky="nsew")
-        for k in self.pages:
-            self.pages[k]["button"].configure(style="NavSelected.TButton" if k == key else "Nav.TButton")
-            self._color_stripe(k)
+        for (gid, k), (btn, _) in self.nav_items.items():
+            if gid == owner:
+                btn.configure(style="NavSelected.TButton" if k == key else "Nav.TButton")
+        self._color_stripes()
         if p.get("on_show"):
             p["on_show"]()
 
-    def _color_stripe(self, key: str) -> None:
+    def _color_stripes(self) -> None:
+        """The marker beside the current tab's selected page."""
         c = theme.current
-        selected = getattr(self, "page", None) == key
-        try:
-            self.pages[key]["stripe"].configure(background=c["accent"] if selected else c["sidebar"])
-        except (KeyError, tk.TclError):
-            pass
+        for (gid, k), (_, stripe) in getattr(self, "nav_items", {}).items():
+            if gid != self.tabs.game:
+                continue
+            try:
+                stripe.configure(background=c["accent"] if getattr(self, "page", None) == k else c["sidebar"])
+            except tk.TclError:
+                pass
 
     def _on_root_resize(self, event) -> None:
         if event.widget is not self.root:
             return
         compact = event.width < px(COMPACT_BELOW)
-        if compact == self._compact:
-            return
-        self._compact = compact
-        self.sidebar.configure(width=px(SIDEBAR_COMPACT_W if compact else SIDEBAR_W))
-        self.lbl_logo.configure(text="COD3" if compact else "CALL OF DUTY 3")
-        if compact:
-            self.sidebar_foot.pack_forget()
-        else:
-            self.sidebar_foot.pack(side="bottom", fill="x", after=self.nav)
+        if compact != self._compact:
+            self._compact = compact
+            self.sidebar.configure(width=px(SIDEBAR_COMPACT_W if compact else SIDEBAR_W))
+            for gid, item in self.tab_items.items():
+                g = games.game(gid)
+                item["button"].configure(text=(g.short if compact else g.tab).upper())
+            # The box before the tabs is as wide as the sidebar, so the tabs
+            # start where the pages do.
+            self.tab_badge_box.configure(width=px(SIDEBAR_COMPACT_W if compact else SIDEBAR_W))
+            self.tab_badge.configure(text="SETUP" if compact else "SETUP TOOL")
+            if compact:
+                self.sidebar_foot.pack_forget()
+                self.btn_open_out.grid_remove()
+            else:
+                self.sidebar_foot.pack(side="bottom", fill="x", after=self.nav_host)
+                self.btn_open_out.grid()
+            for frame in getattr(self, "_label_frames", []):
+                try:
+                    frame.columnconfigure(0, minsize=px(LABEL_COMPACT_W if compact else LABEL_W))
+                except tk.TclError:
+                    pass
+        # The header follows the window's height; a low window gives its
+        # room to the page (and the bottom bar's buttons get the usual size).
+        self._fit_hero(event.height)
+        low = not self._hero_h
+        if low != self._low or getattr(self, "_actions_compact", None) != (compact or low):
+            self._low = low
+            self._compact_actions(compact or low)
 
     def _initial_size(self) -> None:
         """Open at the size the window had last time; the first time, big
@@ -366,7 +409,8 @@ class App(Pages, LogPage):
             setup = self.pages["setup"]["scroll"]
             w = (px(SIDEBAR_W) + 1 + max(p.inner.winfo_reqwidth() for p in pages) +
                  setup.vbar.winfo_reqwidth() + px(8))
-            h = setup.inner.winfo_reqheight() + self.bottom.winfo_reqheight() + px(8)
+            h = (setup.inner.winfo_reqheight() + self.bottom.winfo_reqheight() + self.tabbar.winfo_reqheight() +
+                 px(HERO_H) + px(8))
         self.root.geometry(f"{min(w, int(sw * 0.95))}x{min(h, int(sh * 0.88))}")
         if self._saved_ui.get("ui_zoomed"):
             try:
@@ -378,17 +422,25 @@ class App(Pages, LogPage):
                 pass
 
     def _bind_keys(self) -> None:
-        """Ctrl+B builds, Ctrl+L shows the log, Ctrl+1... picks a page, F5
-        checks again. Bound to the main window only, so a dialog's keys stay
-        its own."""
+        """Ctrl+B the tab's main button, Ctrl+L the log, Ctrl+1... a page of
+        the tab, Ctrl+Tab / Ctrl+Shift+Tab (or Ctrl+PageDown / PageUp) the
+        next or previous tab, F5 checks again. Bound to the main window only,
+        so a dialog's keys stay its own."""
         r = self.root
         for seq in ("<Control-b>", "<Control-B>"):
-            r.bind(seq, lambda e: self._shortcut_build())
+            r.bind(seq, lambda e: self._main_action())
         for seq in ("<Control-l>", "<Control-L>"):
             r.bind(seq, lambda e: self.show_page("log"))
         r.bind("<F5>", lambda e: self._refresh_checks())
-        for i, key in enumerate(self.page_order[:9]):
-            r.bind(f"<Control-Key-{i + 1}>", lambda e, k=key: self.show_page(k))
+        for i in range(9):
+            r.bind(f"<Control-Key-{i + 1}>", lambda e, n=i: self._show_nth_page(n))
+        for seq in ("<Control-Tab>", "<Control-Next>"):
+            r.bind(seq, lambda e: self._step_game(1))
+        for seq in ("<Control-Shift-Tab>", "<Control-ISO_Left_Tab>", "<Control-Prior>"):
+            try:
+                r.bind(seq, lambda e: self._step_game(-1))
+            except tk.TclError:   # a key name this system's Tk doesn't know
+                pass
 
     def _shortcut_build(self) -> None:
         if str(self.btn_build.cget("state")) == "disabled":
@@ -407,9 +459,18 @@ class App(Pages, LogPage):
         self.v_status.set("Checked again.")
 
     # ------------------------------------------------------------------ theme
+    def _own(self) -> str:
+        """The tab in view's own palette (first in its theme list)."""
+        return games.game(self.tabs.game).palette
+
     def _set_theme(self, theme_id: str) -> None:
-        self.v_theme.set(theme.theme_label(theme_id))
-        theme.apply(self.root, theme_id, self.accent, px)
+        """The theme of the tab in view (its own colors are the default)."""
+        gid = self.tabs.game
+        if theme_id == games.game(gid).palette:
+            self.tabs.themes.pop(gid, None)
+        else:
+            self.tabs.themes[gid] = theme_id
+        self._apply_look()
         self._save_quietly()
 
     def _pick_accent(self) -> None:
@@ -419,17 +480,19 @@ class App(Pages, LogPage):
         except tk.TclError:
             return
         if picked and picked[1]:
-            self.accent = theme.normalize_accent(picked[1])
-            self._set_theme(theme.theme_id_for_label(self.v_theme.get()))
+            self.tabs.accents[self.tabs.game] = theme.normalize_accent(picked[1])
+            self._apply_look()
+            self._save_quietly()
 
     def _reset_accent(self) -> None:
-        self.accent = ""
-        self._set_theme(theme.theme_id_for_label(self.v_theme.get()))
+        self.tabs.accents.pop(self.tabs.game, None)
+        self._apply_look()
+        self._save_quietly()
 
     def _on_theme(self, c: Dict[str, str]) -> None:
-        """What styles can't reach: the page markers, swatches, the log's colors."""
-        for key in getattr(self, "pages", {}):
-            self._color_stripe(key)
+        """What styles can't reach: the page markers, swatches, the tabs, the
+        log's colors."""
+        self._color_stripes()
         for sw in getattr(self, "swatches", []):
             try:
                 sw.configure(background=c["accent"])
@@ -440,41 +503,44 @@ class App(Pages, LogPage):
         widgets.title_bar_dark(self.root, not c["light"])
         self._theme_log(c)
         self._theme_pages(c)
+        self._theme_games(c)
 
     # ------------------------------------------------------------------ bottom bar and banner
     def _build_bottom_bar(self, main) -> None:
-        """Build, Cancel, the reason Build is off, progress and status: in
-        view on every page, however small the window is."""
+        """The tab's main buttons, Cancel, the reason the main button is off,
+        progress and status: in view on every page, however small the
+        window is."""
         bar = self.bottom = ttk.Frame(main)
         bar.grid(row=2, column=0, sticky="ew")
-        line = tk.Frame(bar, height=1)
-        line.c3w_role = "divider"
-        line.pack(fill="x")
-        theme.recolor(line)
+        # The progress: a thin line along the bar's top edge (a plain
+        # divider while nothing runs), so the bar takes little height.
+        widgets.LineProgress(bar, self.v_progress, max(2, px(3))).pack(fill="x")
         inner = ttk.Frame(bar, padding=(px(24), px(10), px(24), px(8)))
         inner.pack(fill="x")
         inner.columnconfigure(2, weight=1)
-        self.btn_build = ttk.Button(inner, text="Build", style="Accent.TButton", command=self._start_build)
-        self.btn_build.grid(row=0, column=0, sticky="w")
-        tip(self.btn_build, "Rip the games and build what's ticked on Set up (Ctrl+B). Nothing is downloaded before "
-            "you approve the list.", reason=self.v_build_reason.get)
-        self.btn_cancel = ttk.Button(inner, text="Cancel", command=self._cancel, state="disabled")
+        actions = ttk.Frame(inner)
+        actions.grid(row=0, column=0, sticky="w")
+        self._build_actions(actions)
+        # The quiet buttons are outlined, the same height as the main ones.
+        self.btn_cancel = ttk.Button(inner, text="Cancel", style="Big.Ghost.TButton", command=self._cancel,
+                                     state="disabled")
         self.btn_cancel.grid(row=0, column=1, sticky="w", padx=(px(6), 0))
-        tip(self.btn_cancel, "Stop the build. Press Build later to continue where it stopped.")
-        b = ttk.Button(inner, text="Open output folder", command=lambda: self._open(self.v_out.get()))
+        tip(self.btn_cancel, "Stop the job running now. A build continues where it stopped next time.")
+        b = self.btn_open_out = ttk.Button(inner, text="Open output folder", style="Big.Ghost.TButton",
+                                           command=lambda: self._open(self.v_out.get()))
         b.grid(row=0, column=3, sticky="e")
-        tip(b, "The built game, the ripped files, saves and logs.")
-        # Why Build is off (only shown then); a click goes to Set up.
+        tip(b, "The built game, the ripped files, the new copies, saves and logs.")
+        # Why the main button is off (only shown then); a click goes to the page that fixes it.
         self.lbl_reason = ttk.Label(inner, textvariable=self.v_build_reason, style="Warn.TLabel", cursor="hand2",
                                     justify="left")
         self.lbl_reason.grid(row=1, column=0, columnspan=4, sticky="w", pady=(px(6), 0))
-        self.lbl_reason.bind("<Button-1>", lambda e: self.show_page("setup"))
-        tip(self.lbl_reason, "Click to go to Set up.")
-        ttk.Progressbar(inner, variable=self.v_progress, maximum=1.0).grid(
-            row=2, column=0, columnspan=4, sticky="ew", pady=(px(8), px(4)))
+        self.lbl_reason.bind("<Button-1>", lambda e: self._reason_clicked())
+        tip(self.lbl_reason, "Click to go where this is set.")
         # Status (cut at the window's edge, never pushing the buttons) and the time taken.
-        ttk.Label(inner, textvariable=self.v_status, width=1).grid(row=3, column=0, columnspan=3, sticky="ew")
-        ttk.Label(inner, textvariable=self.v_elapsed, style="Hint.TLabel").grid(row=3, column=3, sticky="e")
+        ttk.Label(inner, textvariable=self.v_status, width=1).grid(row=2, column=0, columnspan=3, sticky="ew",
+                                                                  pady=(px(4), 0))
+        ttk.Label(inner, textvariable=self.v_elapsed, style="Hint.TLabel").grid(row=2, column=3, sticky="e",
+                                                                               pady=(px(4), 0))
         inner.bind("<Configure>", lambda e: self.lbl_reason.configure(wraplength=max(px(200), e.width - px(52))),
                    add="+")
 
@@ -524,13 +590,15 @@ class App(Pages, LogPage):
             return
         running = bool(self.worker and self.worker.is_alive())
         reason = "" if running else self._blocker(self._options(), "Build")
-        self.v_build_reason.set(reason)
         self.btn_build.configure(state="disabled" if running or reason else "normal")
         self.btn_cancel.configure(state="normal" if running else "disabled")
-        if reason:
-            self.lbl_reason.grid()
-        else:
-            self.lbl_reason.grid_remove()
+        if self.tabs.game == games.COD3:
+            self.v_build_reason.set(reason)
+            if reason:
+                self.lbl_reason.grid()
+            else:
+                self.lbl_reason.grid_remove()
+        self._update_actions()   # the other tabs' main buttons (and their reason, when in view)
         self._update_page_states()
 
     def _blocker(self, opts: BuildOptions, what: str) -> str:
@@ -553,6 +621,12 @@ class App(Pages, LogPage):
         return opts
 
     def _on_output_changed(self) -> None:
+        # A new copy folder still at its default (inside the output folder) follows it.
+        new = self.v_out.get().strip()
+        for v in self.pc.values():
+            if v["copy_dir"].get().strip() == pc_games.default_copy_dir(self._last_out):
+                v["copy_dir"].set(pc_games.default_copy_dir(new))
+        self._last_out = new
         self._update_build_state()
         self._refresh_maps()
         self._output_changed()
@@ -562,7 +636,9 @@ class App(Pages, LogPage):
              widgets_out: Optional[list] = None, tooltip: str = "") -> ttk.Entry:
         lbl = ttk.Label(parent, text=label)
         lbl.grid(row=r, column=0, sticky="w", padx=(0, px(10)), pady=px(3))
-        entry = ttk.Entry(parent, textvariable=var)
+        # Narrow at least (it stretches to the room there is), so a small
+        # window doesn't scroll sideways for it.
+        entry = ttk.Entry(parent, textvariable=var, width=8)
         entry.grid(row=r, column=1, sticky="ew", pady=px(3))
         if tooltip:
             tip(entry, tooltip)
@@ -607,7 +683,20 @@ class App(Pages, LogPage):
         threading.Thread(target=wrapper, daemon=True).start()
 
     def _manifest(self) -> dict:
-        return common.read_json(Path(self.v_out.get()) / "cod3_waw.json") if self.v_out.get() else {}
+        """The output folder's cod3_waw.json. Read again only when the file
+        changed: the main buttons ask for it on every key typed in a form."""
+        if not self.v_out.get():
+            return {}
+        path = Path(self.v_out.get()) / "cod3_waw.json"
+        try:
+            st = path.stat()
+        except OSError:
+            return {}
+        key = (str(path), st.st_mtime_ns, st.st_size)
+        cached = getattr(self, "_manifest_cache", None)
+        if cached is None or cached[0] != key:
+            cached = self._manifest_cache = (key, common.read_json(path))
+        return dict(cached[1])
 
     def _info(self, title: str, text: str, kind: str = "info") -> None:
         widgets.message(self.root, title, text, kind=kind)
@@ -643,7 +732,7 @@ class App(Pages, LogPage):
     def _page_setup(self, t) -> None:
         t.columnconfigure(0, weight=1)
         head = widgets.page_header(t, "Set up", "Make Call of Duty 3 from your own disc, then press Build. Your "
-                                   "discs and game folders are only read: never changed, never deleted.", columns=1)
+                                   "discs are only read, never changed.", columns=1)
         b = ttk.Button(head, text="Open input folder", command=self._open_input)
         b.pack(side="right", anchor="n", padx=(px(12), 0))
         tip(b, "Put your disc images and downloads here: they're found by themselves.")
@@ -687,70 +776,10 @@ class App(Pages, LogPage):
             tooltip="Where the game, the ripped files, saves and logs go.")
         ttk.Checkbutton(w, text="Install anything that's missing automatically (recommended)",
                         variable=self.v_install).grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
-
-        ww = section(t, "World at War (optional)", 5, columns=1)
-        self._grid_cols(ww)
-        ttk.Checkbutton(ww, text="Also rip World at War (not needed to play Call of Duty 3)",
-                        variable=self.v_use_waw, command=self._validate_waw).grid(
-            row=0, column=0, columnspan=3, sticky="w", pady=(0, px(4)))
-        self.steam_widgets: list = []
-        self._row(ww, 1, "Steam folder", self.v_steam, [
-            ("Find", self._find_steam, "Look for World at War in your Steam libraries."),
-            ("Browse...", lambda: self._pick_dir(self.v_steam, "World at War folder in your Steam library"), "")],
-            widgets_out=self.steam_widgets)
-        hint(ww, "Have it on Steam? That's all you need: when a Steam folder is set, it is the only World at "
-                 "War source used.").grid(row=2, column=0, columnspan=3, sticky="w")
-        ttk.Label(ww, text="Without Steam, use one of these:").grid(row=3, column=0, columnspan=3, sticky="w",
-                                                                   pady=(px(10), px(2)))
-        rb1 = ttk.Radiobutton(ww, text="Xbox 360 disc image", value=waw.XBOX360, variable=self.v_alt)
-        rb1.grid(row=4, column=0, sticky="w", pady=px(3))
-        e1 = ttk.Entry(ww, textvariable=self.v_xbox)
-        e1.grid(row=4, column=1, sticky="ew", pady=px(3))
-        bf1 = ttk.Frame(ww)
-        bf1.grid(row=4, column=2, sticky="e", padx=(px(6), 0))
-        b1 = ttk.Button(bf1, text="Browse...", command=lambda: self._pick_file(
-            self.v_xbox, "World at War Xbox 360 disc image", DISC_TYPES))
-        b1.pack(side="left", padx=(px(4), 0))
-        rb2 = ttk.Radiobutton(ww, text="PC disc", value=waw.PC_DISC, variable=self.v_alt)
-        rb2.grid(row=5, column=0, sticky="w", pady=px(3))
-        e2 = ttk.Entry(ww, textvariable=self.v_pc)
-        e2.grid(row=5, column=1, sticky="ew", pady=px(3))
-        pf = ttk.Frame(ww)
-        pf.grid(row=5, column=2, sticky="e", padx=(px(6), 0))
-        b2 = ttk.Button(pf, text="Image...", command=lambda: self._pick_file(
-            self.v_pc, "World at War PC disc image", DISC_TYPES))
-        b2.pack(side="left", padx=(px(4), 0))
-        b3 = ttk.Button(pf, text="Drive/folder...", command=lambda: self._pick_dir(
-            self.v_pc, "The World at War PC disc (drive), or a folder installed from it"))
-        b3.pack(side="left", padx=(px(4), 0))
-        tip(b3, "The disc drive, or a folder installed from the PC disc.")
-        ttk.Label(ww, text="Map packs").grid(row=6, column=0, sticky="nw", pady=(px(8), px(2)))
-        ttk.Label(ww, textvariable=self.v_pack, wraplength=px(460), justify="left").grid(
-            row=6, column=1, columnspan=2, sticky="w", pady=(px(8), px(2)))
-        mf = ttk.Frame(ww)
-        mf.grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, px(4)))
-        b4 = ttk.Button(mf, text="Add...", command=self._add_packs)
-        b4.pack(side="left")
-        tip(b4, "Add the official PC patch downloads (1.4, 1.5, 1.6).")
-        b5 = ttk.Button(mf, text="Clear", command=lambda: self._set_packs([]))
-        b5.pack(side="left", padx=(px(4), 0))
-        b6 = ttk.Button(mf, text="Download pages", command=self._open_pack_pages)
-        b6.pack(side="left", padx=(px(4), 0))
-        tip(b6, "Open the patches' download pages in your browser.")
-        hint(ww, "Optional. The discs don't have the map packs; the official PC patches 1.4, 1.5 and 1.6 add "
-                 "them (Map Packs 1-3). Download them from the download pages and add them here, or put them in "
-                 "the input folder. Their installers are never run.").grid(
-            row=8, column=0, columnspan=3, sticky="w")
-        self.alt_widgets = [rb1, e1, b1, rb2, e2, b2, b3, b4, b5, b6]
-        # Off rows say why when the pointer rests on them.
-        for wdg in self.steam_widgets:
-            tip(wdg, reason=lambda: "" if self.v_use_waw.get() else "Tick \"Also rip World at War\" above first.")
-        for wdg in self.alt_widgets:
-            tip(wdg, reason=lambda: "Tick \"Also rip World at War\" above first." if not self.v_use_waw.get() else
-                "Not used: a Steam folder is set, and then it is the only source." if self.v_steam.get().strip()
-                else "")
-        self.lbl_waw_status = hint(ww, var=self.v_waw_status, style="Accent.TLabel")
-        self.lbl_waw_status.grid(row=9, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        waw_box = ttk.Checkbutton(w, text="Also rip World at War (set it up on its tab)", variable=self.v_use_waw,
+                                  command=self._update_build_state)
+        waw_box.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
+        tip(waw_box, "Not needed to play Call of Duty 3.")
 
         # Rarely changed: under "More options" (closed by default).
         more = ttk.Frame(t)
@@ -779,16 +808,18 @@ class App(Pages, LogPage):
                                                                    pady=px(1))
         self._toggle_options(show=False)
 
-        hint(t, "Before anything is downloaded or installed, Build lists what, from where and into which "
-                "folder, and waits for your approval. Everything that can stays in this project folder "
-                "(Tools > Where things go shows each place). You may be asked for your password for system "
-                "packages. You can cancel at any time and press Build again later to continue where it "
-                "stopped.").grid(row=10, column=0, sticky="w", padx=px(24), pady=(px(18), px(18)))
+        hint(t, "Nothing is downloaded before you approve the list (what, from where, into which folder). "
+                "Everything stays in this project folder (Tools > Where things go). Cancel any time; Build "
+                "continues where it stopped.").grid(row=10, column=0, sticky="w", padx=px(24), pady=(px(18), px(18)))
 
     def _grid_cols(self, frame) -> None:
-        """Labels in a column of the same width on every page."""
-        frame.columnconfigure(0, minsize=px(190))
+        """Labels in a column of the same width on every page (narrower in a
+        narrow window: _on_root_resize)."""
+        frame.columnconfigure(0, minsize=px(LABEL_COMPACT_W if getattr(self, "_compact", False) else LABEL_W))
         frame.columnconfigure(1, weight=1)
+        if not hasattr(self, "_label_frames"):
+            self._label_frames: List = []
+        self._label_frames.append(frame)
 
     def _update_versions(self) -> None:
         state = "normal" if self.v_recomp.get() else "disabled"
@@ -868,27 +899,21 @@ class App(Pages, LogPage):
         threading.Thread(target=work, daemon=True).start()
 
     def _validate_waw(self) -> None:
-        use = self.v_use_waw.get()
         steam_set = bool(self.v_steam.get().strip())
-        for wdg in getattr(self, "steam_widgets", []):
-            try:
-                wdg.configure(state="normal" if use else "disabled")
-            except tk.TclError:
-                pass
         for wdg in getattr(self, "alt_widgets", []):
             try:
-                wdg.configure(state="normal" if use and not steam_set else "disabled")
+                wdg.configure(state="disabled" if steam_set else "normal")
             except tk.TclError:
                 pass
         self._waw_gen = getattr(self, "_waw_gen", 0) + 1
         gen = self._waw_gen
-        if not use:
-            self.v_waw_status.set("World at War is left out. Call of Duty 3 builds and plays without it; tick the "
-                                  "box above to rip World at War's files too (for the new engine).")
+        source, notes = waw.choose_source(self.v_steam.get(), self.v_xbox.get(), self.v_pc.get(), self.v_alt.get())
+        self._update_actions()   # "Rip content" needs a source
+        if source.kind == waw.NONE:
+            self.v_waw_status.set("Choose your copy: a Steam folder or a disc.")
             if hasattr(self, "lbl_waw_status"):
                 self.lbl_waw_status.configure(style="Hint.TLabel")
             return
-        source, notes = waw.choose_source(self.v_steam.get(), self.v_xbox.get(), self.v_pc.get(), self.v_alt.get())
 
         packs = list(self.packs)
 
@@ -904,7 +929,7 @@ class App(Pages, LogPage):
                 extra.append(f"Map packs: {len(packs)} download(s)" +
                              (f"; not found: {', '.join(missing)}." if missing else "."))
             elif packs and source.kind == waw.STEAM:
-                extra.append("The Steam version already has every map pack, so the map pack downloads aren't used.")
+                extra.append("Steam has every map pack, so the downloads aren't used.")
             if gen == self._waw_gen:   # a newer check started meanwhile: its result wins
                 self.q.put(("waw_status", " ".join([text] + notes + extra), ok and source.kind != waw.NONE))
         threading.Thread(target=work, daemon=True).start()
@@ -943,15 +968,19 @@ class App(Pages, LogPage):
             upscale_textures=self.v_upscale.get(), upscale_model=self._upscale_model_key(),
             upscale_noise=self._upscale_noise_level(), upscale_scale=self._upscale_scale())
 
-    def _start_build(self, overrides: Optional[dict] = None, what: str = "Build") -> None:
+    def _start_build(self, overrides: Optional[dict] = None, what: str = "Build",
+                     blocker: Optional[Callable[[BuildOptions, str], str]] = None,
+                     done: Optional[tuple] = None) -> None:
         """Starts a build; `overrides` (BuildOptions fields) make it a
-        repair that redoes only what's broken."""
+        repair that redoes only what's broken, or World at War's rip.
+        `blocker` says why it can't start (default: Call of Duty 3's needs);
+        `done` is the (label, command) the "Done" note offers."""
         if self.worker and self.worker.is_alive():
             return
         opts = self._options_with(overrides)
-        blocker = self._blocker(opts, what)
-        if blocker:
-            self.v_status.set(blocker)
+        why = (blocker or self._blocker)(opts, what)
+        if why:
+            self.v_status.set(why)
             return
         self._save()
         self.cancel.clear()
@@ -960,6 +989,9 @@ class App(Pages, LogPage):
         self._hide_banner()
         self._build_started = time.monotonic()
         self._build_what = what
+        self._job_resumes = True     # the pipeline continues where it stopped
+        self._task_actions = [done] if done else None
+        self._task_quiet = False
         self.show_page("log")
         self._log_show_live()
 
@@ -987,15 +1019,70 @@ class App(Pages, LogPage):
             self.v_elapsed.set(format_duration(time.monotonic() - self._build_started))
             self.root.after(1000, self._tick)
 
+    def _start_task(self, what: str, work: Callable[[common.Runner], str],
+                    actions: Optional[List[tuple]] = None) -> None:
+        """Runs a job other than a build on the worker thread (a new copy,
+        building a Rust tool): Cancel stops it, progress and status show in
+        the bottom bar, and its output goes to the log. `work` returns the
+        text of the "Done" note; with `actions` None, no note (the status
+        line says it)."""
+        if self.worker and self.worker.is_alive():
+            self.v_status.set("Busy: wait for the job running now, or cancel it.")
+            return
+        self.cancel.clear()
+        common.APPROVAL.ask = self._ask_approval   # anything to download is listed first
+        self._hide_banner()
+        self._build_started = time.monotonic()
+        self._build_what = what
+        self._job_resumes = False
+        self._task_actions = list(actions) if actions is not None else []
+        self._task_quiet = actions is None
+        self.v_progress.set(0)
+        self.log.step(what)
+
+        def run():
+            try:
+                text = work(common.Runner(self.log, self.cancel))
+                self.q.put(("done", "good", text or ""))
+            except common.Cancelled:
+                self.q.put(("done", "warn", "Canceled."))
+            except SetupError as e:
+                self.log.error(str(e))
+                self.q.put(("done", "bad", str(e)))
+            except Exception as e:  # pragma: no cover - unexpected
+                self.log.error(f"{type(e).__name__}: {e}")
+                self.q.put(("done", "bad", f"Unexpected error: {e}"))
+        self.worker = threading.Thread(target=run, daemon=True)
+        self.worker.start()
+        self.v_status.set(f"{what}...")
+        self._update_build_state()
+        self._tick()
+
     def _build_done(self, kind: str, text: str) -> None:
         took = format_duration(time.monotonic() - self._build_started)
         what = getattr(self, "_build_what", "Build")
+        actions = getattr(self, "_task_actions", None)
         self.root.title(common.APP_NAME)
         self.v_elapsed.set("")
         self.v_progress.set(1.0 if kind == "good" else self.v_progress.get())
         self._update_build_state()
         self._refresh_maps()
-        if kind == "good":
+        if kind == "good" and actions is not None:
+            # A rip or another job: its own note; a quiet one (starting the
+            # LAN server) leaves the status line to what it started.
+            quiet = getattr(self, "_task_quiet", False)
+            if text:
+                self.log.info(text)
+            if quiet:
+                self.v_progress.set(0)
+                if text:
+                    self.v_status.set(text.splitlines()[0])
+            else:
+                self.v_status.set(f"{what} finished in {took}.")
+                self._show_banner("good", f"Done: {what.lower()} finished in {took}.",
+                                  text or "Details are on the Log page.", actions)
+            self._output_changed()
+        elif kind == "good":
             self.v_status.set(f"{what} finished in {took}.")
             self.log.info(text)
             self._show_banner("good", f"Done: {what.lower()} finished in {took}.",
@@ -1056,6 +1143,8 @@ class App(Pages, LogPage):
 
     def _where_summary(self, opts: BuildOptions) -> str:
         out = Path(opts.output_dir)
+        if opts.only_steps == ["waw"]:
+            return f"World at War's files: {out / waw.OUTPUT_DATA}"
         return (f"The game and the ripped files: {out}\n"
                 f"Saves, game settings and logs: {out / 'userdata'}\n"
                 f"Downloaded tools (kept for the next build): {Path(opts.work_dir) / 'tools'}")
@@ -1204,6 +1293,7 @@ class App(Pages, LogPage):
             "upscale_textures": self.v_upscale.get(), "upscale_model": self._upscale_model_key(),
             "upscale_noise": self._upscale_noise_level(), "upscale_scale": self._upscale_scale(),
             "cod3_windowed": self.v_cod3_windowed.get(), "cod3_args": self.v_cod3_args.get(),
+            **self._pc_settings(),
         }
 
     def _apply_settings(self, s: dict) -> None:
@@ -1229,14 +1319,14 @@ class App(Pages, LogPage):
                                s.get("upscale_scale", self._upscale_scale()))
         if isinstance(s.get("waw_map_packs"), list):
             self._set_packs([p for p in s["waw_map_packs"] if isinstance(p, str) and p])
+        self._pc_apply_settings(s)
         self._update_versions()
         self._update_upscale()
         self._validate_waw()
         self._update_build_state()
 
     def _ui_settings(self) -> dict:
-        ui = {"ui_theme": theme.theme_id_for_label(self.v_theme.get()), "ui_accent": self.accent,
-              "ui_page": getattr(self, "page", "setup")}
+        ui = self.tabs.to_settings()   # the tab in view, each tab's page, theme and accent
         try:
             zoomed = (self.root.state() == "zoomed") if IS_WINDOWS else bool(int(self.root.attributes("-zoomed")))
         except (tk.TclError, ValueError):
@@ -1258,12 +1348,27 @@ class App(Pages, LogPage):
             pass
 
     def _on_close(self) -> None:
-        if self.worker and self.worker.is_alive():
-            if not widgets.ask_yes_no(self.root, "Build running", "A build is running. Cancel it and quit?\n"
-                                                                   "Press Build again later to continue.",
-                                      yes="Cancel and quit", no="Keep building", danger=True):
+        """Quitting while a job or a LAN server runs asks once, naming both;
+        nothing is stopped unless the answer is yes."""
+        job = bool(self.worker and self.worker.is_alive())
+        servers = self._pc_servers_running()
+        if job or servers:
+            what = []
+            if job:
+                what.append(f"{getattr(self, '_build_what', 'A build')} is running")
+            if servers:
+                what.append(f"the {' and '.join(servers)} LAN server{'s are' if len(servers) > 1 else ' is'} running")
+            text = "; ".join(what)
+            several = (job and servers) or len(servers) > 1
+            text = text[0].upper() + text[1:] + f". Stop {'them' if several else 'it'} and quit?"
+            if job and getattr(self, "_job_resumes", False):
+                text += "\nA build continues where it stopped next time."
+            if not widgets.ask_yes_no(self.root, "Still running", text, yes="Stop and quit", no="Keep running",
+                                      danger=True):
                 return
-            self.cancel.set()
+            if job:
+                self.cancel.set()
+            self._pc_stop_all_servers()
         try:
             self._save()
         except Exception:  # noqa: BLE001 - never keep the window from closing

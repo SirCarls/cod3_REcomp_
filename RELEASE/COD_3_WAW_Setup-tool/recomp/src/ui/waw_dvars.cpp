@@ -11,6 +11,7 @@
 #include <rex/cvar.h>
 
 #include "game/aim_assist.h"
+#include "game/mouse_look.h"
 #include "game/render_resolution.h"
 
 namespace cod3::ui::waw {
@@ -151,7 +152,7 @@ const Dvar kDvars[] = {
     {"sensitivity", Kind::kPort, "cod3_sensitivity", Conv::kSame, "Mouse sensitivity (default 5)"},
     {"m_yaw", Kind::kPort, "cod3_m_yaw", Conv::kSame, "Degrees turned per mouse count, sideways"},
     {"m_pitch", Kind::kPort, "cod3_m_pitch", Conv::kSame, "Degrees turned per mouse count, up/down"},
-    {"input_invertPitch", Kind::kPort, "cod3_invert_mouse", Conv::kBool, "Invert mouse up/down"},
+    {"input_invertPitch", Kind::kPort, "cod3_invert_mouse", Conv::kInvertPitch, "Invert mouse up/down"},
     {"in_mouse", Kind::kPort, "mnk_mode", Conv::kBool, "Keyboard and mouse controls"},
     {"aim_autoaim_enabled", Kind::kPort, "cod3_aim_assist", Conv::kAimAssist, "Aim assist"},
     {"aim_lockon_enabled", Kind::kPort, "cod3_aim_assist", Conv::kAimAssist, "Aim assist"},
@@ -208,6 +209,7 @@ std::string FromTarget(const Dvar& d, const std::string& v) {
       auto on = AimAssistEnabled();
       return on ? (*on ? "1" : "0") : (v == "0" ? "0" : "1");
     }
+    case Conv::kInvertPitch: return MouseLook::MouseInverted() ? "1" : "0";
     case Conv::kAniso: {
       const int i = std::atoi(v.c_str());
       return i <= 0 ? (i == 0 ? "0" : "default") : std::to_string(1 << (i - 1));
@@ -253,6 +255,18 @@ std::string Value(const Dvar& d, const EngineSnapshot& snap) {
   return FromTarget(d, rex::cvar::GetFlagByName(d.target));
 }
 
+std::string DefaultValue(const Dvar& d, const EngineSnapshot& snap) {
+  if (d.kind == Kind::kGame) {
+    const CvarInfo* c = FindCvar(snap, d.target);
+    return c ? FromTarget(d, c->reset) : std::string();
+  }
+  const auto* info = rex::cvar::GetFlagInfo(d.target);
+  if (!info) return {};
+  // Aim assist's value comes from the game's profile, not the setting.
+  if (d.conv == Conv::kAimAssist) return "1";
+  return FromTarget(d, info->default_value);
+}
+
 SetResult Set(const Dvar& d, const std::string& value) {
   SetResult r;
   std::string v = value;
@@ -273,9 +287,15 @@ SetResult Set(const Dvar& d, const std::string& value) {
     }
     case Conv::kBool: v = Truthy(value) ? "true" : "false"; break;
     case Conv::kNotBool: v = Truthy(value) ? "false" : "true"; break;
+    case Conv::kInvertPitch:
+      MouseLook::SetMouseInverted(Truthy(value));
+      r.message = std::string(d.name) + " " + (Truthy(value) ? "1" : "0") + " (F2 > Mouse > Invert vertical)\n";
+      r.changed_port_setting = true;
+      return r;
     case Conv::kAimAssist:
       SetAimAssist(Truthy(value));
       r.message = std::string(d.name) + " " + (Truthy(value) ? "1" : "0") + " (F2 > Game > Aim assist)\n";
+      r.changed_port_setting = true;  // saved in cod3.toml, like the F2 row
       return r;
     case Conv::kAniso: {
       const int n = std::atoi(value.c_str());

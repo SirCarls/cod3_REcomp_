@@ -9,7 +9,10 @@
 // that button, in brackets and in the text's own font: "[ENTER] SELECT
 // [ESC] BACK", "Press and hold [R] to swap for Kar98k".
 //  * In play the key is the first key of the button's keybind_* setting
-//    (keybind_x = "R,F" shows [R]), so rebinding changes the prompts.
+//    (keybind_x = "R,F" shows [R]), so rebinding changes the prompts. A
+//    button the game binds to one of the port's own keyboard actions
+//    (game/keybinds/binds.h) shows that action's key instead: the left stick
+//    click, +binoculars, shows [B].
 //  * In the menus (cod3_pc_menus, game/pc_menu.h) A is [ENTER], B [ESC],
 //    START [ENTER] and the D-pad the arrow keys, the keys the PC menus take.
 //  * Stick actions read "Use [WASD]" / "Use the mouse" (English), and the

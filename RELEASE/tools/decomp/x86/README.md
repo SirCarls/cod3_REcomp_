@@ -32,6 +32,7 @@ python3 tools/decomp/x86/pcdecomp.py setup                 # finds the files, ch
 python3 tools/decomp/x86/pcdecomp.py status                # what is ported, per executable
 python3 tools/decomp/x86/pcdecomp.py check --image all     # every port against its originals
 python3 tools/decomp/x86/pcdecomp.py check Q_stricmp --image cod2mp --cases 4000
+python3 tools/decomp/x86/pcdecomp.py check --impl cpp      # the C++ version (engine/cpp) against the same originals
 python3 tools/decomp/x86/pcdecomp.py dis Com_Frame --image cod2mp
 python3 tools/decomp/x86/pcdecomp.py call Q_stricmp s:abc s:ABD --image uomp
 python3 tools/decomp/x86/pcdecomp.py find "challengeResponse" --image uomp
@@ -43,7 +44,7 @@ python3 tools/decomp/x86/pcdecomp.py find "challengeResponse" --image uomp
 |---|---|
 | `pe.py` | Loads a PE32 image at its preferred base: sections (zero-filled past their file size), imports, exports, our names. |
 | `oracle_x86.py` | Unicorn in 32-bit protected mode: stack, test heap, `fs:` (a zeroed thread block), import slots that stop the call, stand-ins for the few imports a shared function reaches, the game's error exits as results, every written page put back after each call. |
-| `harness_x86.py` | Specs (arguments, where each goes, what to compare), the line protocol to `engine/tools/pc_check` (the same as `tools/decomp/harness.py`'s), and the comparison. |
+| `harness_x86.py` | Specs (arguments, where each goes, what to compare), the line protocol to `engine/tools/pc_check` (the same as `tools/decomp/harness.py`'s), and the comparison. `--impl cpp` talks the same protocol to `pc_check_cpp`, the C++ version's answerer (`engine/cpp`, built with CMake into `engine/cpp/build` or `IW_CPP_BUILD_DIR`). |
 | `specs/*.py` | One file per area (`shared_strings`, `shared_info`, `shared_hash`, `shared_filter`; the network layer: `net_msg`, `net_oob`, `net_netchan`): the inputs, edge cases included. |
 | `names.py`, `names/<image>.tsv` | Our verified names (address, name, evidence) for the functions the ports use. |
 | `disasm_x86.py` | Capstone disassembly annotated with names, strings and imports. |

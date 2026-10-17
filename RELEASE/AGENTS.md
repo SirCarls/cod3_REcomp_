@@ -16,7 +16,7 @@ A PC port of Call of Duty 3 (Xbox 360), built from the player's own disc, and, l
 ## Ground rules (from the owner; details in REQUIREMENTS section 2)
 
 - **No game data and no personal information in anything published**: no files from a disc, no personal paths, user names or machine details. `tools/check_repo.py` enforces it. Game files for local work go in `dev/` (never published).
-- **Never run** either game's executable, a patch, mod or map installer, and never touch DRM. Installers are unpacked, not run. Nothing depends on Wine or Proton. (One exception: Xenia Canary in the cloud may run the multiplayer program for cross-play tests at milestones; REQUIREMENTS section 2.)
+- **Never run** either game's executable, a patch, mod or map installer, and never touch DRM. Installers are unpacked, not run. Nothing depends on Wine or Proton. (The 2026-10-13 Xenia exception was withdrawn on 2026-10-16: multiplayer is PC only, REQUIREMENTS section 2.)
 - **Ask before downloading or installing anything**, and say where it goes. Everything that can stays inside the project folder (`work/tools/` for tools).
 - **No hard-coded paths**; Windows and Linux both work.
 - **Readable code**: names that say what things are, comments that say why, every outside source recorded in `docs/SOURCES.md`. American spelling.
@@ -38,5 +38,5 @@ Several agents often work on this folder at once and can't see each other. To av
 
 The game's functions become Rust in `engine/crates/cod3_game`, each checked against the original machine code on thousands of inputs. Two layers: `shared`, `math`, `script` are the exact record (with the Xbox 360's limits); `cod3_game::engine` has the same results without them, and the remake uses it. It splits into areas that agents can take one each. Workflow, rules and what's next: [docs/DECOMP.md](docs/DECOMP.md).
 
-- **Multiplayer mixes platforms**: a custom Xbox 360 copy, the recomp and the Rust engine play in one match ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md) 4.9; what crosses the network: [docs/MP_PROTOCOL.md](docs/MP_PROTOCOL.md)). What goes over the network and the game rules every player runs use the console layer, within the console's limits; the engine layer's lifted limits are for what stays on one machine.
+- **Multiplayer is PC only** (owner 2026-10-16: no Xbox 360 cross-play): the recomp on Linux and Windows and the Rust engine play in one match, with dedicated servers in the plan. The recomp runs the console's own network code, so its messages are the wire format the Rust engine speaks ([docs/MULTIPLAYER.md](docs/MULTIPLAYER.md); what crosses the network: [docs/MP_PROTOCOL.md](docs/MP_PROTOCOL.md)). The console layer stays exact as the correctness reference; the engine layer's lifted limits are for what stays on one machine.
 - **Loops are fast and never choke**: no allocation per call in what runs every frame, nothing slower than linear, exact console arithmetic without slow library calls (`ppc::fmadds`, not `f32::mul_add`). Every engine function has a row in `engine/crates/cod3_game/examples/bench.rs`; run it before and after a change ([DECOMP.md, Speed](docs/DECOMP.md#speed)).

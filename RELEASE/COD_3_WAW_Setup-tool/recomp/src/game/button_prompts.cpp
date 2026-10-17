@@ -23,6 +23,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -34,7 +35,8 @@
 
 #include "game/addresses.h"
 #include "game/guest.h"
-#include "game/stick_actions.h"
+#include "game/keybinds/binds.h"  // [keybinds]
+#include "game/qte_actions.h"
 #include "game/pc_menu.h"
 
 REXCVAR_DEFINE_BOOL(cod3_key_prompts, true, "cod3/Mouse",
@@ -116,6 +118,9 @@ class KeyboardWatch final : public rex::ui::WindowInputListener {
     float step = std::abs(e.dx()) + std::abs(e.dy());
     if (step == 0.0f && have_last_)
       step = float(std::abs(e.x() - last_x_) + std::abs(e.y() - last_y_));
+    // The battle action test on the title screen follows the plain pointer
+    // (game/qte_actions.h; in play the held mouse goes through MouseLook).
+    if (have_last_) cod3::qte::AddPointerMotion(float(e.x() - last_x_), float(e.y() - last_y_));
     last_x_ = e.x(), last_y_ = e.y(), have_last_ = true;
     const int64_t now = NowMs();
     if (now - moved_since_ > 500) moved_ = 0.0f, moved_since_ = now;
@@ -169,6 +174,7 @@ void RefreshSettings() {
   static std::string last;
   std::string now;
   for (const char* c : kBindCvars) now += rex::cvar::GetFlagByName(c) + '\n';
+  now += std::to_string(cod3::binds::Generation()) + '\n';  // [keybinds] the port's own action keys
   now += g_mouse_aim.load(std::memory_order_relaxed) ? "mouse" : "keys";
   std::lock_guard lock(mutex);
   if (now != last) {
@@ -275,6 +281,30 @@ constexpr Button kButtons[] = {
     {'0', -1, "ARROWS", "D-PAD", "D-PAD", "D-PAD"},
 };
 constexpr int kButtonCount = int(sizeof(kButtons) / sizeof(kButtons[0]));
+
+// [keybinds] The game's key number of a button character (its pad poll's
+// keys, game/keybinds/binds.cpp), 0 for the combined D-pad ones.
+int PadKeyFor(char glyph) {
+  switch (glyph) {
+    case '"': return 212;  // A
+    case '%': return 213;  // B
+    case '#': return 211;  // X
+    case '$': return 214;  // Y
+    case '&': return 216;  // LT
+    case '!': return 215;  // RT
+    case '\'': return 218;  // LB
+    case '(': return 217;  // RB
+    case '-': return 27;   // START
+    case '1': return 9;    // BACK
+    case '2': return 220;  // LS
+    case '3': return 219;  // RS
+    case ')': return 154;  // D-pad up
+    case ',': return 155;  // D-pad down
+    case '+': return 156;  // D-pad left
+    case '*': return 157;  // D-pad right
+    default: return 0;
+  }
+}
 
 // A key name of the keybind settings (rex/ui/keybinds.h) as the prompt shows
 // it: "Escape" -> "ESC", "Shift+Up" -> "SHIFT+UP", "r" -> "R".
@@ -383,7 +413,13 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
   for (int i = 0; i < kButtonCount; ++i) {
     if (kButtons[i].glyph != glyph) continue;
     index = i;
-    text = "[" + NameFor(kButtons[i], mode) + "]";
+    // [keybinds] In play, a button the game binds to one of the port's own
+    // keyboard actions shows that action's key (the left stick click is
+    // +binoculars in layout A: [B]; game/keybinds/binds.h).
+    std::string name;
+    if (mode == Mode::kPlayKeys) name = cod3::binds::KeyNameForPadKey(base, PadKeyFor(glyph));
+    if (name.empty()) name = NameFor(kButtons[i], mode);
+    text = "[" + name + "]";
     break;
   }
   if (text.size() > kSlotSize - 1) text.resize(kSlotSize - 1);
@@ -551,6 +587,37 @@ std::string StickWords(int stick) {
   return "Use [" + move + "] and " + look;
 }
 
+// [keybinds] The game's action words come in four forms (its table at
+// 0x82A8DFF8): "[W]" (the button), "[PRESS_W]", "[VERB_W]" (Press / Pull /
+// Click + the button) and "[HOLD_W]" (the same + "and hold"). Returns the
+// form (0-3) and the bare word, or -1.
+int ActionWordForm(std::string_view text, std::string_view* word) {
+  if (text.size() < 3 || text.front() != '[' || text.back() != ']') return -1;
+  text = text.substr(1, text.size() - 2);
+  int form = 0;
+  for (const auto& [prefix, f] : {std::pair<std::string_view, int>{"PRESS_", 1}, {"VERB_", 2}, {"HOLD_", 3}})
+    if (text.size() > prefix.size() && text.substr(0, prefix.size()) == prefix) {
+      text.remove_prefix(prefix.size());
+      form = f;
+      break;
+    }
+  *word = text;
+  return form;
+}
+
+// [keybinds] With keys, a word of an action the keyboard calls directly: the
+// game's own verb and the action's key, "Press and hold [B]" for
+// "[HOLD_BINOCS]" (the game writes "Click and hold the left stick"); "" when
+// the action has no key (the game's text stays).
+std::string KeyActionText(PPCContext& ctx, uint8_t* base, std::string_view word, int form) {
+  const std::string key = cod3::binds::KeyNameForActionWord(word);
+  if (key.empty()) return "";
+  if (form == 0) return "[" + key + "]";
+  std::string verb = GameText(ctx, base, form == 3 ? "INGAME_PRESS_AND_HOLD" : "INGAME_PRESS");
+  if (verb.empty()) verb = form == 3 ? "Press and hold" : "Press";
+  return verb + " [" + key + "]";
+}
+
 // With keys, "Pull ~r1" and "Click ~lstick" (the game's words for triggers
 // and stick buttons) read "Press ...": every language's own words.
 std::string KeyVerbs(PPCContext& ctx, uint8_t* base, std::string text) {
@@ -630,10 +697,14 @@ REX_HOOK_RAW(sub_82344F98) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
   __imp__sub_82344F98(ctx, base);
-  if (user == 0 && ctx.r3.u32 == 0 && Valid(state)) {
-    WatchPad(base, state);
-    cod3::stick_actions::ApplyToPad(base, state);  // mouse as the right stick in battle actions
-  }
+  if (user == 0 && ctx.r3.u32 == 0 && Valid(state)) WatchPad(base, state);
+  // [keybinds] Keys of the port's own actions inside an interaction: the
+  // controller button the game binds to the action (after WatchPad, so device
+  // detection sees only the real pads; game/keybinds/binds.h).
+  if (ctx.r3.u32 == 0 && Valid(state)) cod3::binds::ApplyToPad(base, user, state);
+  // Stick battle actions (game/qte_actions.h): the mouse as the stick, in
+  // whichever pad the game reads.
+  if (ctx.r3.u32 == 0 && Valid(state)) cod3::qte::ApplyToPad(base, user, state);
 }
 
 // "~name" -> the button's character: the name instead while names are laid out.
@@ -724,7 +795,16 @@ REX_HOOK_RAW(sub_824DD9A8) {
   const std::string action = Valid(ctx.r3.u32) ? ReadString(base, ctx.r3.u32, 64) : "";
   __imp__sub_824DD9A8(ctx, base);
   const int stick = StickAction(action);
-  if (stick) ++t_tokens;  // remembered, so a device switch lays it out again
+  // [keybinds] A word of an action the keyboard calls directly (BINOCS).
+  std::string_view word;
+  const int form = ActionWordForm(action, &word);
+  const bool key_word = form >= 0 && cod3::binds::IsActionWord(word);
+  if (stick || key_word) ++t_tokens;  // remembered, so a device switch lays it out again
+  if (key_word && IsKeys(LayoutMode(base))) {
+    if (const std::string text = KeyActionText(ctx, base, word, form); !text.empty())
+      if (const uint32_t at = TempText(base, text)) ctx.r3.u64 = at;
+    return;
+  }
   if (!stick || !IsKeys(LayoutMode(base)) || ReadU32(base, bp::kLanguageMode) != 0) return;
   if (const uint32_t text = TempText(base, StickWords(stick))) {
     if (base[text]) ctx.r3.u64 = text;

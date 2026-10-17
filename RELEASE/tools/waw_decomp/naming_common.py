@@ -35,9 +35,12 @@ class Namer:
         self.by_addr = {}
         self.by_name = {}
         self.notes = {}  # addr -> (pass, text): a comment for a function that has no name
+        self.kept = set()  # notes kept when the function has a name too (added to its evidence)
 
-    def note(self, addr, pas, text):
+    def note(self, addr, pas, text, keep=False):
         self.notes[addr] = (pas, text)
+        if keep:
+            self.kept.add(addr)
 
     def add(self, addr, name, kind, pas, evidence):
         if addr in self.by_addr or name in self.by_name:
@@ -62,6 +65,8 @@ class Namer:
         for a in sorted(set(self.by_addr) | set(self.notes)):
             if a in self.by_addr:
                 name, kind, pas, ev = self.by_addr[a]
+                if a in self.kept and a in self.notes:
+                    ev = f"{ev} | {self.notes[a][1]}"
                 yield f"{a:08X}", name, kind, pas, ev
             else:
                 yield f"{a:08X}", "", "note", self.notes[a][0], self.notes[a][1]
@@ -169,11 +174,13 @@ def method_name(path):
     return "__".join(parts[:-1] + [meth])
 
 
-def pass_methods(namer, t, stats):
+def pass_methods(namer, t, stats, unique_only=False):
     """C++ methods that name themselves: a compiler function signature in an assertion, or a
     Demonware log line that starts with Class::method. A string seen in several functions is an
     inlined helper's (bdLinkedList::GetHead), so each function takes the name fewest functions share,
-    and a name shared by more than two functions (overloads) names none."""
+    and a name shared by more than two functions (overloads) names none. unique_only: only names
+    exactly one function has (run early, before the passes that carry names from another build;
+    the rest wait for the last run)."""
     found = collections.defaultdict(collections.Counter)
     for r in t.strings:
         if not r["funcs"]:
@@ -192,8 +199,9 @@ def pass_methods(namer, t, stats):
     claims = collections.defaultdict(list)
     for f, c in found.items():
         best = min(c, key=lambda n: (users[n], -c[n], n))
-        if users[best] > 2:
-            stats["methods_inlined_only"] += 1
+        if users[best] > (1 if unique_only else 2):
+            if not unique_only:
+                stats["methods_inlined_only"] += 1
             continue
         claims[best].append(f)
     for name, fs in sorted(claims.items()):
@@ -218,11 +226,21 @@ def pass_transfer(namer, t, other, other_names, label, stats, min_len=6):
         name = other_names.get(o)
         if name:
             votes[next(iter(here))][name] += 1
+    # each function's best name; a name several functions want goes to the one with the most
+    # strings (a helper inlined on one side and not on the other shares a string or two)
+    claims = collections.defaultdict(list)
     for f, c in sorted(votes.items()):
         name, n = c.most_common(1)[0]
         if len(c) > 1 and c.most_common(2)[1][1] == n:
             stats[f"{label}_ambiguous"] += 1
             continue
+        claims[name].append((n, f))
+    for name, fs in sorted(claims.items()):
+        fs.sort(key=lambda x: (-x[0], x[1]))
+        if len(fs) > 1 and fs[1][0] == fs[0][0]:
+            stats[f"{label}_ambiguous"] += 1
+            continue
+        n, f = fs[0]
         if namer.add(f, name, "function", label, f"{n} string(s) used only by {name} in the other build"):
             stats[label] += 1
 
@@ -372,7 +390,10 @@ def pass_tables(namer, words_by_section, cstr, is_code, kis_by_file, stats, user
                     seen.add(cstr(words[j]).lower())
                     run += 1
                     j += stride
-                if run >= 6:
+                # six entries at least; a { name, handler, developer flag } array may be shorter
+                # (World at War SP's five sentient methods), the flags being 0 or 1 is evidence enough
+                flags = stride == 3 and all(i + k * 3 + 2 < n and words[i + k * 3 + 2] in (0, 1) for k in range(run))
+                if run >= 6 or run >= 3 and flags:
                     hit = (stride, run)
                     break
             if not hit:

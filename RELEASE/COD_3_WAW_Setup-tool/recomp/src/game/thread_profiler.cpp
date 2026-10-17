@@ -45,11 +45,20 @@
 
 #include "game/diagnostics.h"
 #include "game/frame_rate.h"
+#include "game/function_profiler.h"
 #include "game/machine_profile.h"
+#include "game/program.h"
 #include "game/watchdog.h"
 
 REXCVAR_DECLARE(int32_t, cod3_perf_log);          // game/perf_stats.cpp
 REXCVAR_DECLARE(int32_t, cod3_watchdog_seconds);  // game/watchdog.cpp
+
+REXCVAR_DEFINE_BOOL(cod3_profile_auto, true, "cod3/Performance",
+                    "Once a session, after a minute of play, find out which functions the busy "
+                    "frame threads (GPU emulation, the game's main thread, the window) spend "
+                    "their time in, 10 s each; the reports go to userdata/logs and into "
+                    "cod3_report (cod3_profile in the F10 console does it by hand)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace cod3 {
 
@@ -205,8 +214,10 @@ std::string RoleOf(const std::string& name, uint32_t id, uint32_t main_id, uint3
   if (StartsWith(name, "cod3 profiler")) return "this profiler";
   // The game's own threads, by the guest function they start in (the SDK
   // names unnamed guest threads "XThread<start address>").
-  if (StartsWith(name, "XThread8212A780")) return "game job worker";  // loop 0x8212A520: render job, decompression
-  if (StartsWith(name, "XThread82302C80")) return "game's Direct3D thread";  // waits, then D3D 0x822F4AA0
+  if (StartsWith(name, COD3_TEXT("XThread8212A780", "XThread821424B0")))
+    return "game job worker";  // loop 0x8212A520: render job, decompression
+  if (StartsWith(name, COD3_TEXT("XThread82302C80", "XThread822D1870")))
+    return "game's Direct3D thread";  // waits, then D3D 0x822F4AA0
   if (StartsWith(name, "XThread")) return "game thread";
   if (StartsWith(name, "rex::thread::Ti")) return "SDK timers";
   return "";
@@ -267,6 +278,12 @@ void ThreadProfiler::WorkerLoop() {
   Clock::time_point marks_since{};
   Clock::time_point last_stall_table{};
   int stall_tables = 0;
+  // cod3_profile_auto: seconds of play so far, and the threads still to
+  // profile once that reaches a minute.
+  int play_seconds = 0;
+  bool auto_planned = false;
+  std::vector<std::string> auto_queue;
+  int auto_window_tries = 0;
 #if COD3_HAS_GPU_STATS
   namespace gs = rex::graphics::stats;
   gs::Snapshot last{};
@@ -312,6 +329,9 @@ void ThreadProfiler::WorkerLoop() {
           costs.gpu_thread_ms = per_frame_ms(gs::Counter::kGpuThreadMicros);
           costs.submit_ms = per_frame_ms(gs::Counter::kSubmitMicros);
           costs.shader_ms = per_frame_ms(gs::Counter::kShaderTranslateMicros);
+#endif
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 3
+          costs.presents_per_s = float(delta(gs::Counter::kPresents) / secs);
 #endif
         }
       }
@@ -385,7 +405,65 @@ void ThreadProfiler::WorkerLoop() {
       last_table_log = now;
       log_table("threads over the last second; " + verdict);
     }
+
+    // cod3_profile_auto: after a minute of play (the game making frames, not
+    // stalled), plan which frame threads to profile, then profile them one by
+    // one.
+    if (costs.game_fps >= 5.0f) ++play_seconds;
+    if (!auto_planned && play_seconds >= 60 && REXCVAR_GET(cod3_profile_auto)) {
+      auto_planned = true;
+      auto row_cpu = [&](const char* role) {
+        for (const ThreadRow& row : r.rows)
+          if (row.role == role) return row.cpu_pct;
+        return 0.0f;
+      };
+      // The limiting thread first.
+      const bool main_limits = r.limited_by.find("main thread") != std::string::npos;
+      if (main_limits && row_cpu("game main thread") >= 50.0f) auto_queue.push_back("main");
+      if (row_cpu("GPU emulation") >= 40.0f) auto_queue.push_back("gpu");
+      if (!main_limits && row_cpu("game main thread") >= 50.0f) auto_queue.push_back("main");
+      if (row_cpu("window, input, presenting") >= 40.0f) auto_queue.push_back("window");
+      // The thread holding the SDK's global lock while the GPU emulation waits
+      // for it: its profile says what it does with the lock held.
+      for (const ThreadRow& row : r.rows) {
+        if (row.role != "GPU emulation" || row.lock_pct < 5.0f || row.top_lock_holder == 0) continue;
+        std::string holder = "#" + std::to_string(row.top_lock_holder);
+        for (const ThreadRow& other : r.rows)
+          if (other.id == row.top_lock_holder && other.role == "game main thread") holder = "main";
+        if (std::find(auto_queue.begin(), auto_queue.end(), holder) == auto_queue.end())
+          auto_queue.push_back(holder);
+      }
+      std::string list;
+      for (const auto& t : auto_queue) list += (list.empty() ? "" : ", ") + t;
+      REXLOG_INFO("cod3: profiler: after a minute of play, profiling {} for 10 s each "
+                  "(cod3_profile_auto; reports in userdata/logs and in cod3_report)",
+                  list.empty() ? std::string("no thread (none is busy)") : list);
+    }
+    if (!auto_queue.empty() && !FunctionProfiler::Busy() && REXCVAR_GET(cod3_profile_auto)) {
+      const std::string next_thread = auto_queue.front();
+      // The window thread only while it isn't repainting on its own (an open
+      // console or F2 would be what's measured); give that a minute.
+      const float frames_per_s = costs.frame_ms > 0 ? 1000.0f / costs.frame_ms : 0.0f;
+      const bool repainting = costs.presents_per_s > frames_per_s * 1.3f + 5.0f;
+      if (next_thread == "window" && repainting && ++auto_window_tries < 60) {
+        // try again next second
+      } else {
+        auto_queue.erase(auto_queue.begin());
+        if (!(next_thread == "window" && repainting)) {
+          const std::string message = FunctionProfiler::Start(next_thread, 10, 0);
+          if (message.rfind("Profiling", 0) != 0) REXLOG_INFO("cod3: profiler: {}", message);
+        }
+      }
+    }
   }
+}
+
+namespace {
+std::atomic<GuestGpuWaitReader> g_guest_gpu_wait_reader{nullptr};
+}  // namespace
+
+void SetGuestGpuWaitReader(GuestGpuWaitReader reader) {
+  g_guest_gpu_wait_reader.store(reader, std::memory_order_release);
 }
 
 void ThreadProfiler::Compute(const FrameCosts& costs) {
@@ -394,6 +472,7 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
 
   // Waits per thread, by OS id.
   std::unordered_map<uint32_t, std::array<uint64_t, 4>> waits;
+  float lock_waits_per_s = 0, lock_spin_won_pct = -1;
   // Global lock waits per thread, by the thread that held the lock.
   std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint64_t>> holder_waits;
 #if COD3_HAS_THREAD_STATS
@@ -405,6 +484,19 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
       auto& w = waits[totals[i].system_id];
       for (size_t k = 0; k < 4 && k < size_t(ts::Wait::kCount); ++k) w[k] += totals[i].wait_us[k];
     }
+#if defined(REX_THREAD_STATS_VERSION) && REX_THREAD_STATS_VERSION >= 3
+    {
+      const ts::LockSpinTotals spins = ts::ReadLockSpins();
+      if (previous_time_us_ != 0 && now_us > previous_time_us_) {
+        const double won = double(spins.won - std::min(spins.won, previous_lock_spins_won_));
+        const double slept = double(spins.slept - std::min(spins.slept, previous_lock_spins_slept_));
+        lock_waits_per_s = float((won + slept) / (double(now_us - previous_time_us_) / 1e6));
+        lock_spin_won_pct = won + slept > 0 ? float(100.0 * won / (won + slept)) : 0.0f;
+      }
+      previous_lock_spins_won_ = spins.won;
+      previous_lock_spins_slept_ = spins.slept;
+    }
+#endif
 #if defined(REX_THREAD_STATS_VERSION) && REX_THREAD_STATS_VERSION >= 2
     static std::vector<ts::LockHolderTotals> pairs(ts::kMaxThreads * ts::kMaxHoldersPerThread);
     const size_t p = ts::ReadLockHolders(pairs.data(), pairs.size());
@@ -432,6 +524,21 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
 
   ThreadReport r;
   r.costs = costs;
+  r.lock_waits_per_s = lock_waits_per_s;
+  r.lock_spin_won_pct = lock_spin_won_pct;
+  if (const GuestGpuWaitReader reader = g_guest_gpu_wait_reader.load(std::memory_order_acquire)) {
+    constexpr size_t kGroups = size_t(GuestGpuWait::kCount);
+    uint64_t now_waits[kGroups] = {};
+    reader(now_waits, kGroups);
+    if (period_us > 0 && have_guest_gpu_waits_) {
+      for (size_t i = 0; i < kGroups; ++i)
+        r.guest_gpu_wait_ms[i] =
+            float(double(now_waits[i] - std::min(now_waits[i], previous_guest_gpu_waits_[i])) /
+                  1000.0 / (double(period_us) / 1e6));
+    }
+    for (size_t i = 0; i < kGroups; ++i) previous_guest_gpu_waits_[i] = now_waits[i];
+    have_guest_gpu_waits_ = true;
+  }
   std::unordered_map<uint32_t, Previous> next;
   for (const OsThread& t : threads) {
     Previous cur;
@@ -488,6 +595,7 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
         }
         std::sort(holders.begin(), holders.end(), std::greater<>());
         if (holders.size() > 3) holders.resize(3);
+        if (!holders.empty()) row.top_lock_holder = holders[0].second;
         for (const auto& [pct, holder] : holders) {
           char part[32];
           std::snprintf(part, sizeof(part), "%s#%u %.0f%%", row.lock_holders.empty() ? "" : ", ",
@@ -607,13 +715,28 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
     }
     r.why = why;
   }
+  // A second without the window repainting on its own (an open console or
+  // F2) is kept for cod3_report, which is usually written from the console.
+  const float frames_per_s = costs.frame_ms > 0 ? 1000.0f / costs.frame_ms : 0.0f;
+  const bool quiet = r.valid && costs.game_fps >= 5.0f &&
+                     costs.presents_per_s <= frames_per_s * 1.3f + 5.0f;
   std::lock_guard lock(mutex_);
+  if (quiet) {
+    quiet_report_ = r;
+    quiet_time_us_ = now_us;
+  }
   report_ = std::move(r);
 }
 
 ThreadReport ThreadProfiler::Report() {
   std::lock_guard lock(mutex_);
   return report_;
+}
+
+ThreadReport ThreadProfiler::QuietReport(double* age_s) {
+  std::lock_guard lock(mutex_);
+  *age_s = quiet_time_us_ ? double(NowMicros() - quiet_time_us_) / 1e6 : -1.0;
+  return quiet_report_;
 }
 
 std::string ThreadProfiler::Verdict(const ThreadReport& r) {
@@ -636,9 +759,34 @@ std::string ThreadProfiler::Table(const ThreadReport& r, size_t max_rows) {
   std::ostringstream s;
   if (!r.valid) return "(no thread sample yet)\n";
   char line[256];
-  std::snprintf(line, sizeof(line), "all threads %.0f%% of one core; %d above 85%%\n",
+  std::snprintf(line, sizeof(line), "all threads %.0f%% of one core; %d above 85%%",
                 r.process_cpu_pct, r.busy_threads);
   s << line;
+  if (r.lock_spin_won_pct >= 0 && r.lock_waits_per_s >= 1.0f) {
+    std::snprintf(line, sizeof(line), "; global lock waits %.0f a second, %.0f%% ended while spinning",
+                  r.lock_waits_per_s, r.lock_spin_won_pct);
+    s << line;
+  }
+  s << "\n";
+  // The game's waits for the emulated GPU, by what its Direct3D waited for.
+  if (r.guest_gpu_wait_ms[0] >= 0) {
+    static const char* const kNames[] = {"ring space", "command memory", "fences", "locks",
+                                         "resource release", "other"};
+    float total = 0;
+    std::string parts;
+    for (size_t i = 0; i < size_t(GuestGpuWait::kCount); ++i) {
+      total += r.guest_gpu_wait_ms[i];
+      if (r.guest_gpu_wait_ms[i] < 0.5f) continue;
+      std::snprintf(line, sizeof(line), "%s%s %.0f", parts.empty() ? "" : ", ", kNames[i],
+                    r.guest_gpu_wait_ms[i]);
+      parts += line;
+    }
+    if (total >= 0.5f) {
+      std::snprintf(line, sizeof(line), "the game's Direct3D waited for the GPU emulation %.0f ms a second, its threads together (%s)\n",
+                    total, parts.c_str());
+      s << line;
+    }
+  }
   for (size_t i = 0; i < r.rows.size() && i < max_rows; ++i) {
     const ThreadRow& t = r.rows[i];
     if (t.cpu_pct < 0.5f && t.guest_wait_pct < 0.5f && t.lock_pct < 0.5f) break;

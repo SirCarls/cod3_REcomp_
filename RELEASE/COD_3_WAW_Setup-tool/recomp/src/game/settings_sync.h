@@ -12,10 +12,17 @@
 #pragma once
 
 #include <cstdint>
+#include <functional>
 
 struct PPCContext;
 
 namespace cod3::settings {
+
+// A port setting changed outside F2 (the game's own menus, a hook): cod3.toml
+// is saved like F2's Save does, so the change is the one the next start uses.
+// Cod3App sets how (on the UI thread); any thread may ask.
+void SetSaveHandler(std::function<void()> save);
+void RequestSave();
 
 // Game main thread, every frame (Engine::OnGuestFrame).
 void SyncCrosshair(PPCContext& ctx, uint8_t* base);

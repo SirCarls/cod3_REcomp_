@@ -78,17 +78,117 @@ class ProjectLayoutTests(unittest.TestCase):
         self.assertTrue((ROOT / "recomp" / "mp" / "generated" / "rexglue.cmake").is_file())
 
     def test_shared_sources_hook_no_campaign_address(self):
-        # A sub_XXXXXXXX hook in a file compiled into cod3mp would replace
-        # whatever function has that address in codmp_xenonf.xex.
+        # A campaign function name in a file compiled into cod3mp would hook
+        # whatever function has that name or address in codmp_xenonf.xex: each
+        # one goes through tools/mp_aliases.py (CampaignInMultiplayerTests).
         import re
         cmake = (ROOT / "recomp" / "mp" / "CMakeLists.txt").read_text(encoding="utf-8")
         sources = re.findall(r"\$\{COD3_SRC\}/(\S+\.cpp)", cmake)
         self.assertIn("game/script_threads.cpp", sources)
-        allowed = {"sub_823143D0"}   # codmp_xenonf.xex's own SetEvent (game/mp_hooks.cpp)
+        self.assertIn("-include${COD3_SRC}/game/mp/mp_aliases.h", cmake)
+        # Also without the tool: every sub_ hook in a cod3mp file is one the
+        # alias header renames to its MP function.
+        aliases = (ROOT / "recomp" / "src" / "game" / "mp" / "mp_aliases.h").read_text(encoding="utf-8")
+        renamed = set(re.findall(r"^#define (sub_[0-9A-F]{8}) ", aliases, re.M))
         for rel in sources:
             text = (ROOT / "recomp" / "src" / rel).read_text(encoding="utf-8")
             for name in re.findall(r"REX_(?:HOOK_RAW|EXTERN)\((?:__imp__)?(sub_[0-9A-F]{8})\)", text):
-                self.assertIn(name, allowed, f"{rel} hooks {name}")
+                self.assertIn(name, renamed, f"{rel} hooks {name}, which mp_aliases.h doesn't map")
+
+
+def load_mp_aliases():
+    """tools/mp_aliases.py (next to this setup tool), or None (also on a
+    Python older than 3.11, which has no tomllib)."""
+    import importlib.util
+    path = ROOT.parent / "tools" / "mp_aliases.py"
+    if not path.is_file() or importlib.util.find_spec("tomllib") is None:
+        return None
+    spec = importlib.util.spec_from_file_location("mp_aliases", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+class CampaignInMultiplayerTests(unittest.TestCase):
+    """The campaign's port code compiled into cod3mp (tools/mp_aliases.py,
+    recomp/mp/config/campaign_map.tsv). No game is built here."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tool = load_mp_aliases()
+        if cls.tool is None:
+            raise unittest.SkipTest("tools/mp_aliases.py isn't next to the setup tool (or Python < 3.11)")
+        cls.recomp = ROOT / "recomp"
+        cls.problems = cls.tool.Problems()
+        cls.out = cls.tool.generate(cls.recomp, cls.problems)
+        _, cls.rows = cls.tool.read_table(cls.recomp / cls.tool.TABLE)
+
+    def problems_like(self, *words):
+        return [p for p in self.problems if any(w in p for w in words)]
+
+    def test_aliases_are_current(self):
+        # The four generated files are what the table and the sources give.
+        for rel, text in self.out.items():
+            path = self.recomp / rel
+            self.assertTrue(path.is_file(), f"{rel} is missing: run tools/mp_aliases.py --write")
+            self.assertEqual(path.read_text(encoding="utf-8"), text,
+                             f"{rel} is out of date: run tools/mp_aliases.py --write")
+        # No alias chain, no two campaign names on one MP function, no todo row.
+        self.assertEqual(self.problems_like("alias chain", "both become", "not reviewed"), [])
+
+    def test_every_campaign_hook_in_cod3mp_is_mapped_or_marked(self):
+        # A new campaign hook in a shared file without a reviewed row fails
+        # here, so it can't hook the wrong MP function in silence.
+        self.assertEqual(self.problems_like("no row", "unknown status", "needs its reason",
+                                            "has its own code", "renames in cod3mp"), [])
+
+    def test_same_names_bind_to_the_mapped_function(self):
+        mp_names = self.tool.read_names(self.recomp / "mp" / "config" / "names_mp.toml")
+        by_name = {n: a for a, n in mp_names.items()}
+        for r in self.rows:
+            if r.status != "same" or ":" in r.symbol or not r.mp or r.mp == "=":
+                continue
+            mp = self.tool.hexval(r.mp)
+            if r.symbol in by_name:
+                self.assertEqual(by_name[r.symbol], mp, f"{r.symbol}: names_mp.toml has it elsewhere")
+        self.assertEqual(self.problems_like("but names_mp.toml", "names_mp.toml has it"), [])
+
+    def test_midasm_hooks_follow(self):
+        # Every campaign mid-asm hook a cod3mp file defines has an MP site (or
+        # a reason), and the generated table has each MP site once.
+        self.assertEqual(self.problems_like("mid-asm hook", "give its MP address", "isn't defined"), [])
+        import tomllib
+        generated = tomllib.loads(self.out[self.tool.CAMPAIGN_TOML]).get("midasm_hook", [])
+        addresses = [h["address"] for h in generated]
+        self.assertEqual(len(addresses), len(set(addresses)))
+        sites = [r for r in self.rows if r.symbol.startswith("midasm:") and r.status == "mp"]
+        self.assertEqual(len(generated), len(sites))
+        own = tomllib.loads((self.recomp / "mp" / "config" / "codmp.toml").read_text(encoding="utf-8"))
+        own_addresses = {h["address"] for h in own.get("midasm_hook", [])}
+        self.assertFalse(own_addresses & set(addresses), "a site is in codmp.toml and codmp_campaign.toml")
+
+    def test_no_raw_campaign_addresses(self):
+        # Addresses in shared code are addresses.h constants or COD3_ADDR(sp, mp).
+        self.assertEqual(self.problems_like("raw campaign address", "COD3_ADDR("), [])
+
+    def test_force_include_only_on_cod3mp(self):
+        import re
+        mp_cmake = (self.recomp / "mp" / "CMakeLists.txt").read_text(encoding="utf-8")
+        uses = re.findall(r"target_compile_options\((\w+)[^)]*mp_aliases\.h", mp_cmake)
+        self.assertTrue(uses)
+        self.assertEqual(set(uses), {"cod3mp"})
+        top = (self.recomp / "CMakeLists.txt").read_text(encoding="utf-8")
+        self.assertNotIn("mp_aliases", top)
+        self.assertNotIn("game/mp/", top)  # the campaign build has none of cod3mp's own files
+        addresses = (self.recomp / "src" / "game" / "addresses.h").read_text(encoding="utf-8")
+        self.assertIn('#if defined(COD3_MP)  // [mp]', addresses)
+        before, _, after = addresses.partition('#include "game/mp/addresses_mp.h"')
+        self.assertTrue(before.rstrip().endswith("(tools/mp_aliases.py)"))
+        self.assertTrue(after.lstrip().startswith("#else"))
+
+    def test_the_manifest_includes_the_generated_hooks(self):
+        manifest = (self.recomp / "mp" / "cod3mp_manifest.toml").read_text(encoding="utf-8")
+        self.assertIn('"config/codmp_campaign.toml"', manifest)
 
 
 class AppRunTests(unittest.TestCase):

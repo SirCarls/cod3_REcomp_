@@ -9,6 +9,7 @@ own buffer.
 from __future__ import annotations
 
 import random
+import math
 import struct
 from dataclasses import dataclass, field
 
@@ -433,10 +434,17 @@ def _atoi(text: bytes) -> int:
 
 
 def _atof(text: bytes) -> float:
+    """The setting's value as the game keeps it: atof's double stored in a
+    float (too large for a float: infinity, as C's conversion gives)."""
     try:
-        return float(text.decode("latin-1").strip() or "0")
+        value = float(text.decode("latin-1").strip() or "0")
     except ValueError:
         return 0.0
+    try:
+        struct.pack("<f", value)
+    except OverflowError:
+        return math.copysign(math.inf, value)
+    return value
 
 
 class ServerWorld:

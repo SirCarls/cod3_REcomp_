@@ -22,17 +22,21 @@
 #include <rex/system/xmemory.h>
 
 #include "game/addresses.h"
+#include "game/decomp_trace.h"
 #include "game/engine.h"
 #include "game/guest.h"
+#include "game/program.h"
+#include "ui/dvar_domain.h"
 #include "ui/game_console.h"
 
 namespace {
 
 // default.xex in guest memory (generated/default/cod3_pch.h: REX_IMAGE_BASE,
-// REX_IMAGE_SIZE).
-constexpr uint32_t kImageBase = 0x82000000;
-constexpr uint32_t kImageSize = 0xC30000;
-constexpr uint32_t kCodeEnd = 0x820A0000 + 0x4FB1B8;  // REX_CODE_BASE + REX_CODE_SIZE
+// REX_IMAGE_SIZE); codmp_xenonf.xex's in cod3mp (generated/codmp/cod3mp_pch.h).
+constexpr uint32_t kImageBase = COD3_ADDR(0x82000000, 0x82000000);
+constexpr uint32_t kImageSize = COD3_ADDR(0xC30000, 0xE20000);
+// REX_CODE_BASE + REX_CODE_SIZE: 0x820A0000 + 0x4FB1B8 (cod3mp: 0x820B0000 + 0x4F21D4).
+constexpr uint32_t kCodeEnd = COD3_ADDR(0x8259B1B8, 0x825A21D4);
 constexpr uint32_t kPageSize = 0x1000;
 constexpr size_t kMaxFormatChars = 2048;
 
@@ -149,11 +153,25 @@ void Emit(cod3::ui::ConsoleChannel channel, std::string text) {
 
 // void Com_Printf(const char* fmt, ...)
 REX_HOOK_RAW(Com_Printf) {
+  // The decomp trace build: which function prints which of the game's formats.
+  if constexpr (cod3::trace::kEnabled) cod3::trace::NotePrint(ctx, base, ctx.r3.u32, InReadOnlyImage(ctx.r3.u32));
   Emit(cod3::ui::ConsoleChannel::kGame, FormatGuest(ctx, base, ctx.r3.u32, 1));
 }
 
 // void Com_DPrintf(const char* fmt, ...) - only shown with `developer 1`, like the PC games.
 REX_HOOK_RAW(Com_DPrintf) {
+  if constexpr (cod3::trace::kEnabled) cod3::trace::NotePrint(ctx, base, ctx.r3.u32, InReadOnlyImage(ctx.r3.u32));
+  // A dvar name typed alone (Cvar_Command): World at War always answers, and
+  // adds the dvar's domain (ui/dvar_domain.h). This build answers through
+  // Com_DPrintf, so the answer is shown whatever developer is.
+  namespace a = cod3::addr;
+  if (ctx.r3.u32 == a::kCvarCommandValueFormat || ctx.r3.u32 == a::kCvarCommandLatchedFormat) {
+    const std::string text = FormatGuest(ctx, base, ctx.r3.u32, 1);
+    Emit(cod3::ui::ConsoleChannel::kGame, text);
+    if (std::string domain = cod3::ui::domain::LinesAfterGameAnswer(text); !domain.empty())
+      Emit(cod3::ui::ConsoleChannel::kGame, std::move(domain));
+    return;
+  }
   uint32_t dev = cod3::Engine::Get().developer_cvar();
   bool show = dev && cod3::guest::ReadS32(base, dev + cod3::addr::cvar::kInteger) != 0;
   if (!show) return;
@@ -163,6 +181,7 @@ REX_HOOK_RAW(Com_DPrintf) {
 // void Com_Error(int code, const char* fmt, ...)
 REX_EXTERN(__imp__Com_Error);
 REX_HOOK_RAW(Com_Error) {
+  if constexpr (cod3::trace::kEnabled) cod3::trace::NotePrint(ctx, base, ctx.r4.u32, InReadOnlyImage(ctx.r4.u32));
   std::string msg = FormatGuest(ctx, base, ctx.r4.u32, 2);
   // Error strings carry a leading 0x15 control byte in this build.
   if (!msg.empty() && static_cast<unsigned char>(msg[0]) < 0x20) msg.erase(0, 1);

@@ -20,6 +20,7 @@
 #include "game/cheat_guard.h"
 #include "game/cheat_watch.h"
 #include "game/cutscene_skip.h"
+#include "game/fov.h"
 #include "game/game_api.h"
 #include "game/settings_sync.h"
 #include "game/hd_textures.h"
@@ -41,12 +42,6 @@ namespace cod3 {
 namespace a = cod3::addr;
 using guest::ReadString;
 using guest::ReadU32;
-
-static std::string FormatFloat(float v) {
-  char buf[32];
-  std::snprintf(buf, sizeof(buf), "%g", v);
-  return buf;
-}
 
 // Limits on what reaches the game from the port (console lines, config
 // values): the Q3 engine's own sizes (MAX_STRING_CHARS 1024 for a command,
@@ -174,9 +169,7 @@ void Engine::LoadConfig() {
     }
     archived_[name] = rest;
   }
-  if (auto it = archived_.find("cg_fov"); it != archived_.end()) fov_ = std::strtof(it->second.c_str(), nullptr);
-  if (auto it = archived_.find("cg_fovScale"); it != archived_.end())
-    fov_scale_ = std::strtof(it->second.c_str(), nullptr);
+  fov::LoadPlayerSettings(archived_);  // the player's cg_fov / cg_fovScale, limited (game/fov.h)
   REXLOG_INFO("cod3: loaded {} archived cvars from {}{}", archived_.size(), cod3::PathToUtf8(config_path_),
               dropped ? " (" + std::to_string(dropped) + " line(s) dropped)" : std::string());
 }
@@ -223,33 +216,7 @@ void Engine::SaveConfig() {
   for (auto& [k, v] : archived_) out << "seta " << k << " " << QuoteValue(v) << "\n";
 }
 
-// ---------------------------------------------------------------------------
-// FOV
-// ---------------------------------------------------------------------------
-void Engine::SetFov(float fov) {
-  fov = std::clamp(fov, 40.0f, 160.0f);
-  fov_ = fov;
-  std::string v = FormatFloat(fov);
-  QueueGuestTask([v](PPCContext& ctx, uint8_t* base) { CvarSet(ctx, base, "cg_fov", v.c_str(), false); });
-  SetArchived("cg_fov", v);
-}
-
-void Engine::ApplyFovFromGuest(PPCContext& ctx, uint8_t* base, float fov) {
-  fov = std::clamp(fov, 40.0f, 160.0f);
-  fov_ = fov;
-  std::string v = FormatFloat(fov);
-  CvarSet(ctx, base, "cg_fov", v.c_str(), false);
-  SetArchived("cg_fov", v);
-}
-
-void Engine::SetFovScale(float scale) {
-  scale = std::clamp(scale, 0.2f, 2.0f);
-  fov_scale_ = scale;
-  std::string v = FormatFloat(scale);
-  QueueGuestTask(
-      [v](PPCContext& ctx, uint8_t* base) { CvarSet(ctx, base, "cg_fovScale", v.c_str(), false); });
-  SetArchived("cg_fovScale", v);
-}
+// FOV: Engine::fov() / SetFov() / SetFovScale() ... are in game/fov.cpp.
 
 // ---------------------------------------------------------------------------
 // Frame rate limit / counter
@@ -292,10 +259,7 @@ void Engine::ResetArchivedCvars() {
     if (!max_fps.empty()) CvarSet(ctx, base, "com_maxfps", max_fps.c_str(), /*force=*/true);
     // Take the new values as the baseline, so they aren't saved again as
     // if the player had changed them.
-    if (fov_cvar_) fov_ = game::CvarValue(base, fov_cvar_);
-    if (fov_scale_cvar_) fov_scale_ = game::CvarValue(base, fov_scale_cvar_);
-    archived_fov_ = FormatFloat(fov_.load());
-    archived_fov_scale_ = FormatFloat(fov_scale_.load());
+    fov::AdoptFromGuest(ctx, base);
     for (auto& w : watched_) {
       if (w.cvar) w.value = game::CvarString(base, w.cvar, 64);
     }
@@ -342,6 +306,16 @@ void Engine::SyncWatchedCvars(PPCContext& ctx, uint8_t* base) {
       }
     }
     if (changed) SaveConfig();
+    // The console's com_maxfps is the frame rate limit too: cod3_max_fps,
+    // its one home (FirstFrame), follows, so the next start keeps it.
+    if (changed && &w == &watched_[0]) {
+      char* end = nullptr;
+      const long fps = std::strtol(value.c_str(), &end, 10);
+      const std::string limit = std::to_string(std::clamp(fps, 0L, 1000L));
+      if (end != value.c_str() && limit != rex::cvar::GetFlagByName("cod3_max_fps") &&
+          rex::cvar::SetFlagByName("cod3_max_fps", limit))
+        settings::RequestSave();
+    }
   }
 }
 
@@ -396,10 +370,29 @@ void Engine::FirstFrame(PPCContext& ctx, uint8_t* base) {
   CvarGet(ctx, base, "cg_drawFPS", "0", a::cvar_flag::kArchive);
   developer_cvar_ = CvarFind(ctx, base, "developer");
 
-  // Frame rate limit: cod3_max_fps from cod3.toml until the console config
-  // has its own com_maxfps (applied just below). CoD3's default is 0 because
-  // the Xbox 360's vsync held it at 60.
+  // Frame rate limit: one home, cod3_max_fps in cod3.toml. F2, the game's
+  // Options, the setup tool and the console's com_maxfps (mirrored by
+  // SyncWatchedCvars) all change it; the console config's com_maxfps is kept
+  // equal to it. Before, the console config's com_maxfps won at every start,
+  // so a limit chosen in the setup tool did nothing once the console config
+  // had one. An install from before with only the console config's value
+  // takes it over once. (CoD3's own default is 0: the Xbox 360's vsync held
+  // it at 60.)
   std::string max_fps = rex::cvar::GetFlagByName("cod3_max_fps");
+  if (const auto archived = ArchivedCvars(); archived.count("com_maxfps")) {
+    const std::string& old = archived.at("com_maxfps");
+    char* end = nullptr;
+    const long fps = std::strtol(old.c_str(), &end, 10);
+    if (old != max_fps && end != old.c_str() && *end == '\0' &&
+        rex::cvar::GetFlagSource("cod3_max_fps") == rex::cvar::Source::kDefault) {
+      const std::string taken = std::to_string(std::clamp(fps, 0L, 1000L));
+      if (rex::cvar::SetFlagByName("cod3_max_fps", taken)) {
+        REXLOG_INFO("cod3: frame rate limit {} taken over from the console config (com_maxfps)", taken);
+        max_fps = taken;
+        settings::RequestSave();
+      }
+    }
+  }
   if (!max_fps.empty()) CvarSet(ctx, base, "com_maxfps", max_fps.c_str(), /*force=*/true);
 
   // Re-apply archived cvars. Cvar_Set2 creates not-yet-registered cvars as
@@ -411,6 +404,7 @@ void Engine::FirstFrame(PPCContext& ctx, uint8_t* base) {
   cheats::Sync(base);
   std::vector<std::string> refused;
   for (auto& [name, value] : ArchivedCvars()) {
+    if (name == "com_maxfps") continue;  // cod3_max_fps is its home (above)
     const uint32_t var = CvarFind(ctx, base, name.c_str());
     if (var && (game::CvarFlags(base, var) & a::cvar_flag::kCheat) && !cheats::Enabled()) {
       REXLOG_WARN("cod3: {}: '{}' is cheat protected; not applied and dropped (cheats are turned on "
@@ -430,6 +424,10 @@ void Engine::FirstFrame(PPCContext& ctx, uint8_t* base) {
     }
     SaveConfig();
   }
+  // The console config's com_maxfps follows the limit's home.
+  if (const auto archived = ArchivedCvars();
+      !max_fps.empty() && archived.count("com_maxfps") && archived.at("com_maxfps") != max_fps)
+    SetArchived("com_maxfps", max_fps);
   // Starting values of the watched cvars (anything after this is a change
   // made in the game and gets saved).
   for (auto& w : watched_) {
@@ -440,42 +438,6 @@ void Engine::FirstFrame(PPCContext& ctx, uint8_t* base) {
   }
   game_ready_ = true;
   REXLOG_INFO("cod3: engine hooks live (cg_fovScale cvar @ {:08X})", fov_scale_cvar_);
-}
-
-void Engine::SyncFovFromGuest(uint8_t* base) {
-  if (fov_cvar_) fov_ = game::CvarValue(base, fov_cvar_);
-  if (fov_scale_cvar_) fov_scale_ = game::CvarValue(base, fov_scale_cvar_);
-  ArchiveFovIfChanged();
-}
-
-// cg_fov is CVAR_TEMP in CoD3 and cg_fovScale is ours, so neither would be
-// remembered by the game. Persist both whenever they change, whatever changed
-// them (console, options menu, `exec`).
-void Engine::ArchiveFovIfChanged() {
-  if (!fov_cvar_ || (frame_ % 30) != 0) return;
-  std::string fov = FormatFloat(fov_.load());
-  std::string scale = FormatFloat(fov_scale_.load());
-  if (archived_fov_.empty()) {
-    // First sync: adopt what is on disk / in the game without rewriting.
-    archived_fov_ = fov;
-    archived_fov_scale_ = scale;
-    return;
-  }
-  bool changed = false;
-  {
-    std::lock_guard lock(mutex_);
-    if (fov != archived_fov_) {
-      archived_["cg_fov"] = fov;
-      archived_fov_ = fov;
-      changed = true;
-    }
-    if (fov_scale_cvar_ && scale != archived_fov_scale_) {
-      archived_["cg_fovScale"] = scale;
-      archived_fov_scale_ = scale;
-      changed = true;
-    }
-  }
-  if (changed) SaveConfig();
 }
 
 void Engine::TakeSnapshot(uint8_t* base) {
@@ -595,7 +557,6 @@ void Engine::OnGuestFrame(PPCContext& ctx, uint8_t* base) {
     if (ReadU32(base, a::kCvarVars) == 0) return;
     FirstFrame(ctx, base);
   }
-  if (!fov_cvar_) fov_cvar_ = CvarFind(ctx, base, "cg_fov");
 
   std::vector<std::string> commands;
   std::vector<std::function<void(PPCContext&, uint8_t*)>> tasks;
@@ -609,7 +570,7 @@ void Engine::OnGuestFrame(PPCContext& ctx, uint8_t* base) {
 
   cheats::Sync(base);  // sv_cheats for the console and the HUD
   hd::SyncMultiplayerMode();  // texture replacement follows the match state (game/hd_textures.h)
-  SyncFovFromGuest(base);
+  fov::Sync(ctx, base);  // the player's cg_fov / cg_fovScale (game/fov.h)
   SyncWatchedCvars(ctx, base);
   settings::SyncCrosshair(ctx, base);  // cg_drawCrosshair = Options > Gameplay > Crosshair
   if ((frame_ % 10) == 0) CheatWatch::Get().Update(base);

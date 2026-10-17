@@ -31,6 +31,13 @@
 // Each item can be pointed at across its row (half way to the next row);
 // items side by side split their line half way. The footer prompts ("[ENTER]
 // SELECT [ESC] BACK") are buttons as well: a click on one presses it.
+// [menus-brightness] The arrows and gauges drawn on an option row are part of
+// it: a click on the left / right arrow steps the value that way, a click
+// between the arrows steps it toward the half clicked, and a click on a
+// gauge (volume, sensitivity, brightness) moves it to the place clicked and
+// follows the pointer while the button is held. A page's own slider (Options
+// > SCREEN) works the same way. They are found by the names of the pictures
+// the menu draws, so the port's own rows work too.
 //
 // Also here: the "Select Storage Device" item of the pause menu becomes QUIT
 // TO DESKTOP (under QUIT TO MENU) and the storage buttons of the game's
@@ -75,5 +82,10 @@ void SetQuitToDesktopHandler(std::function<void()> quit);
 // game/button_prompts.cpp, as the game draws a line of a multi-line text
 // (game thread): footer prompts drawn by a menu become clickable.
 void NoteLineDrawn(uint8_t* base, uint32_t line, double y_scale);
+
+// [menus-brightness] Game thread, inside a page's left / right handler: true
+// while the mouse / keyboard layer presses `code` (pm::kCode*) or holds it as
+// an arrow key, so a page can tell those from the pad's.
+bool FromPcInput(uint32_t code);
 
 }  // namespace cod3::pcmenu

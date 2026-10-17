@@ -30,7 +30,18 @@
 //     table every minute, and hitch tables from 100 ms;
 //   - debug: "limited by ..." every 2 s.
 // The overlay and `cod3_report` can show the same (Report(), Verdict(),
-// Table()).
+// Table()). `cod3_report` is usually written from the console, which makes
+// the window repaint continuously; QuietReport() is the last second without
+// that, so the report can show the window thread as it is in play.
+//
+// Once a session, after a minute of play (cod3_profile_auto, default on), it
+// asks the function profiler (game/function_profiler.h) for 10 s of each of
+// the busy frame threads: the GPU emulation, the game's main thread and the
+// window thread (only while the window isn't repainting on its own), and the
+// thread that holds the SDK's global lock most while the GPU emulation waits
+// 5% or more for it (its report says what it does with the lock held). The
+// reports go to userdata/logs and their summaries into `cod3_report`, so a
+// report from any session says what those threads spend their time in.
 //
 // Cost: one pass over the process's threads a second (two small reads per
 // thread on Linux, one OS query per thread on Windows; about 1-2 ms for 70
@@ -56,6 +67,9 @@ struct FrameCosts {
   float gpu_wait_ms = 0;    //   of which waiting for the graphics card
   float submit_ms = 0;      //   of which handing commands to the driver
   float shader_ms = 0;      //   of which translating shaders while a draw waited
+  // Pictures the window presented a second (0 = SDK doesn't count them); well
+  // above 1000 / frame_ms, the window repaints on its own (an open console).
+  float presents_per_s = 0;
   int max_fps = 0;          // com_maxfps (0 = no limit)
   // The game's own frames (Com_Frame) per second. Not the same clock as
   // frame_ms (presented frames): the frame limit applies to these.
@@ -74,6 +88,7 @@ struct ThreadRow {
   // Who held the global lock while this thread waited for it, busiest
   // first: "Main XThread 11%, rex::thread::Ti 5%" (Linux; SDK thread stats 2).
   std::string lock_holders;
+  uint32_t top_lock_holder = 0;  // OS id of the first of them, 0 if none
 };
 
 struct ThreadReport {
@@ -84,7 +99,30 @@ struct ThreadReport {
   int busy_threads = 0;         // threads above 85% of a core
   std::string limited_by;       // "the GPU emulation thread", ...
   std::string why;              // the numbers behind it
+  // Waits for the SDK's global lock a second, all threads, and the share that
+  // ended while the waiter spun (SDK thread stats 3; -1 = not counted).
+  float lock_waits_per_s = 0;
+  float lock_spin_won_pct = -1;
+  // The game's waits for the emulated GPU in its Direct3D (game/gpu_wait.h),
+  // ms a second by what it waited for (GuestGpuWait); -1 = not counted.
+  float guest_gpu_wait_ms[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
 };
+
+// What the game's Direct3D waits for the GPU for (the reason codes of its
+// wait helpers, docs/COD3_D3D.md), grouped.
+enum class GuestGpuWait {
+  kRingSpace,      // room in the ring buffer (reason 1)
+  kCommandMemory,  // command memory to reuse (2)
+  kFence,          // BlockOnFence (6)
+  kLock,           // a buffer or texture lock (0xA, 0xC, 0xE)
+  kRelease,        // releasing a resource the GPU may still read (7 ... 0x11)
+  kOther,
+  kCount
+};
+// Set by game/gpu_wait.cpp (campaign only): total microseconds so far, per
+// GuestGpuWait. The thread profiler turns them into ms a second.
+using GuestGpuWaitReader = void (*)(uint64_t* microseconds, size_t count);
+void SetGuestGpuWaitReader(GuestGpuWaitReader reader);
 
 class ThreadProfiler {
  public:
@@ -96,6 +134,9 @@ class ThreadProfiler {
   void NoteGameMainThread();
 
   ThreadReport Report();
+  // The last report from a second in which the window didn't repaint on its
+  // own; `age_s` = how long ago (negative: none yet).
+  ThreadReport QuietReport(double* age_s);
 
   // "limited by X (why)", for the log line and the overlay.
   static std::string Verdict(const ThreadReport& report);
@@ -116,12 +157,17 @@ class ThreadProfiler {
     std::unordered_map<uint32_t, uint64_t> holder_us;  // global lock wait by holder
   };
 
-  std::mutex mutex_;  // report_, worker_started_
+  std::mutex mutex_;  // report_, quiet_report_, quiet_time_us_, worker_started_
   bool worker_started_ = false;
   ThreadReport report_;
+  ThreadReport quiet_report_;
+  uint64_t quiet_time_us_ = 0;
   // Profiler thread only:
   std::unordered_map<uint32_t, Previous> previous_;
   uint64_t previous_time_us_ = 0;
+  uint64_t previous_guest_gpu_waits_[8] = {};
+  bool have_guest_gpu_waits_ = false;
+  uint64_t previous_lock_spins_won_ = 0, previous_lock_spins_slept_ = 0;
   std::atomic<uint32_t> main_thread_id_{0};
   uint32_t ui_thread_id_ = 0;
 };

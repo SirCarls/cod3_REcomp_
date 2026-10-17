@@ -59,11 +59,15 @@ class Engine {
   std::map<std::string, std::string> ArchivedCvars();
   void SaveConfig();
 
-  // FOV state mirrored on the host so the UI never touches guest memory.
-  float fov() const { return fov_; }
-  float fov_scale() const { return fov_scale_; }
-  void SetFov(float fov);            // sets cg_fov  (queued, persisted)
-  void SetFovScale(float scale);     // sets cg_fovScale (queued, persisted)
+  // The player's own cg_fov / cg_fovScale, kept on the host so the UI never
+  // touches guest memory, and always within the effective range (game/fov.h;
+  // defined in fov.cpp). A game-made change (scripted view, vehicle) is not
+  // the player's and isn't shown or saved here.
+  float fov() const;
+  float fov_scale() const;
+  void SetFov(float fov);            // sets cg_fov  (limited, queued, persisted)
+  void SetFovScale(float scale);     // sets cg_fovScale (limited, queued, persisted)
+  void SetFovSettings(float fov, float scale);  // both at once (a Reset)
   // Guest-thread variant used by the native options menu (applies immediately).
   void ApplyFovFromGuest(PPCContext& ctx, uint8_t* base, float fov);
 
@@ -97,8 +101,6 @@ class Engine {
   void TakeSnapshot(uint8_t* base);
   void FirstFrame(PPCContext& ctx, uint8_t* base);
   void RunAutoexec(PPCContext& ctx, uint8_t* base);
-  void SyncFovFromGuest(uint8_t* base);
-  void ArchiveFovIfChanged();
   void SyncWatchedCvars(PPCContext& ctx, uint8_t* base);
 
   std::mutex mutex_;
@@ -127,13 +129,8 @@ class Engine {
   std::map<std::string, std::string> archived_;
   bool config_loaded_ = false;
 
-  std::atomic<float> fov_{65.0f};
-  std::atomic<float> fov_scale_{1.0f};
   uint32_t fov_scale_cvar_ = 0;
-  uint32_t fov_cvar_ = 0;
   uint32_t developer_cvar_ = 0;
-  std::string archived_fov_;
-  std::string archived_fov_scale_;
 
   // Game cvars whose console changes are saved to the config like `seta`.
   struct WatchedCvar {

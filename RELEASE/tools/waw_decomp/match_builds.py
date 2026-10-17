@@ -82,8 +82,10 @@ class Build:
         # dvar_cg_fov and dvar_cg_fovScale is the same function in both builds
         self.globals = collections.defaultdict(set)  # name -> functions using it
         gnames = {a: n for a, n in (global_names or {}).items() if not GENERIC_NAME.match(n)}
-        if names_tsv:
-            for r in read_tsv(names_tsv):
+        # names_tsv: a names table's path, or its rows already read (and filtered)
+        name_rows = (names_tsv if isinstance(names_tsv, list) else read_tsv(names_tsv)) if names_tsv else []
+        if name_rows:
+            for r in name_rows:
                 if r["kind"] == "global" and not GENERIC_NAME.match(r["name"]):
                     gnames[int(r["addr"], 16)] = r["name"]
         if gnames and os.path.exists(f"{raw}/globals.tsv"):
@@ -105,10 +107,9 @@ class Build:
         for a, r in t.funcs.items():
             if not t.default_name(a):
                 self.names[a] = r["name"]
-        if names_tsv:
-            for r in read_tsv(names_tsv):
-                if r["kind"] == "function":
-                    self.names[int(r["addr"], 16)] = r["name"]
+        for r in name_rows:
+            if r["kind"] == "function":
+                self.names[int(r["addr"], 16)] = r["name"]
         if names:
             self.names.update(names)
         # function pointers stored in the data (tables of handlers, callbacks in structures)

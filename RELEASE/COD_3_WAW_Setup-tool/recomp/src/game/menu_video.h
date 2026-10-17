@@ -23,6 +23,8 @@
 //   ANTI-ALIASING     swap_post_effect: off, FXAA, FXAA extreme
 //   SHADOWS           cod3_shadow_quality: original, off (game/shadows.h)
 //   HD TEXTURES       cod3_hd_textures (after a restart)
+//   BATTLE ACTIONS    cod3_qte_style: spinner or original (game/qte_actions.h);
+//                     the in-game page only (the front end's has six rows)
 // All of them only change what is drawn and how often; none changes how the
 // game plays.
 
@@ -44,6 +46,10 @@ enum Row : int {
   kAntiAliasing,
   kShadows,
   kHdTextures,
+  // Stick battle actions: spinner or the game's arrow (game/qte_actions.h).
+  // Only the in-game page has room for this seventh row; the front end's
+  // page shows the first six.
+  kBattleActions,
   kRowCount
 };
 
@@ -95,5 +101,31 @@ const char* QuitToMenuKey();
 const char* QuitToDesktopKey();
 const char* QuitToTitleKey();
 const char* QuitToDesktopQuestionKey();
+
+// [menus-brightness] The game's own brightness (addresses.h, brightness): the
+// one value the main menu's Options > SCREEN page changes. The BRIGHTNESS row
+// of Pause > Options > VIDEO OPTIONS (menu_fov.cpp) shows and changes the
+// same value, so the last
+// change made anywhere wins and both places show it. A change shows at the
+// next frame (the game rebuilds its gamma ramp whenever the value changes)
+// and is saved with the player's options like the game saves them.
+float Brightness(uint8_t* base);                  // 0.5 .. 2.0, 1.0 by default
+float BrightnessFraction(uint8_t* base);          // 0 .. 1 along that range
+void SetBrightnessFraction(uint8_t* base, float fraction);
+// One step left or right, the SCREEN page's D-pad step (0.05); `from` names
+// the place for the log.
+void StepBrightness(uint8_t* base, bool right, const char* from);
+// The brightness in the player's options (what is saved): sets it to `value`
+// and returns the one it had (menu_fov.cpp: the pause menu's Options swap
+// their values with the player's options, the way the game does).
+float ExchangeProfileBrightness(uint8_t* base, float value);
+const char* BrightnessKey();                      // the row's label "BRIGHTNESS"
+
+// [menus-brightness] pc_menu.cpp, a click or drag on a gauge: sets the
+// slider of `page` (row `item`, or -1 for a page's own slider) to `fraction`
+// of its range directly. True for the game's brightness (the SCREEN page and
+// the pause menu's BRIGHTNESS row); false for any other gauge, which
+// pc_menu.cpp steps with left / right instead. Game thread.
+bool SetSlider(uint8_t* base, uint32_t page, int item, float fraction);
 
 }  // namespace cod3::videomenu

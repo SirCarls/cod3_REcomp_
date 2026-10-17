@@ -169,7 +169,8 @@ def cmd_check(args) -> int:
         print("No specs match.")
         return 1
     oracles = {}
-    rust = harness_x86.RustChecker(build=not args.no_build)
+    checker = harness_x86.CppChecker if args.impl == "cpp" else harness_x86.RustChecker
+    rust = checker(build=not args.no_build)
     seed = args.seed if args.seed is not None else int(time.time())
     bad = 0
     try:
@@ -302,6 +303,8 @@ def main() -> int:
     p.add_argument("--against", choices=["cod3"],
                    help="run another game's port (cod3_game) against these originals, to see what they share")
     p.add_argument("--no-build", action="store_true", help="don't rebuild pc_check first")
+    p.add_argument("--impl", choices=["rust", "cpp"], default="rust",
+                   help="which ports answer: the Rust crate (pc_check) or the C++ version (engine/cpp, pc_check_cpp)")
     p = sub.add_parser("find")
     p.add_argument("text")
     p.add_argument("--image", default="cod2mp")

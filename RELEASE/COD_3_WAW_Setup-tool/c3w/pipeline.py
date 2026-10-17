@@ -38,13 +38,22 @@ from .xiso import XisoImage
 # Bump this with every release that changes the setup tool or what it builds (owner rule, 2026-10-14):
 # the last number for fixes, the middle one for new features. repair.py compares it with the installed
 # launcher's copy, so a bump also tells existing installs to refresh their launcher.
-TOOL_VERSION = "2.4.0"
+TOOL_VERSION = "2.10.12"  # 2.10.12: the CoD4 movement style moves in CoD4 PC's 125 fps steps (its air strafing and jump height) at any frame rate; 2.10.11: sprint in the campaign (hold/toggle) and the optional CoD4 movement style, binoculars on a key of their own (B); 2.10.10: HDR10 output (SDK 0044: BT.2020, PQ, subtle highlights; F2 > Video > Colors); 2.10.9: aspect ratio: custom shapes from 4:3, "Match the render resolution", F2 dropdowns fixed, Letterbox off planned as stretched; 2.10.8: the campaign's port features in multiplayer (cod3mp: frame limit, FOV, crosshair, F2, console, cheat guard, screenshots; tools/mp_aliases.py), clean launch path back to the campaign (SDK 0043); 2.10.7: the game is collected when it ends (no "ghost" left by the launcher); 2.10.6: pause menu BRIGHTNESS, clickable menu arrows and gauges; 2.10.5: readback copies only what the CPU reads (SDK 0049), Direct3D waits by reason; 2.10.4: HD textures on/off screenshot pair (cod3_hd_compare); 2.10.3: debug screenshots of the game's own picture; 2.10.2: texture descriptor sets reused (SDK 0048), profiler: what runs under the global lock; 2.10.1: window paint pipeline kept (SDK 0046), register writes (0047), profiler callers; 2.10.0: settings: the last change wins (SDK 0042, Play page); 2.9.1: the game's job wait sleeps, global lock spin (0045), automatic profiles; 2.9.0: QTE spinner, decomp trace version (--trace-build); 2.8.0: regional discs, console language, F2 picture colors; [voice] 2.7.0: voices from another disc
 SDK_REPO = "https://github.com/rexglue/rexglue-sdk.git"
 SDK_COMMIT = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"   # ReXGlue v0.10.0
 
 # default.xex of "Call of Duty 3 (USA, Europe)". The recomp's hooks are tied
 # to this exact build, so other versions would compile into a broken game.
-KNOWN_XEX = {"681724c40e250e584e6585dd903e05afa00a8634": "Call of Duty 3 (USA, Europe)"}
+# The campaign's default.xex of each disc the recomp builds. The German and the
+# French/Spanish/Italian discs carry the same program (the decrypted image and
+# the 15 level DLLs are byte for byte the USA/Europe disc's; only the XEX
+# wrapper differs: docs/X360_FAMILY.md), so every hook matches them too.
+KNOWN_XEX = {"681724c40e250e584e6585dd903e05afa00a8634": "Call of Duty 3 (USA, Europe)",
+             "52447cb4189bc4168e71324255e9e7acf5495eb8": "Call of Duty 3 (Germany)",
+             "6f9247bb74c4006632a8556dcd1d41332139ff83": "Call of Duty 3 (Europe: French, Spanish, Italian)"}
+# The French/Spanish/Italian disc has no English speech: the game takes its
+# language from the console language (Game settings > Console language).
+XEX_PICKS_LANGUAGE = {"6f9247bb74c4006632a8556dcd1d41332139ff83"}
 LEVELS = ["blkbrn", "chambois", "credits", "crssrds", "falaise", "forest", "fuelplnt", "hostage", "island",
           "laison", "mace2", "mayenne", "nightd", "saint_lo", "stbert"]
 RECOMP_FILES = ["default.xex"] + [f"sp/{lvl}/{lvl}.dll" for lvl in LEVELS]
@@ -56,6 +65,11 @@ KNOWN_MP_XEX = {"907985e2f1bdea255b52226ef39acf627c2d7ffc": "Call of Duty 3 (USA
 
 WORK_NEEDED_RECOMP = 7 * 1024 ** 3   # SDK checkout + build, generated code, objects
 WORK_NEEDED_RIPPER = 1 * 1024 ** 3   # the ripper's build, unpacked WaW discs
+# The decomp trace version (docs/DECOMP_TRACE.md): its own build folder next
+# to the normal one, packed into <output>/bin-trace/.
+TRACE_BUILD_DIR = "trace"
+TRACE_BIN_DIR = "bin-trace"
+WORK_NEEDED_TRACE = 2 * 1024 ** 3    # its objects (the translated code is shared)
 BINARIES_SIZE = 600 * 1024 ** 2      # the recompiled game in the output
 RIPPED_SIZE = 4 * 1024 ** 3          # ripped CoD3 + WaW data (whole disc: textures as DDS + PNG)
 # With the waifu2x option: data/cod3/textures_upscaled (the ripped PNGs at the
@@ -132,6 +146,11 @@ class BuildOptions:
     upscale_scale: int = upscale.DEFAULT_SCALE
     force_unknown_iso: bool = False
     skip_dep_check: bool = False   # advanced: build even if detection reports something missing
+    # Also the decomp trace version of this system's game (docs/DECOMP_TRACE.md):
+    # notes which game functions run and who calls them, for mapping unnamed
+    # ones; built in its own folder into <output>/bin-trace/ (the normal game is
+    # unchanged). About doubles the compile time.
+    trace_build: bool = False
     # A repair (c3w/repair.py): only the steps named here (Step.key) run,
     # plus the steps they need (STEP_NEEDS) and those in ALWAYS_STEPS. Empty
     # (a normal build): every step runs.
@@ -151,7 +170,7 @@ class Step:
 STEP_NEEDS = {
     "rip_cod3": ("ripper", "assets"), "upscale": (), "hd_pack": ("ripper",), "user_pack": ("ripper",),
     "waw": ("ripper",), "recompile": ("sdk", "assets"), "package": ("recompile",),
-    "windows": ("recompile",), "linux_wsl": ("assets",),
+    "windows": ("recompile",), "linux_wsl": ("assets",), "trace": ("recompile",),
 }
 # Steps every run has (the tools step only when another step uses tools).
 ALWAYS_STEPS = ("inputs", "finish", "cleanup")
@@ -186,6 +205,7 @@ class Pipeline:
         self.rip: Optional[Path] = None
         self.exe_rel: Optional[str] = None           # this system's version (bin/ or the AppImage)
         self.windows_exe_rel: Optional[str] = None   # cross-built on Linux
+        self.trace_exe_rel: Optional[str] = None     # the decomp trace version (bin-trace/)
         self.linux_exe_rel: Optional[str] = None     # built in WSL on Windows
         self.used_wsl = False
         self.waw_ripped = 0
@@ -262,6 +282,8 @@ class Pipeline:
             ]
         if self.native:
             steps.append(Step("Packaging", self.package, "package"))
+            if self.o.trace_build:
+                steps.append(Step("Decomp trace version", self.trace_game, "trace"))
         if self.cross_windows:
             steps.append(Step("Windows version (cod3.exe)", self.windows_game, "windows"))
         if self.wsl_linux:
@@ -395,6 +417,9 @@ class Pipeline:
         builds = int(self.native or self.cross_windows) + int(self.cross_windows) + int(self.wsl_linux)
         need_work = (WORK_NEEDED_RIPPER if self._runs("ripper") else 0) + WORK_NEEDED_RECOMP * builds
         need_out += BINARIES_SIZE * max(0, int(self.cross_windows) + int(self.wsl_linux))
+        if self.native and self.o.trace_build and self._runs("trace"):
+            need_work += WORK_NEEDED_TRACE
+            need_out += BINARIES_SIZE
         free_out, free_work = free_space(self.out), free_space(self.work)
         self.log.info(f"Output: {self.out}  (needs ~{human(need_out)}, {human(free_out)} free)")
         self.log.info(f"Work:   {self.work}  (needs ~{human(need_work)}, {human(free_work)} free)")
@@ -416,12 +441,17 @@ class Pipeline:
         name = KNOWN_XEX.get(xex_sha1)
         if name:
             self.log.info(f"Game: {name} (default.xex {xex_sha1[:12]}...)")
+            if xex_sha1 in XEX_PICKS_LANGUAGE:
+                self.log.info("This disc speaks French, Spanish or Italian, whichever the console language is: "
+                              "pick it on the Play page (Game settings > Console language). With English the "
+                              "soldiers most likely have no voices, since the disc has no English speech.")
         elif self.o.force_unknown_iso:
             self.log.warn(f"Unknown default.xex ({xex_sha1}); continuing because 'force' is on. "
                           "Expect build errors or crashes.")
         else:
-            raise SetupError("This doesn't look like the 'Call of Duty 3 (USA, Europe)' Xbox 360 disc "
-                             f"(default.xex SHA-1 {xex_sha1}). The recomp's code hooks only match that release.")
+            raise SetupError("This doesn't look like a Call of Duty 3 Xbox 360 disc the recomp knows "
+                             f"(default.xex SHA-1 {xex_sha1}). Its code hooks match these releases: "
+                             + ", ".join(KNOWN_XEX.values()) + ".")
         # The recomp needs the executables; ripping needs the sp/ archives.
         missing = self._cod3_missing_files() if self.o.build_recomp else []
         if missing:
@@ -1009,6 +1039,19 @@ class Pipeline:
     def proj_build(self) -> Path:
         return self.proj / "out" / "build" / "release"
 
+    @property
+    def trace_build_dir(self) -> Path:
+        """The decomp trace version's own build folder (same project and translated code)."""
+        return self.proj / "out" / "build" / TRACE_BUILD_DIR
+
+    def _game_configure(self, build: Path, *extra: str) -> list:
+        """The CMake configure command of the game in `build` (as recompile's)."""
+        assert self.tc
+        return [self.tc.cmake, "-S", self.proj, "-B", build, "-G", "Ninja",
+                "-DCMAKE_BUILD_TYPE=Release", f"-DCMAKE_C_COMPILER={self.tc.cc}",
+                f"-DCMAKE_CXX_COMPILER={self.tc.cxx}", f"-DCMAKE_MAKE_PROGRAM={self.tc.ninja}",
+                f"-DCMAKE_PREFIX_PATH={self.sdk_install}", *extra]
+
     def recompile(self) -> None:
         assert self.tc
         # Template -> work tree. Only changed files are rewritten so ninja
@@ -1104,11 +1147,12 @@ class Pipeline:
     # ------------------------------------------------------------------
     # 6. Package
     # ------------------------------------------------------------------
-    def _binaries(self) -> List[Path]:
+    def _binaries(self, build: Optional[Path] = None) -> List[Path]:
         """The game's files: the executable, the libraries built next to it, and
         anything else they need from the SDK. Stops if a library is missing
-        from this computer, since the game couldn't start without it."""
-        b = self.proj_build
+        from this computer, since the game couldn't start without it.
+        `build`: another build folder of the game (the decomp trace version)."""
+        b = build or self.proj_build
         if IS_WINDOWS:
             start = [b / "cod3.exe"] + sorted(b.glob("*.dll"))
             is_system = binaries.windows_is_system_dll
@@ -1240,6 +1284,61 @@ class Pipeline:
         env = dict(os.environ, C3W_LINK=str(link), C3W_TARGET=str(target), C3W_DIR=str(target.parent))
         self.runner.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], env=env, check=False,
                         quiet=True)
+
+    # ------------------------------------------------------------------
+    # 7a. The decomp trace version (optional; docs/DECOMP_TRACE.md)
+    # ------------------------------------------------------------------
+    def trace_game(self) -> None:
+        """This system's game once more with COD3_DECOMP_TRACE (every game
+        function notes when it first runs and who calls it), in a build folder
+        of its own from the same translated code, into <output>/bin-trace/. It
+        uses the normal game's files and userdata; the normal game is
+        unchanged. Optional: if it fails, the normal game is unaffected and
+        the reason is logged."""
+        try:
+            self._trace_game()
+        except Cancelled:
+            raise
+        except Exception as e:  # noqa: BLE001 - a compile or copy failure, reported the same way
+            self.log.warn(f"The decomp trace version wasn't made: {e}")
+
+    def _trace_game(self) -> None:
+        assert self.tc
+        build = self.trace_build_dir
+        self._forget_other_compiler(build)
+        self.log.info("Configuring the decomp trace version (its own build folder)...")
+        # Only the campaign program is traced; the multiplayer program is not built here.
+        self.runner.run(self._game_configure(build, "-DCOD3_DECOMP_TRACE=ON", "-DCOD3_BUILD_MP=OFF"),
+                        cwd=self.proj, env=self.tc.env)
+        self.log.info(f"Compiling the decomp trace version with {self.o.jobs} threads. It compiles the whole "
+                      "game once more, so it takes about as long as the normal game did.")
+        self.runner.run([self.tc.cmake, "--build", build, "--parallel", str(self.o.jobs)],
+                        cwd=self.proj, env=self.tc.env, quiet=True, line_filter=self._ninja_progress("Trace"))
+        if not (build / exe_name("cod3")).exists():
+            raise SetupError("its build finished but cod3 was not produced; see the log")
+        missing = missing_levels(build)
+        if missing:
+            raise SetupError("its build finished without the level libraries for: " + ", ".join(missing))
+        bins = self._binaries(build)
+        bindir = self.out / TRACE_BIN_DIR
+        bindir.mkdir(parents=True, exist_ok=True)
+        for f in bins:
+            try:
+                shutil.copy2(f, bindir / f.name)
+            except OSError as e:
+                raise SetupError(f"couldn't replace {bindir / f.name} ({e}); close the trace version of the game "
+                                 "and build again") from None
+        self.trace_exe_rel = f"{TRACE_BIN_DIR}/{exe_name('cod3')}"
+        self.packed["trace"] = [f"{TRACE_BIN_DIR}/{f.name}" for f in bins]
+        if IS_WINDOWS:
+            self._windows_shortcut(bindir / "cod3.exe", self.out / "Call of Duty 3 (decomp trace).lnk")
+        else:
+            launcher = self.out / "Call of Duty 3 (decomp trace).sh"
+            launcher.write_text(f'#!/bin/sh\ncd "$(dirname "$0")" && exec ./{TRACE_BIN_DIR}/cod3 "$@"\n',
+                                encoding="utf-8")
+            launcher.chmod(0o755)
+        self.log.info(f"Decomp trace version: {self.out / self.trace_exe_rel} (same game files and settings; "
+                      "its traces go to userdata/decomp_trace/, see docs/DECOMP_TRACE.md)")
 
     # ------------------------------------------------------------------
     # 7b. The Windows version, built on Linux (optional)
@@ -1416,6 +1515,10 @@ class Pipeline:
             "cod3_exe_windows": windows_exe,
             "cod3_files_linux": packed("linux", self.linux_exe_rel),
             "cod3_files_windows": packed("windows", None),
+            # The decomp trace version (bin-trace/), when this or an earlier build made it.
+            "cod3_trace_exe": self.trace_exe_rel or (manifest.get("cod3_trace_exe")
+                                                     if (self.out / TRACE_BIN_DIR).is_dir() else None),
+            "cod3_files_trace": packed("trace", None) if (self.out / TRACE_BIN_DIR).is_dir() else None,
             "cod3_data": COD3_DATA.as_posix(),
             # The upscaled PNGs (any scale), under their old name if a
             # textures_2x folder from an earlier build wasn't renamed.

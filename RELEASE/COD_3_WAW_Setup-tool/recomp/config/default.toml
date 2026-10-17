@@ -160,6 +160,15 @@ name = "Cod3BriefingLoopBegin"
 address = 0x824EECD0
 name = "Cod3MovieLoopEnd"
 
+# [voice] Voice language (src/game/voice_language.cpp). 0x824EED20 opens a
+# movie's sound track (movies/<name>-en/-de/-fr/-es/-it.wma) by the console
+# language that XGetLanguage (0x82343D78, called at 0x824EEDCC) returns in r3;
+# right after that call the hook answers with the language the player chose.
+[[midasm_hook]]
+address = 0x824EEDD0
+name = "Cod3VoiceMovieLanguage"
+registers = ["r3"]
+
 # Frame rate limit (src/game/frame_rate.cpp). Com_Frame (0x82536DD0) turns
 # com_maxfps into a minimum number of milliseconds per frame (r30) and then
 # busy-waits on the clock until that many have passed. Here, both paths have

@@ -1,13 +1,14 @@
 // cod3 - raw mouse aim (see mouse_look.h).
 
 #include "game/mouse_look.h"
-#include "game/stick_actions.h"
+#include "game/qte_actions.h"
 
 #include <algorithm>
 #include <cmath>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/system/kernel_state.h>
 
 #include "game/addresses.h"
 #include "game/guest.h"
@@ -51,8 +52,27 @@ bool MouseLook::Enabled() {
   return REXCVAR_GET(cod3_raw_mouse) && REXCVAR_GET(mnk_mode);
 }
 
+namespace {
+// The profile's Invert aim now (the controls settings are in guest memory
+// from the start), else as last seen while aiming.
+bool GameInvertsAim(const std::atomic<bool>& last_seen) {
+  auto* ks = rex::system::kernel_state();
+  if (uint8_t* base = ks && ks->memory() ? ks->memory()->virtual_membase() : nullptr)
+    return guest::ReadU8(base, addr::controls::kSettings + addr::controls::kInvertAim) != 0;
+  return last_seen.load(std::memory_order_relaxed);
+}
+}  // namespace
+
+bool MouseLook::MouseInverted() {
+  return REXCVAR_GET(cod3_invert_mouse) != GameInvertsAim(Get().game_invert_);
+}
+
+void MouseLook::SetMouseInverted(bool inverted) {
+  rex::cvar::SetFlagByName("cod3_invert_mouse", inverted != GameInvertsAim(Get().game_invert_) ? "true" : "false");
+}
+
 void MouseLook::AddDelta(float dx, float dy) {
-  stick_actions::AddMouse(dx, dy);  // battle actions that want the right stick (game/stick_actions.h)
+  qte::AddMouse(dx, dy);  // the cursor of stick battle actions (game/qte_actions.h)
   std::lock_guard lock(mutex_);
   dx_ += dx;
   dy_ += dy;
@@ -66,7 +86,10 @@ void MouseLook::ClearPending() {
 bool MouseLook::WantsCapture() const {
   if (!Enabled()) return false;
   int64_t now = Clock::now().time_since_epoch().count();
-  return now - last_guest_tick_ns_.load(std::memory_order_relaxed) < kInGameWindowNs;
+  // A stick battle action keeps the mouse even if the game stopped building
+  // usercmds meanwhile (the mouse is its stick, game/qte_actions.h).
+  return now - last_guest_tick_ns_.load(std::memory_order_relaxed) < kInGameWindowNs ||
+         qte::MouseOwnsView();
 }
 
 void MouseLook::SetViewFov(float fov, float base_fov) {
@@ -92,6 +115,9 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
   // so it can't snap the view.
   if (!Enabled() || now - prev > kInGameWindowNs) return;
   if (dx == 0.0f && dy == 0.0f) return;
+  // A stick battle action (valve, crowbar, rowing) takes the mouse as its
+  // stick meanwhile (game/qte_actions.h): the view stays still.
+  if (qte::MouseOwnsView()) return;
 
   // Keyboard/mouse drives local player 1 only; pads drive the others.
   const uint32_t local = guest::ReadU32(base, addr::kActiveLocalClient);
@@ -113,6 +139,7 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
   const double scale_x = game_scale(c::kHorizontalSens);
   const double scale_y = game_scale(c::kVerticalSens);
   const bool game_invert = guest::ReadU8(base, c::kSettings + c::kInvertAim) != 0;
+  game_invert_.store(game_invert, std::memory_order_relaxed);
 
   const uint32_t angles = addr::kClientActive + local * addr::kClientActiveStride + addr::kViewAnglesOffset;
   float pitch = guest::ReadF32(base, angles + 0);

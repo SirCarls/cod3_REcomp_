@@ -14,6 +14,10 @@
 
 #include <cstdint>
 
+#if defined(COD3_MP)  // [mp] codmp_xenonf.xex's values (tools/mp_aliases.py)
+#include "game/mp/addresses_mp.h"
+#else
+
 namespace cod3::addr {
 
 // ---------------------------------------------------------------------------
@@ -86,6 +90,13 @@ inline constexpr uint32_t kComPrintf = 0x82523A58;
 inline constexpr uint32_t kComDPrintf = 0x82523A60;
 // void Com_Error(int code, const char* fmt, ...) - retail just hits DbgBreakPoint
 inline constexpr uint32_t kComError = 0x825239A0;
+// qboolean Cvar_Command(void): a dvar name typed alone. It answers through
+// Com_DPrintf in this build (so only with developer 1) with these two formats:
+// "\"%s\" is:\"%s^7\" default:\"%s^7\"\n" and, when a change waits for a
+// restart, "latched: \"%s\"\n". With a value it calls Cvar_Set2(force 0).
+inline constexpr uint32_t kCvarCommand = 0x8252DB38;
+inline constexpr uint32_t kCvarCommandValueFormat = 0x82068B08;
+inline constexpr uint32_t kCvarCommandLatchedFormat = 0x82068B28;
 
 // ---------------------------------------------------------------------------
 // cgame field of view
@@ -96,6 +107,28 @@ inline constexpr uint32_t kComError = 0x825239A0;
 inline constexpr uint32_t kCgGetViewFov = 0x8243A198;
 // vmCvar_t cg_fov { handle @0, modificationCount @4, value @8, integer @12, string[256] @16 }
 inline constexpr uint32_t kCgFovVmCvar = 0x82A11358;
+inline constexpr uint32_t kVmCvarValue = 8;    // float
+inline constexpr uint32_t kVmCvarInteger = 12; // int
+// Who else changes the FOV (game/fov.h):
+// - The interaction system (vehicles, turrets, melee, levers ...), one
+//   Interaction per local client: its start (0x82501BA8, 0x824FC858) saves
+//   cgame's cg_fov value at +176, melee states blend it (0x824F2738), and
+//   its end (0x824FDE90 (interaction, restore_view)) writes the saved value
+//   back. All three write the vmCvar directly, never the dvar.
+// - Level scripts: the level interface's setcvar slots 0x258 (string),
+//   0x25C (int) and 0x260 (float), each Cvar_Get(name, value, 0x1000) then
+//   Cvar_Set2(force 1); they return the cvar_t*.
+namespace interact {
+inline constexpr uint32_t kPerClient = 0x82A59DA0;  // Interaction*[4], by kActiveLocalClient
+inline constexpr uint32_t kState = 4;               // the running InteractState*, 0 = none
+inline constexpr uint32_t kSavedFov = 176;          // cgame's cg_fov when it started
+inline constexpr uint32_t kEnd = 0x824FDE90;        // hooked: sub_824FDE90
+}  // namespace interact
+namespace level_cvar {
+inline constexpr uint32_t kSetString = 0x824AB398;  // hooked: sub_824AB398 (name, const char*)
+inline constexpr uint32_t kSetInt = 0x824AB300;     // hooked: sub_824AB300 (name, int)
+inline constexpr uint32_t kSetFloat = 0x824AB260;   // hooked: sub_824AB260 (name, f1)
+}  // namespace level_cvar
 
 // ---------------------------------------------------------------------------
 // Client input / view angles (client/cl_input.c)
@@ -929,4 +962,41 @@ inline constexpr uint32_t kListTime = 1052;              // render list: float s
 inline constexpr uint32_t kListTimeUsed = 1056;          // render list: float seconds the shaders get
 }  // namespace crossref
 
+// ---------------------------------------------------------------------------
+// [menus-brightness] The game's brightness: one float, 0.5 to 2.0, 1.0 by
+// default. SCR_UpdateScreen (0x82511168, at 0x825111E0) calls 0x82419228,
+// which rebuilds the gamma ramp whenever the value differs from the last one
+// it applied (0x825CDAA8). Options > SCREEN (GammaScreenMenu, vtable
+// 0x82072434, panel SP_OP_screen_gamma: gauge_fill +64, gauge_arrow_left
+// +68, gauge_arrow_right +72) moves it in its draw (0x824CC278): by the left
+// stick (stick x 1/16384 a frame) and by the D-pad (0.05 a press, pad
+// buttons 0 / 2 through 0x820E9038); its OnLeft / OnRight only flash the
+// arrows, so the PC menus' left / right (pc_menu.cpp) did nothing there. On
+// leaving (vtbl[22] 0x824C3300) a value changed since the page opened goes
+// into the profile (+400) and the profile is marked to be saved; signing in
+// applies the profile's value (0x823F8990).
+// ---------------------------------------------------------------------------
+namespace brightness {
+inline constexpr uint32_t kValue = 0x825CDAA4;        // float: the brightness in use
+inline constexpr float kMin = 0.5f;                   // both clamps use 0x82062720 (0.5)
+inline constexpr uint32_t kMax = 0x825CE628;          // float: the clamps' maximum (2.0)
+inline constexpr uint32_t kStep = 0x826A13CC;         // float: one D-pad press (0.05)
+inline constexpr uint32_t kProfile = 0x82A8E610;      // the player's options (664 bytes)
+inline constexpr uint32_t kProfileValue = 400;        // float: the saved brightness
+inline constexpr uint32_t kPageVtable = 0x82072434;   // GammaScreenMenu
+inline constexpr uint32_t kPageOnLeft = 0x824BC2C0;   // vtbl[27] (this); hooked
+inline constexpr uint32_t kPageOnRight = 0x824BC248;  // vtbl[28] (this); hooked
+// ControlsPage_Apply (AdvancedOptionsMenu, pause > Options): swaps the page's
+// values with the profile's. B (0x824F07B0) copies the profile, swaps,
+// compares, swaps back; a difference opens "save changes?" (MEM_CONFIRM_SAVE,
+// 0x824F0608), whose Yes (0x824F04D0) swaps and saves; hooked.
+inline constexpr uint32_t kAdvSwapProfile = 0x824E5DF8;
+// A gauge picture's fill, as the pages set it (0x824DC108): (part, f1 = 0..1,
+// f3 = the picture's +52), from the part's left edge.
+inline constexpr uint32_t kSetFill = 0x824C0588;
+inline constexpr uint32_t kQuadFillScale = 52;        // float
+}  // namespace brightness
+
 }  // namespace cod3::addr
+
+#endif  // COD3_MP

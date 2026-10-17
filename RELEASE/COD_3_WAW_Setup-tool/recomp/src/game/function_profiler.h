@@ -19,7 +19,8 @@
 // How it samples, about once per millisecond of the thread's CPU time (time
 // it spends waiting isn't sampled, so the percentages are of its work):
 //   - Linux: a timer on the thread's own CPU clock sends it SIGPROF; the
-//     handler only stores the interrupted instruction address. CPU-time
+//     handler only stores the interrupted instruction address (and the
+//     caller candidates, below). CPU-time
 //     timers are only as fine as the kernel's tick (HZ, 100 to 1000 a second
 //     by kernel), so a kernel with 250 gives at most 250 samples a second;
 //     how busy the thread was comes from its CPU clock.
@@ -31,6 +32,20 @@
 // function table, so every game function is reported with its Xbox 360
 // address (both platforms).
 //
+// Code without a name of its own (the C library's memcpy, a graphics
+// driver) is reported by who called it: each sample also keeps a few words
+// from the thread's stack that point into code, and the first one right after
+// a call instruction is taken as the return address. That is a good guess,
+// not a certainty (a function with a large stack frame can hold an old one).
+// The C library's memory and string routines are named even without its
+// debug symbols (see AddCLibraryNames), and its debug symbols are read when
+// the distribution's package for them is installed (libc6-dbg on Ubuntu).
+//
+// On Linux each sample also notes whether the thread held the SDK's global
+// lock (glibc keeps the owner's thread id in the mutex), and the report lists
+// what the thread did while holding it, with callers: what the other threads
+// that wait for the lock (the GPU emulation, mostly) are waiting behind.
+//
 // Cost: nothing while not capturing; about 1% of the sampled thread while
 // capturing.
 
@@ -38,6 +53,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace cod3 {
 
@@ -51,6 +67,11 @@ class FunctionProfiler {
 
   // True while a capture runs (or waits for its delay).
   static bool Busy();
+
+  // This session's profiles, a few lines each (the modules and the hottest
+  // functions), for cod3_report. The full reports stay in userdata/logs; the
+  // newest 30 are kept.
+  static std::vector<std::string> SessionSummaries();
 };
 
 }  // namespace cod3

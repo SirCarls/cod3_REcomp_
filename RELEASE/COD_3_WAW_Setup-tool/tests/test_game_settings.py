@@ -108,11 +108,28 @@ class TableTests(unittest.TestCase):
                 gs.check(values)
 
     def test_custom_aspect_ratios(self):
-        for shape in ("24:10", "2.39:1", "2.39", "16:9", "48:9", "21:9", "32:9", "auto"):
+        # From the console's 4:3 to 48:9 (game/ultrawide.h kMinAspect/kMaxAspect),
+        # and "resolution": the render resolution's shape (kMatchResolution).
+        for shape in ("24:10", "2.39:1", "2.39", "16:9", "48:9", "21:9", "32:9", "auto", "resolution",
+                      "4:3", "16:10", "1.6", "3:2"):
             gs.check({"cod3_aspect_ratio": shape})
-        for shape in ("4:3", "1:1", "49:9", "0:9", "21:0", "abc", "21:9x", "", "1" * 17):
+        for shape in ("5:4", "1:1", "49:9", "0:9", "21:0", "abc", "21:9x", "", "1" * 17, "Resolution"):
             with self.assertRaises(SetupError, msg=shape):
                 gs.check({"cod3_aspect_ratio": shape})
+
+    def test_aspect_choices_match_f2(self):
+        # The setup tool lists the same shapes, in the same order, as F2 >
+        # Video > Aspect ratio (ui/hud_overlay.cpp) when the game's sources are here.
+        st = next(s for s in gs.SETTINGS if s.key == "cod3_aspect_ratio")
+        values = [v for v, _ in st.choices]
+        self.assertEqual(values, ["auto", "resolution", "4:3", "16:10", "16:9", "21:9", "32:9"])
+        f2 = Path(__file__).resolve().parents[1] / "recomp" / "src" / "ui" / "hud_overlay.cpp"
+        if not f2.is_file():
+            self.skipTest("the game's sources aren't next to the tests")
+        text = f2.read_text(encoding="utf-8")
+        m = re.search(r'const char\* v\[\] = \{"auto", cod3::kMatchResolution, ([^}]*)\}', text)
+        self.assertIsNotNone(m)
+        self.assertEqual(["auto", "resolution"] + re.findall(r'"([^"]+)"', m.group(1)), values)
 
     def test_choices_match_the_game_source(self):
         """The resolution list and limits are the game's own (game/render_resolution.h),

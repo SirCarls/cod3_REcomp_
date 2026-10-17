@@ -126,7 +126,7 @@ def cmd_build(a: argparse.Namespace) -> int:
         fidelityfx=not a.no_fidelityfx, build_linux=build_linux, build_windows=build_windows,
         binaries_only=a.binaries_only, force_unknown_iso=a.force, skip_dep_check=a.skip_dep_check,
         upscale_textures=a.upscale_textures, upscale_model=a.upscale_model, upscale_noise=a.upscale_noise,
-        upscale_scale=a.upscale_scale)
+        upscale_scale=a.upscale_scale, trace_build=a.trace_build)
     log = _cli_log()
     cancel = threading.Event()
     common.APPROVAL.ask = _cli_approval(a.yes)
@@ -331,6 +331,10 @@ def main() -> int:
     b.add_argument("--upscale-scale", type=int, default=upscale.DEFAULT_SCALE, choices=sorted(upscale.SCALES),
                    help="how many times larger waifu2x makes the textures: 1 (noise reduction only, with the "
                         "cunet style), 2 (default) or 4 (slow; 16 times the texture memory)")
+    b.add_argument("--trace-build", action="store_true",
+                   help="also build the decomp trace version of the game into <output>/bin-trace/: it notes which "
+                        "game functions run and who calls them, for mapping unnamed ones (docs/DECOMP_TRACE.md); "
+                        "the normal game is unchanged; about doubles the compile time")
     b.add_argument("--yes", action="store_true",
                    help="approve the downloads and installs without asking (they are still listed)")
     b.set_defaults(func=cmd_build)

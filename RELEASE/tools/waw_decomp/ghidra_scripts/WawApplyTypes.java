@@ -1,10 +1,11 @@
 // Parses a C header of World at War's types into the program and applies them:
 //   - globals named dvar_* become dvar_s pointers,
-//   - globals and functions listed in a symbols table (addr, kind, name, type) get those types
-//     (function types become prototypes; only for functions whose name matches the table).
+//   - globals and functions listed in symbols tables (addr, kind, name, type[, ...]) get those
+//     types (function types become prototypes; only for functions whose name matches the table).
 //
-// Headless: -postScript WawApplyTypes.java <header.h> [symbols.tsv]
-// The header and table are made by tools/waw_decomp/t4sp_types.py (private use only).
+// Headless: -postScript WawApplyTypes.java <header.h> [symbols.tsv ...]
+// The header and the first table are made by tools/waw_decomp/t4sp_types.py (private use only);
+// more tables, such as the typed globals found with struct_globals.py, can follow.
 // @category WaW
 
 import java.io.File;
@@ -65,32 +66,39 @@ public class WawApplyTypes extends GhidraScript {
         if (args.length < 2) return;
         int gl = 0, fn = 0, fail = 0;
         FunctionSignatureParser fsp = new FunctionSignatureParser(dtm, null);
-        for (String line : Files.readAllLines(Paths.get(args[1]), StandardCharsets.UTF_8)) {
+        List<String> lines = new ArrayList<>();
+        for (int i = 1; i < args.length; i++) lines.addAll(Files.readAllLines(Paths.get(args[i]), StandardCharsets.UTF_8));
+        for (String line : lines) {
             String[] c = line.split("\t");
-            if (c.length < 4 || c[0].equals("addr")) continue;
+            if (c.length < 4 || c[0].equals("addr") || c[3].isBlank()) continue;
             Address a = toAddr(Long.parseLong(c[0], 16));
             try {
                 if (c[1].equals("function")) {
                     Function f = getFunctionAt(a);
                     if (f == null || !f.getName().equals(c[2])) continue;
-                    String t = c[3];
+                    String t = c[3].replaceAll("\\bconst\\b\\s*", "");  // the signature parser rejects const
                     int p = t.indexOf('(');
                     String sig = t.substring(0, p) + " " + c[2] + t.substring(p);
                     FunctionDefinitionDataType def = fsp.parse(f.getSignature(), sig);
                     if (new ApplyFunctionSignatureCmd(a, def, SourceType.USER_DEFINED).applyTo(currentProgram, monitor)) fn++;
-                    else fail++;
+                    else failed(++fail, c, "prototype not applied");
                 } else {
                     DataType t = resolve(dtm, c[3]);
-                    if (t == null) { fail++; continue; }
+                    if (t == null) { failed(++fail, c, "type not found"); continue; }
                     currentProgram.getListing().clearCodeUnits(a, a.add(Math.max(1, t.getLength()) - 1), false);
                     currentProgram.getListing().createData(a, t);
                     gl++;
                 }
             } catch (Exception e) {
-                fail++;
+                failed(++fail, c, e.getMessage());
             }
         }
         println("typed: " + fn + " function prototypes, " + gl + " globals, " + fail + " failed");
+    }
+
+    // the first few failures, so a wrong row can be found
+    private void failed(int n, String[] row, String why) {
+        if (n <= 30) println("failed: " + row[0] + " " + row[2] + " " + row[3] + ": " + why);
     }
 
     private DataType findType(DataTypeManager dtm, String name) {
@@ -114,9 +122,12 @@ public class WawApplyTypes extends GhidraScript {
                 case "int": t = IntegerDataType.dataType; break;
                 case "unsigned int": t = UnsignedIntegerDataType.dataType; break;
                 case "char": t = CharDataType.dataType; break;
+                case "unsigned char": t = UnsignedCharDataType.dataType; break;
                 case "float": t = FloatDataType.dataType; break;
                 case "bool": t = BooleanDataType.dataType; break;
                 case "short": t = ShortDataType.dataType; break;
+                case "unsigned short": t = UnsignedShortDataType.dataType; break;
+                case "void": t = VoidDataType.dataType; break;
                 default: return null;
             }
         }

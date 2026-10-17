@@ -29,6 +29,7 @@ A normal **Build** also builds the pack when the folder has pictures.
 | What | Rule |
 |---|---|
 | File type | PNG. 8 bits per channel: RGBA (best), RGB, gray, or gray + alpha. |
+| Colors | Plain sRGB, as an ordinary PNG is: the values in the file are used as they are, the way the game uses its own. An embedded color profile or gamma setting is ignored, so a picture in another color space (Adobe RGB, Display P3) comes out wrong: convert it to sRGB before saving, or save it without a profile. |
 | Not allowed | palette (indexed-color) PNGs, 16-bit PNGs, interlaced PNGs, animated PNGs (APNG). Save as "RGBA, 8 bits per channel, no interlacing". |
 | Name | Exactly the ripped picture's name (the `file` column of `insignia_textures.txt`, or the PNG's name in `data/cod3/textures/`), `$` and all, case and all, with `.png`. A few names hold more than one picture; the others are saved as `<name>__<16 hex digits>.png`, and you replace each under its own name. |
 | Aspect ratio | The original's (to within a texel of rounding). |

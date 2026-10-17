@@ -69,6 +69,27 @@ std::optional<Program> ProgramForPath(std::string path) {
   return std::nullopt;
 }
 
+// The executable the game asked for, for the log: its file name only, with
+// any byte that isn't printable shown as \xNN. The SDK's launch path can
+// start with stray bytes (XamLoaderLaunchTitle joins a bare "default.xex" to
+// the running program's folder through a view of a freed string).
+std::string LaunchName(const std::string& path) {
+  const size_t cut = path.find_last_of("\\/:");
+  std::string out;
+  for (const char c : cut == std::string::npos ? path : path.substr(cut + 1)) {
+    const auto u = static_cast<unsigned char>(c);
+    if (u >= 0x20 && u < 0x7F) {
+      out.push_back(c);
+    } else {
+      static constexpr char kHex[] = "0123456789ABCDEF";
+      out += "\\x";
+      out.push_back(kHex[u >> 4]);
+      out.push_back(kHex[u & 15]);
+    }
+  }
+  return out;
+}
+
 // AppRun (c3w/pipeline.py) starts usr/bin/$COD3_PROGRAM; any other value
 // starts the campaign.
 constexpr const char* kProgramEnv = "COD3_PROGRAM";
@@ -83,6 +104,15 @@ constexpr Program kThisProgram = Program::kCampaign;
 #endif
 
 bool IsLaunchDataArg(const std::string& arg) { return arg.rfind(kLaunchDataArg, 0) == 0; }
+
+// Test switches that act once per start (a console script, scripted input, a
+// battle action demo): not handed to the next instance, or quitting to the
+// menu would run "spmap ..." again, and a "reboot" in it would never end.
+bool IsOneOffArg(const std::string& arg) {
+  for (const char* prefix : {"--cod3_autoexec", "--cod3_test_", "--cod3_qte_demo"})
+    if (arg.rfind(prefix, 0) == 0) return true;
+  return false;
+}
 
 // The window now (NoteWindowState); width 0 until the UI has run.
 std::atomic<bool> g_fullscreen{false};
@@ -150,6 +180,7 @@ bool Spawn(Program program, const std::filesystem::path& data_file) {
   for (int i = 1; argv && i < argc; ++i) {
     if (std::wstring(argv[i]).rfind(skip, 0) == 0) continue;
     if (window_known && IsWindowArg(std::filesystem::path(argv[i]).string())) continue;
+    if (IsOneOffArg(std::filesystem::path(argv[i]).string())) continue;
     cmd += L" " + QuoteArg(argv[i]);
   }
   if (argv) LocalFree(argv);
@@ -204,7 +235,8 @@ bool Spawn(Program program_id, const std::filesystem::path& data_file) {
       if (end == std::string::npos) end = all.size();
       std::string arg = all.substr(start, end - start);
       const bool replaced = IsWindowArg(arg) && !WindowArgs().empty();
-      if (index++ > 0 && !IsLaunchDataArg(arg) && !replaced) args.push_back(std::move(arg));
+      if (index++ > 0 && !IsLaunchDataArg(arg) && !replaced && !IsOneOffArg(arg))
+        args.push_back(std::move(arg));
       start = end + 1;
     }
   }
@@ -268,12 +300,13 @@ bool RelaunchRequested() {
   if (!data || data->launch_path.empty()) return false;
   const auto program = ProgramForPath(data->launch_path);
   if (!program) {
-    REXLOG_WARN("cod3: the game asked to launch {}, which this port doesn't have", data->launch_path);
+    REXLOG_WARN("cod3: the game asked to launch {}, which this port doesn't have",
+                LaunchName(data->launch_path));
     return false;
   }
   if (!ProgramInstalled(*program)) {
     REXLOG_WARN("cod3: the game asked to launch {}; its program ({}) isn't next to this one",
-                data->launch_path, ProgramName(*program));
+                LaunchName(data->launch_path), ProgramName(*program));
     return false;
   }
   return true;
@@ -305,17 +338,24 @@ bool Relaunch(const std::filesystem::path& userdata_dir) {
   }
   if (!Spawn(*program, file)) {
     REXLOG_ERROR("cod3: couldn't start {} for the game's launch of {}", ProgramName(*program),
-                 data->launch_path);
+                 LaunchName(data->launch_path));
     return false;
   }
-  REXLOG_INFO("cod3: the game launched {}; started {} ({} bytes of launch data)", data->launch_path,
-              ProgramName(*program), data->launch_data.size());
+  REXLOG_INFO("cod3: the game launched {}; started {} ({} bytes of launch data)",
+              LaunchName(data->launch_path), ProgramName(*program), data->launch_data.size());
   return true;
 }
 
 void RestoreLaunchData(const std::filesystem::path& userdata_dir) {
   const std::string path = REXCVAR_GET(cod3_launch_data);
   if (path.empty()) return;
+  // Only Relaunch's command line hands launch data over. A value saved in
+  // cod3.toml by an older build would give a fresh start whatever file a
+  // failed relaunch left behind (old control settings).
+  if (rex::cvar::GetFlagSource("cod3_launch_data") != rex::cvar::Source::kCommandLine) {
+    rex::cvar::ResetToDefault("cod3_launch_data");
+    return;
+  }
   const std::filesystem::path file = Utf8ToPath(path);
   // Only the port's own file: userdata/launch_data.bin, written by Relaunch
   // above (the argument comes from the command line, which anything that

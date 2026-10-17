@@ -189,7 +189,15 @@ What is missing or wrong:
     in `tests/test_multiplayer_build.py` checks it).
   - Settings: `cod3mp` reads the campaign's `cod3.toml` (keys, window,
     video, audio, network) and keeps its own changes in `cod3mp.toml`, so it
-    never rewrites the campaign's file. Its log is `userdata/logs/cod3mp.log`.
+    never rewrites the campaign's file. The newer file wins (2026-10-16, the
+    owner's "last change wins" rule): when `cod3.toml` was saved after
+    `cod3mp.toml` (a change in the campaign or the setup tool), its values
+    replace `cod3mp.toml`'s; otherwise only settings still at their default
+    take them. The GPU plugin's settings are taken in a second pass once the
+    plugin is loaded. Never taken: the campaign's display shape and render
+    scales, texture packs (multiplayer allows only the insignia list), the
+    1000 Hz vblank and the display gamma (both programs derive it from
+    `cod3_color_space`). Its log is `userdata/logs/cod3mp.log`.
   - Controls: the SDK's keyboard and mouse mode with the campaign's binds;
     the mouse moves the right stick until the campaign's raw mouse aim is
     hooked here too. The campaign's F2 window, game console, frame limiter,
@@ -534,6 +542,103 @@ Notes:
   match on two PCs are the next things to try. What to send back if
   something goes wrong: `userdata/logs/cod3mp.log` from each PC.
 
+### 4.12 The campaign's port features in `cod3mp` (2026-10-16)
+
+Owner, 03:26: "Please make sure all the patches we made for sp can be used
+within mp."
+
+**How.** The same `recomp/src` files are compiled into both programs, but
+the two programs put their functions and data at different addresses, so
+`cod3mp`'s build takes its addresses from one reviewed table,
+`recomp/mp/config/campaign_map.tsv` (tab-separated: symbol, campaign
+address, multiplayer address, status, registers, jump, why, MP function).
+A row's status is `mp` (its multiplayer counterpart, checked), `same`,
+`dead` (campaign only, never runs in `cod3mp`; the why column says why),
+`later` (it has a counterpart, but that feature isn't on in `cod3mp` yet) or
+`mp-code` (`cod3mp` does this in its own code). Every pair was checked
+against both programs' code (function pairing, then by hand where the
+pairing wasn't certain); the evidence is in the why column.
+`tools/mp_aliases.py --write` makes four files from the table (never edit
+them by hand):
+
+- `recomp/src/game/mp/mp_aliases.h`, force-included into `cod3mp`'s sources
+  only: each campaign function name a shared file hooks or calls becomes the
+  multiplayer function's name.
+- `recomp/src/game/mp/addresses_mp.h`: `addresses.h`'s constants with their
+  multiplayer values (`addresses.h` uses it when `COD3_MP` is defined). A
+  constant with no multiplayer value is left out, so a `cod3mp` file that
+  uses it doesn't compile.
+- `recomp/src/game/mp/campaign_only.cpp`: a stand-in for each campaign-only
+  function a shared file names. It never runs; if it did, the log would say
+  so once.
+- `recomp/mp/config/codmp_campaign.toml`: the campaign's mid-asm hooks at
+  their multiplayer sites (`cod3mp_manifest.toml` includes it).
+
+An address written in a `.cpp` file goes through
+`COD3_ADDR(campaign, multiplayer)` (`recomp/src/game/program.h`, which also
+gives `cod3::kMultiplayer`). `python tools/mp_aliases.py --check` (also run
+by `tests/test_multiplayer_build.py`) fails on a stale generated file, an
+unreviewed row, a hook without a row, or a raw campaign address in a file
+`cod3mp` compiles; `--report` lists what binds how. After changing the
+port code, run `--check`; a new hook or address needs a row first. The
+campaign's build doesn't change: its compiled objects were compared byte for
+byte before and after.
+
+**In `cod3mp` now** (cloud runs in the front end and a local match on Verdun,
+spawned and moved):
+
+- Frame rate limit and pacing (the hook at 0x82557E98), the 1000 Hz guest
+  vblank, `com_maxfps` from the console config, the performance line, the
+  thread and function profilers, the machine profile, the watchdog at the
+  multiplayer program's sites.
+- Native render resolution, shadow quality, the ultrawide picture (two
+  scene-aspect sites; not tried on a wide window yet).
+- Field of view: the campaign's limits (`cg_fov 170` becomes 160 with a
+  note), saved per program (`cod3mp_config.cfg`), multiplayer's own default
+  of 80. In multiplayer `cg_fov` only exists once a map is loaded (it is a
+  cgame dvar there): set it in a match or in F2.
+- The port's crosshair (mid-asm hooks at 0x8245DD8C and 0x82452E38).
+- F2, the ~ console and the full console, `cod3_report`, `cg_drawFPS`, the
+  game's own prints in the log.
+- The cheat guard: cheat commands and cheat-protected dvars are refused while
+  `sv_cheats` is 0, and the game's own `sv_cheats 1` at every map load
+  (`SV_Map_f`) is undone. In a match nobody can turn cheats on yet: every
+  console runs its own server (section 1), so "this machine runs the server"
+  doesn't make it the host, and until `cod3mp` reads the Demonware session's
+  host flag (and has a channel to every player) no machine counts as the
+  host (4.6).
+- Texture replacement: in a match only the insignia list of the user pack
+  (4.8); `cod3_hd_compare` is campaign only.
+- Screenshots (`screenshot`, the debug log's shots): the game's own picture
+  only.
+- The main menu: DOWNLOAD CONTENT becomes QUIT TO DESKTOP (press A twice
+  within 20 s), and XBOX LIVE says it isn't part of the PC version.
+- Keyboard movement. Raw mouse aim is compiled in but untested: in the cloud
+  a match frame takes 5-14 s, longer than the 1.5 s the mouse code allows
+  between frames, so the cloud can't show it.
+
+**Not in `cod3mp` yet (why):** the film skip (no films in multiplayer),
+battle actions and the QTE spinner (none in multiplayer), the option rows in
+the game's own menus (FOV, VIDEO, BRIGHTNESS), menu mouse control and button
+prompts (multiplayer's menu classes have other fields and virtual functions,
+and its option pages are its own `MP*` classes), Sticky Aim (kept per
+controller profile in multiplayer), the voice language (multiplayer's own
+sound banks), the decomp trace build, the level DLL hooks (multiplayer has no
+level DLLs). F2 has the same settings meanwhile.
+
+**Known problems:**
+
+- **No sound output device:** creating or joining a match stops the game.
+  The game's voice and session object (0x82A9ACB8) is made by the sound
+  system's start-up and stays empty without a device. `cod3mp` says so (log
+  and a HUD line) 15 s after the main menu appears.
+- QUIT TO DESKTOP isn't on the pause pages yet; in a match, the console's
+  `quit` and the window's close button work.
+- The garbage bytes in the log line when multiplayer hands back to the
+  campaign came from the SDK (`XamLoaderLaunchTitle` kept a view of a freed
+  string): SDK patch 0043; `relaunch.cpp` also prints only the file name now,
+  with odd bytes as `\xNN`.
+
 ## 5. Unknowns
 
 - How Xenia Canary's main builds handle the secure-address and key calls a
@@ -550,8 +655,9 @@ Notes:
   nothing of it has been run yet.
 - A dedicated server (4.3).
 - How many of the campaign's port features (mouse aim, field of view, frame
-  limit, ultrawide, crosshair) are wanted in multiplayer, where some (field
-  of view, crosshair) touch fairness. To decide with the owner.
+  limit, ultrawide, crosshair) are wanted in multiplayer. Decided by the
+  owner 2026-10-16: all of them (4.12); the field of view keeps the
+  campaign's limits in a match.
 
 ## 6. Files
 
@@ -562,7 +668,12 @@ Notes:
 - `recomp/mp/`: the `cod3mp` target (manifest, `config/codmp.toml`,
   `config/names_mp.toml`, `CMakeLists.txt`, `generated/rexglue.cmake`).
 - `recomp/src/cod3mp_app.{h,cpp}`, `recomp/src/main_mp.cpp`,
-  `recomp/src/game/mp_hooks.cpp`: the multiplayer program's own code;
+  `recomp/src/game/mp/` (`session`, `menus_mp`, `hud_mp`, `campaign_stubs`
+  and the three generated files): the multiplayer program's own code;
+  `recomp/src/game/program.h`: `COD3_ADDR`, `COD3_TEXT`, `kMultiplayer`;
   `recomp/src/game/relaunch.{h,cpp}`: switching between the two programs.
 - `c3w/pipeline.py` (`MP_XEX`, `KNOWN_MP_XEX`, `_copy_mp_xex`), and
   `tests/test_multiplayer_build.py`.
+- `recomp/mp/config/campaign_map.tsv` and `tools/mp_aliases.py` (4.12);
+  `tools/campaign_map_set.py` applies a file of review decisions to the
+  table.

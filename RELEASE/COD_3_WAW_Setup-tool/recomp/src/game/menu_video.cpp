@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -28,6 +29,7 @@
 #include "game/guest.h"
 #include "game/hd_textures.h"
 #include "game/multiplayer.h"
+#include "game/qte_actions.h"
 #include "game/render_resolution.h"
 #include "game/shadows.h"
 
@@ -169,13 +171,16 @@ constexpr const char* kQuitToMenuKey = "FEMENU_PAUSE_QUIT_TO_MENU";
 constexpr const char* kQuitToDesktopKey = "FEMENU_PAUSE_QUIT_TO_DESKTOP";
 constexpr const char* kQuitToTitleKey = "FEMENU_MAIN_QUIT_TO_TITLE";
 constexpr const char* kQuitQuestionKey = "FEMENU_QUIT_TO_DESKTOP_QUESTION";
+constexpr const char* kBrightnessKey = "FEMENU_COP_BRIGHTNESS";  // [menus-brightness]
 constexpr const char* kLabelKeys[cod3::videomenu::kRowCount] = {
     "FEMENU_VIDEO_RESOLUTION", "FEMENU_VIDEO_MAXFPS",   "FEMENU_VIDEO_VSYNC",
     "FEMENU_VIDEO_AA",         "FEMENU_VIDEO_SHADOWS", "FEMENU_VIDEO_HDTEXTURES",
+    "FEMENU_VIDEO_QTE",
 };
 constexpr const char* kInstKeys[cod3::videomenu::kRowCount] = {
     "FEMENU_VIDEO_INST_RESOLUTION", "FEMENU_VIDEO_INST_MAXFPS",  "FEMENU_VIDEO_INST_VSYNC",
     "FEMENU_VIDEO_INST_AA",         "FEMENU_VIDEO_INST_SHADOWS", "FEMENU_VIDEO_INST_HDTEXTURES",
+    "FEMENU_VIDEO_INST_QTE",
 };
 
 constexpr Text kTexts[] = {
@@ -189,12 +194,14 @@ constexpr Text kTexts[] = {
     {kQuitToDesktopKey, "QUIT TO DESKTOP"},
     {kQuitToTitleKey, "QUIT TO TITLE SCREEN"},
     {kQuitQuestionKey, "Quit the game and go back to the desktop?"},
+    {kBrightnessKey, "BRIGHTNESS"},  // [menus-brightness]
     {kLabelKeys[0], "RESOLUTION"},
     {kLabelKeys[1], "FRAME RATE LIMIT"},
     {kLabelKeys[2], "V-SYNC"},
     {kLabelKeys[3], "ANTI-ALIASING"},
     {kLabelKeys[4], "SHADOWS"},
     {kLabelKeys[5], "HD TEXTURES"},
+    {kLabelKeys[6], "BATTLE ACTIONS"},
 };
 
 // The end of a help text for a setting that waits for a restart.
@@ -239,6 +246,9 @@ std::string HelpText(int row) {
       t += AfterRestart(HdTexturesPending());
       if (cod3::GetHdTextures() == cod3::HdTextures::kNoPack)
         t += " Not installed: tick \"Upscale the extracted textures\" in the setup tool.";
+      break;
+    case cod3::videomenu::kBattleActions:
+      t = cod3::qte::MenuHelp();
       break;
   }
   return t;
@@ -403,6 +413,8 @@ std::string Value(int row) {
     }
     case kHdTextures:
       return GetBool("cod3_hd_textures") ? "ON" : "OFF";
+    case kBattleActions:
+      return qte::MenuValue();
   }
   return {};
 }
@@ -421,6 +433,8 @@ std::string Note(int row) {
       return RestartOnly("swap_post_effect") ? kAfterRestart : "";
     case kShadows:
       return "";
+    case kBattleActions:
+      return "VALVES, CRANES, CROWBARS, ROWING";
   }
   return {};
 }
@@ -507,6 +521,10 @@ std::string Step(PPCContext& ctx, uint8_t* base, int row, bool right) {
       Save();
       return Value(row);
     }
+    case kBattleActions:
+      qte::MenuStep();  // two choices: either way flips
+      Save();
+      return Value(row);
   }
   return {};
 }
@@ -532,6 +550,53 @@ void SetSaveHandler(std::function<void()> save) {
   std::lock_guard lock(g_save_mutex);
   g_save = std::move(save);
 }
+
+// ---------------------------------------------------------------------------
+// [menus-brightness] The game's brightness (addresses.h, brightness)
+// ---------------------------------------------------------------------------
+namespace {
+namespace br = cod3::addr::brightness;
+
+float BrightnessMax(uint8_t* base) {
+  const float max = ReadF32(base, br::kMax);
+  return std::isfinite(max) && max > br::kMin ? max : 2.0f;
+}
+
+void SetBrightnessValue(uint8_t* base, float value) {
+  value = std::clamp(value, br::kMin, BrightnessMax(base));
+  cod3::guest::WriteF32(base, br::kValue, value);
+}
+}  // namespace
+
+float Brightness(uint8_t* base) {
+  const float v = ReadF32(base, br::kValue);
+  return std::isfinite(v) ? v : 1.0f;
+}
+
+float BrightnessFraction(uint8_t* base) {
+  const float range = BrightnessMax(base) - br::kMin;
+  return std::clamp((Brightness(base) - br::kMin) / range, 0.0f, 1.0f);
+}
+
+void SetBrightnessFraction(uint8_t* base, float fraction) {
+  const float range = BrightnessMax(base) - br::kMin;
+  SetBrightnessValue(base, br::kMin + std::clamp(fraction, 0.0f, 1.0f) * range);
+}
+
+void StepBrightness(uint8_t* base, bool right, const char* from) {
+  float step = ReadF32(base, br::kStep);
+  if (!(step > 0.0f && step < 1.0f)) step = 0.05f;
+  SetBrightnessValue(base, Brightness(base) + (right ? step : -step));
+  REXLOG_INFO("cod3: brightness {:.2f} ({})", Brightness(base), from);
+}
+
+float ExchangeProfileBrightness(uint8_t* base, float value) {
+  const float old = ReadF32(base, br::kProfile + br::kProfileValue);
+  cod3::guest::WriteF32(base, br::kProfile + br::kProfileValue, value);
+  return old;
+}
+
+const char* BrightnessKey() { return kBrightnessKey; }
 
 }  // namespace cod3::videomenu
 

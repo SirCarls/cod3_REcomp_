@@ -123,7 +123,8 @@ def main():
                     n += 1
     print(f"{n} functions -> {out}")
     # name tables: { "script_name", Function, ... } (script builtins, console commands, ...)
-    entry = re.compile(r'\{\s*"([A-Za-z_][\w]*)"\s*,\s*&?\s*([A-Za-z_]\w*)\s*[,}]')
+    # (a handler may be cast first: { "precachemodel", (void(*)())Scr_PrecacheModel, 0 })
+    entry = re.compile(r'\{\s*"([A-Za-z_][\w]*)"\s*,\s*(?:\(\s*void\s*\([^()]*\*\s*\)\s*\([^()]*\)\s*\)\s*)?&?\s*([A-Za-z_]\w*)\s*[,}]')
     # the array an entry is in: "functions" and "methods" of the same file stay apart
     array = re.compile(r"\b([A-Za-z_]\w*)\s*\[[^\]\[;]*\]\s*=\s*\{")
     tab = out[:-4] + "_tables.tsv" if out.endswith(".tsv") else out + "_tables.tsv"

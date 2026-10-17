@@ -1,0 +1,442 @@
+# cod3mp: what each campaign symbol the shared files use is in the multiplayer program
+# (codmp_xenonf.xex). Read by tools/mp_aliases.py; every row checked by hand or
+# carried from the address map (map: ...). Statuses: tools/mp_aliases.py's help.
+symbol	sp	mp	status	regs	jump	why	mp_function
+AdvancedOptionsMenu__dtor	824DC640		dead			hand check: destructor: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class do
+AdvancedOptionsMenu__vfunc_14	824CD530		dead			hand check: draw: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+AdvancedOptionsMenu__vfunc_19	824E6020		dead			hand check: select: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
+AdvancedOptionsMenu__vfunc_30	824F07B0		dead			hand check: back: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+CG_GetViewFov	8243A198	82453810	mp			hand check: loads cg_fov's vmCvar value (0x82BA2BB8+8) into f1 and is called by CG_DrawSkyBoxPortal and CG_CalcFov's pair as in the campaign; the hook scales f1 after it
+CL_AdjustAngles	8250B460	82525698	mp			hand check: called at CL_CreateCmd+0x34 in both (MP CL_CreateCmd 0x8252C7A8 saves the pitch of cl 0x82C2ECF0 + client*6352 + 1668 before it and clamps the change after); MP's body only turns by keys, the hook adds the mouse after it
+Cbuf_Execute	8247E380	824A27E8	mp			map: verified
+CheatsOk	825432C8	82565908	mp			map: verified (96% equal, 100% same instruction kinds (49 vs 49 instructions); field offsets differ: 500->484 x2; pair table:)
+Cmd_Give_f	82560988	8258BC68	mp			map: verified (93% equal, 100% same instruction kinds (128 vs 128 instructions); field offsets differ: 528->512 x5, 280->312,)
+Cmd_God_f	825452E0	8256AC18	mp			map: verified (92% equal, 100% same instruction kinds (37 vs 37 instructions); field offsets differ: 632->620 x2, 500->484; p)
+Cmd_JumpToNode_f	82542F00	82565540	mp			map: verified (96% equal, 100% same instruction kinds (81 vs 81 instructions); field offsets differ: 500->484 x3; pair table:)
+Cmd_Noclip_f	825451B0	8256AAE8	mp			map: verified (hand check: Cmd_Noclip_f: the same code, only the client field offsets differ (noclip 1452 -> 2040, client 528)
+Cmd_Notarget_f	82545248	8256AB80	mp			map: verified (92% equal, 100% same instruction kinds (37 vs 37 instructions); field offsets differ: 632->620 x2, 500->484; p)
+Cmd_SetViewpos_f	82543048	82565688	mp			map: verified (97% equal, 100% same instruction kinds (67 vs 67 instructions); field offsets differ: 500->484 x2; pair table:)
+Cmd_Ufo_f	82545128	8256AA60	mp			map: verified (hand check: Cmd_Ufo_f: the same code, only the client field offsets differ (ufo 1456 -> 2044); hand-checked pa)
+Com_DPrintf	82523A60	825448A0	mp			map: verified (hand check: Com_DPrintf -> 0x825448A0: the same code, 190 of 191 aligned calls; the 10-15 table's 0x8249A650 w)
+Com_Error	825239A0	825447E0	mp			map: verified (hand check: Com_Error -> 0x825447E0: the same code, 101 of 101 aligned calls (the same code is 2 functions in )
+Com_Frame	82536DD0	82557D60	mp			map: verified (hand check: listed both around the frame limiter: the same code, other registers (r29/r30/r28 for r30/r31/r29))
+Com_Printf	82523A58	82544898	mp			map: verified (hand check: Com_Printf (empty in retail: blr) -> 0x82544898; 17 of 18 aligned calls; the 10-15 table had the n)
+Cvar_Get	8252BBE0	8254F458	mp			map: verified (86% equal, 96% same instruction kinds (193 vs 186 instructions); pair table: name (1); aligned calls: 128 of 1)
+Cvar_Set2	8252B850	8254F0C8	mp			map: verified
+DialogMenuSystem__vfunc_14	824CE3E8	8250BEE8	later			menus in cod3mp (draw slot 14 -> MP slot 19)
+FEMenuSystem__vfunc_12	824C4DB8	824DCE48	mp			map: verified (90% equal, 100% same instruction kinds (133 vs 133 instructions); field offsets differ: 76->120 x2, 72->116 x2)
+FEMenuSystem__vfunc_17	824C48B8	824D5A08	later			menus in cod3mp (HandleButton slot 17 -> MP slot 28)
+FEMultiLineText__ctor	824DEAD0	824EBDF0	later			button prompts in cod3mp
+FEMultiLineText__vfunc_0	820AD1B8	820BBF98	mp			map: verified
+FEMultiLineText__vfunc_19	824CFA00	824D7218	later			button prompts in cod3mp
+FEMultiLineText__vfunc_36	824E8180	824F76A0	mp			map: verified (96% equal, 96% same instruction kinds (87 vs 89 instructions); pair table: calls (4); vtable slot 36 of FEMult)
+FEMultiLineText__vfunc_91	824E8098	824F75A8	mp			map: verified (89% equal, 92% same instruction kinds (58 vs 62 instructions); pair table: calls (4); vtable slot 91 of FEMult)
+FEMultiLineText__vfunc_92	824DD790	824F7410	mp			map: verified
+FEMultiLineText__vfunc_93	824DD630	824F72B0	mp			map: verified
+FrontEndMenuSystem__vfunc_14	824CE4D0	824DC718	later			menus in cod3mp
+InGameMenuSystem__vfunc_14	824CD9E0	824F6338	later			menus in cod3mp
+Localize	8252CB98	8254D180	mp			map: verified
+MainMenu__dtor	824DBFE8		dead			hand check: destructor: the campaign main menu (MainMenu): no MainMenu in MP (its main menu is MPMainMenuXBox, vtable 0x8207E95C). Campaign front end only; no p
+MainMenu__vfunc_14	824EBF78		dead			hand check: MainMenu draw (slot 14): no MainMenu in MP (MPMainMenuXBox slot 20 = 0x823BDAF8). Campaign front end only; no pair: no table pair, no aligned call,
+MainMenu__vfunc_18	824C40B8		dead			hand check: MainMenu::vfunc_18 (the campaign main menu's select: item 1 runs load_mp_exe). MP has no MainMenu class (RTTI); its main menu is MPMainMenuXBox (vta
+OptionsGameplayMenu__Apply	824C3E48		dead			MP never constructs OptionsGameplayMenu (MPOptionsGameplayMenu instead)
+OptionsGameplayMenu__Init	824E4D78		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__MoveDown	824C3F08		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__MoveUp	824C3FE0		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__Refresh	824DB960		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__Toggle	824BD160		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__Update	824CD2D0		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__dtor	824DBB38		dead			MP never constructs OptionsGameplayMenu
+OptionsGameplayMenu__vfunc_14	824CD398		dead			MP never constructs OptionsGameplayMenu
+PauseMenu__vfunc_19	824F0B50		dead			hand check: select: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: init
+ProfileEditMenu__dtor	824DA818		dead			hand check: ProfileEditMenu destructor: MP's is 0x82508560 (the only user of MP's never-constructed ProfileEditMenu vtable); MP's page is MPProfileEditMenu (des
+ProfileEditMenu__vfunc_19	824BC070		dead			MP never constructs ProfileEditMenu (MPProfileEditMenu instead)
+ProfileEditMenu__vfunc_20	824ED298		dead			MP never constructs ProfileEditMenu
+Profile_LoadSettings	823FBC58		dead			hand check: Profile_LoadSettings (reads the control settings from the profile save): MP keeps one settings block per profile (0x82C6B730, stride 6984) and has n
+RE_BeginFrame	8241A0A0	824345E0	mp			hand check: the refexport slot GetRefAPI fills in both; the hook only counts frames before the original
+RE_RenderScene	82430710	82448A18	mp			map: verified (97% equal, 99% same instruction kinds (184 vs 184 instructions); pair table: strings (2); sources: pair; same )
+R_SelectVideoMode	8212FDB8	82142DE8	mp			map: verified
+R_SetMultisample	82153F50	8216BDF0	mp			hand check: same role (main() asks for type 1 after the device is made); MP's body also prints and keeps its resolve constants; the start hook only changes the type asked for, the live switch calls it
+SV_MapRestartInternal_f	825149A8	82533868	mp			hand check: map_restart_internal's handler; the hook only works before the original
+SV_MapRestart_f	825148D0	825357A0	mp			hand check: the map_restart command's handler (SV_AddOperatorCommands); the hook only works before the original
+SV_SpawnServer	82517A00	82535A18	mp			hand check: SV_Map_f calls it right before Cvar_Set2(sv_cheats, 1) whose return is 0x82536C80, as in the campaign; the hook works before and after the original only
+ScriptThread_CallEntry	823C0B98	823911E8	same			in cod3mp since the first version (names_mp.toml has it at 0x823911E8)
+ScriptThread_Destroy	824A3040	824C0DC8	mp			map: verified
+longjmp_guest	8234EEC0	8231E400	mp			map: verified
+nglListAddQuad	8212AC58	82142988	mp			map: verified (90% equal, 90% same instruction kinds (55 vs 60 instructions); pair table: calls (4); aligned calls: 22 of 22 )
+nglListAddString	82134F70	8214CE30	mp			map: verified (95% equal, 100% same instruction kinds (87 vs 87 instructions); field offsets differ: -5724->-16084 x4; pair t)
+sub_8212A100	8212A100	82141E40	mp			map: verified
+sub_8212A110	8212A110	82141E50	mp			map: verified (88% equal, 88% same instruction kinds (34 vs 30 instructions); pair table: calls (5); aligned calls: 13 of 16 )
+sub_8212A520	8212A520	82142248	mp			map: verified (99% equal, 99% same instruction kinds (152 vs 153 instructions); pair table: calls (1); aligned calls: 2 of 2 )
+sub_82130808	82130808	82143838	mp			map: verified
+sub_822EBFB8	822EBFB8	822BAD00	mp			map: verified
+sub_822EBFE8	822EBFE8	822BAD30	mp			checked: the same code as the campaign's (D3D_WaitEnd, game/gpu_wait.cpp), between its two mapped neighbors
+sub_822EC168	822EC168	822BAEB0	mp			map: verified
+sub_82344F98	82344F98	82314360	mp			map: verified
+sub_82344FC0	82344FC0	82314390	mp			map: verified
+sub_82345000	82345000	823143D0	mp			map: verified
+sub_82419098	82419098	82430E70	mp			map: verified (93% equal, 91% same instruction kinds (100 vs 100 instructions); pair table: calls (1); aligned calls: 2 of 2 )
+sub_82425BD0	82425BD0	8243D590	mp			map: verified (91% equal, 96% same instruction kinds (513 vs 506 instructions); field offsets differ: 2112->21604, 1212->2160)
+sub_82462FB0	82462FB0	8247D700	mp			map: verified (95% equal, 97% same instruction kinds (73 vs 71 instructions); field offsets differ: 196->268; pair table: cal)
+sub_82478B80	82478B80	824964E8	mp			map: verified (82% equal, 93% same instruction kinds (90 vs 87 instructions); pair table: calls (3); aligned calls: 1 of 1 re)
+sub_824AB260	824AB260	824CB460	mp			map: verified
+sub_824AB300	824AB300	824CB500	mp			map: verified
+sub_824AB398	824AB398	824CB598	mp			map: verified
+sub_824BFA70	824BFA70	824D7AF8	mp			map: verified
+sub_824C3190	824C3190	824DA9D8	mp			map: verified (hand check: ProfileEditMenu slot 26 -> MP slot 33: the same code apart from field offsets (+20); class never c)
+sub_824C3248	824C3248	824DAA90	mp			map: verified (hand check: ProfileEditMenu slot 25 -> MP slot 32: the same code (45 instructions, all the same kinds), only t)
+sub_824C41B8	824C41B8		dead			hand check: move down: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class doe
+sub_824C4218	824C4218		dead			hand check: move up: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does
+sub_824C4338	824C4338		dead			hand check: move down: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: i
+sub_824C4390	824C4390		dead			hand check: move up: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: ini
+sub_824C4428	824C4428	824DBC50	mp			map: verified (72% equal, 100% same instruction kinds (46 vs 46 instructions); field offsets differ: 56->76 x5, 56->52 x3, 32)
+sub_824C68E0	824C68E0	824DF350	mp			map: verified (91% equal, 91% same instruction kinds (234 vs 214 instructions); pair table: strings (5); aligned calls: 2 of )
+sub_824CD768	824CD768		dead			hand check: item states: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots:
+sub_824CDB28	824CDB28	820B4B10	later			menus in cod3mp (message box open)
+sub_824D7650	824D7650	824EBF20	later			button prompts in cod3mp
+sub_824D7B48	824D7B48	824EC230	later			button prompts in cod3mp
+sub_824D7D88	824D7D88	824EC430	mp			map: verified (75% equal, 91% same instruction kinds (223 vs 216 instructions); pair table: calls (3); aligned calls: 1 of 1 )
+sub_824DBEE8	824DBEE8		dead			hand check: MainMenu update (slot 16): no MainMenu in MP (MPMainMenuXBox slot 23 = 0x823D2E88). Campaign front end only; no pair: no table pair, no aligned call
+sub_824DC1C0	824DC1C0		dead			hand check: left/right: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class do
+sub_824DC798	824DC798		dead			hand check: quit yes: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: in
+sub_824DD9A8	824DD9A8	825011E8	later			button prompts in cod3mp
+sub_824DE290	824DE290		dead			hand check: expands the action tokens of a multi-line text: called at the start of FEMultiLineText slots 91 and 36 in the campaign; MP's slots 97 and 36 (0x824F
+sub_824E2948	824E2948	824F4840	mp			map: verified (hand check: ProfileEditMenu slot 0 in both. MP never constructs ProfileEditMenu (its vtable 0x82071FEC is used)
+sub_824E56B8	824E56B8		dead			hand check: MainMenu init (slot 0): no MainMenu in MP (MPMainMenuXBox slot 0 = 0x823C20D8 is a different page). Campaign front end only; rejected 0x8239AF98 (pa
+sub_824E60E8	824E60E8		dead			hand check: init: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+sub_824E6588	824E6588		dead			hand check: refresh: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does
+sub_824E6640	824E6640		dead			hand check: init: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: init s
+sub_824EE128	824EE128		dead			hand check: update: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
+sub_824EFB18	824EFB18		dead			hand check: update (slot 16): the campaign's title screen (TitleMenu, "Press Start"): no TitleMenu in MP; its first page is PressStartMenu (vtable 0x82083F3C: s
+sub_824FDE90	824FDE90	82519178	mp			hand check: interaction end: clears the state (+4) and writes the saved FOV (+116 in MP, +176 in the campaign) into cg_fov's vmCvar; the hook only runs after it
+sub_82525190	82525190	82545F88	mp			hand check: the screen update SCR_DrawScreenField calls in both; MP's sends the list and opens the next one in 0x82146F38 instead of inline; the watchdog only marks before it
+kCvarGet	8252BBE0	8254F458	mp			map: verified (86% equal, 96% same instruction kinds (193 vs 186 instructions); pair table: name (1); aligned calls: 128 of 1)
+kCvarSet2	8252B850	8254F0C8	mp			map: verified
+kCvarFindVar	82529790	8254A468	mp			map: verified
+kCvarVars	829BAB14	82B36B84	mp			map: verified (5 of 5 aligned uses)
+kSvCheatsPtr	829BB178	82B371E8	mp			map: verified (4 of 4 aligned uses)
+kCbufAddText	824644D0	8247FA38	mp			map: verified
+kCbufInsertText	82464408	8247F970	mp			map: verified
+kCbufExecute	8247E380	824A27E8	mp			map: verified
+kCbufExecuteText	8247E498	824A2900	mp			map: verified
+kCmdExecuteString	8247E228	824A2690	mp			map: verified (88% equal, 97% same instruction kinds (85 vs 86 instructions); pair table: calls (5); aligned calls: 2 of 2 re)
+kCmdAddCommand	8246CBA8	8248A490	mp			map: verified (hand check: Cmd_AddCommand: MP 0x8248A490 has the same code (masked) and the same callers (Com_Init x11, CL_In)
+kCmdFunctions	829EBA10	82B8CC88	mp			map: verified (12 of 12 aligned uses)
+kComPrintf	82523A58	82544898	mp			map: verified (hand check: Com_Printf (empty in retail: blr) -> 0x82544898; 17 of 18 aligned calls; the 10-15 table had the n)
+kComDPrintf	82523A60	825448A0	mp			map: verified (hand check: Com_DPrintf -> 0x825448A0: the same code, 190 of 191 aligned calls; the 10-15 table's 0x8249A650 w)
+kComError	825239A0	825447E0	mp			map: verified (hand check: Com_Error -> 0x825447E0: the same code, 101 of 101 aligned calls (the same code is 2 functions in )
+kCvarCommand	8252DB38	82551518	mp			map: verified (96% equal, 100% same instruction kinds (48 vs 48 instructions); pair table: strings (3); aligned calls: 1 of 1)
+kCvarCommandValueFormat	82068B08	820670E4	mp			map: verified (the same string '"%s" is:"%s^7" default:"%s^7"\n', once in codmp)
+kCvarCommandLatchedFormat	82068B28	82067104	mp			map: verified (the same string 'latched: "%s"\n', once in codmp)
+kCgGetViewFov	8243A198	82453810	mp			hand check: see CG_GetViewFov
+kCgFovVmCvar	82A11358	82BA2BB8	mp			map: verified (4 of 4 aligned uses)
+interact::kPerClient	82A59DA0	82C37070	mp			map: verified (25 of 27 aligned uses)
+interact::kEnd	824FDE90	82519178	mp			hand check: see sub_824FDE90
+level_cvar::kSetString	824AB398	824CB598	mp			map: verified
+level_cvar::kSetInt	824AB300	824CB500	mp			map: verified
+level_cvar::kSetFloat	824AB260	824CB460	mp			map: verified
+kClAdjustAngles	8250B460	82525698	mp			hand check: see CL_AdjustAngles
+kActiveLocalClient	82A2A1C8	82BCBE9C	mp			map: verified (255 of 265 aligned uses)
+kClientActive	82A57900	82C2ECF0	mp			map: verified (hand check: clientActive (cl): MP's CL_AdjustAngles and CL_MouseMove form 0x82C2ECF0 where the campaign forms )
+controls::kSettings	82A8E610	82C6B730	mp			map: verified (hand check: the player's control settings: MP has one per controller profile, base 0x82C6B730 and stride 6984 )
+controls::kGameplayApply	824C3E48		dead			MP never constructs OptionsGameplayMenu (its page is MPOptionsGameplayMenu)
+controls::kProfileLoad	823FBC58		dead			hand check: Profile_LoadSettings (reads the control settings from the profile save): MP keeps one settings block per profile (0x82C6B730, stride 6984) and has n
+crosshair::kAlphaVmCvar	82A0E630	82B9F8C0	mp			map: verified (1 of 1 aligned uses; users: 2 of 2 paired campaign users use 0x82B9F8C0 in MP (access addi vs addi))
+cheats::kCheatsOk	825432C8	82565908	mp			map: verified (96% equal, 100% same instruction kinds (49 vs 49 instructions); field offsets differ: 500->484 x2; pair table:)
+cheats::kCheatsVmCvar	829B6110	82B322A0	mp			map: verified (4 of 4 aligned uses)
+cheats::kSvMapSetsCheatsReturn	82518DDC	82536C80	mp			map: verified (hand check: the return address of SV_Map_f's Cvar_Set2("sv_cheats", r30, 1) right after SV_SpawnServer: MP SV_)
+cheats::kStringZero	82065B94	82060D54	mp			map: verified (35 of 36 aligned uses; same read-only value (30000000))
+cheats::kGod	825452E0	8256AC18	mp			map: verified (92% equal, 100% same instruction kinds (37 vs 37 instructions); field offsets differ: 632->620 x2, 500->484; p)
+cheats::kNoTarget	82545248	8256AB80	mp			map: verified (92% equal, 100% same instruction kinds (37 vs 37 instructions); field offsets differ: 632->620 x2, 500->484; p)
+cheats::kNoclip	825451B0	8256AAE8	mp			map: verified (hand check: Cmd_Noclip_f: the same code, only the client field offsets differ (noclip 1452 -> 2040, client 528)
+cheats::kUfo	82545128	8256AA60	mp			map: verified (hand check: Cmd_Ufo_f: the same code, only the client field offsets differ (ufo 1456 -> 2044); hand-checked pa)
+cheats::kGive	82560988	8258BC68	mp			map: verified (93% equal, 100% same instruction kinds (128 vs 128 instructions); field offsets differ: 528->512 x5, 280->312,)
+cheats::kSetViewPos	82543048	82565688	mp			map: verified (97% equal, 100% same instruction kinds (67 vs 67 instructions); field offsets differ: 500->484 x2; pair table:)
+cheats::kJumpToNode	82542F00	82565540	mp			map: verified (96% equal, 100% same instruction kinds (81 vs 81 instructions); field offsets differ: 500->484 x3; pair table:)
+cheats::kSpawnServer	82517A00	82535A18	mp			hand check: see SV_SpawnServer
+cheats::kMapRestart	825148D0	825357A0	mp			hand check: see SV_MapRestart_f
+cheats::kMapRestartInternal	825149A8	82533868	mp			hand check: see SV_MapRestartInternal_f
+fe::kGameplayCtor	824DBBF0		dead			hand check: OptionsGameplayMenu constructor: MP has none (nothing stores MP's vtable 0x820718EC but the destructor). MP's page constructor is MPOptionsGameplayM
+fe::kGameplayCtorCountInsn	824DBC0C		dead			hand check: li r5,4 (item count) in the campaign's OptionsGameplayMenu constructor; MP has no such constructor. The same instruction in MP's page constructor MP
+fe::kGameplayInit	824E4D78		dead			MP never constructs OptionsGameplayMenu (its page is MPOptionsGameplayMenu, ctor 0x823F6900)
+fe::kGameplayUpdate	824CD2D0		dead			MP never constructs OptionsGameplayMenu
+fe::kGameplayRefresh	824DB960		dead			MP never constructs OptionsGameplayMenu
+fe::kGameplayMoveA	824C3FE0		dead			MP never constructs OptionsGameplayMenu
+fe::kGameplayMoveB	824C3F08		dead			MP never constructs OptionsGameplayMenu
+fe::kGameplayToggle	824BD160		dead			MP never constructs OptionsGameplayMenu
+fe::kPanelFindElement	824D07D0	0	later			game_api's menu wrappers (PanelFindElement ...): only the menu files call them, and they aren't in cod3mp yet
+fe::kPanelFindQuad	824DFC70	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kOperatorNew	820CC1D0	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; the map has MP 0x820DE6D8)
+fe::kTextCtor	820ACA38	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; MP 0x820BB820)
+fe::kQuadCtor	824C8498	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; MP 0x824E1AF0)
+fe::kGameplayDraw	824CD398		dead			MP never constructs OptionsGameplayMenu
+fe::kOperatorDelete	820CC468	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; the map has MP 0x820DE980)
+fe::adv::kVtable	82071B24		dead			hand check: vtable: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
+fe::adv::kInit	824E60E8		dead			hand check: init: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+fe::adv::kRefresh	824E6588		dead			hand check: refresh: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does
+fe::adv::kUpdate	824EE128		dead			hand check: update: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
+fe::adv::kDraw	824CD530		dead			hand check: draw: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+fe::adv::kMoveUp	824C4218		dead			hand check: move up: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does
+fe::adv::kMoveDown	824C41B8		dead			hand check: move down: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class doe
+fe::adv::kToggle	824DC1C0		dead			hand check: left/right: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class do
+fe::adv::kSyncValueHighlight	824BD3F8		dead			hand check: value highlight: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the cla
+fe::adv::kSelect	824E6020		dead			hand check: select: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
+fe::adv::kBack	824F07B0		dead			hand check: back: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
+fe::adv::kTitleKey	8206FEA4		dead			hand check: title key FEMENU_OPTIONS (MP has no such string): the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, s
+fe::adv::kValueNames	82064658		dead			hand check: Advanced Options value names (InvertAimOnOff ... TankControlOnOff): the page does not exist in MP. Campaign front end only; no aligned use
+fe::adv::kArrowNames	82064670		dead			hand check: Advanced Options arrow names (arrowL1 ...): the page does not exist in MP. Campaign front end only; no aligned use
+fe::options::kVtable	820729A4	82071FEC	mp			map: verified (the vtable of .?AVProfileEditMenu@@ (RTTI); slots may differ)
+fe::options::kInit	824E2948	824F4840	mp			map: verified (hand check: ProfileEditMenu slot 0 in both. MP never constructs ProfileEditMenu (its vtable 0x82071FEC is used)
+fe::options::kSelect	824BC070		dead			MP never constructs ProfileEditMenu (its page is MPProfileEditMenu, ctor 0x823F6658)
+fe::options::kEnter	824ED298		dead			MP never constructs ProfileEditMenu
+fe::options::kMoveUp	824C3248	824DAA90	mp			map: verified (hand check: ProfileEditMenu slot 25 -> MP slot 32: the same code (45 instructions, all the same kinds), only t)
+fe::options::kMoveDown	824C3190	824DA9D8	mp			map: verified (hand check: ProfileEditMenu slot 26 -> MP slot 33: the same code apart from field offsets (+20); class never c)
+fe::kGameplayTitleKey	8206FFFC	8206E5E8	mp			map: verified (the same string 'FEMENU_OP_GAMEPLAY_TITLE', once in codmp)
+fe::kGameplayLabelKeys	82064744	820635E4	mp			map: verified (hand check: the gameplay page's row label keys: MP 0x820635E4 holds pointers to the same four strings in the s)
+fe::kLocalize	8252CB98	8254D180	mp			map: verified
+fe::kLanguageMode	82A2A150	82BCBE24	mp			map: verified (12 of 12 aligned uses)
+fe::kArrowAlphaNormal	82062720	82062C94	mp			map: verified (84 of 89 aligned uses; same read-only value (3f000000))
+fe::kArrowAlphaFlash	82064200	8206178C	mp			map: verified (186 of 195 aligned uses; same read-only value (3f800000))
+fe::kArrowFlashTime	82001930	820019C8	mp			map: verified (0x4 after 0x8200192C (-> 0x820019C4, 9 votes); same read-only value (3dcccccd))
+fe::kTextScaleDefault	825D121C	825DA49C	mp			map: verified (74 of 75 aligned uses)
+video::kModeTable	825A2168	825B24F0	mp			map: verified (1 of 1 aligned uses; users: 1 of 1 paired campaign users use 0x825B24F0 in MP (access addi vs addi))
+video::kSelectMode	8212FDB8	82142DE8	mp			map: verified
+video::kVideoMode	8290F2BC	82A8C1D0	mp			map: verified (13 of 13 aligned uses)
+video::kModeId	8290F29C	82A8C1B0	mp			map: verified (4 of 4 aligned uses)
+video::kSetMultisample	82153F50	8216BDF0	mp			hand check: see R_SetMultisample
+movie::kStart	824EED20		dead			hand check: movie start (opens movies\<name>.wmv and its .wma by language): MP has no such code (no ".wmv"/"-en" strings in codmp_xenonf.xex) and plays no films
+movie::kPlayBlocking	824EF308		dead			hand check: movie play-until-done loop (logos, attract, bonus films): no counterpart in MP (the pair table's 0x8244A9C8 has 20% the same kinds). Campaign only;
+movie::kFinishLevelMovie	824EEBA0		dead			hand check: a level's briefing film after loading (called by SV_SpawnServer): MP's SV_SpawnServer starts no film. Campaign only; rejected 0x82143260 (calls); 9%
+movie::kSkipCheck	824D0470		dead			hand check: movie skip check: MP has a copy (0x824ED588, the pair; 50% the same kinds) that nothing calls, and its film open 0x824ED400 ("movies\treyarch.xbv")
+movie::kStop	824D0528	0	dead			game_api's MovieStop: only the film skip calls it (MP plays no films)
+movie::kHandle	82A2A24C	82BCBF28	mp			map: verified (hand check: the playing movie object: MP's film draw (0x824ED1B0, called by CG_Draw2D) and its unused open (0x)
+movie::kElapsedMs	82A2A254		dead			MP plays no films (its film open and skip check have no callers)
+movie::kMinimumMs	82A2A258		dead			MP plays no films
+movie::kSkipState	82A8DF2C	82C6B1FC	mp			map: verified (68 of 72 aligned uses)
+movie::kLoader	82A2AB6C	82BCC828	mp			map: verified (117 of 118 aligned uses)
+movie::kLoadingMovie	824EECF8		dead			hand check: the briefing as the loading screen (a level loader callback): MP's level loader 0x8247DD38 starts no film. Campaign only; no pair: no table pair, no
+movie::kLoadingScreen	82526240	82546FF0	mp			map: verified
+jobs::kQueue	8290E930	82A8B840	mp			map: verified (23 of 23 aligned uses)
+jobs::kWakeEvent	8290E98C	82A8B89C	mp			map: verified (6 of 6 aligned uses; hand-found the same (owner game/mp_hooks.cpp (job wake event)))
+jobs::kWake	8212A100	82141E40	mp			map: verified
+ultrawide::kSceneSetAspectCall	82430340	82448538	mp			map: verified (hand check: listed both: the campaign has one bl nglSetAspect (f1 = 16:9 / 4:3 constant by cg_widescreen 0x82A)
+ultrawide::kRenderScene	82430710	82448A18	mp			map: verified (97% equal, 99% same instruction kinds (184 vs 184 instructions); pair table: strings (2); sources: pair; same )
+ultrawide::kSetAspect	8212AEA8	82143F10	mp			map: verified
+ultrawide::kSetPerspective	8212AEC8	82143F30	mp			map: verified
+ultrawide::kListAddQuad	8212AC58	82142988	mp			map: verified (90% equal, 90% same instruction kinds (55 vs 60 instructions); pair table: calls (4); aligned calls: 22 of 22 )
+ultrawide::kListAddString	82134F70	8214CE30	mp			map: verified (95% equal, 100% same instruction kinds (87 vs 87 instructions); field offsets differ: -5724->-16084 x4; pair t)
+ultrawide::kCurrentList	8290E9A4	82A8C12C	mp			map: verified (248 of 249 aligned uses)
+ultrawide::kMovieQuadPtr	82A2A250	0	dead			the movie's quad: MP plays no films; ultrawide.cpp skips the test in cod3mp
+mp::kLoadMpExe	825145D8		dead			hand check: SV_LoadMpExe_f (load_mp_exe: the campaign starts the multiplayer program): MP's command of that name (0x82534688) is a different function (56% the s
+mp::kMainMenuSelect	824C40B8		dead			hand check: MainMenu::vfunc_18 (the campaign main menu's select: item 1 runs load_mp_exe). MP has no MainMenu class (RTTI); its main menu is MPMainMenuXBox (vta
+mp::kLaunchNewImage	82343928	82312BC0	mp			map: verified
+mp::kMpExePath	8206950C	82067A54	mp			map: verified (the same string 'd:\codmp_xenonf.xex', once in codmp)
+msgbox::kFrontEnd	82A8DF2C	82C6B1FC	mp			map: verified (68 of 72 aligned uses)
+msgbox::kPlayer	82A2A1C8	82BCBE9C	mp			map: verified (255 of 265 aligned uses)
+msgbox::kSystemVtable	820719D4	82071614	mp			map: verified (the vtable of .?AVDialogMenuSystem@@ (RTTI); slots may differ)
+msgbox::kPageVtable	820718EC	82071504	mp			map: verified (the vtable of .?AVDialogMenu@@ (RTTI); slots may differ)
+msgbox::kClose	824C4608	0	later			game_api's message box wrappers: only the menu files call them (not in cod3mp yet)
+msgbox::kSetMessage	824D31E0	0	later			game_api's message box wrappers: only the menu files call them (not in cod3mp yet)
+msgbox::kAddButton	824C4428	0	later			game_api's message box wrappers: only the menu files call them (not in cod3mp yet; MP 0x824DBC50)
+msgbox::kUpdateSelection	824BDDE8	0	later			game_api's message box wrappers: only the menu files call them (not in cod3mp yet)
+msgbox::kOpen	824CDB28	0	later			game_api's message box wrappers: only the menu files call them (not in cod3mp yet)
+msgbox::kCloseCallback	823F86D0		dead			hand check: `return 1` close callback of the 'multiplayer missing' box: campaign -> multiplayer launch only; no pair: no table pair, no aligned call, no unique
+msgbox::kOkKey	8206FDF8	8207A06C	mp			map: verified (the same string 'MEM_DIALOG_OK', once in codmp)
+live_video::kComFrame	82536DD0	82557D60	mp			map: verified (hand check: listed both around the frame limiter: the same code, other registers (r29/r30/r28 for r30/r31/r29))
+live_video::kPresentParams	8290EBC0	82A8BA70	mp			map: verified (18 of 18 aligned uses)
+live_video::kDevice	8290F24C	82A8C0FC	mp			map: verified (922 of 922 aligned uses)
+live_video::kRenderJobGroup	8290F8FC	82A8CC40	mp			hand check: the render list send (pair of 0x8213DAA0, MP 0x82156B28) queues on it at the same two instructions; MP's screen update has no wait of its own on it
+live_video::kWaitJobGroup	8212A110	82141E50	mp			map: verified (88% equal, 88% same instruction kinds (34 vs 30 instructions); pair table: calls (5); aligned calls: 13 of 16 )
+live_video::kUnbindAndIdle	82130CC8	82143CF8	mp			map: verified
+live_video::kCurrentList	8290E9A4	82A8C12C	mp			map: verified (248 of 249 aligned uses)
+live_video::kListCursor	8290E9BC	82A8C144	mp			map: verified (158 of 158 aligned uses)
+live_video::kBeginNextFrame	82130808	82143838	mp			map: verified
+live_video::kTargetStackCount	82910B58	82A8C810	mp			map: verified (7 of 7 aligned uses)
+live_video::kRebuildScreenTargets	8213F810	821575F0	mp			map: verified
+live_video::kFrontBufferA	82911068	82A8DF74	mp			map: verified (3 of 3 aligned uses)
+live_video::kFrontBufferB	8291103C	82A8DF48	mp			map: verified (3 of 3 aligned uses)
+live_video::kBackBufferCopy	8291100C	82A8DF18	mp			map: verified (17 of 17 aligned uses)
+live_video::kQuarterTargetA	82910FB4	82A8DEC0	mp			map: verified (9 of 9 aligned uses)
+live_video::kQuarterTargetB	82910F88	82A8DE94	mp			map: verified (1 of 1 aligned uses; users: 1 of 1 paired campaign users use 0x82A8DE94 in MP (access addi vs addi))
+live_video::kResourceRelease	822F1340	822C0060	mp			map: verified
+live_video::kCreateTexture	8214DDB8	82165CA0	mp			map: verified (74% equal, 90% same instruction kinds (115 vs 109 instructions); pair table: strings (2); aligned calls: 12 of)
+live_video::kReleaseTexture	8213F8A0	82157680	mp			map: verified (86% equal, 86% same instruction kinds (71 vs 62 instructions); pair table: strings (1); aligned calls: 11 of 1)
+live_video::kFullDepth	82A2ABDC	82BCC8AC	mp			map: verified (10 of 10 aligned uses)
+live_video::kDepthInUse	8290A97C	82A8760C	mp			map: verified (3 of 3 aligned uses)
+live_video::kMakeFullDepth	82419408	82431510	mp			hand check: makes the full-size depth texture from the video mode (0x82A8C1D0) into 0x82BCC8AC and the depth in use 0x82A8760C, as the campaign's; MP prints when it fails
+live_video::kEffectsColor	82A2ACDC	82BCCA24	mp			map: verified (6 of 6 aligned uses)
+live_video::kEffectsDepth	82A2ACE0	82BCCA28	mp			map: verified (7 of 7 aligned uses)
+live_video::kEffectsWidth	82A2ACD0	82BCCA18	mp			map: verified (1 of 1 aligned uses; users: 2 of 2 paired campaign users use 0x82BCCA18 in MP (access lwz,stw vs lwz,stw))
+live_video::kEffectsHeight	82A2ACD4	82BCCA1C	mp			map: verified (1 of 1 aligned uses; users: 2 of 2 paired campaign users use 0x82BCCA1C in MP (access lwz,stw vs lwz,stw))
+live_video::kGammaDirty	8290F240	82A8C0F0	mp			map: verified (3 of 3 aligned uses; hand-found the same (owner game/color_output.cpp (gamma ramp flag)))
+live_video::kEffectsJobGroup	82A11C44	82BA3424	mp			map: verified (5 of 5 aligned uses)
+pc_menu::kProcessInput	824C4DB8	824DCE48	mp			map: verified (90% equal, 100% same instruction kinds (133 vs 133 instructions); field offsets differ: 76->120 x2, 72->116 x2)
+pc_menu::kFrameCount	825F4E08	825FEBD8	mp			map: verified (19 of 21 aligned uses)
+pc_menu::kDialogSystemVtable	820719D4	82071614	mp			map: verified (the vtable of .?AVDialogMenuSystem@@ (RTTI); slots may differ)
+pc_menu::kFEMenuOnLeft	820ADAC0	820BC960	later			menus in cod3mp
+pc_menu::kNullsub	82144CA8	8215CA98	mp			map: verified
+pc_menu::kTitleMenuVtable	82071724		dead			hand check: TitleMenu vtable: the campaign's title screen (TitleMenu, "Press Start"): no TitleMenu in MP; its first page is PressStartMenu (vtable 0x82083F3C: s
+pc_menu::kTextVtable	82070B54	820702DC	mp			map: verified (RTTI .?AVFEText@@: 2 vtables in codmp; this one lines up with the campaign's slots best (vtables.py score 93.5)
+pc_menu::kMultiLineTextVtable	82070C84	8207041C	mp			map: verified (the vtable of .?AVFEMultiLineText@@ (RTTI); slots may differ)
+pc_menu::kFrontEndDraw	824CE4D0	824DC718	later			menus in cod3mp
+pc_menu::kInGameDraw	824CD9E0	824F6338	later			menus in cod3mp
+pc_menu::kDialogDraw	824CE3E8	8250BEE8	later			menus in cod3mp
+main_menu::kVtable	82071DDC		dead			hand check: MainMenu vtable: the campaign main menu (MainMenu): no MainMenu in MP (its main menu is MPMainMenuXBox, vtable 0x8207E95C). Campaign front end only;
+main_menu::kInit	824E56B8		dead			hand check: MainMenu init (slot 0): no MainMenu in MP (MPMainMenuXBox slot 0 = 0x823C20D8 is a different page). Campaign front end only; rejected 0x8239AF98 (pa
+main_menu::kUpdate	824DBEE8		dead			hand check: MainMenu update (slot 16): no MainMenu in MP (MPMainMenuXBox slot 23 = 0x823D2E88). Campaign front end only; no pair: no table pair, no aligned call
+main_menu::kDraw	824EBF78		dead			hand check: MainMenu draw (slot 14): no MainMenu in MP (MPMainMenuXBox slot 20 = 0x823BDAF8). Campaign front end only; no pair: no table pair, no aligned call,
+main_menu::kSelect	824C40B8		dead			hand check: MainMenu::vfunc_18 (the campaign main menu's select: item 1 runs load_mp_exe). MP has no MainMenu class (RTTI); its main menu is MPMainMenuXBox (vta
+main_menu::kBack	824BD370		dead			hand check: MainMenu back (slot 30): no MainMenu in MP (MPMainMenuXBox slot 37 = 0x823D2E50). Campaign front end only; no pair: no table pair, no aligned call,
+main_menu::kPanelDraw	824BFA70	824D7AF8	mp			map: verified
+main_menu::kYesKey	8206FE30	820700CC	mp			map: verified (the same string 'MEM_DIALOG_YES', once in codmp)
+main_menu::kNoKey	8206FE40	820700DC	mp			map: verified (the same string 'MEM_DIALOG_NO', once in codmp)
+main_menu::kNoCallback	824BD750		dead			hand check: 'no' callback of its box: the campaign main menu (MainMenu): no MainMenu in MP (its main menu is MPMainMenuXBox, vtable 0x8207E95C). Campaign front
+storage::kPauseInit	824E6640		dead			hand check: init: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: init s
+storage::kPauseItemStates	824CD768		dead			hand check: item states: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots:
+storage::kPauseQuitKey	8206FD68		dead			hand check: PAUSEMENU_QUIT key: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64
+storage::kPauseSelect	824F0B50		dead			hand check: select: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: init
+storage::kPauseMoveUp	824C4390		dead			hand check: move up: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: ini
+storage::kPauseMoveDown	824C4338		dead			hand check: move down: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: i
+storage::kPauseQuit	824DC7F8		dead			hand check: quit: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: init s
+storage::kPauseQuitYes	824DC798		dead			hand check: quit yes: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots: in
+storage::kSelectDeviceKey	8207ADA4	82079F04	mp			map: verified (the same string 'FEMENU_XENON_GAMEDESTROY_SELECT', once in codmp)
+storage::kFailedSelectKey	8207AEBC	82079F64	mp			map: verified (the same string 'FEMENU_XENON_DEVICE_FAILED_SELECT', once in codmp)
+shadows::kMakeMaps	82419098	82430E70	mp			map: verified (93% equal, 91% same instruction kinds (100 vs 100 instructions); pair table: calls (1); aligned calls: 2 of 2 )
+shadows::kFreeMaps	82417230	8242F298	mp			map: verified
+shadows::kCascades	8242BAA0	82442A20	mp			map: verified (73% equal, 87% same instruction kinds (436 vs 444 instructions); field offsets differ: 36->40 x2, 40->88, 32->)
+shadows::kAimAtCasters	8242C170	82443110	mp			map: verified (83% equal, 94% same instruction kinds (173 vs 173 instructions); pair table: calls (2); aligned calls: 1 of 1 )
+shadows::kAddCaster	82425BD0	8243D590	mp			map: verified (91% equal, 96% same instruction kinds (513 vs 506 instructions); field offsets differ: 2112->21604, 1212->2160)
+shadows::kShadowView	8290F2B8	82A8C1CC	mp			map: verified (8 of 8 aligned uses)
+shadows::kWhiteTexture	82A2AC6C	82BCC9B4	mp			map: verified (8 of 8 aligned uses)
+shadows::kMaps	82A2AC44	82BCC98C	mp			map: verified (4 of 4 aligned uses)
+shadows::kSlotLights	82A2AC30	82BCC978	mp			map: verified (11 of 11 aligned uses)
+shadows::kSlotScenes	82A2AC58	82BCC9A0	mp			map: verified (10 of 10 aligned uses)
+shadows::kTestShadowCvar	82A11C4C	82BA342C	mp			map: verified (2 of 3 aligned uses; users: 3 of 3 paired campaign users use 0x82BA342C in MP (access lwz,stw vs lwz,stw))
+prompts::kFEManager	82A8DF2C	82C6B1FC	mp			map: verified (68 of 72 aligned uses)
+prompts::kTokenGlyph	824C68E0	824DF350	mp			map: verified (91% equal, 91% same instruction kinds (234 vs 214 instructions); pair table: strings (5); aligned calls: 2 of )
+prompts::kLayoutLine	824D7650	824EBF20	later			button prompts in cod3mp
+prompts::kMeasureWord	824D7B48	824EC230	later			button prompts in cod3mp
+prompts::kDrawLine	824D7D88	824EC430	mp			map: verified (75% equal, 91% same instruction kinds (223 vs 216 instructions); pair table: calls (3); aligned calls: 1 of 1 )
+prompts::kStringFromChars	824A5978	821E0E48	mp			map: verified (90% equal, 95% same instruction kinds (40 vs 41 instructions); pair table: calls (5); aligned calls: 59 of 61 )
+prompts::kGetPadState	82344F98	82314360	mp			map: verified
+prompts::kClientActiveIndex	82A2A1C8	82BCBE9C	mp			map: verified (255 of 265 aligned uses)
+prompts::kLanguageMode	82A2A150	82BCBE24	mp			map: verified (12 of 12 aligned uses)
+prompts::kLocalize	8252CB98	8254D180	mp			map: verified
+prompts::kStringTables	82A2A14C	82BCBE20	mp			map: verified (33 of 33 aligned uses)
+prompts::kPressKey	8206F6C0		dead			the string 'INGAME_PRESS' is not in codmp
+prompts::kPullKey	8206F6D0		dead			the string 'INGAME_PULL' is not in codmp
+prompts::kClickKey	8206F6DC		dead			the string 'INGAME_CLICK' is not in codmp
+prompts::kExpandActions	824DE290		dead			hand check: expands the action tokens of a multi-line text: called at the start of FEMultiLineText slots 91 and 36 in the campaign; MP's slots 97 and 36 (0x824F
+prompts::kActionText	824DD9A8	825011E8	later			button prompts in cod3mp
+prompts::kTitleUpdate	824EFB18		dead			hand check: update (slot 16): the campaign's title screen (TitleMenu, "Press Start"): no TitleMenu in MP; its first page is PressStartMenu (vtable 0x82083F3C: s
+prompts::kTitlePressStartKey	8206FAE0		dead			hand check: FEMENU_TITLE_PRESS_START_XBOX (not in MP): the campaign's title screen (TitleMenu, "Press Start"): no TitleMenu in MP; its first page is PressStartM
+crossref::kSvRunningPtr	829BAB18	82B36B88	mp			map: verified (12 of 12 aligned uses)
+crossref::kComMaxFpsPtr	829C2514	82B3E8F8	mp			map: verified (2 of 2 aligned uses; users: 2 of 2 paired campaign users use 0x82B3E8F8 in MP (access lwz,stw vs lwz,stw))
+crossref::kTimescalePtr	829BAB0C	82B36B7C	mp			map: verified (9 of 9 aligned uses)
+crossref::kRLodScalePtr	82A11B5C	82BA333C	mp			map: verified (2 of 2 aligned uses; users: 2 of 2 paired campaign users use 0x82BA333C in MP (access lwz,stw vs lwz,stw))
+crossref::kComFrameTime	829C2518	82B3E8FC	mp			map: verified (6 of 6 aligned uses)
+crossref::kComFrameLastTime	82BE3CA8	82DD556C	mp			map: verified (hand check: Com_Frame's lastTime: in the frame-limiter wait loop (lwz r11,15528(r31) with r31 = 0x82BE0000; MP)
+crossref::kCmdText	829F1BB8	82B93444	mp			map: verified (11 of 11 aligned uses)
+crossref::kCgCvarTable	825CDBF0	825D6A40	mp			map: verified (4 of 4 aligned uses)
+crossref::kGameCvarTable	825F3940	825FD138	mp			map: verified (6 of 6 aligned uses)
+crossref::kCgSubtitlesVmCvar	82A0DF60	82B9F160	mp			map: verified (hand check: cg_subtitles vmCvar: the first word of MP's cgame table entry for cg_subtitles (0x825D6FA0) is 0x8)
+crossref::kVBlankCounter	8290F290	82A8C1A4	mp			map: verified (1 of 1 aligned uses; users: 1 of 1 paired campaign users use 0x82A8C1A4 in MP (access lwz vs lwz))
+crossref::kFrameStartVBlanks	8290F294	82A8C1A8	mp			map: verified (2 of 2 aligned uses; users: 2 of 2 paired campaign users use 0x82A8C1A8 in MP (access lwz,stw vs lwz,stw))
+ns:cvar			same			Cvar_Get / Cvar_Set2 / Cvar_FindVar are the same code: the Q3 cvar_t layout
+ns:cvar_flag			same			Cvar_Set2's flag checks are the same code
+midasm:Cod3GameplayItemCount@824DBC0C	824DBC0C		dead			hand check: li r5,4 (item count) in the campaign's OptionsGameplayMenu constructor; MP has no such constructor. The same instruction in MP's page constructor MP
+midasm:Cod3CrosshairHook@82444BB8	82444BB8	8245DD8C	mp		8245DEE0	hand check: the block after the crosshair color call in CG_DrawCrosshair (MP bl 0x8244A260 with the color at r1+96, campaign r1+112); f29 the aim fraction in both; the jump is the function's own early-out target. MP: only with one local player (game/mp/hud_mp.cpp)	Cod3MpCrosshairHook
+midasm:Cod3MountedCrosshairHook@824396D4	824396D4	82452E38	mp		82452F90	hand check: the block after the first return (cg_crosshairAlpha 0x82B9F8C0 stored at r1+156 = rgb r1+144 + 12; campaign r1+140 = 128 + 12); the jump is the epilogue. MP: only with one local player (game/mp/hud_mp.cpp)	Cod3MpMountedCrosshairHook
+midasm:Cod3SceneAspectHook@82430340	82430340	82448538	mp	f1		hand check: MP's first bl nglSetAspect (0x82143F10) in the scene setup, f1 = cg_widescreen ? 16:9 : 4:3, or the split-screen shapes for layouts 3/4; the hook changes only an f1 of 16:9
+midasm:Cod3VoiceMovieLanguage@824EEDD0	824EEDD0		dead			hand check: Cod3VoiceMovieLanguage hook in the movie start: campaign only (MP plays no films); +0xB0 in sub_824EED20: its function has no MP pair (rejected 0x82
+midasm:Cod3FrameLimiterHook@82536EE0	82536EE0	82557E98	mp	r11, r29		hand check: the same wait loop; MP's minimum msec is r29 (li r29,1; divw r29,1000,com_maxfps), the campaign's r30
+midasm:cod3_script_resume_prepare@824A63AC	824A63AC	824C54F4	mp-code			codmp.toml has it (0x824C54F4)
+midasm:cod3_script_resume@824A6480	824A6480	824C55C8	mp-code		824C53F0	codmp.toml has it (0x824C55C8, jump 0x824C53F0)
+lit:game/watchdog.cpp:823494F8	823494F8	82319200	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:823444FC	823444FC	823137CC	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82344654	82344654	82313964	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82344494	82344494	82313764	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:823444E0	823444E0	823137B0	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82345630	82345630	82314A00	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:823445D0	823445D0	823138E0	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82344638	82344638	82313948	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:823455B8	823455B8	82314988	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82349740	82349740	82318B90	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82345050	82345050	82314420	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:822F4DB8	822F4DB8	822C3AD8	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:822C0FE8	822C0FE8	82291FD8	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:822C10A8	822C10A8	82292098	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:822C10D8	822C10D8	822920C8	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:822C11AC	822C11AC	8229219C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:8230258C	8230258C	822D117C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82302620	82302620	822D1210	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82302D1C	82302D1C	822D190C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:821960B8	821960B8	8222C318	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82195AC4	82195AC4	8239083C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82195BE4	82195BE4	0	dead			the film player's message call (0x82195B00 / 0x82195BA8): no MP counterpart, MP plays no films
+lit:game/watchdog.cpp:8219627C	8219627C	8222C63C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82195B60	82195B60	0	dead			the film player's message call (0x82195B00 / 0x82195BA8): no MP counterpart, MP plays no films
+lit:game/watchdog.cpp:82343B14	82343B14	82312C8C	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82343BA8	82343BA8	82312D20	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/watchdog.cpp:82343E9C	82343E9C	823132FC	mp			map: verified (the call site lined up in the paired function; 13 instructions around it equal)
+lit:game/job_wait.cpp:8290E920	8290E920	82A8B830	mp			map: verified (12 / 2 aligned uses); 0x8212A110's queue lock and helper state
+lit:game/job_wait.cpp:8290E970	8290E970	82A8B880	mp			map: verified (12 / 2 aligned uses); 0x8212A110's queue lock and helper state
+lit:game/print_hooks.cpp:82000000	82000000	82000000	same			the program's image (REX_IMAGE_BASE / REX_IMAGE_SIZE / REX_CODE_BASE + REX_CODE_SIZE of its generated pch)
+lit:game/print_hooks.cpp:00C30000	00C30000	00E20000	mp			the program's image (REX_IMAGE_BASE / REX_IMAGE_SIZE / REX_CODE_BASE + REX_CODE_SIZE of its generated pch)
+lit:game/print_hooks.cpp:8259B1B8	8259B1B8	825A21D4	mp			the program's image (REX_IMAGE_BASE / REX_IMAGE_SIZE / REX_CODE_BASE + REX_CODE_SIZE of its generated pch)
+midasm:Cod3SceneAspectHook@82430340	82430340	82448558	mp	f1		hand check: MP's second bl nglSetAspect: f1 = f27 when the dvar at 0x82BA13E4 is set (the campaign's other branch to its one call); the same hook
+crosshair::kColorOnStack		96	mp			hand check: CG_DrawCrosshair's color array: addi r5,r1,96 before MP's color call (campaign r1+112)
+crosshair::kMountedColorOnStack		144	mp			hand check: the mounted crosshair's rgb: addi r7,r1,144 and the alpha stored at r1+156 (campaign 128 / 140)
+crosshair::kVmCvarValue			same			vmCvar_t value at +8 (MP reads cg_crosshairAlpha's +8 at 0x82452E40)
+interact::kState			same			hand check: MP's interaction end clears +4 (stw r25,4(r30)) as the campaign's does
+interact::kSavedFov		116	mp			hand check: MP's interaction end restores lfs f0,116(r30) into cg_fov's vmCvar (campaign 176)
+kVmCvarValue			same			vmCvar_t value at +8 (MP's CG_GetViewFov: lfs f1,8(cg_fov vmCvar))
+kVmCvarInteger			same			vmCvar_t integer at +12 (Q3 layout; CheatsOk reads +12 in both)
+kClientActiveStride		6352	mp			hand check: MP's CL_CreateCmd: mulli r11,r11,6352 (campaign 7280)
+kViewAnglesOffset		1668	mp			hand check: MP's CL_CreateCmd: addi r10,r31,1668 for the pitch, 1672 the yaw (campaign 5732)
+cheats::kEntClient		512	mp			hand check: MP's Cmd_Noclip_f / Cmd_Ufo_f: lwz rX,512(ent) for the client (campaign 528)
+cheats::kEntFlags		620	mp			hand check: MP's Cmd_God_f / Cmd_Notarget_f: lwz/stw r11,620(ent) (campaign 632)
+cheats::kFlagGod			same			hand check: the same xori in MP's Cmd_God_f
+cheats::kFlagNoTarget			same			hand check: the same xori in MP's Cmd_Notarget_f
+cheats::kClientNoclip		2040	mp			hand check: MP's Cmd_Noclip_f: lwz/stw 2040(client) (campaign 1452)
+cheats::kClientUfo		2044	mp			hand check: MP's Cmd_Ufo_f: lwz/stw 2044(client) (campaign 1456)
+cheats::kVmCvarInteger			same			vmCvar_t integer at +12 (MP's CheatsOk reads +12 of 0x82B322A0)
+controls::kInvertAim			same			hand check: MP's stick turning (0x8252B578) reads lbzx +65 of the profile's block (0x82C6B730 + profile * 6984)
+controls::kHorizontalSens			same			hand check: MP's stick turning reads lwzx +68 of the profile's block, times 0.04 (0x820852B0)
+controls::kVerticalSens			same			hand check: MP's stick turning reads lwzx +72 of the profile's block
+controls::kSensScale			same			hand check: MP's stick turning multiplies by 0x820852B0 = 0.04
+controls::kSensZero			same			the same 0.1 in MP (0x820019C8, map); used the same way for a 0 setting
+controls::kCrosshair			same			the profile block's crosshair byte +57 (map hand check: the same field offsets); written only when cg_drawCrosshair exists (MP has no such dvar)
+fe::kQuadName		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kQuadSize		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kTextSize		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kElemAssign		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kElemSetVisible		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kElemSetAlpha		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kElemSetTextRaw		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kElemSetTextKey		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kItemSetVisible		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kItemSetDisabled		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kItemSetLabelKey		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+pc_menu::kStringChars			same			the game's refcounted String: chars at +12 (MP's FEText draw reads +12 of its String* as the campaign's)
+live_video::kRecordTexture			same			ngl texture records: the same nglCreateTexture / release code (+20 the D3D texture)
+live_video::kEffectsColorFlags			same			hand check: MP's effects targets (0x8243BD38): li r3,81; 0x18280186
+live_video::kEffectsColorFormat			same			hand check: MP's effects targets: lis r4,6184; ori 390 (0x18280186)
+live_video::kEffectsDepthFlags			same			hand check: MP's effects targets: li r3,32; 0x1A220197
+live_video::kDepthFormat			same			hand check: MP's effects depth and full depth (0x82431510): lis r4,6690; ori 407
+shadows::kShadowNode			same			hand check: MP's 0x8243D590 stores the node at +144 at the same places
+ultrawide::kListTarget			same			hand check: MP's 2D code reads list+808 then target+24 & 0x2000 (rlwinm 18,18) at the same places (0x82144C7C ...)
+ultrawide::kTargetFlags			same			hand check: see ultrawide::kListTarget
+ultrawide::kTargetVirtual			same			hand check: see ultrawide::kListTarget
+ultrawide::kQuadVertexStride			same			hand check: MP's nglListAddQuad copies the same 104-byte quad
+lit:game/thread_profiler.cpp:8212A780	8212A780	821424B0	mp			map: verified (the job worker thread entry, identical code)
+lit:game/thread_profiler.cpp:82302C80	82302C80	822D1870	mp			map: verified (the Direct3D thread entry, identical code)
+brightness::kValue	825CDAA4		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kMax	825CE628		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kStep	826A13CC		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kProfile	82A8E610		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kPageVtable	82072434		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kPageOnLeft	824BC2C0		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kPageOnRight	824BC248		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kAdvSwapProfile	824E5DF8		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+brightness::kSetFill	824C0588		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	

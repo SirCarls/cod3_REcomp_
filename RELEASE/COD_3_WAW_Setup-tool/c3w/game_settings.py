@@ -37,8 +37,8 @@ MAX_FILE = 1024 * 1024   # bytes; the game's own file is a few KB
 MIN_CUSTOM_SIZE = (640, 360)
 MAX_CUSTOM_SIZE = (15360, 4320)
 # Picture shapes the game takes for cod3_aspect_ratio (game/ultrawide.h):
-# from the game's own 16:9 to three 16:9 screens side by side.
-MIN_ASPECT = 16 / 9
+# from the console's own 4:3 to three 16:9 screens side by side.
+MIN_ASPECT = 4 / 3
 MAX_ASPECT = 48 / 9
 
 
@@ -55,7 +55,7 @@ def _is_resolution(value: Any) -> bool:
 
 def _is_aspect(value: Any) -> bool:
     """A picture shape of the player's own for cod3_aspect_ratio: "W:H"
-    (24:10, 2.39:1) or a number (2.39), from 16:9 to 48:9 (ParseAspect)."""
+    (24:10, 2.39:1) or a number (2.39), from 4:3 to 48:9 (ParseAspect)."""
     m = re.fullmatch(r"(\d{1,5}(?:\.\d{1,4})?)(?::(\d{1,5}(?:\.\d{1,4})?))?", value) \
         if isinstance(value, str) and len(value) <= 16 else None
     if not m:
@@ -127,7 +127,7 @@ SETTINGS: List[Setting] = [
             "bool", default=True),
     Setting("cod3_max_fps", "Frame rate limit",
             "The most frames per second the game may draw (0 = no limit). It's a cap, not a target. "
-            "A limit typed in the game's console (com_maxfps) wins over this.",
+            "F2, the game's Options and com_maxfps in its console change this same setting.",
             "int", tuple((v, "No limit" if v == 0 else str(v)) for v in _FPS), min=0, max=1000, default=60),
     Setting("fullscreen", "Display mode",
             "Play in a window, or fill the whole monitor without changing its resolution (borderless).",
@@ -137,11 +137,17 @@ SETTINGS: List[Setting] = [
             "It doesn't cap the frame rate.",
             "bool", default=False, invert=True,
             cvars=("vulkan_allow_present_mode_immediate", "d3d12_allow_variable_refresh_rate_and_tearing")),
+    # The same choices, in the same order, as F2 > Video > Aspect ratio
+    # (ui/hud_overlay.cpp); "resolution" is kMatchResolution (game/ultrawide.h).
     Setting("cod3_aspect_ratio", "Aspect ratio",
-            "The shape of the picture. Wider than 16:9 shows more at the sides; the HUD and menus stay 16:9. "
-            "F2 also takes a shape of your own (for example 24:10).",
-            "choice", (("auto", "Automatic (the window's shape)"), ("16:9", "16:9 (the game's own)"),
-                       ("21:9", "21:9 (ultrawide)"), ("32:9", "32:9 (super ultrawide)")), default="auto",
+            "The shape of the picture; the view up and down stays the game's. Wider than 16:9 shows more at "
+            "the sides (the HUD and menus stay 16:9), narrower shows less. \"Match the render resolution\" "
+            "takes the shape of a custom render size such as 2560x1080. F2 also takes a shape of your own "
+            "(for example 24:10).",
+            "choice", (("auto", "Automatic (the window's shape)"), ("resolution", "Match the render resolution"),
+                       ("4:3", "4:3 (the classic TV shape)"), ("16:10", "16:10"),
+                       ("16:9", "16:9 (the game's own)"), ("21:9", "21:9 (ultrawide)"),
+                       ("32:9", "32:9 (super ultrawide)")), default="auto",
             also=_is_aspect),
     Setting("swap_post_effect", "Anti-aliasing",
             "Smooths jagged edges after the picture is drawn. Costs very little; Extreme smooths more.",
@@ -169,6 +175,19 @@ SETTINGS: List[Setting] = [
     Setting("cod3_volume", "Master volume",
             "Everything the game plays, in percent. Music, effects and voices have their own sliders in "
             "the game's Options.", "int", min=0, max=100, default=100, scale=100),
+    # [voice] game/voice_language.h; the other languages come from another disc (c3w/voices.py)
+    Setting("cod3_voice_language", "Voices",
+            "The language the soldiers speak in the campaign and its films. German, French, Spanish and "
+            "Italian need that disc's voices: Add voices from another disc. The text stays as it is.",
+            "choice", (("disc", "The game's own"), ("en", "English"), ("de", "German"), ("fr", "French"),
+                       ("es", "Spanish"), ("it", "Italian")), default="disc"),
+    # The SDK's own setting (XGetLanguage): Xbox 360 language numbers.
+    Setting("user_language", "Console language",
+            "The language the game is told the console uses. It picks the films' sound and, on the "
+            "French/Spanish/Italian disc, the soldiers' language and the text. Leave English for the "
+            "USA/Europe disc.",
+            "choice", ((1, "English"), (3, "German"), (4, "French"), (5, "Spanish"), (6, "Italian")),
+            default=1),
     Setting("cod3_glyph_style", "Controller button style",
             "How the game's prompts show controller buttons.",
             "choice", (("xbox", "Xbox 360 (the game's own)"), ("playstation", "PlayStation"),
@@ -509,16 +528,30 @@ def _matches(candidates: Iterable[str], names: Set[str]) -> bool:
     return False
 
 
+def _ended(pid_dir: Path) -> bool:
+    """True for a process that has ended but not been collected by its parent
+    yet (state Z, "zombie"; X, dead): its name stays in /proc until then, so it
+    would look like a game that is still running."""
+    try:
+        stat = (pid_dir / "stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    # "<pid> (<comm>) <state> ...": the name may hold spaces or parentheses.
+    rest = stat[stat.rfind(")") + 1:].split()
+    return bool(rest) and rest[0] in ("Z", "X")
+
+
 def processes_in(proc: Path) -> Iterable[List[str]]:
     """For each process in a /proc-style folder: its comm, executable link
-    and first two command-line arguments (what's readable)."""
+    and first two command-line arguments (what's readable). Processes that
+    have ended (zombies) are left out."""
     try:
         pids = [p for p in proc.iterdir() if p.name.isdigit()]
     except OSError:
         return
     me = str(os.getpid())
     for p in pids:
-        if p.name == me:
+        if p.name == me or _ended(p):
             continue
         found: List[str] = []
         try:

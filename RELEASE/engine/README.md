@@ -24,6 +24,7 @@ This is the native Rust side of the project. It builds on Linux and Windows with
 | `tools/newcopy` | `newcopy find / make / check`, the command line of `game_sources`. |
 | `tools/pc_check` | Runs the `iw_pc` ports for the x86 checker (`../tools/decomp/x86/pcdecomp.py check`). |
 | `tools/iw_server` | `iw-server`: a LAN server for Call of Duty 2 and United Offensive that the games' own PC clients can find and join, built on `iw_pc::server` ([PC_SERVER.md](../docs/PC_SERVER.md)). |
+| `cpp/` | The C++ version of `iw_pc`, for developers (CMake, C++20, standard library only): every ported function of the two PC games also in C++, checked against the same originals (`../tools/decomp/x86/pcdecomp.py check --impl cpp`). The Rust crate stays the full version ([cpp/README.md](cpp/README.md)). |
 | `crates/machine` | What the machine has — logical CPUs, the ones this process may use (affinity, Linux cgroup quota), physical cores, shared-L3 groups, efficiency cores, RAM, Wine — read once, and the thread budget from it. The same profile and the same budget as the ReXGlue port's `game/machine_profile.cpp`, checked against the one table `crates/machine/budget_cases.tsv` (see `../docs/SCALING.md`). Standard library only. |
 | `crates/jobs` | The engine's job pool, sized from `machine`: a parallel loop the asking thread helps with (the renderer records draws this way, so a frame's work spreads over every core instead of one GPU thread) and three priorities (frame, now, background; background never takes every worker). No dependencies besides `machine`. |
 

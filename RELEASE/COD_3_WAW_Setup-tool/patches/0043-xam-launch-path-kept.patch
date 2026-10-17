@@ -1,0 +1,25 @@
+From: cod3 port
+Subject: [PATCH] xam: keep the launch path XamLoaderLaunchTitle builds
+
+XamLoaderLaunchTitle joins a bare name ("default.xex") to the running
+program's folder, but held the result in a std::string_view (auto from
+MappedPtr<char>::value()), which pointed at the joined temporary only until
+the end of that statement. The launch path then started with whatever the
+allocator wrote into the freed buffer (16 bytes on glibc), e.g.
+"<garbage>0\Partition1\default.xex" in cod3mp's log when its reboot
+command starts the campaign. A std::string keeps it.
+---
+diff --git a/src/kernel/xam/xam_info.cpp b/src/kernel/xam/xam_info.cpp
+--- a/src/kernel/xam/xam_info.cpp
++++ b/src/kernel/xam/xam_info.cpp
+@@ -268,7 +268,9 @@
+ 
+   // Translate the launch path to a full path.
+   if (raw_name_ptr) {
+-    auto path = raw_name_ptr.value();
++    // A copy: path takes the joined string below, which a string_view
++    // would only point at until the end of that statement.
++    std::string path(raw_name_ptr.value());
+     if (path.empty()) {
+       loader_data.launch_path = "game:\\default.xex";
+     } else {

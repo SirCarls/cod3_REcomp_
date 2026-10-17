@@ -7,6 +7,11 @@ and the plain image (xex2pe.py), and writes names.tsv (addr, name, kind, pass,
 evidence). Passes, strongest first:
 
   runtime   the compiler's register save/restore routines (__savegprlr_14 ...), by their code
+  extra     (--extra, repeatable) names found by hand, with their evidence (addr, name, kind,
+            pass, evidence; a row of kind "note" is a comment only)
+  method    C++ methods named in their own strings (Demonware's "bdCore::init" log lines,
+            compiler signatures in assertions) when exactly one function has the name; names
+            two functions share come last
   pc        the PC build's name for the function that uses the same strings
             (--pc-names/--pc-raw: the PC names.tsv and its Ghidra export)
   selfname  a function's own name in its error/log strings
@@ -19,11 +24,12 @@ evidence). Passes, strongest first:
             and named globals, then the call graph and pointer tables); matched functions that stay unnamed
             get a note with their PC address
   kisak-graph  KisakCOD names from the call graph
+  method    the rest of the methods (a name two functions share: name, name_2)
 
 Usage:
     python3 tools/waw_decomp/name_x360.py --raw <export dir> --image image.pe --load 0x82000000 \
         --out names.tsv [--pc-names names.tsv --pc-raw <pc export dir> [--pc-exe CoDWaW.exe]] \
-        [--kisak ... --kisak-tables ...] [--matches pc_match.tsv]
+        [--kisak ... --kisak-tables ...] [--matches pc_match.tsv] [--extra hand.tsv ...]
 """
 import argparse
 import collections
@@ -210,6 +216,8 @@ def main():
                                             " --pc-names, when there): every entry of its tables")
     ap.add_argument("--kisak")
     ap.add_argument("--kisak-tables")
+    ap.add_argument("--extra", action="append", default=[],
+                    help="TSV: addr, name, kind, pass, evidence; names found by hand, taken right after the runtime routines (may be given more than once)")
     ap.add_argument("--out", required=True)
     ap.add_argument("--matches", help="write every matched (Xbox 360, PC) function pair here")
     args = ap.parse_args()
@@ -224,6 +232,21 @@ def main():
     for a, (name, ev) in sorted(stubs.items()):
         if namer.add(a, name, "function", "runtime", ev):
             stats["runtime"] += 1
+
+    # --- extra: names found by hand (a row of kind "note" is a comment only)
+    for extra in args.extra:
+        for r in read_tsv(extra):
+            addr = int(r["addr"], 16)
+            if r["kind"] == "note":
+                namer.note(addr, r.get("pass") or "extra", r.get("evidence", ""), keep=True)
+                stats["extra_notes"] += 1
+            elif (r["kind"] != "function" or addr in t.funcs) and namer.add(
+                    addr, r["name"], r["kind"], r.get("pass") or "extra", r.get("evidence", "")):
+                stats["extra"] += 1
+
+    # --- C++ methods that name exactly one function: before the PC names, since the same
+    # Demonware message can sit in another class's method on PC (the rest at the end)
+    pass_methods(namer, t, stats, unique_only=True)
 
     # --- pc: names from the PC build by shared strings
     if args.pc_names and args.pc_raw:

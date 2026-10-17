@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <string>
 
 #include <rex/ui/imgui_dialog.h>
@@ -59,6 +60,8 @@ class HudOverlay : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 };
 
+class ConsoleView;  // ui/console_view.h
+
 class SettingsWindow : public rex::ui::ImGuiDialog {
  public:
   SettingsWindow(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
@@ -82,6 +85,7 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   void DrawInterface();
   void DrawPerformance();
   void DrawConsole();
+  void DrawSavedConsoleSettings();
   void Save();
 
   std::filesystem::path config_path_;
@@ -91,6 +95,8 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   bool dirty_ = false;
   bool restart_needed_ = false;
   std::string status_;
+  // F2 > Console's console (ui/console_pages.h), made when first shown.
+  std::shared_ptr<ConsoleView> console_view_;
 };
 
 }  // namespace cod3::ui

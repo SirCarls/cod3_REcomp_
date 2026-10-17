@@ -1,0 +1,475 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index 21f776a..f1d8102 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -316,6 +316,21 @@ class CommandProcessor {
+                                    std::vector<const uint8_t*>& data_out) {
+     data_out.assign(count, nullptr);
+   }
++  // For the implementations, after a resolve ShouldReadbackResolve said to
++  // copy back: copies the resolve's bytes (`data`, `length` of them) into
++  // guest memory at `physical_address`, all of them or, for a destination in
++  // pieces (readback_resolve_cpu_pages_only), the pieces the guest reads.
++  // Returns how many bytes were copied.
++  uint64_t CopyResolveToGuest(uint32_t physical_address, uint32_t length, const uint8_t* data);
++  // The same in two steps, for an implementation that also copies only the
++  // pieces from the GPU: which pieces (offset, length) a resolve's copy back
++  // is, or true for all of it; then the copy of those.
++  bool GetResolveCopyPieces(uint32_t physical_address, uint32_t length,
++                            std::vector<std::pair<uint32_t, uint32_t>>& pieces);
++  uint64_t CopyResolvePiecesToGuest(uint32_t physical_address, uint32_t length,
++                                    const uint8_t* data, bool all,
++                                    const std::vector<std::pair<uint32_t, uint32_t>>& pieces);
++
+   // Copies back the resolves guest threads are waiting for. On the command
+   // processor thread between packets and while it waits; cheap when none.
+   void ProcessResolveFetches() {
+@@ -371,7 +386,29 @@ class CommandProcessor {
+     // The guest has accessed it: copied back after each resolve.
+     bool cpu_reads;
+     bool cpu_reads_logged;
++    // readback_resolve_cpu_pages_only: the 4 KB pieces of it the guest has
++    // touched, a bit each from the one holding `address`. After each resolve
++    // only these are copied back; the others stay watched, and touching one
++    // brings in this resolve's data (one fetch per resolve) and adds it here.
++    std::vector<uint64_t> read_chunks;
++    uint32_t read_chunk_count;
++    // The guest's copy of all of it holds the last resolve's data (a whole
++    // copy or a fetch since that resolve): touching a watched piece then only
++    // needs it unwatched.
++    bool current;
++    // Copied back whole after each resolve: pages-only is off, or the guest
++    // has touched too much of it for pieces to pay.
++    bool whole;
+   };
++  // The 4 KB pieces readback_resolve_cpu_pages_only works in.
++  static constexpr uint32_t kResolveChunkShift = 12;
++  // Marks the pieces of a destination that a touched physical range covers
++  // as read; returns whether any was new.
++  static bool MarkResolveChunksRead(ResolveDestination& destination, uint32_t physical_address,
++                                    uint32_t length);
++  // Watches the pieces of a destination the guest hasn't touched (for the
++  // data of the resolve just made).
++  void WatchUnreadResolveChunks(const ResolveDestination& destination);
+   // Called by the memory system on the thread that touched a read-watched
+   // page, with the global critical region locked once.
+   static std::pair<uint32_t, uint32_t> ResolveReadCallbackThunk(
+@@ -389,6 +426,8 @@ class CommandProcessor {
+   static constexpr size_t kMaxResolveDestinations = 256;
+   // Guarded by the global critical region.
+   std::vector<ResolveDestination> resolve_destinations_;
++  // CopyResolveToGuest's pieces (offset, length), kept for their storage.
++  std::vector<std::pair<uint32_t, uint32_t>> resolve_copy_runs_;
+   void* resolve_read_callback_handle_ = nullptr;
+   // Host thread ID of the command processor thread, which can't wait for
+   // itself.
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 848b53d..30dfa33 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -470,6 +470,9 @@ class VulkanCommandProcessor : public CommandProcessor {
+     uint32_t written_size[2] = {0, 0};
+     uint32_t current_index = 0;
+     uint64_t last_used_frame = 0;
++    // The slot holds only some pieces of the destination (a full readback
++    // copied in pieces): never read as a whole by a delayed readback.
++    bool partial[2] = {false, false};
+   };
+   void EvictOldReadbackBuffers(std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map);
+   // Makes sure a slot of a resolve readback buffer exists, mapped, with at
+@@ -478,8 +481,13 @@ class VulkanCommandProcessor : public CommandProcessor {
+   // Records the copy of a resolve destination from the GPU's memory (through
+   // a downscale at a draw resolution scale) into a readback buffer, ready for
+   // the host to read once the submission completes.
++  // `pieces` (offset, length within the destination), when not null and
++  // the copy is unscaled: copy only those, each to its own offset.
+   bool RecordResolveReadbackCopy(uint32_t address, uint32_t length, uint32_t format,
+-                                 VkBuffer target);
++                                 VkBuffer target,
++                                 const std::vector<std::pair<uint32_t, uint32_t>>* pieces = nullptr);
++  // The pieces of the current full readback (IssueCopy_ReadbackResolvePath).
++  std::vector<std::pair<uint32_t, uint32_t>> readback_pieces_;
+   static constexpr uint32_t kReadbackBufferSizeIncrement = 16 * 1024 * 1024;
+   static constexpr size_t kMaxReadbackBuffers = 256;
+   static constexpr uint64_t kReadbackBufferEvictionAgeFrames = 60;
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 62dc10f..7ce7068 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -62,6 +62,12 @@ REXCVAR_DEFINE_BOOL(readback_resolve_cpu_reads_only, true, "GPU",
+                     "others are watched instead: the first access waits while that one is "
+                     "copied back, and it is copied back after every resolve from then on")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(readback_resolve_cpu_pages_only, true, "GPU",
++                    "readback_resolve_cpu_reads_only: of a destination the game's CPU reads, copy "
++                    "back after each resolve only the 4 KB pieces it has touched. The rest stay "
++                    "watched, and touching one brings in its data then (off: all of it after "
++                    "every resolve, as before)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ REXCVAR_DEFINE_INT32(readback_resolve_cpu_wait_limit_ms, 10000, "GPU",
+                      "readback_resolve_cpu_reads_only: how long the CPU's first access to a "
+                      "resolve waits for its copy (which waits for the host GPU) before going "
+@@ -285,8 +291,9 @@ void CommandProcessor::Shutdown() {
+       auto global_lock = rex::thread::global_critical_region::AcquireDirect();
+       destinations.swap(resolve_destinations_);
+     }
++    // Destinations copied back in pieces are partly watched too.
+     for (const ResolveDestination& destination : destinations) {
+-      if (!destination.cpu_reads) {
++      if (!destination.cpu_reads || !destination.whole) {
+         memory::DisablePhysicalMemoryReadWatch(*memory_, destination.address, destination.length);
+       }
+     }
+@@ -847,6 +854,15 @@ bool CommandProcessor::ShouldReadbackResolve(uint32_t physical_address, uint32_t
+                     physical_address, length);
+       }
+     }
++    if (!REXCVAR_GET(readback_resolve_cpu_pages_only)) {
++      destination->whole = true;
++    }
++    if (!destination->whole) {
++      // In pieces: the ones the guest has touched are copied back now
++      // (CopyResolveToGuest); the others are watched for this data.
++      destination->current = false;
++      WatchUnreadResolveChunks(*destination);
++    }
+     return true;
+   }
+   // Watch it again for the new data: a write past the guest's views, a
+@@ -885,14 +901,37 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+       if (destination.address >= touched_end || destination_end <= physical_address_start) {
+         continue;
+       }
+-      // Unwatch all of it: one fault per destination, not per page.
+-      unwatch_start = std::min(unwatch_start, uint64_t(destination.address));
+-      unwatch_end = std::max(unwatch_end, destination_end);
+-      if (!destination.cpu_reads) {
+-        // The first access since it was resolved to: copy it back now, and
+-        // after every resolve from now on.
+-        destination.cpu_reads = true;
+-        if (can_wait) {
++      // In pieces (readback_resolve_cpu_pages_only): only the touched piece is
++      // unwatched, and only it is copied back after each resolve from now on.
++      // Once the guest has touched too much of it, all of it again.
++      if (!destination.whole && REXCVAR_GET(readback_resolve_cpu_pages_only)) {
++        MarkResolveChunksRead(destination, physical_address_start, length);
++        const uint32_t chunk_count =
++            uint32_t(((destination_end - 1) >> kResolveChunkShift) -
++                     (destination.address >> kResolveChunkShift) + 1);
++        if (destination.read_chunk_count > std::max<uint32_t>(16, chunk_count / 8)) {
++          destination.whole = true;
++        }
++      } else {
++        destination.whole = true;
++      }
++      if (destination.whole) {
++        // Unwatch all of it: one fault per destination, not per page.
++        unwatch_start = std::min(unwatch_start, uint64_t(destination.address));
++        unwatch_end = std::max(unwatch_end, destination_end);
++      }
++      // The first access since it was resolved to, or a piece whose data the
++      // last resolve hasn't brought in yet: copy it back now (the copy fills
++      // every piece still watched).
++      const bool first_access = !destination.cpu_reads;
++      const bool needs_data = first_access || !destination.current;
++      destination.cpu_reads = true;
++      if (needs_data) {
++        bool pending = false;
++        for (const ResolveFetch& fetch : resolve_fetches_) {
++          pending |= destination.fetch_serial && fetch.serial == destination.fetch_serial;
++        }
++        if (can_wait && !pending) {
+           destination.fetch_serial = resolve_fetch_next_serial_++;
+           ResolveFetch& fetch = resolve_fetches_.emplace_back();
+           fetch.address = destination.address;
+@@ -901,7 +940,7 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+           fetch.serial = destination.fetch_serial;
+           fetch.in_progress = false;
+           fetch.cancelled = false;
+-        } else if (REXCVAR_GET(readback_resolve_log)) {
++        } else if (!can_wait && REXCVAR_GET(readback_resolve_log)) {
+           REXGPU_INFO(
+               "Resolve readback: {:08X} accessed where it can't wait for its copy (the GPU "
+               "thread); this access sees the older contents",
+@@ -1014,6 +1053,12 @@ void CommandProcessor::ProcessResolveFetchesNow() {
+       }
+       if (!it->cancelled && i < resolve_fetch_data_.size() && resolve_fetch_data_[i]) {
+         CopyResolveFetchToGuest(done, resolve_fetch_data_[i]);
++        // Every piece still watched now has the last resolve's data.
++        for (ResolveDestination& destination : resolve_destinations_) {
++          if (destination.address == done.address && destination.length == done.length) {
++            destination.current = true;
++          }
++        }
+       }
+       resolve_fetches_.erase(it);
+     }
+@@ -1056,6 +1101,129 @@ void CommandProcessor::CopyResolveFetchToGuest(const ResolveFetch& fetch, const
+   }
+ }
+ 
++bool CommandProcessor::MarkResolveChunksRead(ResolveDestination& destination,
++                                             uint32_t physical_address, uint32_t length) {
++  const uint64_t destination_end = uint64_t(destination.address) + destination.length;
++  const uint64_t first = std::max(uint64_t(physical_address), uint64_t(destination.address));
++  const uint64_t end = std::min(uint64_t(physical_address) + length, destination_end);
++  if (first >= end) {
++    return false;
++  }
++  const uint32_t base_chunk = destination.address >> kResolveChunkShift;
++  const uint32_t chunk_count =
++      uint32_t(((destination_end - 1) >> kResolveChunkShift) - base_chunk + 1);
++  destination.read_chunks.resize((chunk_count + 63) / 64);
++  bool any_new = false;
++  for (uint64_t chunk = first >> kResolveChunkShift; chunk <= (end - 1) >> kResolveChunkShift;
++       ++chunk) {
++    const uint32_t index = uint32_t(chunk) - base_chunk;
++    uint64_t& bits = destination.read_chunks[index >> 6];
++    const uint64_t bit = uint64_t(1) << (index & 63);
++    if (!(bits & bit)) {
++      bits |= bit;
++      ++destination.read_chunk_count;
++      any_new = true;
++    }
++  }
++  return any_new;
++}
++
++void CommandProcessor::WatchUnreadResolveChunks(const ResolveDestination& destination) {
++  const uint64_t destination_end = uint64_t(destination.address) + destination.length;
++  const uint32_t base_chunk = destination.address >> kResolveChunkShift;
++  const uint32_t chunk_count =
++      uint32_t(((destination_end - 1) >> kResolveChunkShift) - base_chunk + 1);
++  uint32_t run_first = UINT32_MAX;
++  auto watch_run = [&](uint32_t run_end) {
++    if (run_first == UINT32_MAX) {
++      return;
++    }
++    const uint64_t start = std::max(uint64_t(base_chunk + run_first) << kResolveChunkShift,
++                                    uint64_t(destination.address));
++    const uint64_t end = std::min(uint64_t(base_chunk + run_end) << kResolveChunkShift,
++                                  destination_end);
++    if (end > start) {
++      memory::EnablePhysicalMemoryReadWatch(*memory_, uint32_t(start), uint32_t(end - start));
++    }
++    run_first = UINT32_MAX;
++  };
++  for (uint32_t i = 0; i < chunk_count; ++i) {
++    const bool read = (i >> 6) < destination.read_chunks.size() &&
++                      (destination.read_chunks[i >> 6] & (uint64_t(1) << (i & 63)));
++    if (read) {
++      watch_run(i);
++    } else if (run_first == UINT32_MAX) {
++      run_first = i;
++    }
++  }
++  watch_run(chunk_count);
++}
++
++bool CommandProcessor::GetResolveCopyPieces(uint32_t physical_address, uint32_t length,
++                                            std::vector<std::pair<uint32_t, uint32_t>>& pieces) {
++  pieces.clear();
++  const uint32_t address = physical_address & 0x1FFFFFFF;
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++  for (ResolveDestination& destination : resolve_destinations_) {
++    if (destination.address != address || destination.length != length) {
++      continue;
++    }
++    if (!destination.cpu_reads || destination.whole) {
++      destination.current = true;
++      return true;
++    }
++    const uint64_t destination_end = uint64_t(address) + length;
++    const uint32_t base_chunk = address >> kResolveChunkShift;
++    const uint32_t chunk_count =
++        uint32_t(((destination_end - 1) >> kResolveChunkShift) - base_chunk + 1);
++    for (uint32_t i = 0; i < chunk_count; ++i) {
++      if ((i >> 6) >= destination.read_chunks.size() ||
++          !(destination.read_chunks[i >> 6] & (uint64_t(1) << (i & 63)))) {
++        continue;
++      }
++      const uint64_t start =
++          std::max(uint64_t(base_chunk + i) << kResolveChunkShift, uint64_t(address));
++      const uint64_t end =
++          std::min(uint64_t(base_chunk + i + 1) << kResolveChunkShift, destination_end);
++      const uint32_t offset = uint32_t(start - address);
++      if (!pieces.empty() && pieces.back().first + pieces.back().second == offset) {
++        pieces.back().second += uint32_t(end - start);
++      } else {
++        pieces.emplace_back(offset, uint32_t(end - start));
++      }
++    }
++    return false;
++  }
++  return true;
++}
++
++uint64_t CommandProcessor::CopyResolvePiecesToGuest(
++    uint32_t physical_address, uint32_t length, const uint8_t* data, bool all,
++    const std::vector<std::pair<uint32_t, uint32_t>>& pieces) {
++  uint8_t* guest = memory_->TranslatePhysical(physical_address);
++  if (!guest || !length) {
++    return 0;
++  }
++  if (all) {
++    std::memcpy(guest, data, length);
++    return length;
++  }
++  uint64_t copied = 0;
++  for (const auto& [offset, piece_length] : pieces) {
++    std::memcpy(guest + offset, data + offset, piece_length);
++    copied += piece_length;
++  }
++  return copied;
++}
++
++uint64_t CommandProcessor::CopyResolveToGuest(uint32_t physical_address, uint32_t length,
++                                              const uint8_t* data) {
++  // The pieces are worked out under the lock that guards the destinations,
++  // and copied outside it (all of it may be megabytes).
++  const bool all = GetResolveCopyPieces(physical_address, length, resolve_copy_runs_);
++  return CopyResolvePiecesToGuest(physical_address, length, data, all, resolve_copy_runs_);
++}
++
+ void CommandProcessor::ReturnFromWait() {}
+ 
+ uint32_t CommandProcessor::ExecutePrimaryBuffer(uint32_t read_index, uint32_t write_index) {
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index d9c5d28..9fdf339 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -3129,11 +3129,12 @@ bool D3D12CommandProcessor::IssueCopy_ReadbackResolvePath() {
+   bool should_copy = (readback_mode == ReadbackResolveMode::kSome) ? is_cache_miss : true;
+   if (should_copy && rb.buffers[read_index] && written_length <= rb.sizes[read_index] &&
+       rb.mapped_data[read_index]) {
+-    uint8_t* destination = memory_->TranslatePhysical(written_address);
+-    if (destination) {
+-      std::memcpy(destination, static_cast<uint8_t*>(rb.mapped_data[read_index]), written_length);
++    // All of it, or the pieces the guest reads (readback_resolve_cpu_pages_only).
++    const uint64_t copied = CopyResolveToGuest(
++        written_address, written_length, static_cast<const uint8_t*>(rb.mapped_data[read_index]));
++    if (copied) {
+       stats::Add(stats::Counter::kReadbacks);
+-      stats::Add(stats::Counter::kReadbackBytes, written_length);
++      stats::Add(stats::Counter::kReadbackBytes, copied);
+     }
+   }
+ 
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index ce40f2b..23a831e 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4494,8 +4494,9 @@ bool VulkanCommandProcessor::EnsureReadbackBufferSlot(ReadbackBuffer& readback,
+   return true;
+ }
+ 
+-bool VulkanCommandProcessor::RecordResolveReadbackCopy(uint32_t address, uint32_t length,
+-                                                       uint32_t format, VkBuffer target) {
++bool VulkanCommandProcessor::RecordResolveReadbackCopy(
++    uint32_t address, uint32_t length, uint32_t format, VkBuffer target,
++    const std::vector<std::pair<uint32_t, uint32_t>>* pieces) {
+   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -4664,12 +4665,29 @@ bool VulkanCommandProcessor::RecordResolveReadbackCopy(uint32_t address, uint32_
+     shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
+     SubmitBarriers(true);
+ 
+-    VkBufferCopy readback_region = {};
+-    readback_region.srcOffset = address;
+-    readback_region.dstOffset = 0;
+-    readback_region.size = length;
+-    deferred_command_buffer_.CmdVkCopyBuffer(shared_memory_->buffer(), target, 1,
+-                                             &readback_region);
++    if (pieces) {
++      // Only the pieces the guest reads, each where the whole copy would put
++      // it.
++      std::vector<VkBufferCopy> regions;
++      regions.reserve(pieces->size());
++      for (const auto& [offset, piece_length] : *pieces) {
++        VkBufferCopy& region = regions.emplace_back();
++        region.srcOffset = VkDeviceSize(address) + offset;
++        region.dstOffset = offset;
++        region.size = piece_length;
++      }
++      if (!regions.empty()) {
++        deferred_command_buffer_.CmdVkCopyBuffer(shared_memory_->buffer(), target,
++                                                 uint32_t(regions.size()), regions.data());
++      }
++    } else {
++      VkBufferCopy readback_region = {};
++      readback_region.srcOffset = address;
++      readback_region.dstOffset = 0;
++      readback_region.size = length;
++      deferred_command_buffer_.CmdVkCopyBuffer(shared_memory_->buffer(), target, 1,
++                                               &readback_region);
++    }
+   }
+ 
+   PushBufferMemoryBarrier(target, 0, length, VK_PIPELINE_STAGE_TRANSFER_BIT,
+@@ -4725,13 +4743,23 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   if (!EnsureReadbackBufferSlot(readback, write_index, AlignReadbackBufferSize(written_length))) {
+     return true;
+   }
++  bool use_delayed_sync =
++      readback_mode == ReadbackResolveMode::kFast || readback_mode == ReadbackResolveMode::kSome;
++  // A full readback of a destination the guest reads in pieces
++  // (readback_resolve_cpu_pages_only): only those cross from the GPU, too.
++  // Delayed readbacks read the slot the previous resolve wrote, which must
++  // then hold all of it.
++  bool all_pieces = true;
++  if (!use_delayed_sync && !texture_cache_->IsDrawResolutionScaled()) {
++    all_pieces = GetResolveCopyPieces(written_address, written_length, readback_pieces_);
++  }
+   if (!RecordResolveReadbackCopy(written_address, written_length, copy_dest_format,
+-                                 readback.buffers[write_index])) {
++                                 readback.buffers[write_index],
++                                 all_pieces ? nullptr : &readback_pieces_)) {
+     return true;
+   }
++  readback.partial[write_index] = !all_pieces;
+ 
+-  bool use_delayed_sync =
+-      readback_mode == ReadbackResolveMode::kFast || readback_mode == ReadbackResolveMode::kSome;
+   uint32_t read_index = write_index;
+   if (use_delayed_sync) {
+     read_index = 1 - write_index;
+@@ -4742,7 +4770,8 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   bool is_cache_miss = false;
+   if (use_delayed_sync && (readback.buffers[read_index] == VK_NULL_HANDLE ||
+                            written_length > readback.sizes[read_index] ||
+-                           readback.mapped_data[read_index] == nullptr)) {
++                           readback.mapped_data[read_index] == nullptr ||
++                           readback.partial[read_index])) {
+     is_cache_miss = true;
+     read_index = write_index;
+     if (!AwaitAllQueueOperationsCompletion()) {
+@@ -4760,11 +4789,16 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+     readback_memory_range.size = VK_WHOLE_SIZE;
+     dfn.vkInvalidateMappedMemoryRanges(device, 1, &readback_memory_range);
+ 
+-    uint8_t* destination = memory_->TranslatePhysical(written_address);
+-    if (destination) {
+-      std::memcpy(destination, readback.mapped_data[read_index], written_length);
++    // All of it, or the pieces the guest reads (readback_resolve_cpu_pages_only):
++    // the ones copied from the GPU above for a full readback.
++    const uint8_t* data = static_cast<const uint8_t*>(readback.mapped_data[read_index]);
++    const uint64_t copied =
++        all_pieces ? CopyResolveToGuest(written_address, written_length, data)
++                   : CopyResolvePiecesToGuest(written_address, written_length, data, false,
++                                              readback_pieces_);
++    if (copied) {
+       stats::Add(stats::Counter::kReadbacks);
+-      stats::Add(stats::Counter::kReadbackBytes, written_length);
++      stats::Add(stats::Counter::kReadbackBytes, copied);
+     }
+   }
+ 
+@@ -4795,6 +4829,7 @@ void VulkanCommandProcessor::ReadBackResolvesNow(const ResolveFetch* fetches, si
+                                    readback.buffers[index])) {
+       continue;
+     }
++    readback.partial[index] = false;
+     slots[i] = {&readback, index};
+     any_recorded = true;
+   }

@@ -12,22 +12,60 @@ include(generated/rexglue.cmake)
 
 set(COD3_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
-# Only what is the same in both programs, or this program's own: the
-# campaign's other game code hooks default.xex's addresses. A shared file may
-# hook a function by name only when tools/name_mp_functions.py gives this
-# program's function of the same role that name (never a sub_ address name:
-# here that is another function).
+# The campaign's port code (F2, the ~ console, raw mouse aim, the frame
+# limiter, FOV, native resolution ...) and this program's own. A shared
+# file's hooks and addresses become this program's through
+# game/mp/mp_aliases.h and game/mp/addresses_mp.h, which tools/mp_aliases.py
+# makes from config/campaign_map.tsv (every campaign function and address
+# a shared file uses, checked in both images); campaign-only code (films,
+# battle actions, the campaign's own menu pages) is left out or bound to
+# nothing (game/mp/campaign_only.cpp).
 set(COD3MP_SOURCES
     ${COD3_SRC}/main_mp.cpp
     ${COD3_SRC}/cod3mp_app.cpp
+    ${COD3_SRC}/game/cheat_guard.cpp
+    ${COD3_SRC}/game/cheat_watch.cpp
     ${COD3_SRC}/game/color_output.cpp
+    ${COD3_SRC}/game/diagnostics.cpp
+    ${COD3_SRC}/game/engine.cpp
+    ${COD3_SRC}/game/fov.cpp
+    ${COD3_SRC}/game/frame_rate.cpp
+    ${COD3_SRC}/game/function_profiler.cpp
+    ${COD3_SRC}/game/game_api.cpp
+    ${COD3_SRC}/game/gpu_wait.cpp
+    ${COD3_SRC}/game/hd_textures.cpp
+    ${COD3_SRC}/game/job_wait.cpp
+    ${COD3_SRC}/game/job_wake.cpp
     ${COD3_SRC}/game/level_hooks.cpp
-    ${COD3_SRC}/game/mp_hooks.cpp
+    ${COD3_SRC}/game/machine_profile.cpp
+    ${COD3_SRC}/game/mouse_look.cpp
+    ${COD3_SRC}/game/perf_stats.cpp
+    ${COD3_SRC}/game/print_hooks.cpp
     ${COD3_SRC}/game/relaunch.cpp
+    ${COD3_SRC}/game/render_resolution.cpp
+    ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
+    ${COD3_SRC}/game/settings_sync.cpp
+    ${COD3_SRC}/game/shadows.cpp
+    ${COD3_SRC}/game/thread_profiler.cpp
+    ${COD3_SRC}/game/ultrawide.cpp
+    ${COD3_SRC}/game/watchdog.cpp
+    ${COD3_SRC}/game/mp/campaign_only.cpp
+    ${COD3_SRC}/game/mp/campaign_stubs.cpp
+    ${COD3_SRC}/game/mp/hud_mp.cpp
+    ${COD3_SRC}/game/mp/menus_mp.cpp
+    ${COD3_SRC}/game/mp/session.cpp
     ${COD3_SRC}/test_input.cpp
+    ${COD3_SRC}/ui/announcement_feed.cpp
+    ${COD3_SRC}/ui/console_pages.cpp
+    ${COD3_SRC}/ui/console_view.cpp
+    ${COD3_SRC}/ui/dvar_domain.cpp
+    ${COD3_SRC}/ui/game_console.cpp
+    ${COD3_SRC}/ui/hud_overlay.cpp
+    ${COD3_SRC}/ui/problem_log.cpp
     ${COD3_SRC}/ui/theme.cpp
+    ${COD3_SRC}/ui/waw_dvars.cpp
 )
 
 if(WIN32)
@@ -40,10 +78,17 @@ endif()
 # the setup tool packs them together.
 set_target_properties(cod3mp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
-# COD3_MP: the few shared files that include a program's generated headers
-# pick this program's (game/script_threads.cpp).
+# COD3_MP: shared files pick this program's generated headers and values
+# (game/program.h, game/addresses.h). The alias header goes into this
+# target's own sources only, never into the generated code (cod3mp_recomp),
+# where it would rename this program's functions.
 target_compile_definitions(cod3mp PRIVATE COD3_MP=1)
 target_include_directories(cod3mp PRIVATE ${COD3_SRC})
+if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+    target_compile_options(cod3mp PRIVATE "/FI${COD3_SRC}/game/mp/mp_aliases.h")
+else()
+    target_compile_options(cod3mp PRIVATE "-include${COD3_SRC}/game/mp/mp_aliases.h")
+endif()
 
 rexglue_setup_target(cod3mp GPU_PLUGINS xenos)
 

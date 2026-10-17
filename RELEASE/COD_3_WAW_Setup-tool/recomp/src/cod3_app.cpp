@@ -22,10 +22,12 @@
 #include <SDL3/SDL.h>
 #include <rex/audio/downmix.h>
 #include <rex/cvar.h>
+#include <rex/cvar_file.h>
 #include <rex/filesystem.h>
 #include <rex/input/input_system.h>
 #include <rex/logging.h>
 #include <rex/ui/imgui_drawer.h>
+#include <rex/ui/presenter.h>
 #include <rex/graphics/xenos.h>
 #include <rex/runtime.h>
 #include <rex/system/gpu_plugin.h>
@@ -38,16 +40,23 @@
 #include "game/pc_menu.h"
 #include "game/button_prompts.h"
 #include "game/color_output.h"
+#include "game/decomp_trace.h"
 #include "game/diagnostics.h"
 #include "game/frame_rate.h"
 #include "game/hd_textures.h"
+#include "game/keybinds/binds.h"  // [keybinds]
 #include "game/menu_video.h"
 #include "game/multiplayer.h"
+#include "game/protected_dvars.h"  // [movement]
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
+#include "game/screenshot.h"
+#include "game/settings_sync.h"
 #include "game/ultrawide.h"
+#include "game/voice_language.h"  // [voice]
 #include "game/watchdog.h"
 #include "test_input.h"
+#include "ui/problem_log.h"
 #include "ui/theme.h"
 #include "generated/default/cod3_init.h"
 
@@ -76,11 +85,15 @@ REXCVAR_DECLARE(double, cod3_refresh_rate);
 REXCVAR_DECLARE(std::string, cod3_graphics_api);
 
 namespace {
-// A default that only applies while the user hasn't set that option
-// themselves (config file, environment or command line).
+// The game's own default for a setting (app_defaults.h): the value it has
+// until the player chooses another, the one F2's Reset buttons go back to and
+// the one cod3.toml leaves out. So a player who picks the SDK's own value
+// (keyboard and mouse off, resolve readback off) keeps it: before, the file
+// left that value out as "the default" and this put the game's back at every
+// start (rex/cvar_file.h, SDK patch 0042).
 void SetDefault(const char* name, const char* value) {
-  if (auto* info = rex::cvar::GetFlagInfo(name); info && info->source == rex::cvar::Source::kDefault)
-    rex::cvar::SetFlagByName(name, value);
+  if (rex::cvar::GetFlagInfo(name) && !rex::cvar::SetDefaultValue(name, value))
+    REXLOG_WARN("cod3: {} doesn't take the default '{}'", name, value);
 }
 
 // Ends the process at once. Every way out of the game (window close button,
@@ -164,6 +177,8 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
     paths.game_data_root = root / "assets";
   // [cod3mp] Where the Multiplayer item looks for the disc's multiplayer files.
   cod3::mp::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  // [voice] Where the Voices setting finds other discs' sound banks.
+  cod3::voice::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
     paths.user_data_root = root / "userdata";
     paths.cache_root = root / "userdata" / "cache";
@@ -175,10 +190,12 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
   // Without a log_file the SDK logs into <executable folder>/logs, which is
   // read-only inside an AppImage (creating it throws and the game exits
   // before opening a window). Log into userdata/logs/ instead; a log_file
-  // from the command line or cod3.toml still wins. Forward slashes: F2's
-  // Save writes this into cod3.toml unescaped, where a Windows "C:\..." path
-  // would make the whole file unreadable (see PathToUtf8Generic in util.h).
-  if (rex::cvar::GetFlagByName("log_file").empty()) {
+  // from the command line still wins. (This runs before cod3.toml is read,
+  // and a value set here outranks the file's, so a moved or copied game
+  // folder logs into its own userdata/logs.) Forward slashes: a Windows
+  // "C:\..." path in cod3.toml (see PathToUtf8Generic in util.h).
+  if (const auto source = rex::cvar::GetFlagSource("log_file");
+      source != rex::cvar::Source::kCommandLine && source != rex::cvar::Source::kEnvironment) {
     const auto user_dir = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
     std::error_code ec;
     std::filesystem::create_directories(user_dir / "logs", ec);
@@ -187,6 +204,8 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
 }
 
 void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
+  // F2 > Console > Problems: every warning and error from here on (ui/problem_log.h).
+  cod3::ui::ProblemLog::Get().Install();
   runtime_config_ = &config;  // its GPU plugin is loaded right after this (render resolution)
   // The game's name in the system's sound settings (PipeWire, PulseAudio:
   // the stream's application name; the SDK's is "rexglue"). SDL reads this
@@ -261,6 +280,16 @@ void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
   // (guest_vblank_rate and the other GPU settings exist only once the GPU
   // plugin is loaded: ApplyGpuDefaults.)
 
+  // Test switches act for one start only. An older build saved them into
+  // cod3.toml with everything else given on the command line (SDK patch 0042
+  // stops that), and from there an autoexec ran at every start.
+  for (const char* name : {"cod3_autoexec", "cod3_autoexec_delay", "cod3_test_input",
+                           "cod3_test_fov_script", "cod3_test_fov_cgame"}) {
+    if (rex::cvar::GetFlagSource(name) != rex::cvar::Source::kConfig) continue;
+    REXLOG_INFO("cod3: {} from cod3.toml not used (a test switch: give it on the command line)", name);
+    rex::cvar::ResetToDefault(name);
+  }
+
   // PC-style controls out of the box: keyboard + raw mouse aim with World at
   // War-like binds, and the GPU settings known to suit this title
   // (app_defaults.h; each only while the user hasn't set it).
@@ -269,6 +298,12 @@ void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
     set_default(d.cvar, d.value);
   }
   for (const auto& d : cod3::kKeybindDefaults) set_default(d.cvar, d.value);
+  // [keybinds] Binoculars and sprint / hold breath are keys of their own in
+  // the campaign (game/keybinds/binds.h): no key presses the controller's
+  // left stick click or D-pad by default, and a player's own keys there move
+  // to those actions once (saved).
+  for (const auto& d : cod3::kCampaignKeybindDefaults) set_default(d.cvar, d.value);
+  cod3::binds::MigrateSettings(config_path_);
 }
 
 // The GPU plugin's settings (vblank rate, resolve readback ...) only exist
@@ -286,6 +321,8 @@ bool Cod3App::ConstructRuntime(const rex::PathConfig& paths) {
   cod3::diag::Start(userdata_dir_ / "logs");
   // The hang watchdog and, on Windows, the crash logger (game/watchdog.h).
   cod3::watchdog::Start();
+  // The decomp trace build only: its session folder and writer (game/decomp_trace.h).
+  cod3::trace::Start(userdata_dir_);
   return rex::ReXApp::ConstructRuntime(paths);
 }
 
@@ -401,7 +438,8 @@ void Cod3App::OnPostSetup() {
       if (cod3::ui::GameConsole::IsOpen()) return false;
       auto* drawer = imgui_drawer();
       if (!drawer || !drawer->HasDialogs()) return true;
-      return !drawer->GetIO().WantCaptureMouse;
+      // Typing into a text box (F2 > Console's input line) never reaches the game either.
+      return !drawer->GetIO().WantCaptureMouse && !drawer->GetIO().WantTextInput;
     });
   }
 
@@ -424,9 +462,10 @@ void Cod3App::OnPostSetup() {
   cod3::pcmenu::SetQuitToDesktopHandler([this]() {
     app_context().CallInUIThreadDeferred([this]() { SaveAndExit("quit to desktop from the game's menu"); });
   });
-  // A video setting changed in the game's own Options menus (game thread):
-  // save the settings file on the UI thread, like F2's Save.
-  cod3::videomenu::SetSaveHandler([this]() {
+  // A video setting changed in the game's own Options menus, or another port
+  // setting outside F2 (game thread): save the settings file on the UI
+  // thread, like F2's Save.
+  auto save_on_ui_thread = [this]() {
     app_context().CallInUIThreadDeferred([this]() {
       try {
         rex::cvar::SaveConfig(config_path_);
@@ -434,6 +473,20 @@ void Cod3App::OnPostSetup() {
         REXLOG_WARN("cod3: couldn't save {}: {}", cod3::PathToUtf8(config_path_), e.what());
       }
     });
+  };
+  cod3::videomenu::SetSaveHandler(save_on_ui_thread);
+  cod3::settings::SetSaveHandler(save_on_ui_thread);
+  // [movement] A movement setting changed in the game's Options menus (game
+  // thread): the same save (game/movement/settings.h, game/protected_dvars.h).
+  cod3::protected_dvars::SetSaveHandler(save_on_ui_thread);
+
+  // Screenshots for the debug log and bug reports (game/screenshot.h): the
+  // game's own picture, read back from the GPU emulation's output, never
+  // the screen or the window.
+  cod3::shot::Start(userdata_dir_ / "logs" / "screenshots", [this](rex::ui::RawImage& image) {
+    auto* graphics = runtime() ? runtime()->graphics_system() : nullptr;
+    auto* presenter = graphics ? graphics->presenter() : nullptr;
+    return presenter && presenter->CaptureGuestOutput(image);
   });
 
   // Master volume (F2 > Audio, snd_volume in the console).
@@ -482,6 +535,8 @@ void Cod3App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     }
     // windows-fps: one log line on the frame pacing (game/frame_rate.h).
     cod3::LogFramePacingOnce(window());
+    // [keybinds] Keys held when an overlay opens or the window loses focus are let go.
+    cod3::binds::OnUiFrame();
   };
   // Above the ImGui drawer (z 64) so the toggle key never reaches a text box.
   window()->AddInputListener(&key_listener_, 200);
@@ -495,6 +550,19 @@ void Cod3App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
   // Keys in the game's button prompts (game/button_prompts.h): first of all
   // listeners, it only watches which device is in use and takes nothing.
   cod3::prompts::Attach(window(), 201);
+  // [keybinds] Keys of the port's own actions (binoculars, sprint / hold
+  // breath; game/keybinds/binds.h): below the PC menus, above ImGui and the
+  // keyboard/mouse driver, which then never sees them; nothing while the
+  // console or the settings window is open, or while another ImGui window
+  // (the SDK's F3/F4/F10 overlays) has the mouse or a text box: the same rule
+  // as the game's own input (SetActiveCallback in OnPostSetup).
+  cod3::binds::Attach(window(), 197, [this]() {
+    if (cod3::ui::GameConsole::IsOpen() || settings_ != nullptr) return true;
+    auto* drawer = imgui_drawer();
+    return drawer && drawer->HasDialogs() && (drawer->GetIO().WantCaptureMouse || drawer->GetIO().WantTextInput);
+  });
+  // The decomp trace build only: F8 notes a marker (game/decomp_trace.h).
+  cod3::trace::AttachMarkerKey(window(), imgui_drawer());
   // Fullscreen refresh rate (F2 > Video; SDK patch 0013): an exclusive mode
   // at that rate, or borderless at the desktop's own mode when 0.
   window()->SetFullscreenRefreshRate(REXCVAR_GET(cod3_refresh_rate));
@@ -589,6 +657,7 @@ void Cod3App::UpdateMouseCapture() {
 void Cod3App::SaveAll() {
   if (settings_) settings_->SaveIfDirty();
   cod3::Engine::Get().SaveConfig();
+  cod3::trace::Flush();  // the decomp trace build's files (game/decomp_trace.h)
 }
 
 // UI thread: saves the settings and ends the process (EndProcess).
@@ -630,6 +699,7 @@ void Cod3App::OnPostLaunchModule(rex::system::XThread* thread) {
 
 void Cod3App::OnShutdown() {
   StartExitWatchdog("shutting down");
+  cod3::shot::Stop();  // before the GPU emulation's presenter goes
   console_.reset();
   if (settings_) settings_->SaveIfDirty();
   settings_.reset();
@@ -641,6 +711,7 @@ void Cod3App::OnShutdown() {
     }
     cod3::pcmenu::Detach(window());
     cod3::prompts::Detach(window());
+    cod3::binds::Detach(window());  // [keybinds]
     window()->RemoveInputListener(&mouse_listener_);
     window()->RemoveInputListener(&key_listener_);
   }

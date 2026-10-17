@@ -18,6 +18,7 @@
 #include <rex/audio/output_device.h>
 #include <rex/cvar.h>
 #include <rex/hook.h>  // PPCRegister, for the midasm hooks below
+#include <rex/ui/hdr_output.h>  // SDK patch 0044
 #include <rex/logging.h>
 
 #include "app_defaults.h"
@@ -26,10 +27,19 @@
 #include "game/cutscene_skip.h"
 #include "game/diagnostics.h"
 #include "game/engine.h"
+#include "game/fov.h"
 #include "game/hd_textures.h"
+#include "game/program.h"
+#include "game/mouse_look.h"
+#if !defined(COD3_MP)
+#include "game/keybinds/binds.h"     // [keybinds] campaign only for now
+#include "game/movement/settings.h"  // [movement] campaign only for now
+#endif
 #include "game/render_resolution.h"
+#include "game/screenshot.h"
 #include "game/shadows.h"
 #include "game/ultrawide.h"
+#include "game/voice_language.h"  // [voice]
 #include "game/frame_rate.h"
 #include "game/perf_stats.h"
 #include "game/machine_profile.h"  // [hw-scaling]
@@ -37,6 +47,9 @@
 #include "game/guest.h"
 #include "game/addresses.h"
 #include "ui/announcement_feed.h"
+#include "ui/console_pages.h"
+#include "ui/console_view.h"
+#include "ui/qte_spinner.h"
 #include "ui/theme.h"
 
 REXCVAR_DECLARE(bool, cod3_raw_mouse);
@@ -92,8 +105,8 @@ REXCVAR_DEFINE_DOUBLE(cod3_refresh_rate, 0.0, "cod3/Display",
                       "applies at once")
     .range(0.0, 1000.0);
 REXCVAR_DEFINE_INT32(cod3_max_fps, 60, "cod3/Display",
-                     "Starting frame rate limit (com_maxfps; 0 = no limit). A com_maxfps set "
-                     "in the console or the settings is saved in the console config and wins.")
+                     "Frame rate limit (com_maxfps; 0 = no limit). F2, the game's Options and "
+                     "com_maxfps in the console all change it; the game starts with it.")
     .range(0, 1000);
 
 namespace cod3::ui {
@@ -313,23 +326,20 @@ static void DrawSkipPrompt(ImGuiIO& io, float alpha) {
   dl->AddText(font, size, lp, gold, label);
 }
 
-// The game's HUD on the window (hud_overlay.h): the picture, fitted to the
-// window with the shape the game draws (game/ultrawide.h), and on a wider
-// picture its centered 16:9 part when the HUD is kept 16:9.
+// The game's HUD on the window (hud_overlay.h): the picture where the
+// presenter shows it with the shape the game draws (game/ultrawide.h: bars,
+// or stretched with Letterbox off), and on a wider picture its centered 16:9
+// part when the HUD is kept 16:9.
 HudArea CurrentHudArea(const ImGuiIO& io) {
   HudArea a{0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y};
-  if (a.width <= 0.0f || a.height <= 0.0f) return a;
+  if (a.width < 1.0f || a.height < 1.0f) return a;
   const float picture = std::max(cod3::DisplayAspect(), 0.1f);
-  // The presenter letterboxes or pillarboxes a window of another shape.
-  if (a.width / a.height > picture + 0.002f) {
-    a.width = std::floor(a.height * picture);
-    a.x = std::floor((io.DisplaySize.x - a.width) * 0.5f);
-  } else if (a.width / a.height < picture - 0.002f) {
-    a.height = std::floor(a.width / picture);
-    a.y = std::floor((io.DisplaySize.y - a.height) * 0.5f);
-  }
-  if (picture > cod3::kSixteenByNine + 0.002f && REXCVAR_GET(cod3_ultrawide_hud)) {
-    const float hud_width = std::floor(a.height * cod3::kSixteenByNine);
+  const cod3::PictureRect r = cod3::PictureInView(uint32_t(io.DisplaySize.x + 0.5f),
+                                                  uint32_t(io.DisplaySize.y + 0.5f), picture);
+  a = HudArea{float(r.x), float(r.y), float(r.width), float(r.height)};
+  if (picture > cod3::kSixteenByNine + cod3::kSameShape && REXCVAR_GET(cod3_ultrawide_hud)) {
+    // The 16:9 share of the picture's width (the same on a stretched picture).
+    const float hud_width = std::floor(a.width * cod3::kSixteenByNine / picture);
     a.x += std::floor((a.width - hud_width) * 0.5f);
     a.width = hud_width;
   }
@@ -365,6 +375,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   cod3::PerfMonitor::Get().Tick();
   DrawCheatWatermark(io);
   cod3::hud::AnnouncementFeed::Draw(io);
+  DrawQteSpinner(io);  // stick battle actions (ui/qte_spinner.h)
   if (const float cover = cod3::CutsceneSkip::Get().CoverAlpha(); cover > 0.0f) {
     // Skipping a level intro: black while game time runs fast behind it.
     ImGui::GetBackgroundDrawList()->AddRectFilled(
@@ -475,19 +486,22 @@ static void Help(const char* text) {
   ImGui::Spacing();
 }
 
-// Puts settings back to the values the game starts with: app_defaults.h,
-// else the built-in default. Returns true when one of the changes needs a
-// restart to take effect.
+// Puts settings back to their defaults (the game's own from app_defaults.h,
+// which Cod3App made the defaults, else the SDK's) the way a change in F2
+// does: each change callback runs, so a setting that applies while the game
+// runs does so at once (the window leaves fullscreen, shadows, picture colors,
+// the volume) instead of at the next start. Returns true when one of the
+// changes needs a restart to take effect.
 static bool ResetSettings(std::initializer_list<const char*> names) {
   bool restart = false;
   for (const char* name : names) {
     const auto* info = rex::cvar::GetFlagInfo(name);
     if (!info) continue;
+    const std::string def = info->default_value;   // copied: the pointer goes stale
+    const bool hot = info->lifecycle == rex::cvar::Lifecycle::kHotReload;
     const std::string before = Get(name);
-    rex::cvar::ResetToDefault(name);
-    const bool stick_mouse = std::string_view(name) == "mnk_mouse" && !REXCVAR_GET(cod3_raw_mouse);
-    if (const char* v = cod3::AppDefaultFor(name); v && !stick_mouse) rex::cvar::SetFlagByName(name, v);
-    if (Get(name) != before && info->lifecycle != rex::cvar::Lifecycle::kHotReload) restart = true;
+    if (before != def) rex::cvar::SetFlagByName(name, def);
+    if (Get(name) != before && !hot) restart = true;
   }
   return restart;
 }
@@ -525,7 +539,9 @@ void SettingsWindow::DrawVideo() {
                                       "d3d12_allow_variable_refresh_rate_and_tearing", "present_letterbox",
                                       "swap_post_effect", "native_2x_msaa", "present_effect",
                                       "anisotropic_override", "cod3_hd_textures", "readback_resolve",
-                                      "cod3_max_fps", "cod3_shadow_quality"});
+                                      "cod3_max_fps", "cod3_shadow_quality", "cod3_color_space",
+                                      "display_hdr", "display_hdr_paper_white", "display_hdr_peak",
+                                      "cod3_refresh_rate", "cod3_live_resolution", "cod3_graphics_api"});
     if (engine.GameReady()) {
       engine.SetMaxFps(REXCVAR_GET(cod3_max_fps));
       engine.SetDrawFps(0);
@@ -553,7 +569,7 @@ void SettingsWindow::DrawVideo() {
     const char* n[] = {"Windowed", "Fullscreen (borderless)"};
     dirty_ |= CvarCombo("Display mode", "fullscreen", v, n, 2, &restart_needed_);
     Help("Play in a window, or fill the whole monitor without changing its resolution "
-         "(borderless). Applies after a restart.");
+         "(borderless). Applies at once and is kept for the next start.");
   }
   {
     // The refresh rates the monitor offers at its current resolution
@@ -603,20 +619,33 @@ void SettingsWindow::DrawVideo() {
     // same choices as the game's Options > Video and the setup tool.
     const std::string cur = REXCVAR_GET(cod3_render_resolution);
     uint32_t custom_w = 0, custom_h = 0;
-    const bool custom = cur.find('x') != std::string::npos &&
-                        cod3::ParseResolutionChoice(cur, &custom_w, &custom_h);
+    bool custom = cur.find('x') != std::string::npos &&
+                  cod3::ParseResolutionChoice(cur, &custom_w, &custom_h);
+    // The other names the game takes for two listed sizes.
+    const std::string listed_as = cur == "4k" ? "2160p" : cur == "8k" ? "4320p" : cur;
     static bool show_custom = false;
     static char custom_text[24] = "";
-    std::string preview = custom ? "Custom (" + cur + ")" : cur;
+    static std::string last_seen;
+    if (cur != last_seen) {
+      // A change made elsewhere (the game's Options, the console, the setup
+      // tool) is shown as it is.
+      show_custom = custom;
+      if (custom) std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
+      last_seen = cur;
+    }
+    std::string preview = custom ? "Custom (" + cur + ")"
+                                 : cur + " (not a size: \"Match the screen\" is used)";
     for (const auto& c : cod3::kResolutionChoices)
-      if (cur == c.value) preview = c.name;
+      if (listed_as == c.value) preview = c.name;
     if (ImGui::BeginCombo("Render resolution", preview.c_str())) {
       for (const auto& c : cod3::kResolutionChoices) {
-        if (ImGui::Selectable(c.name, cur == c.value)) {
+        // One row is marked: the custom row while its box is open.
+        if (ImGui::Selectable(c.name, !show_custom && listed_as == c.value)) {
           REXCVAR_SET(cod3_render_resolution, std::string(c.value));
           cod3::RequestRenderResolution();  // a live change (game/render_resolution.h)
           dirty_ = true;
-          show_custom = false;
+          show_custom = false;  // the custom box closes at once
+          custom = false;
         }
       }
       if (ImGui::Selectable("Custom size...", custom || show_custom)) {
@@ -625,10 +654,9 @@ void SettingsWindow::DrawVideo() {
       }
       ImGui::EndCombo();
     }
-    if (custom || show_custom) {
+    if (custom) show_custom = true;
+    if (show_custom) {
       // A size of your own, WIDTHxHEIGHT, within the limits the game takes.
-      if (!show_custom) std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
-      show_custom = true;
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.0f);
       const bool entered = ImGui::InputText("##custom_resolution", custom_text, sizeof(custom_text),
                                             ImGuiInputTextFlags_EnterReturnsTrue |
@@ -650,6 +678,17 @@ void SettingsWindow::DrawVideo() {
         ImGui::TextDisabled("Width x height, from %ux%u to %ux%u (for example 2560x1080).",
                             cod3::kMinCustomWidth, cod3::kMinCustomHeight, cod3::kMaxCustomWidth,
                             cod3::kMaxCustomHeight);
+      // A size of another shape than the picture is drawn in the picture's
+      // shape (game/render_resolution.h FitAspect), unless the shape follows it.
+      const float picture = cod3::DisplayAspect();
+      if (custom && Get("cod3_aspect_ratio") != cod3::kMatchResolution) {
+        const float size_shape = float(custom_w) / float(custom_h);
+        if (std::abs(size_shape - picture) > picture * 0.01f)
+          ImGui::TextDisabled("%ux%u is %.2f:1 and the picture %.2f:1, so it is drawn in the "
+                              "picture's shape. Aspect ratio \"Match the render resolution\" "
+                              "keeps the size's own shape.",
+                              custom_w, custom_h, size_shape, picture);
+      }
     }
     {
       const char* v[] = {"native", "scaled"};
@@ -704,67 +743,109 @@ void SettingsWindow::DrawVideo() {
          "applied while the game runs, between two frames. Off: it applies at the next start.");
   }
   {
-    // Hor+ ultrawide (game/ultrawide.h): a wider picture shows more at the
-    // sides with the same view up and down; the HUD and menus stay 16:9.
-    const char* v[] = {"auto", "16:9", "21:9", "32:9"};
-    const char* n[] = {"Automatic (the window's shape)", "16:9 (the game's own)", "21:9 (ultrawide)",
-                       "32:9 (super ultrawide)"};
+    // The picture's shape (game/ultrawide.h). The view up and down stays the
+    // game's: wider than 16:9 shows more at the sides (the HUD and menus stay
+    // 16:9), narrower (down to the console's 4:3) less, with the HUD filling
+    // the picture.
+    const char* v[] = {"auto", cod3::kMatchResolution, "4:3", "16:10", "16:9", "21:9", "32:9"};
+    const char* n[] = {"Automatic (the window's shape)", "Match the render resolution",
+                       "4:3 (the classic TV shape)", "16:10", "16:9 (the game's own)",
+                       "21:9 (ultrawide)", "32:9 (super ultrawide)"};
+    constexpr int kCount = int(sizeof(v) / sizeof(v[0]));
     const std::string cur = Get("cod3_aspect_ratio");
-    bool listed = false;
-    for (const char* value : v) listed |= cur == value;
+    int listed = -1;
+    for (int i = 0; i < kCount; ++i)
+      if (cur == v[i]) listed = i;
+    // The box for a shape of your own is open while one is set, or after
+    // "Custom shape..." until a listed shape is picked. A change made
+    // elsewhere (the console, the setup tool) is shown as it is.
     static bool show_custom = false;
     static char custom_text[24] = "";
-    std::string preview = "Custom (" + cur + ")";
-    for (int i = 0; i < 4; ++i)
-      if (cur == v[i]) preview = n[i];
+    static std::string last_seen;
+    if (cur != last_seen) {
+      if (listed >= 0)
+        show_custom = false;
+      else
+        std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
+      last_seen = cur;
+    }
+    auto in_range = [](float shape) {
+      return shape >= cod3::kMinAspect - 0.001f && shape <= cod3::kMaxAspect + 0.001f;
+    };
+    std::string preview;
+    float set_shape = 0.0f;
+    if (listed >= 0)
+      preview = n[listed];
+    else if (!cod3::ParseAspectText(cur, &set_shape))
+      preview = "Custom (" + cur + ": not a shape, Automatic is used)";
+    else if (!in_range(set_shape))
+      preview = "Custom (" + cur + ", kept to " + (set_shape < cod3::kMinAspect ? "4:3" : "48:9") + ")";
+    else
+      preview = "Custom (" + cur + ")";
     if (ImGui::BeginCombo("Aspect ratio", preview.c_str())) {
-      for (int i = 0; i < 4; ++i) {
-        if (ImGui::Selectable(n[i], cur == v[i])) {
+      for (int i = 0; i < kCount; ++i) {
+        // One row is marked: the custom row while its box is open.
+        if (ImGui::Selectable(n[i], !show_custom && listed == i)) {
           rex::cvar::SetFlagByName("cod3_aspect_ratio", v[i]);
           dirty_ = true;
-          show_custom = false;
+          show_custom = false;  // the custom box closes at once (it stayed open before)
+          listed = i;
         }
       }
-      if (ImGui::Selectable("Custom shape...", !listed || show_custom)) {
+      if (ImGui::Selectable("Custom shape...", show_custom || listed < 0)) {
         show_custom = true;
-        std::snprintf(custom_text, sizeof(custom_text), "%s", listed ? "" : cur.c_str());
+        std::snprintf(custom_text, sizeof(custom_text), "%s", listed >= 0 ? "" : cur.c_str());
       }
       ImGui::EndCombo();
     }
-    if (!listed || show_custom) {
-      // A shape of your own (W:H or a number), from 16:9 to 48:9.
-      if (!show_custom) std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
-      show_custom = true;
+    if (listed < 0) show_custom = true;
+    if (show_custom) {
+      // A shape of your own (W:H or a number), from 4:3 to 48:9.
       ImGui::SetNextItemWidth(ImGui::GetFontSize() * 9.0f);
       const bool entered = ImGui::InputText("##custom_aspect", custom_text, sizeof(custom_text),
                                             ImGuiInputTextFlags_EnterReturnsTrue |
                                                 ImGuiInputTextFlags_CharsNoBlank);
       ImGui::SameLine();
-      float parsed = 0.0f;
-      const bool valid = cod3::ParseAspect(custom_text, &parsed);
+      float typed = 0.0f;
+      const bool parses = cod3::ParseAspectText(custom_text, &typed);
+      const bool valid = parses && in_range(typed);
       ImGui::BeginDisabled(!valid);
       if ((ImGui::Button("Use this shape") || entered) && valid) {
         rex::cvar::SetFlagByName("cod3_aspect_ratio", custom_text);
         dirty_ = true;
       }
       ImGui::EndDisabled();
-      if (!valid && custom_text[0])
-        ImGui::TextDisabled("Width:height, for example 24:10 or 2.39:1 (from 16:9 to 48:9).");
-      else if (valid && custom_text[0])
-        ImGui::TextDisabled("%.3f:1", parsed);
+      if (custom_text[0] && !parses)
+        ImGui::TextDisabled("Width:height, for example 24:10, 16:10 or 2.39:1 (from 4:3 to 48:9).");
+      else if (custom_text[0] && !valid)
+        ImGui::TextDisabled("%.3f:1 is %s: a shape goes from 4:3 (1.333:1) to 48:9 (5.333:1).", typed,
+                            typed < cod3::kMinAspect ? "narrower than 4:3" : "wider than 48:9");
+      else if (custom_text[0])
+        ImGui::TextDisabled("%.3f:1", typed);
     }
     const float shape = cod3::DisplayAspect();
-    if (shape > cod3::kSixteenByNine + 0.002f)
-      ImGui::TextDisabled("Now: %.2f:1, %.0f%% wider than 16:9, with the HUD and menus 16:9 in the middle.",
-                          shape, (shape / cod3::kSixteenByNine - 1.0f) * 100.0f);
+    const char* from = cur == cod3::kMatchResolution ? ", the render resolution's shape" : "";
+    if (shape > cod3::kSixteenByNine + cod3::kSameShape)
+      ImGui::TextDisabled("Now: %.2f:1%s, %.0f%% wider than 16:9, with the HUD and menus 16:9 in the "
+                          "middle.",
+                          shape, from, (shape / cod3::kSixteenByNine - 1.0f) * 100.0f);
+    else if (!cod3::IsSixteenByNine(shape))
+      ImGui::TextDisabled("Now: %.2f:1%s, %.0f%% narrower than 16:9: less at the sides, the same view "
+                          "up and down.",
+                          shape, from, (1.0f - shape / cod3::kSixteenByNine) * 100.0f);
     else
-      ImGui::TextDisabled("Now: 16:9, the game's own picture.");
-    Help("The shape of the picture. Wider than 16:9 shows more of the world at the sides with the "
-         "same view up and down (the field of view settings still apply); the HUD, menus, movies "
-         "and briefings stay 16:9 in the middle. Automatic follows the window, or the monitor in "
-         "fullscreen; a window narrower than 16:9 gets the 16:9 picture with bars. A custom shape "
-         "can be anything from 16:9 to 48:9 (three 16:9 screens). Applies at once; the game's "
-         "resolution follows the new shape a moment later.");
+      ImGui::TextDisabled("Now: 16:9, the game's own picture%s.", from);
+    Help("The shape of the picture. The view up and down always stays the game's. Wider than 16:9 "
+         "shows more of the world at the sides (the field of view settings still apply); the HUD, "
+         "menus, movies and briefings stay 16:9 in the middle. Narrower (16:10, 4:3) shows less at "
+         "the sides, and the HUD and menus fill the picture as on a 4:3 TV. Automatic follows the "
+         "window, or the monitor in fullscreen; a window narrower than 16:9 gets the 16:9 picture "
+         "with bars. Match the render resolution uses the shape of the render resolution's size: a "
+         "custom 2560x1080 gives 2.37:1 and 1650x900 1.83:1, a named size (1080p, 1440p) 16:9, and "
+         "\"Match the screen\" the window's shape. A custom shape can be anything from 4:3 to 48:9. "
+         "A picture of another shape than the window gets black bars, or is stretched with "
+         "Letterbox off. Applies at once; the game's resolution follows the new shape a moment "
+         "later.");
   }
   {
     // Host V-Sync: wait for the monitor instead of showing a frame the
@@ -788,7 +869,8 @@ void SettingsWindow::DrawVideo() {
   }
   dirty_ |= CvarCheckbox("Letterbox (keep the picture's shape)", "present_letterbox", &restart_needed_);
   Help("Keeps the picture's shape with black bars when the window has another shape (for example "
-       "16:9 chosen on an ultrawide monitor), instead of stretching it.");
+       "16:9 chosen on an ultrawide monitor, or 4:3 on a 16:9 one), instead of stretching it to the "
+       "window.");
 
   Section("Frame rate");
   {
@@ -834,6 +916,60 @@ void SettingsWindow::DrawVideo() {
          "lowest and highest rate in that time; \"frame times\" adds the average and longest frame "
          "in milliseconds and the current limit. Green: at the limit (or 60+), yellow: 30+, red: "
          "below 30.");
+  }
+
+  Section("Colors");
+  {
+    // game/color_output.h (claude-5d, SDK patch 0040): the display the game is
+    // told about and the tone curve the picture goes out with. Applies at once.
+    const char* v[] = {"display", "bt709"};
+    const char* n[] = {"Matched to your display (sRGB)", "Console on an HDTV (BT.709)"};
+    dirty_ |= CvarCombo("Picture colors", "cod3_color_space", v, n, 2, &restart_needed_);
+    Help("Matched to your display: the game's colors as a PC screen should show them. Console on "
+         "an HDTV: the Xbox 360 on a TV, a little darker with more contrast. Applies at once.");
+  }
+  if (Has("display_hdr")) {
+    // SDK patch 0044 (rex/ui/hdr_output.h): an HDR10 picture (BT.2020, PQ)
+    // for an HDR display. The picture keeps its look at the white level; only
+    // its brightest highlights go up to the highlight level. Live.
+    dirty_ |= CvarCheckbox("HDR output (HDR10, BT.2020)", "display_hdr", &restart_needed_);
+    Help("For an HDR display. The game keeps its look at the white level below; only its brightest "
+         "highlights (sky, sun, lamps, fire, muzzle flashes) get brighter, up to the highlight "
+         "level. F2, the console and the port's other overlays stay at the white level. Needs HDR "
+         "turned on in your system's display settings (on Linux a Wayland desktop with HDR on, such "
+         "as KDE Plasma or GNOME) and the Vulkan graphics API. Applies at once.");
+    if (GetBool("display_hdr")) {
+      switch (rex::ui::GetHdrOutput()) {
+        case rex::ui::HdrOutput::kActive:
+          Help("Now: HDR10 picture.");
+          break;
+        case rex::ui::HdrOutput::kNotOffered:
+          Help("Now: normal (SDR) picture: the display doesn't offer HDR to this window. Turn on HDR "
+               "in your system's display settings, then switch this off and on again.");
+          break;
+        case rex::ui::HdrOutput::kNotSupported:
+          Help("Now: normal (SDR) picture: HDR output needs the Vulkan graphics API.");
+          break;
+        default:
+          break;
+      }
+      auto nits_slider = [&](const char* label, const char* cvar, float lo, float hi) {
+        float value = static_cast<float>(std::strtod(Get(cvar).c_str(), nullptr));
+        if (ImGui::SliderFloat(label, &value, lo, hi, "%.0f nits",
+                               ImGuiSliderFlags_AlwaysClamp)) {
+          rex::cvar::SetFlagByName(cvar, std::to_string(static_cast<int>(value + 0.5f)));
+          dirty_ = true;
+        }
+      };
+      nits_slider("HDR white level", "display_hdr_paper_white", 80.0f, 500.0f);
+      Help("How bright the game's white is (and F2's). Match your desktop's brightness for normal "
+           "content (KDE: SDR brightness; Windows: SDR content brightness). 203 is the standard.");
+      nits_slider("HDR highlight level", "display_hdr_peak", 200.0f, 4000.0f);
+      Help("The brightest the highlights get. At or below your display's peak brightness (its HDR "
+           "rating: HDR400 = 400, HDR600 = 600, HDR1000 = 1000). The game's own pure white text "
+           "(subtitles, some HUD) counts as a highlight too: lower this if it's too bright. Equal "
+           "to the white level: no brighter highlights.");
+    }
   }
 
   Section("Anti-aliasing & scaling");
@@ -909,22 +1045,44 @@ void SettingsWindow::DrawVideo() {
 void SettingsWindow::DrawGame() {
   auto& engine = cod3::Engine::Get();
   if (ResetButton("reset_game", "game settings")) {
-    engine.SetFov(65.0f);
-    engine.SetFovScale(1.0f);
-    ResetSettings({"cod3_aim_assist", "cod3_volume", "audio_device"});   // aim assist follows the game's Sticky Aim again
+    engine.SetFovSettings(cod3::fov::kDefaultFov, cod3::fov::kDefaultScale);
+    // Aim assist follows the game's Sticky Aim again.
+    ResetSettings({"cod3_aim_assist", "cod3_volume", "audio_device", "cod3_skip_movies", "cod3_skip_prompt"});
     dirty_ = true;
   }
   Section("View");
-  float fov = engine.fov();
-  if (ImGui::SliderFloat("Field of view (cg_fov)", &fov, 65.0f, 120.0f, "%.0f")) engine.SetFov(fov);
-  Help("How wide your view is, in degrees. The Xbox 360 game uses 65. Also in Options > Gameplay "
-       "and the ~ console (cg_fov).");
-  float scale = engine.fov_scale();
-  if (ImGui::SliderFloat("FOV scale (cg_fovScale)", &scale, 0.2f, 2.0f, "%.2f"))
-    engine.SetFovScale(scale);
-  Help("Multiplies the field of view, World at War style: 1.2 turns 65 into 78. Aiming down the "
-       "sights is scaled the same way.");
-  ImGui::Text("Effective FOV: %.1f", fov * scale);
+  {
+    // Each slider's range follows the other value, so the effective FOV
+    // (cg_fov x cg_fovScale) stays within 65-165 (game/fov.h).
+    namespace fov = cod3::fov;
+    float value = engine.fov();
+    const fov::Range fov_range = fov::FovRange(engine.fov_scale());
+    if (ImGui::SliderFloat("Field of view (cg_fov)", &value, fov_range.min, fov_range.max, "%.0f",
+                           ImGuiSliderFlags_AlwaysClamp))
+      engine.SetFov(value);
+    Help("How wide your view is, in degrees. The Xbox 360 game uses 65. Also in Options > Gameplay "
+         "and the ~ console (cg_fov). Its range follows the FOV scale below.");
+    ImGui::TextDisabled("With FOV scale %.2f: %.0f to %.0f.", engine.fov_scale(), fov_range.min,
+                        fov_range.max);
+    float scale = engine.fov_scale();
+    const fov::Range scale_range = fov::ScaleRange(engine.fov());
+    if (ImGui::SliderFloat("FOV scale (cg_fovScale)", &scale, scale_range.min, scale_range.max, "%.2f",
+                           ImGuiSliderFlags_AlwaysClamp))
+      engine.SetFovScale(scale);
+    Help("Multiplies the field of view, World at War style: 1.2 turns 65 into 78. Aiming down the "
+         "sights is scaled the same way. Its range follows the field of view above.");
+    ImGui::TextDisabled("With field of view %.0f: %.2f to %.2f.", engine.fov(), scale_range.min,
+                        scale_range.max);
+    ImGui::Text("Effective FOV: %.1f (kept within %.0f to %.0f)", engine.fov() * engine.fov_scale(),
+                fov::kMinEffective, fov::kMaxEffective);
+    Help("The field of view times the FOV scale. It never goes below 65 or above 165, from here, the "
+         "game's Options or the console. Vehicles, turrets and scripted moments may change the view "
+         "while they last (aiming down the sights narrows it too); your values come back after them "
+         "and at every level start, and only your own changes are saved.");
+    if (fov::ScriptedViewActive())
+      ImGui::TextDisabled("A scripted view has the FOV right now; yours comes back after it.");
+  }
+#if !defined(COD3_MP)  // [mp] multiplayer plays no films; aim assist is per profile there (later)
   Section("Cutscenes");
   dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
   Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
@@ -948,6 +1106,10 @@ void SettingsWindow::DrawGame() {
   Help("Slows your aim down while it passes over an enemy, as on the console. Mostly helps with a "
        "controller. It's the same switch as Options > Gameplay > Sticky Aim in the game's menu "
        "(available once a profile is loaded).");
+  // [movement] Sprint and the movement style (game/movement/settings.h): the
+  // same rows as the game's Pause > Options > MOVEMENT OPTIONS.
+  dirty_ |= cod3::movement::DrawF2Section();
+#endif
   Section("Sound");
   if (Has("cod3_volume")) {
     float vol = float(GetDouble("cod3_volume", 1.0)) * 100.0f;
@@ -959,6 +1121,7 @@ void SettingsWindow::DrawGame() {
          "game's Options > Sound. Console: snd_volume 0-1.");
   }
   DrawSoundOutput();
+  if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -1085,7 +1248,8 @@ void SettingsWindow::DrawControls() {
     // cod3_raw_mouse first: mnk_mouse's default depends on it.
     restart_needed_ |= ResetSettings({"mnk_mode", "cod3_raw_mouse", "mnk_mouse", "cod3_sensitivity",
                                       "cod3_zoom_sensitivity", "cod3_invert_mouse", "cod3_m_yaw",
-                                      "cod3_m_pitch", "mnk_sensitivity"});
+                                      "cod3_m_pitch", "mnk_sensitivity", "cod3_key_prompts",
+                                      "cod3_glyph_style"});
     dirty_ = true;
   }
   dirty_ |= CvarCheckbox("Keyboard & mouse", "mnk_mode", &restart_needed_);
@@ -1133,12 +1297,13 @@ void SettingsWindow::DrawControls() {
       }
       Help("Extra factor while aiming down the sights. The aim already slows down with the zoom; "
            "below 1 slows it more, above 1 less.");
-      bool inv = REXCVAR_GET(cod3_invert_mouse);
+      bool inv = cod3::MouseLook::MouseInverted();
       if (ImGui::Checkbox("Invert vertical", &inv)) {
-        REXCVAR_SET(cod3_invert_mouse, inv);
+        cod3::MouseLook::SetMouseInverted(inv);
         dirty_ = true;
       }
-      Help("Pushing the mouse forward looks down. The game's own Invert aim option flips it too.");
+      Help("Pushing the mouse forward looks down. The game's own Invert aim option (Options > "
+           "Controls) inverts the controller and the mouse; this box shows the mouse as it is.");
       if (ImGui::TreeNode("Advanced (m_yaw / m_pitch)")) {
         float yaw = static_cast<float>(REXCVAR_GET(cod3_m_yaw));
         float pitch = static_cast<float>(REXCVAR_GET(cod3_m_pitch));
@@ -1173,6 +1338,7 @@ void SettingsWindow::DrawControls() {
       Help("How far a mouse movement pushes the emulated right stick.");
     }
   }
+  dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h)
   Section("Key bindings");
   if (ResetButton("reset_binds", "key bindings")) {
     restart_needed_ |= ResetSettings(
@@ -1181,19 +1347,34 @@ void SettingsWindow::DrawControls() {
          "keybind_lstick_left", "keybind_lstick_right", "keybind_lstick_press", "keybind_rstick_up",
          "keybind_rstick_down", "keybind_rstick_left", "keybind_rstick_right", "keybind_rstick_press",
          "keybind_dpad_up", "keybind_dpad_down", "keybind_dpad_left", "keybind_dpad_right", "keybind_back",
-         "keybind_start", "keybind_guide"});
+         "keybind_start", "keybind_guide", "cod3_binds_kbm_p1"});
     dirty_ = true;
   }
+#if !defined(COD3_MP)
+  // [keybinds] The game's own actions with keys of their own (binoculars,
+  // sprint / hold breath ...; game/keybinds/binds.h), above the controller rows.
+  dirty_ |= cod3::binds::DrawF2Rows();
+  Help("Each row is a controller button and the keys that press it, separated by commas; press "
+       "Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, Up/Down/Left/Right; "
+       "mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written "
+       "MOUSE4 / MOUSE5. The left stick click and the D-pad are empty by default: the binoculars and "
+       "sprint / hold breath have their own keys above.");
+#else
   Help("Each row is a controller button and the keys that press it, separated by commas; press "
        "Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, Up/Down/Left/Right; "
        "mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written "
        "MOUSE4 / MOUSE5. Shift+Up means both together.");
+#endif
   static const char* kBinds[][2] = {
       {"keybind_right_trigger", "Fire (RT)"},   {"keybind_left_trigger", "Aim (LT)"},
       {"keybind_right_shoulder", "Grenade (RB)"}, {"keybind_left_shoulder", "Smoke grenade (LB)"},
       {"keybind_a", "Jump (A)"},                {"keybind_b", "Stance (B)"},
       {"keybind_x", "Use/Reload (X)"},          {"keybind_y", "Switch weapon (Y)"},
+#if !defined(COD3_MP)  // [keybinds] the campaign's L3 is +binoculars, which has its own key
+      {"keybind_rstick_press", "Melee (RS)"},   {"keybind_lstick_press", "Left stick click (LS)"},
+#else
       {"keybind_rstick_press", "Melee (RS)"},   {"keybind_lstick_press", "Sprint / hold breath (LS)"},
+#endif
       {"keybind_lstick_up", "Forward"},         {"keybind_lstick_down", "Back"},
       {"keybind_lstick_left", "Strafe left"},   {"keybind_lstick_right", "Strafe right"},
       {"keybind_dpad_up", "D-pad up"},          {"keybind_dpad_down", "D-pad down"},
@@ -1339,6 +1520,39 @@ void SettingsWindow::DrawPerformance() {
     Help("Writes userdata/logs/report-<date>-<time>.txt: the build, the settings that matter, every "
          "setting you changed, level load times, the last minute of frame costs and the slowest "
          "frames. Attach it (and cod3.log) to a bug report. Same as cod3_report in the console.");
+    if (ImGui::Button("Take a screenshot")) {
+      const std::string file =
+          cod3::shot::Request(cod3::shot::Kind::kAsked, "asked for in F2");
+      status_ = !file.empty() ? "Screenshot: userdata/logs/screenshots/" + file
+                : cod3::shot::Available() ? std::string("One was just taken; try again in a moment.")
+                                          : std::string("Screenshots need the GPU emulation.");
+    }
+    Help("Saves the game's own picture (not this window, the console, the desktop or anything "
+         "else on screen) to userdata/logs/screenshots/. Same as screenshot in the console.");
+    {
+      const auto hd = cod3::GetHdTextures();
+      const bool can_compare = (hd == cod3::HdTextures::kOn || hd == cod3::HdTextures::kCommandLine) &&
+                               !cod3::kMultiplayer && !cod3::hd::IsMultiplayerMode();
+      ImGui::BeginDisabled(!can_compare);
+      if (ImGui::Button("Compare HD textures")) {
+        const std::string stem = cod3::shot::RequestHdCompare(2.0);
+        status_ = stem.empty() ? std::string("A comparison is already under way.")
+                               : "Screenshots: userdata/logs/screenshots/" + stem + "-on.png and -off.png";
+      }
+      ImGui::EndDisabled();
+    }
+    Help("Two screenshots of the same view: with the HD textures, then without them (they go off "
+         "for two seconds and come back by themselves). Stand still. Needs HD textures on at "
+         "start; campaign only. Same as cod3_hd_compare in the console.");
+    {
+      const char* v[] = {"0", "30", "60", "120", "300"};
+      const char* n[] = {"Off", "Every 30 seconds", "Every minute", "Every 2 minutes",
+                         "Every 5 minutes"};
+      dirty_ |= CvarCombo("Debug screenshots", "cod3_debug_screenshots", v, n, 5, &restart_needed_);
+    }
+    Help("With Log detail on Debug only: the game's picture every so often while it changes, "
+         "when the game gets stuck, and with each report, into userdata/logs/screenshots/ "
+         "(the newest 100 automatic ones are kept). Only the game's own picture is saved.");
   }
   Section("Frame cost");
   dirty_ |= CvarCheckbox("Show what each frame costs", "cod3_perf_overlay", &restart_needed_);
@@ -1492,13 +1706,33 @@ void SettingsWindow::DrawInterface() {
   }
 }
 
+// F2 > Console: the ~ console itself, the problems logged this session
+// (ui/console_pages.h), and the settings the console saved.
 void SettingsWindow::DrawConsole() {
+  if (!ImGui::BeginTabBar("##console_views")) return;
+  if (ImGui::BeginTabItem("Console")) {
+    DrawConsolePage(console_view_);
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem(ProblemsTabLabel())) {
+    DrawProblemsPage();
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Saved settings")) {
+    DrawSavedConsoleSettings();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
+void SettingsWindow::DrawSavedConsoleSettings() {
   auto& engine = cod3::Engine::Get();
   if (!engine.GameReady()) ImGui::BeginDisabled();
   if (ResetButton("reset_console", "console settings (dvars)")) engine.ResetArchivedCvars();
   if (!engine.GameReady()) ImGui::EndDisabled();
   Help("Settings changed in the ~ console are kept here and come back every time the game starts: anything "
-       "set with seta, plus com_maxfps, cg_drawFPS, cg_fov and cg_fovScale however they were changed. "
+       "set with seta, plus com_maxfps and cg_drawFPS however they were changed, and your own cg_fov and "
+       "cg_fovScale (not a vehicle's or a scripted view's). "
        "Reset puts them back to the game's defaults (the frame rate limit to the one in Video) and empties "
        "the list. The settings in the other tabs aren't touched.");
   const auto saved = engine.ArchivedCvars();

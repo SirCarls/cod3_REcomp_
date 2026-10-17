@@ -2,6 +2,9 @@
 
 #include "game/cheat_watch.h"
 
+#include <cstring>
+#include <string_view>
+
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
@@ -10,9 +13,13 @@
 #include "game/cheat_guard.h"
 #include "game/diagnostics.h"
 #include "game/engine.h"
+#include "game/fov.h"
 #include "game/game_api.h"
 #include "game/settings_sync.h"
 #include "game/guest.h"
+#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
+#include "game/protected_dvars.h"
+#endif
 #include "game/watchdog.h"
 #include "ui/game_console.h"
 
@@ -203,6 +210,31 @@ REX_HOOK_RAW(Cmd_JumpToNode_f) { OneShot(ctx, base, __imp__Cmd_JumpToNode_f, "ju
 // one that refuses cheat-protected dvars while sv_cheats is 0).
 REX_EXTERN(__imp__Cvar_Set2);
 REX_HOOK_RAW(Cvar_Set2) {
+#if !defined(COD3_MP)  // [movement]
+  // A server_sided_protected dvar is the port's, never a game dvar: a
+  // config, exec, a script or a menu can't write it (game/protected_dvars.h).
+  if (ctx.r3.u32 >= 0x10000) {
+    const char* name = reinterpret_cast<const char*>(base + ctx.r3.u32);
+    if (cod3::protected_dvars::RefuseGuestWrite(std::string_view(name, strnlen(name, 65)))) {
+      ctx.r3.u64 = 0;
+      return;
+    }
+  }
+#endif
+  // No value means "the dvar's default" (Cvar_Reset, the console's
+  // "reset <dvar>"), but this game's Cvar_Set2 reads the value before it
+  // checks for that, so a reset crashed the game (the Xbox had no console to
+  // type one). Hand it the default instead, as Quake 3 does; nothing for a
+  // dvar that doesn't exist.
+  if (ctx.r4.u32 == 0) {
+    const uint32_t var = cod3::game::CvarFindGuest(ctx, base, ctx.r3.u32);
+    const uint32_t reset_value = var ? ReadU32(base, var + cod3::addr::cvar::kResetString) : 0;
+    if (!reset_value) {
+      ctx.r3.u64 = 0;
+      return;
+    }
+    ctx.r4.u64 = reset_value;
+  }
   // The console game turns cheats on at every level start (SV_Map_f, see
   // addresses.h); the Xbox had no console to use them from. Here every level
   // starts with cheats off, and only "sv_cheats 1" in the console turns them
@@ -246,6 +278,7 @@ REX_HOOK_RAW(SV_SpawnServer) {
   cod3::watchdog::SetGameContext(&ctx);
   cod3::watchdog::Mark("SV_SpawnServer (a level load starts)");
   cod3::CheatWatch::Get().LevelStart();
+  cod3::fov::OnLevelStart(ctx, base);  // the player's cg_fov / cg_fovScale again (game/fov.h)
   cod3::diag::LevelLoadBegin(cod3::guest::ReadString(base, ctx.r3.u32, 64));
   __imp__SV_SpawnServer(ctx, base);
   cod3::diag::LevelLoadEnd();
@@ -255,10 +288,12 @@ REX_HOOK_RAW(SV_SpawnServer) {
 REX_EXTERN(__imp__SV_MapRestart_f);
 REX_HOOK_RAW(SV_MapRestart_f) {
   cod3::CheatWatch::Get().LevelStart();
+  cod3::fov::OnLevelStart(ctx, base);
   __imp__SV_MapRestart_f(ctx, base);
 }
 REX_EXTERN(__imp__SV_MapRestartInternal_f);
 REX_HOOK_RAW(SV_MapRestartInternal_f) {
   cod3::CheatWatch::Get().LevelStart();
+  cod3::fov::OnLevelStart(ctx, base);
   __imp__SV_MapRestartInternal_f(ctx, base);
 }

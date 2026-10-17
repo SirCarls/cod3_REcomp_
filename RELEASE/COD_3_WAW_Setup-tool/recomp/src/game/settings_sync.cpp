@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <string>
 
 #include <rex/logging.h>
@@ -35,6 +36,25 @@ void Apply(PPCContext& ctx, uint8_t* base, int on) {
 }  // namespace
 
 void NoteLevelStart() { g_resync = true; }
+
+namespace {
+std::mutex g_save_mutex;
+std::function<void()> g_save;
+}  // namespace
+
+void SetSaveHandler(std::function<void()> save) {
+  std::lock_guard lock(g_save_mutex);
+  g_save = std::move(save);
+}
+
+void RequestSave() {
+  std::function<void()> save;
+  {
+    std::lock_guard lock(g_save_mutex);
+    save = g_save;
+  }
+  if (save) save();
+}
 
 void SyncCrosshair(PPCContext& ctx, uint8_t* base) {
   if (!g_cvar) {

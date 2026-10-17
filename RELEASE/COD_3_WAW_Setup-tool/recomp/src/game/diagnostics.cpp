@@ -31,7 +31,9 @@
 #include "game/hd_textures.h"
 #include "game/machine_profile.h"  // [hw-scaling]
 #include "game/render_resolution.h"
+#include "game/screenshot.h"
 #include "game/thread_profiler.h"  // [hw-scaling]
+#include "game/function_profiler.h"  // [hw-scaling]
 #include "util.h"
 
 REXCVAR_DEFINE_STRING(cod3_log_detail, "normal", "cod3/Performance",
@@ -110,14 +112,20 @@ std::string Flag(const char* name) {
   return v;
 }
 
+bool GivenAtStart(const char* name) {
+  const auto source = rex::cvar::GetFlagSource(name);
+  return source == rex::cvar::Source::kCommandLine || source == rex::cvar::Source::kEnvironment;
+}
+
 void ApplyDetail(const std::string& value) {
-  // The SDK's own messages: debug only at the highest detail.
-  if (rex::cvar::GetFlagInfo("log_level")) {
+  // The SDK's own messages: debug only at the highest detail (a log_level
+  // given on the command line wins for that run).
+  if (rex::cvar::GetFlagInfo("log_level") && !GivenAtStart("log_level")) {
     const std::string want = value == "debug" ? "debug" : "info";
     if (rex::cvar::GetFlagByName("log_level") != want) rex::cvar::SetFlagByName("log_level", want);
   }
   // Every new resolve destination copied back to the CPU (SDK patch 0012).
-  if (rex::cvar::GetFlagInfo("readback_resolve_log"))
+  if (rex::cvar::GetFlagInfo("readback_resolve_log") && !GivenAtStart("readback_resolve_log"))
     rex::cvar::SetFlagByName("readback_resolve_log", value == "debug" ? "true" : "false");
 }
 
@@ -154,7 +162,10 @@ std::string SettingsSummary() {
   s += "input: mnk " + Flag("mnk_mode") + ", raw mouse " + Flag("cod3_raw_mouse") +
        ", sensitivity " + Flag("cod3_sensitivity") + "\n";
   s += "game: skip cutscenes " + Flag("cod3_skip_movies") + ", volume " + Flag("cod3_volume") +
-       ", log detail " + Flag("cod3_log_detail") + "\n";
+       ", log detail " + Flag("cod3_log_detail") + " (debug screenshots " +
+       (Flag("cod3_debug_screenshots") == "0" ? std::string("off")
+                                              : "every " + Flag("cod3_debug_screenshots") + " s") +
+       ")\n";
   return s;
 }
 
@@ -302,6 +313,16 @@ std::filesystem::path WriteReport() {
   out << OsSummary() << "; " << std::max(1u, std::thread::hardware_concurrency())
       << " CPU threads\n\n";
   out << "== Settings that matter ==\n" << SettingsSummary() << "\n";
+  // At debug log detail, the game's picture as the report is written
+  // (game/screenshot.h), next to the screenshots the debug log takes.
+  if (GetDetail() == Detail::kDebug) {
+    const std::string stem = PathToUtf8(path.stem());
+    const std::string shot = shot::Request(shot::Kind::kReport, "with " + stem + ".txt", stem);
+    out << "== Screenshot ==\n"
+        << (shot.empty() ? std::string("(none: no picture from the game yet)")
+                         : "userdata/logs/screenshots/" + shot + " (the game's picture only)")
+        << "\n\n";
+  }
   {
     // [hw-scaling] what this PC has, and where the time goes per thread.
     const auto& machine = machine::Get();
@@ -312,6 +333,30 @@ std::filesystem::path WriteReport() {
     const std::string verdict = ThreadProfiler::Verdict(threads);
     if (!verdict.empty()) out << verdict << "\n";
     out << ThreadProfiler::Table(threads, 24) << "\n";
+    // The console (or F2) makes the window repaint on its own while it's
+    // open, which is when this report is written: the last second without
+    // that shows the window thread as it is in play.
+    const auto& c = threads.costs;
+    const float frames_per_s = c.frame_ms > 0 ? 1000.0f / c.frame_ms : 0.0f;
+    double quiet_age = -1;
+    const ThreadReport quiet = ThreadProfiler::Get().QuietReport(&quiet_age);
+    if (c.presents_per_s > frames_per_s * 1.3f + 5.0f && quiet.valid && quiet_age >= 0) {
+      char title[160];
+      std::snprintf(title, sizeof(title),
+                    "== Threads in play (%.0f s ago, before the window repainted on its own for "
+                    "the console or F2) ==\n",
+                    quiet_age);
+      out << title;
+      const std::string quiet_verdict = ThreadProfiler::Verdict(quiet);
+      if (!quiet_verdict.empty()) out << quiet_verdict << "\n";
+      out << ThreadProfiler::Table(quiet, 24) << "\n";
+    }
+    // This session's function profiles (cod3_profile, cod3_profile_auto).
+    const auto profiles = FunctionProfiler::SessionSummaries();
+    out << "== Function profiles this session (full reports in userdata/logs) ==\n";
+    if (profiles.empty()) out << "(none yet: after a minute of play, or cod3_profile in the F10 console)\n";
+    for (const auto& p : profiles) out << p;
+    out << "\n";
   }
   out << "== Settings changed from their defaults ==\n";
   for (const auto& n : rex::cvar::ListModifiedFlags()) {

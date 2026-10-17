@@ -15,6 +15,7 @@
 #include "game/addresses.h"
 #include "game/aim_assist.h"
 #include "game/guest.h"
+#include "game/settings_sync.h"
 
 REXCVAR_DEFINE_INT32(cod3_aim_assist, -1, "cod3/Game",
                      "Aim assist (the game's Sticky Aim): -1 = as set in Options > Gameplay, "
@@ -58,10 +59,16 @@ REX_HOOK_RAW(Profile_LoadSettings) {
 }
 
 // Options > Gameplay closed: the player chose in the game's menu, so the
-// profile decides again.
+// profile decides again. Saved at once: an old F2 choice left in cod3.toml
+// would otherwise be forced again at the next profile load (the next
+// mission, which is a new start of the program).
 REX_EXTERN(__imp__OptionsGameplayMenu__Apply);
 REX_HOOK_RAW(OptionsGameplayMenu__Apply) {
   const uint8_t before = cod3::guest::ReadU8(base, c::kSettings + c::kStickyAim);
   __imp__OptionsGameplayMenu__Apply(ctx, base);
-  if (cod3::guest::ReadU8(base, c::kSettings + c::kStickyAim) != before) REXCVAR_SET(cod3_aim_assist, -1);
+  if (cod3::guest::ReadU8(base, c::kSettings + c::kStickyAim) != before &&
+      REXCVAR_GET(cod3_aim_assist) != -1) {
+    REXCVAR_SET(cod3_aim_assist, -1);
+    cod3::settings::RequestSave();
+  }
 }

@@ -838,6 +838,27 @@ def drop_foreign_paths(settings: dict, keys: Iterable[str]) -> tuple:
     return out, dropped
 
 
+def start_and_collect(args: Sequence[str], on_exit: Optional[Callable[[int], None]] = None,
+                      **kwargs) -> subprocess.Popen:
+    """Starts a program that runs on its own (the game, a file manager) and
+    collects it when it ends, on a thread of its own. Without that, a
+    program started from here that has ended stays in the system's process
+    list as a "zombie" until this tool closes: the game looked as if it was
+    still running (owner, 2026-10-16: "ghost application"). `on_exit` gets
+    the exit code (on that thread)."""
+    proc = subprocess.Popen(list(args), **kwargs)
+
+    def collect() -> None:
+        code = proc.wait()
+        if on_exit:
+            try:
+                on_exit(code)
+            except Exception:  # noqa: BLE001 - a report only
+                pass
+    threading.Thread(target=collect, daemon=True).start()
+    return proc
+
+
 def open_in_file_manager(path: Path) -> None:
     path = Path(path)
     if IS_WINDOWS:
@@ -846,5 +867,5 @@ def open_in_file_manager(path: Path) -> None:
         opener = shutil.which("xdg-open") or shutil.which("gio")
         if opener:
             args = [opener, str(path)] if opener.endswith("xdg-open") else [opener, "open", str(path)]
-            subprocess.Popen(args, start_new_session=True,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            start_and_collect(args, start_new_session=True,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

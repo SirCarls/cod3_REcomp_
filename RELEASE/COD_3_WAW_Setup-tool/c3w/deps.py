@@ -190,9 +190,10 @@ CROSS_TOOLCHAINS = {"llvm-mingw-linux"}
 STEP_ONLY = CROSS_TOOLCHAINS | {"waifu2x-linux", "waifu2x-win"}
 
 # Windows: the tools as pinned downloads into the work folder (no winget, so
-# nothing lands in Program Files) that need no admin rights, checked against their SHA-256 like the ones above. Nothing in them
-# is run to install: 7zr.exe (7-Zip's standalone console program) unpacks the
-# full 7-Zip from its installer, and 7-Zip unpacks the LLVM installer.
+# nothing lands in Program Files) that need no admin rights, checked against
+# their SHA-256 like the ones above. Nothing in them is run to install:
+# 7zr.exe (7-Zip's standalone console program) unpacks the full 7-Zip from
+# its installer, and 7-Zip unpacks the LLVM installer.
 # Hashes: Git for Windows' and LLVM's own published SHA-256 for these files;
 # 7-Zip publishes none, so the files as downloaded on 2026-10-09.
 WINDOWS_FALLBACK: Dict[str, Tuple[str, str, str]] = {
@@ -1210,11 +1211,12 @@ def fetch_portable(key: str, tools_dir: Path, runner: Runner, log: Log, cancel: 
 
 
 def plan(tc: Toolchain, tools_dir: Path, allow_install: bool, recomp: bool = True, windows_exe: bool = False,
-         rust: bool = True, shown_dir: Optional[Path] = None) -> List[Install]:
+         rust: bool = True, shown_dir: Optional[Path] = None, archives: bool = True) -> List[Install]:
     """What ensure() is about to download or install, for one approval up
     front. Something it can't foresee (say, a too-old CMake from the package
     manager) is asked for when it comes up. `shown_dir` is the tools folder
-    as the user knows it (tools_dir may be the build's space-free link)."""
+    as the user knows it (tools_dir may be the build's space-free link).
+    Without `archives` (only Rust programs are built), no 7-Zip."""
     items: List[Install] = []
     shown = shown_dir or tools_dir
 
@@ -1247,7 +1249,7 @@ def plan(tc: Toolchain, tools_dir: Path, allow_install: bool, recomp: bool = Tru
             items.append(rust_install(shown, update=bool(rustup)))
         if rust and allow_install and tc.needs_msvc_linker() and not _common.UNDER_WINE:
             items.append(VS_INSTALL)   # this Rust links with Visual Studio's link.exe
-        if not tc.sevenzip:
+        if not tc.sevenzip and archives:
             if IS_LINUX:
                 want("7zip-linux")
             elif IS_WINDOWS and allow_install:
@@ -1285,14 +1287,17 @@ def plan(tc: Toolchain, tools_dir: Path, allow_install: bool, recomp: bool = Tru
 
 
 def ensure(tools_dir: Path, runner: Runner, log: Log, cancel: threading.Event,
-           allow_install: bool, recomp: bool = True, windows_exe: bool = False, rust: bool = True) -> Toolchain:
+           allow_install: bool, recomp: bool = True, windows_exe: bool = False, rust: bool = True,
+           archives: bool = True) -> Toolchain:
     """Detects the tools and installs what's missing (when allowed). Without
     `recomp`, only the ripper's tools (Rust, 7-Zip) are wanted; without
     `rust`, Rust isn't installed (the game-only build inside WSL). With
-    `windows_exe` (Linux), also what building the Windows ripper needs."""
+    `windows_exe` (Linux), also what building the Windows ripper needs.
+    Without `archives` (with `recomp` off: only Rust programs that open no
+    archives, such as newcopy), 7-Zip isn't wanted either."""
     tc = detect(tools_dir, runner)
     log.info("Found:\n" + tc.summary())
-    APPROVAL.require(plan(tc, tools_dir, allow_install, recomp, windows_exe, rust), log)
+    APPROVAL.require(plan(tc, tools_dir, allow_install, recomp, windows_exe, rust, archives=archives), log)
     if not recomp:
         if allow_install and IS_LINUX and (not tc.linker or (windows_exe and not tc.mingw)):
             try:
@@ -1307,7 +1312,7 @@ def ensure(tools_dir: Path, runner: Runner, log: Log, cancel: threading.Event,
             # The PC's own Rust links with Microsoft's link.exe, which only the
             # Build Tools bring (a Rust this tool installs uses the GNU linker then).
             install_vs_build_tools(tools_dir, runner, log, cancel, shutil.which("winget"))
-        if not tc.sevenzip:
+        if not tc.sevenzip and archives:
             if IS_LINUX:
                 fetch_portable("7zip-linux", tools_dir, runner, log, cancel)
             elif IS_WINDOWS and allow_install:

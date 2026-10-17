@@ -34,6 +34,13 @@ class MouseLook {
   // True if raw mouse aim is enabled in the settings.
   static bool Enabled();
 
+  // Up/down for the mouse, as the player sees it: the game's own Invert aim
+  // (Options > Controls, the profile) flips the stick and the mouse, and
+  // cod3_invert_mouse flips the mouse on top of it. F2 and the console show
+  // and set this result, so a box that reads "inverted" is inverted.
+  static bool MouseInverted();
+  static void SetMouseInverted(bool inverted);
+
   // Guest thread, from the CL_AdjustAngles hook.
   void ApplyToGuest(uint8_t* base);
   // Guest thread, from the CG_GetViewFov hook.
@@ -46,6 +53,7 @@ class MouseLook {
   float dy_ = 0.0f;
   std::atomic<int64_t> last_guest_tick_ns_{0};
   std::atomic<float> zoom_ratio_{1.0f};
+  std::atomic<bool> game_invert_{false};  // the profile's Invert aim, last seen
 };
 
 }  // namespace cod3

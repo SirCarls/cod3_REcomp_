@@ -3,8 +3,12 @@
 //
 // The game's Direct3D waits for the GPU by spinning on values the GPU writes
 // to memory: the ring buffer's read pointer, fences, a frame counter. Four
-// loops do it (0x822F2380, 0x822F1738, 0x822F16A0, 0x82302768); each starts
-// the wait with 0x822EBFB8 and calls 0x822EC168 between two checks. On the
+// loops do it (D3D_BlockOnFenceInternal 0x822F2380, D3D_WaitForRingSpace
+// 0x822F1738, D3D_WaitForGpuProgress 0x822F16A0, D3D_WaitForWorkerProgress
+// 0x82302768; names from docs/COD3_D3D.md, which found that every busy wait
+// in Direct3D goes through the same helpers): each starts the wait with
+// D3D_WaitBegin (0x822EBFB8), calls D3D_WaitSpinCheckHang (0x822EC168)
+// between two checks and ends with D3D_WaitEnd (0x822EBFE8). On the
 // Xbox 360 that is a hardware thread the game owns. Here it held a CPU core at
 // 100% for as long as the GPU emulation was behind - in a GPU-bound scene,
 // most of every frame: the function profiler (cod3_profile main) put
@@ -19,6 +23,11 @@
 // costs a little latency. The checks and their results are the game's own;
 // game time runs on the game's clock and isn't touched. The sleeping part
 // shows as a wait of the game main thread in the stall table.
+//
+// Each wait's time is also counted by its reason code (ring space, command
+// memory, fences, locks, resource release: D3D_WaitBegin's third argument),
+// and the thread profiler's table shows how many ms a second the game waited
+// for the GPU emulation and for what.
 //
 // cod3_gpu_wait_sleeps (default on) switches it; off is the game's own spin.
 // Without the SDK patch the hooks only call the game's code.

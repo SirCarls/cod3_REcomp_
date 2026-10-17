@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import threading
+import time
 import tkinter as tk
 import webbrowser
 from pathlib import Path
@@ -20,6 +21,7 @@ from typing import Dict, List, Optional
 
 from . import (common, deps, game_settings, pc_check, profiles, repair, rippers, theme, upscale, user_textures,
                waw, widgets)
+from . import voices  # [voice] another disc's voices
 from .common import IS_LINUX, IS_WINDOWS, SetupError
 from .pipeline import TOOL_VERSION, upscaled_size
 from .widgets import ScrollFrame, hint, px, section, tip
@@ -33,8 +35,9 @@ FIX_TEXT = {
     "rerip": "Rip the game files again",
     "relaunchers": "Write the launchers again",
 }
-SHORTCUTS = [("Ctrl+B", "Build"), ("Ctrl+L", "Show the log"), ("Ctrl+1 to Ctrl+{n}", "Go to a page"),
-             ("F5", "Check the disc, the build and this page again"), ("Ctrl+F", "Search the log"),
+SHORTCUTS = [("Ctrl+B", "The tab's main button (Build, Rip, Make a copy)"), ("Ctrl+L", "Show the log"),
+             ("Ctrl+1 to Ctrl+{n}", "Go to a page of the tab"), ("Ctrl+Tab", "Next game tab (Shift: back)"),
+             ("F5", "Check this page again"), ("Ctrl+F", "Search the log"),
              ("Esc", "Close a dialog"), ("Enter", "Pick a dialog's main button")]
 # The game's settings on the Play page, in groups (game_settings.SETTINGS
 # keys; one the list doesn't name goes under "More").
@@ -43,7 +46,8 @@ GS_GROUPS = [
                  "cod3_live_resolution", "cod3_aspect_ratio", "vsync", "cod3_max_fps"]),
     ("Graphics", ["swap_post_effect", "anisotropic_override", "cod3_shadow_quality", "cod3_hd_textures",
                   "cod3_user_textures", "cod3_graphics_api"]),
-    ("Sound and controls", ["cod3_volume", "cod3_glyph_style", "cod3_skip_movies"]),
+    ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
+                            "cod3_skip_movies"]),
 ]
 
 
@@ -96,6 +100,12 @@ class Pages:
             self._update_texture_state()
         elif key == "maps":
             self._refresh_maps()
+        elif key == "waw_content":
+            self._validate_waw()
+        elif key.endswith("_copy") and key[:-5] in getattr(self, "pc", {}):
+            self._pc_check_install(key[:-5])
+        elif key.endswith("_server") and key[:-7] in getattr(self, "pc", {}):
+            self._pc_refresh(key[:-7])
 
     def _theme_pages(self, c: Dict[str, str]) -> None:
         for sw in getattr(self, "swatches", []):
@@ -127,27 +137,59 @@ class Pages:
         self.lbl_play_reason = ttk.Label(top, textvariable=self.v_play_reason, style="Hint.TLabel",
                                          wraplength=px(440), justify="left")
         self.lbl_play_reason.pack(side="left", padx=(px(14), 0))
-        ttk.Checkbutton(g, text="Start in a window", variable=self.v_cod3_windowed).grid(
-            row=1, column=0, columnspan=3, sticky="w", pady=(px(10), px(2)))
-        ttk.Label(g, text="Extra arguments").grid(row=2, column=0, sticky="w", pady=px(3))
+        # Windowed or fullscreen is the game's own Display mode (Game settings
+        # below, F2 in the game): one setting, so the last change made in
+        # either place is the one the next start uses. (An older "Start in a
+        # window" box sent --fullscreen=false at every start, which undid F2.)
+        ttk.Label(g, text="Extra arguments").grid(row=2, column=0, sticky="w", pady=(px(10), px(3)))
         e = ttk.Entry(g, textvariable=self.v_cod3_args)
-        e.grid(row=2, column=1, columnspan=2, sticky="ew", pady=px(3))
-        tip(e, "Passed to the game as they are (for testing). Leave empty normally.")
+        e.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(px(10), px(3)))
+        tip(e, "For testing: passed to the game as they are, for each start from here. They win over the game "
+               "settings for that start and are never saved in them. Leave empty normally.")
         hint(g, "In game: ~ console (Shift+~ full), F2 settings (resolution up to 4K, FPS, AA/FSR, FOV, crosshair, "
                 "mouse). FOV is also in Options > Gameplay.").grid(row=3, column=0, columnspan=3, sticky="w",
                                                                    pady=(px(4), 0))
+        # [voice] Another disc's voices (c3w/voices.py); Voices under Game settings picks the language.
+        vb = ttk.Button(g, text="Add voices from another disc...", command=self._add_voices)
+        vb.grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
+        tip(vb, "Copies the voices of another Call of Duty 3 disc (Germany, or Europe with French, Spanish and "
+                "Italian) from its .iso into the game, next to its own. Then choose them with Voices under Game "
+                "settings, or in F2 > Game > Sound.")
 
         s = section(t, "Game settings", 3, columns=1)
         self._grid_cols(s)
         self._game_settings_section(s)
 
         d = section(t, "Ripped game files", 5, columns=1)
-        hint(d, "Call of Duty 3 textures (DDS + PNG), meshes (glTF) and materials (JSON), and World at War "
-                "scripts, ripped from your copies. The native engine that plays them is being built; World at War "
-                "itself is never run.").pack(anchor="w")
+        hint(d, "Textures (DDS + PNG), meshes (glTF) and materials (JSON), for the new engine.").pack(anchor="w")
         b = ttk.Button(d, text="Open ripped files", command=lambda: self._open(str(Path(self.v_out.get()) / "data")))
         b.pack(anchor="w", pady=(px(8), px(18)))
         tip(b, "The data folder in the output folder.")
+
+    def _add_voices(self) -> None:  # [voice]
+        """Copies another Call of Duty 3 disc's voice files into the built
+        game (c3w/voices.py: never overwrites anything)."""
+        out = self._out_path()
+        try:
+            if out is None:
+                raise SetupError("no output folder")
+            voices.assets_folder(out)
+        except SetupError:
+            self._info("Build the game first", "Voices go into a built game: build Call of Duty 3 on Set up "
+                                               "first.", kind="warning")
+            return
+        disc = filedialog.askopenfilename(title="Another Call of Duty 3 disc", parent=self.root,
+                                          filetypes=[("Disc images", "*.iso"), ("All files", "*")])
+        if not disc:
+            return
+
+        def work(runner: common.Runner) -> str:
+            r = voices.add_voices(Path(disc), out, runner.log, runner.cancel)
+            have = ", ".join(voices.LANGUAGES[c] for c, n in r["languages"].items() if n)
+            first = (f"Copied {r['copied']} voice files from {r['disc']} ({common.human(r['bytes'])})."
+                     if r["copied"] else f"The game already has the voices of {r['disc']}.")
+            return f"{first} Voices the game can use: {have}. Choose one with Voices under Game settings."
+        self._start_task("Adding voices", work, actions=[])
 
     def _on_show_play(self) -> None:
         # The game may have changed its settings (F2) or been started or
@@ -172,6 +214,23 @@ class Pages:
             return None, (f"Not built yet: tick the {system} version on Set up and press Build.")
         return exe, f"Ready: the {system} version is built."
 
+    def _migrate_windowed(self, out: Path) -> None:
+        """An older version's "Start in a window" box (the tool's own setting,
+        sent as --fullscreen=false at every start) becomes the game's Display
+        mode once, unless the game's settings already say."""
+        if not self.v_cod3_windowed.get():
+            return
+        try:
+            if "fullscreen" not in game_settings.read_values(out):
+                game_settings.save(out, {"fullscreen": False})
+                self.log.info("\"Start in a window\" is now the game's own setting: Display mode = Windowed "
+                              "(Game settings here, F2 > Video in the game).")
+        except SetupError as e:
+            self.log.warn(f"Couldn't turn \"Start in a window\" into the game's Display mode: {e}")
+            return
+        self.v_cod3_windowed.set(False)
+        self._gs_loaded_for = None   # read the file again, with the new line
+
     def _play_cod3(self) -> None:
         exe, why = self._play_exe()
         if exe is None:
@@ -179,9 +238,17 @@ class Pages:
                                         f"found.\n{why}", kind="warning")
             return
         out = Path(self.v_out.get())
+        try:
+            running = game_settings.game_running(out)
+        except Exception:  # noqa: BLE001 - best effort, as on the Play page
+            running = False
+        if running:
+            self._info("Already running", "Call of Duty 3 is already running. Close it first to start it again "
+                                          "(its settings are saved when you change them in the game).",
+                       kind="warning")
+            return
+        self._migrate_windowed(out)
         args = [str(exe)]
-        if self.v_cod3_windowed.get():
-            args.append("--fullscreen=false")
         if self.v_cod3_args.get().strip():
             args += shlex.split(self.v_cod3_args.get(), posix=not IS_WINDOWS)
         env = dict(os.environ)
@@ -193,14 +260,22 @@ class Pages:
                 pass
         if exe.suffix.lower() == ".appimage" and not (shutil.which("fusermount") or shutil.which("fusermount3")):
             env["APPIMAGE_EXTRACT_AND_RUN"] = "1"  # no FUSE: run the AppImage without mounting it
-        if self._gs_dirty():
-            self._save_game_settings(quiet=True)
+        if self._gs_dirty() and not self._save_game_settings(quiet=True):
+            return   # said why; nothing started with settings that weren't saved
         self._save()
         self.log.info("Launching: " + " ".join(args))
         kwargs = {} if IS_WINDOWS else {"start_new_session": True}
+        started = time.monotonic()
+
+        def ended(code: int) -> None:
+            # On the collecting thread: the log line goes through the UI queue.
+            took = time.monotonic() - started
+            self.q.put(("call", lambda: self.log.info(
+                f"The game process started here exited after {took / 60:.1f} min (exit code {code}).")))
         try:
-            subprocess.Popen(args, cwd=str(out), env=env, **kwargs)
+            common.start_and_collect(args, on_exit=ended, cwd=str(out), env=env, **kwargs)
             self.v_status.set("Call of Duty 3 is starting...")
+            self._gs_launched = time.monotonic()   # _gs_watch follows it until it ends
         except OSError as e:
             self._info("Could not start", f"The game didn't start.\n{e}\n\nIf the output folder is on a drive "
                                           "mounted without execute permission, move it to your home folder.",
@@ -248,6 +323,10 @@ class Pages:
         self.lbl_gs_reason = hint(s, var=self.v_gs_reason, style="Hint.TLabel")
         self.lbl_gs_reason.grid(row=r + 1, column=1, columnspan=2, sticky="w")
         self._gs_running = False
+        self._gs_loading = self._gs_watching = False
+        self._gs_mtime: Optional[int] = None
+        self._gs_launched: Optional[float] = None
+        self.root.after(2000, self._gs_watch)
         if not shown:
             for b in (self.btn_gs_save, self.btn_gs_undo, self.btn_gs_defaults):
                 b.configure(state="disabled")
@@ -262,8 +341,8 @@ class Pages:
             if st.kind == "choice":
                 labels = [label for _, label in st.choices]
                 var = tk.StringVar(value=self._gs_label(st, st.default))
-                w = ttk.Combobox(s, textvariable=var, state="readonly", values=labels,
-                                 width=max([12] + [len(x) + 2 for x in labels]))
+                w = ttk.Combobox(s, textvariable=var, state="readonly", values=labels)
+                widgets.fit_list_width(w, labels)
             elif st.choices:
                 # A number with suggestions (the frame rate limit): pick one or type your own.
                 var = tk.StringVar(value=self._gs_label(st, st.default))
@@ -332,6 +411,54 @@ class Pages:
                            else f"{st.label}: pick one from the list.")
         return bad
 
+    def _gs_edits(self) -> dict:
+        """The settings changed in the form since the file was read."""
+        if self._gs_loaded_for is None:
+            return {}
+        return {k: v for k, v in self._gs_values().items() if not self._gs_same(self._gs_loaded.get(k), v)}
+
+    @staticmethod
+    def _gs_file_mtime(out: Optional[Path]) -> Optional[int]:
+        try:
+            return game_settings.settings_file(out).stat().st_mtime_ns if out is not None else None
+        except OSError:
+            return None
+
+    def _gs_watch(self) -> None:
+        """Every 2 s: when the game's settings file changed (the game saves it
+        when a setting changes in F2 or its menus) or the game started or
+        ended, the Play page reads it again, keeping only what was changed
+        here and not saved. Off the UI thread: the running check asks the
+        system for its processes."""
+        self.root.after(2000, self._gs_watch)
+        if getattr(self, "page", "") != "play" or getattr(self, "_gs_loading", False) or \
+                getattr(self, "_gs_watching", False) or not getattr(self, "_gs_vars", None):
+            return
+        out = self._out_path()
+        if out is None:
+            return
+        launched = getattr(self, "_gs_launched", None)
+        follow = self._gs_running or (launched is not None and time.monotonic() - launched < 60)
+        self._gs_watching = True
+
+        def work():
+            mtime = self._gs_file_mtime(out)
+            running = self._gs_running
+            if follow:
+                try:
+                    running = bool(game_settings.game_running(out))
+                except Exception:  # noqa: BLE001 - best effort
+                    pass
+
+            def done():
+                self._gs_watching = False
+                if not running and launched is not None and time.monotonic() - launched >= 60:
+                    self._gs_launched = None   # started and gone (or never came up)
+                if mtime != getattr(self, "_gs_mtime", None) or running != self._gs_running:
+                    self._load_game_settings(keep_edits=True)
+            self.q.put(("call", done))
+        threading.Thread(target=work, daemon=True).start()
+
     def _gs_dirty(self) -> bool:
         if not getattr(self, "_gs_vars", None) or self._gs_loaded_for is None:
             return False
@@ -361,8 +488,11 @@ class Pages:
         out = self._out_path()
         folder = self.v_out.get().strip()
 
+        self._gs_loading = True
+
         def work():
             values, err = {}, ""
+            mtime = self._gs_file_mtime(out)
             if out is not None:
                 try:
                     values = game_settings.load(out)
@@ -374,13 +504,19 @@ class Pages:
                 running = False
 
             def done():
+                self._gs_loading = False
                 if self.v_out.get().strip() != folder:
                     return   # the output folder changed meanwhile: its own load follows
                 self._gs_running = running
-                if not (keep_edits and self._gs_dirty()):
+                self._gs_mtime = mtime
+                # The file's values everywhere, except the settings changed here
+                # and not saved yet (keep_edits): so a change made in the game
+                # shows here, and saving here never puts an old value back.
+                edits = self._gs_edits() if keep_edits and self._gs_loaded_for == folder else {}
+                if not err:
                     self._gs_loaded = dict(values)
                     self._gs_loaded_for = folder
-                    self._set_gs_form(values)
+                    self._set_gs_form({**values, **edits})
                 self._update_game_settings_state(err)
             self.q.put(("call", done))
         threading.Thread(target=work, daemon=True).start()
@@ -408,27 +544,35 @@ class Pages:
         self.v_gs_reason.set(reason)
         self.lbl_gs_reason.configure(style=style)
 
-    def _save_game_settings(self, quiet: bool = False) -> None:
+    def _save_game_settings(self, quiet: bool = False) -> bool:
+        """Writes the settings changed here, and only those: a setting changed
+        in the game since this page read the file keeps the game's value.
+        False when nothing could be saved (the reason is shown)."""
         out = self._out_path()
         if out is None:
-            return
+            return False
+        if self._gs_problems():
+            self._info("Not saved", "The game settings weren't saved.\n" + self._gs_problems()[0], kind="warning")
+            return False
+        changed = self._gs_edits()
         try:
             if game_settings.game_running(out):
                 self._gs_running = True
                 self._update_game_settings_state()
-                if not quiet:
-                    self._info("Close the game first", "Call of Duty 3 is running.\nIt writes its settings when it "
-                                                       "quits, which would undo these. Close it, then save.",
-                               kind="warning")
-                return
-            values = self._gs_values()
-            game_settings.save(out, values)
+                self._info("Close the game first", "Call of Duty 3 is running.\nChange settings in the game (F2) "
+                                                   "while it runs, or close it and save them here.",
+                           kind="warning")
+                return False
+            game_settings.save(out, changed)
         except (SetupError, OSError, ValueError, NotImplementedError) as e:
             self._info("Not saved", f"The game settings weren't saved.\n{e}", kind="error")
-            return
-        self._gs_loaded = dict(values)
+            return False
+        self._gs_loaded = {**self._gs_loaded, **changed}
+        self._gs_mtime = self._gs_file_mtime(out)
         self._update_game_settings_state()
-        self.v_status.set("Game settings saved.")
+        if not quiet:
+            self.v_status.set("Game settings saved." if changed else "Nothing to save.")
+        return True
 
     # ------------------------------------------------------------------ Textures page
     def _page_textures(self, t) -> None:
@@ -444,10 +588,13 @@ class Pages:
             return ", ".join(words[:-1]) + " or " + words[-1]
         sizes = either([f"{upscaled_size(k) / 1024 ** 3:.0f}" for k in upscale.SCALES])
         scales = either([f"{k}x" for k in upscale.SCALES])
-        ttk.Checkbutton(u, text=f"Upscale the extracted textures with waifu2x (uses your graphics card; about "
-                                f"{sizes} GB more at {scales})", variable=self.v_upscale,
-                        command=self._update_upscale).grid(row=0, column=0, columnspan=3, sticky="w",
-                                                           pady=(0, px(6)))
+        # A short box label (a check box's text can't wrap); the details wrap under it.
+        top = ttk.Frame(u)
+        top.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, px(6)))
+        ttk.Checkbutton(top, text="Upscale the extracted textures with waifu2x", variable=self.v_upscale,
+                        command=self._update_upscale).pack(anchor="w")
+        hint(top, f"Uses your graphics card; about {sizes} GB more at {scales}.").pack(anchor="w",
+                                                                                       padx=(px(26), 0))
         ttk.Label(u, text="Style").grid(row=1, column=0, sticky="w", pady=px(3))
         self.cb_upscale_model = ttk.Combobox(u, textvariable=self.v_upscale_model, state="readonly", width=36,
                                              values=[label for _, label in upscale.MODELS.values()])
@@ -576,10 +723,9 @@ class Pages:
     def _page_maps(self, t) -> None:
         t.columnconfigure(0, weight=1)
         t.rowconfigure(2, weight=1)
-        head = widgets.page_header(t, "Mods & maps", "Add World at War mods and custom maps (UGX zombies maps, "
-                                   "Spain at War and others): pick the installer .exe, an archive (.zip/.7z/.rar) "
-                                   "or an unpacked folder. Installers are unpacked, never run. Everything goes into "
-                                   "the output folder (data/waw/custom_maps), not into World at War.", columns=1)
+        head = widgets.page_header(t, "Mods & maps", "Add World at War mods and custom maps (UGX and others): an "
+                                   "installer, an archive or a folder. Installers are unpacked, never run; everything "
+                                   "goes to data/waw/custom_maps in the output folder.", columns=1)
         widgets.link(head, "ugx-mods.com", lambda: webbrowser.open("https://www.ugx-mods.com/")).pack(
             side="right", anchor="n")
         lf = ttk.Frame(t)
@@ -738,7 +884,8 @@ class Pages:
         hint(p, var=self.v_profiles_empty).pack(anchor="w", pady=(px(4), 0))
 
         a = section(t, "Appearance", 9, columns=1)
-        hint(a, "The same themes as the game's F2 window, and a highlight color of your own.").grid(
+        hint(a, "The game's F2 themes, and a highlight color of your own. Other tabs pick theirs in the "
+                "sidebar.").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, px(6)))
         for i, tid in enumerate(theme.THEME_ORDER):
             th = theme.THEMES[tid]
@@ -759,7 +906,7 @@ class Pages:
         tip(b, "Buttons, the selected page and headings use it. Text in it is adjusted to stay readable.")
         self.btn_reset_accent = ttk.Button(af, text="Reset accent", command=self._reset_accent)
         self.btn_reset_accent.pack(side="left", padx=(px(6), 0))
-        tip(self.btn_reset_accent, lambda: "Back to the theme's own brass." if self.accent else
+        tip(self.btn_reset_accent, lambda: "Back to the theme's own accent." if self.accent else
             "The theme's own accent is in use.")
         self._refresh_profiles()
 
@@ -1217,9 +1364,9 @@ class Pages:
 
     def _page_about(self, t) -> None:
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Builds Call of Duty 3 for PC from your "
-                                                "own disc, and rips both games' files for the new engine.",
-                            columns=1)
+        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3 for PC from your own disc, "
+                                                "World at War's content, and the Rust tools for Call of Duty 2 and "
+                                                "United Offensive.", columns=1)
         d = section(t, "Documents", 1, columns=1)
         d.columnconfigure(1, weight=1)
         docs = [("README.md", "Read me", "How to set up and play; the project folder."),
@@ -1241,7 +1388,7 @@ class Pages:
 
         k = section(t, "Keyboard shortcuts", 3, columns=1)
         for r, (keys, what) in enumerate(SHORTCUTS):
-            keys = keys.format(n=min(9, len(self.page_order)))
+            keys = keys.format(n=min(9, max(len(pages) for pages in self.page_lists.values())))
             ttk.Label(k, text=keys, style="Bold.TLabel").grid(row=r, column=0, sticky="w", pady=px(1))
             ttk.Label(k, text=what).grid(row=r, column=1, sticky="w", padx=(px(16), 0))
 
@@ -1252,5 +1399,5 @@ class Pages:
                   "License). Texture upscaling uses waifu2x and waifu2x-ncnn-vulkan (MIT). Every download is "
                   "listed in docs/SOURCES.md.").pack(anchor="w")
         hint(lic, "Call of Duty is a trademark of Activision. This project contains no Activision code or assets: "
-                  "everything game-specific is made on your PC from your own discs.").pack(anchor="w",
-                                                                                         pady=(px(8), px(18)))
+                  "everything game-specific is made on your PC from your own copies. The tab headers are drawn by "
+                  "this tool; no game artwork or logo is used.").pack(anchor="w", pady=(px(8), px(18)))

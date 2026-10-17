@@ -17,19 +17,31 @@
 #include <rex/logging.h>
 
 #include "game/addresses.h"
+#include "game/decomp_trace.h"
 #include "game/diagnostics.h"
+#include "game/hd_textures.h"
+#include "game/program.h"
+#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
+#include "game/protected_dvars.h"
+#endif
+#if !defined(COD3_MP)  // [keybinds] campaign only for now
+#include "game/keybinds/binds.h"
+#endif
+#include "game/screenshot.h"
+#include "ui/console_view.h"
+#include "ui/dvar_domain.h"
+#include "ui/problem_log.h"
 #include "ui/waw_dvars.h"
 
 namespace cod3::ui {
 
 namespace {
 
-constexpr const char* kPrompt = "CoD3 >";
 constexpr const char* kVersionTag = "Call of Duty 3 - static recomp";
-constexpr int kMaxInlineSuggestions = 24;
 
-const char* kLocalCommands[] = {"clear", "cls",  "condump", "cvarlist", "dvarlist",  "dvardump",   "find",
-                                "fov",   "cheats", "sv_cheats", "help",   "quit",      "cod3_report"};
+const char* const kLocalCommands[] = {"clear", "cls",    "condump",   "cvarlist", "dvarlist", "dvardump",
+                                      "find",  "fov",    "cheats",    "sv_cheats", "help",    "quit",
+                                      "cod3_report", "problems", "screenshot", "cod3_hd_compare"};
 
 // A file name for condump: the name part only (no folders, no drive, no
 // ".."), printable characters, ending in .txt. Anything else gives the default.
@@ -140,75 +152,6 @@ std::vector<std::string> SplitCommands(std::string_view line) {
   return out;
 }
 
-ImVec4 Q3Color(char code) {
-  switch (code) {
-    case '0': return ImVec4(0.35f, 0.35f, 0.35f, 1.0f);
-    case '1': return ImVec4(1.00f, 0.32f, 0.32f, 1.0f);
-    case '2': return ImVec4(0.40f, 1.00f, 0.40f, 1.0f);
-    case '3': return ImVec4(1.00f, 0.92f, 0.36f, 1.0f);
-    case '4': return ImVec4(0.42f, 0.52f, 1.00f, 1.0f);
-    case '5': return ImVec4(0.38f, 0.95f, 1.00f, 1.0f);
-    case '6': return ImVec4(1.00f, 0.45f, 1.00f, 1.0f);
-    case '8': return ImVec4(1.00f, 0.62f, 0.20f, 1.0f);
-    case '9': return ImVec4(0.60f, 0.60f, 0.60f, 1.0f);
-    default: return ImVec4(0.92f, 0.92f, 0.92f, 1.0f);
-  }
-}
-
-ImVec4 ChannelColor(ConsoleChannel ch) {
-  switch (ch) {
-    case ConsoleChannel::kDeveloper: return ImVec4(0.62f, 0.62f, 0.62f, 1.0f);
-    case ConsoleChannel::kError: return ImVec4(1.00f, 0.36f, 0.30f, 1.0f);
-    case ConsoleChannel::kEcho: return ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
-    case ConsoleChannel::kSystem: return ImVec4(1.00f, 0.80f, 0.35f, 1.0f);
-    default: return ImVec4(0.92f, 0.92f, 0.92f, 1.0f);
-  }
-}
-
-// Draws text with ^N color codes on a single line.
-void DrawColored(std::string_view text, ImVec4 base_color) {
-  ImVec4 color = base_color;
-  size_t start = 0;
-  bool first = true;
-  auto flush = [&](size_t end) {
-    if (end <= start) return;
-    if (!first) ImGui::SameLine(0.0f, 0.0f);
-    ImGui::PushStyleColor(ImGuiCol_Text, color);
-    ImGui::TextUnformatted(text.data() + start, text.data() + end);
-    ImGui::PopStyleColor();
-    first = false;
-  };
-  for (size_t i = 0; i + 1 < text.size(); ++i) {
-    if (text[i] == '^' && text[i + 1] >= '0' && text[i + 1] <= '9') {
-      flush(i);
-      color = text[i + 1] == '7' ? base_color : Q3Color(text[i + 1]);
-      start = i + 2;
-      ++i;
-    }
-  }
-  flush(text.size());
-  if (first) ImGui::TextUnformatted("");
-}
-
-std::string FlagString(uint32_t f) {
-  namespace cf = cod3::addr::cvar_flag;
-  std::string s;
-  s += (f & cf::kServerInfo) ? 'S' : ' ';
-  s += (f & cf::kUserInfo) ? 'U' : ' ';
-  s += (f & cf::kRom) ? 'R' : ' ';
-  s += (f & cf::kInit) ? 'I' : ' ';
-  s += (f & cf::kArchive) ? 'A' : ' ';
-  s += (f & cf::kLatch) ? 'L' : ' ';
-  s += (f & cf::kCheat) ? 'C' : ' ';
-  s += (f & cf::kTemp) ? 'T' : ' ';
-  return s;
-}
-
-double NowSeconds() {
-  using namespace std::chrono;
-  return duration<double>(steady_clock::now().time_since_epoch()).count();
-}
-
 }  // namespace
 
 // ===========================================================================
@@ -217,6 +160,11 @@ double NowSeconds() {
 GameConsole& GameConsole::Get() {
   static GameConsole console;
   return console;
+}
+
+const std::vector<const char*>& GameConsole::LocalCommands() {
+  static const std::vector<const char*> names(std::begin(kLocalCommands), std::end(kLocalCommands));
+  return names;
 }
 
 void GameConsole::Print(ConsoleChannel channel, std::string_view text) {
@@ -306,6 +254,41 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
   for (auto& cmd : SplitCommands(trimmed)) {
     auto args = Tokenize(cmd);
     if (args.empty()) continue;
+    // The decomp trace build's trace_mark / trace_status / trace_write (game/decomp_trace.h).
+    if (cod3::trace::kEnabled && cod3::trace::HandleConsoleCommand(ToLower(args[0]), args)) continue;
+#if !defined(COD3_MP)  // [movement]
+    // server_sided_protected dvars (game/protected_dvars.h), in every form
+    // (set, seta, reset, toggle, "<name> <value>" ...): the port's own; refused
+    // while a match's server sets them.
+    {
+      bool changed = false;
+      if (protected_dvars::HandleConsoleLine(
+              args, source,
+              [this](bool error, const std::string& text) {
+                Print(error ? ConsoleChannel::kError : ConsoleChannel::kSystem, text);
+              },
+              &changed)) {
+        if (changed && on_settings_changed_) on_settings_changed_();
+        continue;
+      }
+    }
+#endif
+#if !defined(COD3_MP)  // [keybinds]
+    // "bind B +binoculars", "unbind B", "bind B": keyboard and mouse keys of
+    // the port's own actions (game/keybinds/binds.h), saved like F2's keys.
+    // Controller buttons (L3, UPARROW ...) stay the game's own binds.
+    {
+      bool changed = false;
+      const bool handled = binds::HandleConsoleCommand(
+          args, source,
+          [this](bool error, const std::string& text) {
+            Print(error ? ConsoleChannel::kError : ConsoleChannel::kSystem, text);
+          },
+          &changed);
+      if (changed && on_settings_changed_) on_settings_changed_();
+      if (handled) continue;
+    }
+#endif
     if (HandleLocal(ToLower(args[0]), args, source)) continue;
     if (HandleWaw(cmd, args)) continue;
     // native-render: the port's own settings by their own names too
@@ -313,14 +296,46 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
     // console; F2 shows the new value.
     if (args.size() >= 2 && args[0].rfind("cod3_", 0) == 0) {
       if (const auto* info = rex::cvar::GetFlagInfo(args[0]); info && info->type != rex::cvar::FlagType::Command) {
-        const std::string value = JoinFrom(args, 1);
+        std::string value = JoinFrom(args, 1);
+        // A choice by its number in the domain list, as World at War takes them.
+        const auto& choices = info->constraints.allowed_values;
+        if (!choices.empty() && std::find(choices.begin(), choices.end(), value) == choices.end() &&
+            !value.empty() && value.size() <= 3 && std::all_of(value.begin(), value.end(), [](char c) {
+              return std::isdigit(static_cast<unsigned char>(c)) != 0;
+            })) {
+          if (const size_t index = std::stoul(value); index < choices.size()) value = choices[index];
+        }
         if (rex::cvar::SetFlagByName(args[0], value)) {
           Print(ConsoleChannel::kSystem, args[0] + " \"" + rex::cvar::GetFlagByName(args[0]) + "\"\n");
           if (on_settings_changed_) on_settings_changed_();
         } else {
-          Print(ConsoleChannel::kError, "^1" + args[0] + ": \"" + value + "\" wasn't taken (not an allowed value, or a start-only setting)\n");
+          // World at War's answer to a value outside the domain.
+          Print(ConsoleChannel::kError, "^1'" + value + "' is not a valid value for dvar '" + args[0] +
+                                            "' (or it is only read at start)\n");
+          for (const auto& l : domain::Describe(domain::ForPortSetting(*info)))
+            Print(ConsoleChannel::kGame, "  " + l + "\n");
         }
         continue;
+      }
+    }
+    // A port setting on its own ("cod3_render_percent", "fullscreen"): its
+    // value, default and domain, World at War style. The game's own names
+    // come first (the game answers those itself).
+    if (args.size() == 1) {
+      const auto* info = rex::cvar::GetFlagInfo(args[0]);
+      if (info && info->type != rex::cvar::FlagType::Command) {
+        const EngineSnapshot snap = engine.Snapshot();
+        const bool game_name =
+            std::any_of(snap.cvars.begin(), snap.cvars.end(), [&](const CvarInfo& c) { return EqualsNoCase(c.name, args[0]); }) ||
+            std::any_of(snap.commands.begin(), snap.commands.end(), [&](const std::string& c) { return EqualsNoCase(c, args[0]); });
+        if (!game_name) {
+          for (const auto& l : domain::InfoLines(info->name, domain::PortValueText(*info, rex::cvar::GetFlagByName(args[0])),
+                                                 domain::PortValueText(*info, info->default_value),
+                                                 domain::ForPortSetting(*info)))
+            Print(ConsoleChannel::kGame, l + "\n");
+          if (!info->description.empty()) Print(ConsoleChannel::kDeveloper, "  " + info->description + "\n");
+          continue;
+        }
       }
     }
     // The cheat guard (game/cheat_guard.h): cheat commands and cheat-protected
@@ -366,14 +381,16 @@ bool GameConsole::HandleWaw(std::string& cmd, std::vector<std::string>& args) {
   const size_t name_at = set_style ? 1 : 0;
   const waw::Dvar* d = waw::Find(args[name_at]);
 
-  // "sensitivity" / "cg_gun_x" on its own: show it, World at War style.
+  // "sensitivity" / "cg_gun_x" on its own: its value, default and domain,
+  // World at War style (ui/dvar_domain.h), then what it is in this port.
   if (d && !set_style && args.size() == 1) {
-    const std::string value = waw::Value(*d, engine.Snapshot());
-    const char* where = d->kind == waw::Kind::kGame ? "Call of Duty 3: " : "port setting ";
-    Print(ConsoleChannel::kGame, "\"" + std::string(d->name) + "\" is:\"" +
-                                     (value.empty() ? std::string("?") : value) + "^7\" (" + where +
-                                     d->target + ")\n");
-    Print(ConsoleChannel::kDeveloper, std::string("  ") + d->help + "\n");
+    const EngineSnapshot snap = engine.Snapshot();
+    const std::string value = waw::Value(*d, snap);
+    for (const auto& line : domain::InfoLines(d->name, value.empty() ? "?" : value, waw::DefaultValue(*d, snap),
+                                              domain::ForWaw(*d, snap)))
+      Print(ConsoleChannel::kGame, line + "\n");
+    const char* where = d->kind == waw::Kind::kGame ? "Call of Duty 3's " : "the port's setting ";
+    Print(ConsoleChannel::kDeveloper, std::string("  ") + d->help + " (" + where + d->target + ")\n");
     return true;
   }
   // Port settings are the PC port's own: set here, not in the game.
@@ -416,7 +433,12 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
     Print(ConsoleChannel::kSystem,
           "Console commands: clear, condump <file>, cvarlist / dvarlist [filter], find <text>, "
           "fov [value], sv_cheats [0|1] (cheats is the same command), cod3_report (a report file "
-          "for bug reports), quit\n"
+          "for bug reports), problems [count] (this session's warnings and errors, as in F2 > "
+          "Console > Problems), screenshot (the game's picture, into "
+          "userdata/logs/screenshots), cod3_hd_compare [seconds] (the same view with the HD "
+          "textures and without them: stand still), quit\n"
+          "A dvar or setting name on its own shows its value, default and domain, World at War "
+          "style (\"cg_fov\" is:\"65\" default:\"65\", Domain is any number from 65 to 160).\n"
           "Cheats: cheat commands (give, god, noclip, notarget, ufo, setviewpos, jumptonode) and "
           "cheat-protected dvars (C in cvarlist, e.g. timescale) work only while sv_cheats is 1, "
           "and every mission starts with sv_cheats 0. sv_cheats 1 puts a CHEATS USED mark on "
@@ -424,7 +446,8 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
           "back to their defaults and turns god / notarget / noclip / ufo off. In a multiplayer "
           "match only the host can set sv_cheats, and everyone is told.\n"
           "Logging: cod3_log_detail normal | verbose | debug, cod3_perf_log <seconds>, "
-          "cod3_perf_overlay 1\n"
+          "cod3_perf_overlay 1, cod3_debug_screenshots <seconds> (with debug detail: the "
+          "game's picture every so often, 0 = none)\n"
           "World at War dvar names work too (W in cvarlist): CoD3's own under another name "
           "(cg_gun_x = cg_gunX) or the port's settings (sensitivity, m_yaw, r_mode 1920x1080, "
           "r_fullscreen, r_vsync, snd_volume).\n"
@@ -456,12 +479,55 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
       return true;
     }
   }
+  // problems [count]: the newest kinds of warnings and errors (ui/problem_log.h).
+  if (cmd == "problems") {
+    const long wanted = args.size() > 1 ? std::strtol(args[1].c_str(), nullptr, 10) : 20;
+    const size_t count = static_cast<size_t>(std::clamp(wanted, 1L, static_cast<long>(ProblemLog::kMaxGroups)));
+    Print(ConsoleChannel::kSystem, ProblemLog::Get().AsText(count));
+    return true;
+  }
   if (cmd == "cod3_report") {
     const auto path = diag::WriteReport();
     if (!path.empty())
       Print(ConsoleChannel::kSystem, "Wrote " + cod3::PathToUtf8(path) + "\n");
     else
       Print(ConsoleChannel::kError, "^1cod3_report: could not write the report\n");
+    return true;
+  }
+  // screenshot: the game's own picture (game/screenshot.h); never the
+  // console, F2, the desktop or another window. No file name is taken.
+  if (cmd == "screenshot") {
+    const std::string file = shot::Request(shot::Kind::kAsked, "asked for in the console");
+    if (!file.empty())
+      Print(ConsoleChannel::kSystem,
+            "Saving userdata/logs/screenshots/" + file + " (the game's picture only)\n");
+    else if (shot::Available())
+      Print(ConsoleChannel::kError, "^1screenshot: one was just taken; try again in a moment\n");
+    else
+      Print(ConsoleChannel::kError, "^1screenshot: not available (no GPU emulation)\n");
+    return true;
+  }
+  // cod3_hd_compare [seconds]: the same view with and without the HD
+  // textures, a moment apart (game/screenshot.h).
+  if (cmd == "cod3_hd_compare") {
+    const HdTextures hd = GetHdTextures();
+    if (cod3::kMultiplayer || hd::IsMultiplayerMode()) {
+      // Campaign only: in multiplayer no texture changes at all.
+      Print(ConsoleChannel::kError, "^1cod3_hd_compare: campaign only (not in multiplayer)\n");
+    } else if (hd != HdTextures::kOn && hd != HdTextures::kCommandLine) {
+      Print(ConsoleChannel::kError,
+            std::string("^1cod3_hd_compare: the HD textures aren't in use in this session (") +
+                DescribeHdTextures(hd) + "; F2 > Video > HD textures, then restart)\n");
+    } else {
+      const double seconds = args.size() > 1 ? std::strtod(args[1].c_str(), nullptr) : 2.0;
+      const std::string stem = shot::RequestHdCompare(seconds > 0 ? seconds : 2.0);
+      if (stem.empty())
+        Print(ConsoleChannel::kError, "^1cod3_hd_compare: one is already under way\n");
+      else
+        Print(ConsoleChannel::kSystem,
+              "Stand still: saving userdata/logs/screenshots/" + stem +
+                  "-on.png, then the HD textures go off for a moment for " + stem + "-off.png\n");
+    }
     return true;
   }
   if (cmd == "condump") {
@@ -486,7 +552,7 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
     int count = 0;
     for (auto& v : snap.cvars) {
       if (!filter.empty() && ToLower(v.name).find(filter) == std::string::npos) continue;
-      Print(ConsoleChannel::kGame, FlagString(v.flags) + " " + v.name + " \"" + v.value + "^7\"\n");
+      Print(ConsoleChannel::kGame, ConsoleFlagString(v.flags) + " " + v.name + " \"" + v.value + "^7\"\n");
       ++count;
     }
     // World at War names for CoD3 dvars and port settings.
@@ -540,211 +606,15 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
 }
 
 // ===========================================================================
-// GameConsoleDialog (view)
+// GameConsoleDialog (the drop-down window around the shared ConsoleView)
 // ===========================================================================
 GameConsoleDialog::GameConsoleDialog(rex::ui::ImGuiDrawer* drawer, bool full)
-    : ImGuiDialog(drawer), full_(full) {
+    : ImGuiDialog(drawer), view_(std::make_unique<ConsoleView>()), full_(full) {
   GameConsole::SetOpen(true);
-  Engine::Get().RequestSnapshot();
 }
 
 GameConsoleDialog::~GameConsoleDialog() {
   GameConsole::SetOpen(false);
-}
-
-void GameConsoleDialog::UpdateSuggestions(std::string_view text) {
-  suggestions_.clear();
-  suggestion_sel_ = -1;
-  size_t start = text.find_first_not_of(" /\\");
-  if (start == std::string_view::npos) return;
-  text.remove_prefix(start);
-  // Only the command / cvar name (first token) is completed.
-  size_t space = text.find(' ');
-  std::string_view word = text.substr(0, space);
-  if (word.empty()) return;
-  const bool exact_only = space != std::string_view::npos;
-
-  for (auto& v : snapshot_.cvars) {
-    if (exact_only ? EqualsNoCase(v.name, word) : StartsWithNoCase(v.name, word))
-      suggestions_.push_back({v.name, v.value, v.reset, v.flags, true});
-  }
-  for (auto& c : snapshot_.commands) {
-    if (exact_only ? EqualsNoCase(c, word) : StartsWithNoCase(c, word))
-      suggestions_.push_back({c, {}, {}, 0, false});
-  }
-  for (const char* c : kLocalCommands) {
-    if (exact_only ? EqualsNoCase(c, word) : StartsWithNoCase(c, word))
-      suggestions_.push_back({c, {}, {}, 0, false});
-  }
-  for (const auto& w : waw::All()) {
-    if (exact_only ? EqualsNoCase(w.name, word) : StartsWithNoCase(w.name, word))
-      suggestions_.push_back({w.name, waw::Value(w, snapshot_), {}, 0, true});
-  }
-  std::sort(suggestions_.begin(), suggestions_.end(), [](const Suggestion& a, const Suggestion& b) {
-    return ToLower(a.name) < ToLower(b.name);
-  });
-  suggestions_.erase(std::unique(suggestions_.begin(), suggestions_.end(),
-                                 [](const Suggestion& a, const Suggestion& b) {
-                                   return EqualsNoCase(a.name, b.name);
-                                 }),
-                     suggestions_.end());
-}
-
-int GameConsoleDialog::InputCallback(ImGuiInputTextCallbackData* data) {
-  auto* self = static_cast<GameConsoleDialog*>(data->UserData);
-  switch (data->EventFlag) {
-    case ImGuiInputTextFlags_CallbackAlways: {
-      std::string_view text(data->Buf, static_cast<size_t>(data->BufTextLen));
-      // Completions update typed_prefix_ themselves, so a mismatch here means
-      // the user edited the line.
-      if (text != self->typed_prefix_) {
-        self->typed_prefix_ = std::string(text);
-        self->UpdateSuggestions(text);
-      }
-      break;
-    }
-    case ImGuiInputTextFlags_CallbackCompletion: {
-      auto& sug = self->suggestions_;
-      if (sug.empty()) break;
-      std::string replacement;
-      if (sug.size() == 1) {
-        replacement = sug[0].name + " ";
-      } else {
-        // Longest common prefix first; once it stops growing, cycle matches.
-        std::string lcp = sug[0].name;
-        for (auto& s : sug) {
-          size_t j = 0;
-          while (j < lcp.size() && j < s.name.size() &&
-                 std::tolower(static_cast<unsigned char>(lcp[j])) ==
-                     std::tolower(static_cast<unsigned char>(s.name[j])))
-            ++j;
-          lcp.resize(j);
-        }
-        std::string current(data->Buf, static_cast<size_t>(data->BufTextLen));
-        size_t lead = current.find_first_not_of(" /\\");
-        std::string word = lead == std::string::npos ? "" : current.substr(lead);
-        if (lcp.size() > word.size()) {
-          replacement = lcp;
-        } else {
-          self->suggestion_sel_ = (self->suggestion_sel_ + 1) % static_cast<int>(sug.size());
-          replacement = sug[self->suggestion_sel_].name;
-        }
-      }
-      data->DeleteChars(0, data->BufTextLen);
-      data->InsertChars(0, replacement.c_str());
-      if (sug.size() == 1) {
-        self->suggestion_sel_ = -1;
-        self->typed_prefix_ = replacement;
-        self->UpdateSuggestions(replacement);
-      } else if (self->suggestion_sel_ < 0) {
-        self->typed_prefix_ = replacement;
-        self->UpdateSuggestions(replacement);
-      } else {
-        self->typed_prefix_ = replacement;
-      }
-      break;
-    }
-    case ImGuiInputTextFlags_CallbackHistory: {
-      auto& hist = GameConsole::Get().history();
-      if (hist.empty()) break;
-      int prev = self->history_pos_;
-      if (data->EventKey == ImGuiKey_UpArrow) {
-        self->history_pos_ =
-            self->history_pos_ < 0 ? static_cast<int>(hist.size()) - 1 : std::max(0, self->history_pos_ - 1);
-      } else if (data->EventKey == ImGuiKey_DownArrow) {
-        if (self->history_pos_ >= 0 && ++self->history_pos_ >= static_cast<int>(hist.size()))
-          self->history_pos_ = -1;
-      }
-      if (prev != self->history_pos_) {
-        const std::string& h = self->history_pos_ >= 0 ? hist[self->history_pos_] : std::string();
-        data->DeleteChars(0, data->BufTextLen);
-        data->InsertChars(0, h.c_str());
-        self->suggestion_sel_ = -1;
-        self->typed_prefix_ = h;
-        self->UpdateSuggestions(h);
-      }
-      break;
-    }
-    default:
-      break;
-  }
-  return 0;
-}
-
-void GameConsoleDialog::DrawOutput(float height) {
-  auto& model = GameConsole::Get();
-  if (model.generation() != lines_gen_) {
-    lines_gen_ = model.generation();
-    model.CopyLines(lines_);
-    scroll_to_bottom_ = true;
-  }
-  ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-  ImGui::BeginChild("##cod3_output", ImVec2(0, height), false,
-                    ImGuiWindowFlags_HorizontalScrollbar | ImGuiWindowFlags_NoNav);
-  ImGuiListClipper clipper;
-  clipper.Begin(static_cast<int>(lines_.size()));
-  while (clipper.Step()) {
-    for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i)
-      DrawColored(lines_[i].text, ChannelColor(lines_[i].channel));
-  }
-  if (ImGui::IsKeyPressed(ImGuiKey_PageUp)) ImGui::SetScrollY(ImGui::GetScrollY() - height * 0.8f);
-  if (ImGui::IsKeyPressed(ImGuiKey_PageDown)) ImGui::SetScrollY(ImGui::GetScrollY() + height * 0.8f);
-  if (scroll_to_bottom_) {
-    ImGui::SetScrollHereY(1.0f);
-    scroll_to_bottom_ = false;
-  }
-  ImGui::EndChild();
-  ImGui::PopStyleColor();
-}
-
-void GameConsoleDialog::DrawSuggestions(float x, float y, float width) {
-  if (suggestions_.empty()) return;
-  ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
-  ImGui::SetNextWindowSizeConstraints(ImVec2(width * 0.5f, 0), ImVec2(width, 600));
-  ImGui::SetNextWindowBgAlpha(0.88f);
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
-                           ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize;
-  ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.55f, 0.47f, 0.25f, 1.0f));
-  if (ImGui::Begin("##cod3_suggest", nullptr, flags)) {
-    const ImVec4 name_col(1.00f, 1.00f, 1.00f, 1.0f);
-    const ImVec4 value_col(1.00f, 0.92f, 0.36f, 1.0f);
-    const ImVec4 dim_col(0.60f, 0.60f, 0.60f, 1.0f);
-    if (suggestions_.size() == 1 && suggestions_[0].is_cvar) {
-      // World at War shows the full dvar info for a single match.
-      auto& s = suggestions_[0];
-      ImGui::TextColored(name_col, "%s", s.name.c_str());
-      ImGui::SameLine(0, 24);
-      DrawColored(s.value, value_col);
-      ImGui::TextColored(dim_col, "  default: %s", s.reset.c_str());
-      std::string f = FlagString(s.flags);
-      ImGui::TextColored(dim_col, "  flags: [%s]  (S=serverinfo U=userinfo R=read-only I=init "
-                                  "A=archived L=latched C=cheat T=temp)", f.c_str());
-    } else if (static_cast<int>(suggestions_.size()) > kMaxInlineSuggestions) {
-      ImGui::TextColored(dim_col, "%d matches (too many to show here, press Shift+~ for the full console)",
-                         static_cast<int>(suggestions_.size()));
-    } else {
-      float name_w = 0;
-      for (auto& s : suggestions_) name_w = std::max(name_w, ImGui::CalcTextSize(s.name.c_str()).x);
-      for (int i = 0; i < static_cast<int>(suggestions_.size()); ++i) {
-        auto& s = suggestions_[i];
-        if (i == suggestion_sel_) {
-          ImVec2 p = ImGui::GetCursorScreenPos();
-          ImGui::GetWindowDrawList()->AddRectFilled(
-              p, ImVec2(p.x + width - 24, p.y + ImGui::GetTextLineHeight()),
-              ImGui::GetColorU32(ImVec4(0.45f, 0.38f, 0.16f, 0.9f)));
-        }
-        ImGui::TextColored(s.is_cvar ? name_col : ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "%s", s.name.c_str());
-        if (s.is_cvar) {
-          ImGui::SameLine(name_w + 32);
-          DrawColored(s.value, value_col);
-        }
-      }
-    }
-  }
-  ImGui::End();
-  ImGui::PopStyleColor();
 }
 
 void GameConsoleDialog::OnDraw(ImGuiIO& io) {
@@ -757,19 +627,7 @@ void GameConsoleDialog::OnDraw(ImGuiIO& io) {
 }
 
 void GameConsoleDialog::DrawConsole(ImGuiIO& io) {
-  // Keep autocomplete data fresh while open (twice a second).
-  double now = NowSeconds();
-  if (now - last_snapshot_request_ > 0.5) {
-    Engine::Get().RequestSnapshot();
-    last_snapshot_request_ = now;
-  }
-  auto& engine = Engine::Get();
-  if (engine.SnapshotGeneration() != snapshot_gen_) {
-    snapshot_ = engine.Snapshot();
-    snapshot_gen_ = snapshot_.generation;
-    if (suggestion_sel_ < 0) UpdateSuggestions(typed_prefix_);
-  }
-
+  view_->Refresh();
   open_anim_ = std::min(1.0f, open_anim_ + io.DeltaTime * 10.0f);
   const float width = io.DisplaySize.x;
   const float line_h = ImGui::GetFrameHeightWithSpacing();
@@ -784,59 +642,21 @@ void GameConsoleDialog::DrawConsole(ImGuiIO& io) {
   ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.12f, 0.12f, 0.10f, 1.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-  ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse;
-  if (ImGui::Begin("##cod3_console", nullptr, flags)) {
+  const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoCollapse;
+  const bool shown = ImGui::Begin("##cod3_console", nullptr, flags);
+  if (shown) {
     if (full_) {
-      DrawOutput(output_h);
+      view_->DrawOutput(output_h);
       ImGui::Separator();
     }
-
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.30f, 1.0f), "%s", kPrompt);
-    ImGui::SameLine();
-    const float tag_w = ImGui::CalcTextSize(kVersionTag).x;
-    ImGui::SetNextItemWidth(std::max(100.0f, ImGui::GetContentRegionAvail().x - tag_w - 16.0f));
-    if (focus_input_) {
-      ImGui::SetKeyboardFocusHere();
-      focus_input_ = false;
-    }
-    ImGuiInputTextFlags in_flags = ImGuiInputTextFlags_EnterReturnsTrue |
-                                   ImGuiInputTextFlags_CallbackAlways |
-                                   ImGuiInputTextFlags_CallbackCompletion |
-                                   ImGuiInputTextFlags_CallbackHistory;
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0));
-    bool submitted = ImGui::InputText("##cod3_input", input_, sizeof(input_), in_flags,
-                                      &GameConsoleDialog::InputCallback, this);
-    ImGui::PopStyleColor();
-    const ImVec2 input_max = ImGui::GetItemRectMax();
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(0.55f, 0.55f, 0.50f, 1.0f), "%s", kVersionTag);
-
-    if (submitted) {
-      GameConsole::Get().Submit(input_);
-      input_[0] = '\0';
-      typed_prefix_.clear();
-      suggestions_.clear();
-      suggestion_sel_ = -1;
-      history_pos_ = -1;
-      scroll_to_bottom_ = true;
-      ImGui::SetKeyboardFocusHere(-1);
-    }
-    if (ImGui::IsKeyPressed(ImGuiKey_L) && io.KeyCtrl) GameConsole::Get().Clear();
-    // Keep keyboard focus in the input while the console is open.
-    if (!ImGui::IsAnyItemActive() && !ImGui::IsAnyItemHovered()) focus_input_ = true;
-
-    ImGui::End();
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
-    DrawSuggestions(0, y + height + 2.0f, std::max(width * 0.6f, input_max.x));
-    return;
+    view_->DrawInputLine(kVersionTag, /*keep_focus=*/true);
   }
   ImGui::End();
   ImGui::PopStyleVar(2);
   ImGui::PopStyleColor(3);
+  if (shown) view_->DrawSuggestions(ImVec2(0, y + height + 2.0f), false, std::max(width * 0.6f, view_->input_max().x));
 }
 
 }  // namespace cod3::ui

@@ -5,8 +5,10 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -109,6 +111,7 @@ struct Pointer {
   bool over = false;        // over the picture
   float x = 0.0f, y = 0.0f; // in the game's 640x480 menu space
   uint32_t moves = 0;       // counts motion events
+  bool left_down = false;   // [menus-brightness] the left button is held (dragging a gauge)
   std::deque<Request> requests;
 };
 Pointer g_input;
@@ -221,6 +224,7 @@ class MenuInput final : public rex::ui::WindowInputListener {
   void OnKeyUp(rex::ui::KeyEvent& e) override;
   void OnMouseMove(rex::ui::MouseEvent& e) override;
   void OnMouseDown(rex::ui::MouseEvent& e) override;
+  void OnMouseUp(rex::ui::MouseEvent& e) override;  // [menus-brightness]
   void OnMouseWheel(rex::ui::MouseEvent& e) override;
 
  private:
@@ -302,7 +306,9 @@ void MenuInput::OnMouseDown(rex::ui::MouseEvent& e) {
   if (e.button() == Button::kLeft) {
     Request r;
     r.ask = Ask::kClick;
-    if (ToMenuSpace(window, e.x(), e.y(), &r.x, &r.y)) Push(r);
+    std::lock_guard lock(g_input.mutex);
+    g_input.left_down = true;  // [menus-brightness]
+    if (ToMenuSpace(window, e.x(), e.y(), &r.x, &r.y)) PushLocked(r);
   } else if (e.button() == Button::kRight) {
     Request r;
     r.code = pm::kCodeB;
@@ -312,6 +318,13 @@ void MenuInput::OnMouseDown(rex::ui::MouseEvent& e) {
   }
   // Not also a trigger pull for the keyboard/mouse driver.
   e.set_handled(true);
+}
+
+// [menus-brightness] Ends a gauge drag. Not handled: others see it too.
+void MenuInput::OnMouseUp(rex::ui::MouseEvent& e) {
+  if (e.button() != rex::ui::MouseEvent::Button::kLeft) return;
+  std::lock_guard lock(g_input.mutex);
+  g_input.left_down = false;
 }
 
 void MenuInput::OnMouseWheel(rex::ui::MouseEvent& e) {
@@ -360,12 +373,168 @@ struct Box {
   bool Contains(float x, float y) const { return x >= x0 && x <= x1 && y >= y0 && y <= y1; }
 };
 
+// [menus-brightness] The arrows and the gauge drawn on a row (or a page's own,
+// not on a row: Options > SCREEN), from the pictures the menu draws (see
+// "Arrows and gauges" below).
+struct RowControls {
+  bool left = false, right = false, gauge = false, fill = false;
+  Box l, r;  // the left and right arrow
+  Box g, f;  // the gauge's frame (its whole range) and its fill
+};
+
 struct Item {
   int index = 0;
   Box ink;                    // the label's letters as drawn
   Box hit;                    // what the pointer selects it in
   bool left_aligned = false;  // label on the left, a value to its right
+  RowControls ctl;            // [menus-brightness] its arrows and gauge
 };
+
+// ---------------------------------------------------------------------------
+// [menus-brightness] Arrows and gauges. Every picture drawn inside a menu
+// system's draw goes through the picture draw (PanelQuad__vfunc_1, hooked at
+// the end); the ones named as a left / right arrow (arrowL1, arrowR6,
+// slot_05_arrow_left, gauge_arrow_right ...) or a gauge (slot_01_gauge_back,
+// slot_01_gauge_fill, HSensProgbar1 / 2, MusicVolProgbar ...) are noted with
+// where they were drawn, like the footer prompts. The port's own rows draw
+// copies of the game's pictures, with their names, so they are found too.
+// A row gets the ones drawn on its line and its hit area grows to cover
+// them (the arrows lie right of the labels' column on most pages).
+// ---------------------------------------------------------------------------
+enum class ControlKind : uint8_t { kLeft, kRight, kGauge, kFill };
+
+struct Control {
+  uint32_t system = 0;  // the menu system that drew it
+  uint32_t quad = 0;
+  uint32_t frame = 0;   // the game frame it was drawn in
+  ControlKind kind = ControlKind::kLeft;
+  Box box;
+};
+
+std::mutex g_control_mutex;
+std::vector<Control> g_controls;  // g_control_mutex
+constexpr float kControlMargin = 4.0f;  // menu units a click may miss a picture by
+
+// What a picture's name says it is; false: neither an arrow nor a gauge.
+bool ControlKindOf(std::string name, ControlKind* kind) {
+  for (char& c : name) c = char(std::tolower(static_cast<unsigned char>(c)));
+  auto has = [&name](const char* s) { return name.find(s) != std::string::npos; };
+  auto numbered = [&name](const char* prefix) {  // arrowL1 .. arrowR7
+    const size_t n = std::strlen(prefix);
+    return name.size() > n && name.compare(0, n, prefix) == 0 && std::isdigit(static_cast<unsigned char>(name[n]));
+  };
+  if (has("arrow")) {
+    if (has("left") || numbered("arrowl")) return *kind = ControlKind::kLeft, true;
+    if (has("right") || numbered("arrowr")) return *kind = ControlKind::kRight, true;
+    return false;  // up / down and the HUD's arrows
+  }
+  if (has("gauge") || has("progbar")) {
+    const bool fill = has("fill") || (name.size() >= 8 && name.compare(name.size() - 8, 8, "progbar2") == 0);
+    *kind = fill ? ControlKind::kFill : ControlKind::kGauge;
+    return true;
+  }
+  return false;
+}
+
+// The rectangle a picture covers (its parts' vertices), in menu space.
+bool QuadBox(uint8_t* base, uint32_t quad, Box* out) {
+  namespace fe = cod3::addr::fe;
+  const uint32_t parts = ReadU32(base, quad + fe::kQuadParts), n = ReadU32(base, quad + fe::kQuadPartCount);
+  if (!Valid(parts) || n == 0 || n > 8) return false;
+  Box b{1e9f, 1e9f, -1e9f, -1e9f};
+  for (uint32_t p = 0; p < n; ++p) {
+    const uint32_t part = ReadU32(base, parts + 4 * p);
+    for (uint32_t v = 0; Valid(part) && v < 4; ++v) {
+      const uint32_t at = part + fe::kQuadPartVerts + v * fe::kQuadVertStride;
+      const float x = ReadF32(base, at), y = ReadF32(base, at + 4);
+      if (!std::isfinite(x) || !std::isfinite(y)) return false;
+      b.x0 = std::min(b.x0, x), b.x1 = std::max(b.x1, x);
+      b.y0 = std::min(b.y0, y), b.y1 = std::max(b.y1, y);
+    }
+  }
+  if (b.x0 > b.x1 || b.y0 > b.y1 || b.x1 - b.x0 > 640.0f || b.y1 - b.y0 > 480.0f) return false;
+  *out = b;
+  return true;
+}
+
+// What `system` drew in the last two frames.
+std::vector<Control> DrawnControls(uint32_t system) {
+  const uint32_t frame = FrameNow();
+  std::vector<Control> out;
+  std::lock_guard lock(g_control_mutex);
+  for (const auto& c : g_controls)
+    if (c.system == system && frame - c.frame <= 2) out.push_back(c);
+  return out;
+}
+
+Box Union(const Box& a, const Box& b) {
+  return Box{std::min(a.x0, b.x0), std::min(a.y0, b.y0), std::max(a.x1, b.x1), std::max(a.y1, b.y1)};
+}
+
+void AddControl(RowControls& rc, const Control& c) {
+  auto add = [&c](bool& has, Box& box) {
+    box = has ? Union(box, c.box) : c.box;
+    has = true;
+  };
+  switch (c.kind) {
+    case ControlKind::kLeft: add(rc.left, rc.l); break;
+    case ControlKind::kRight: add(rc.right, rc.r); break;
+    case ControlKind::kGauge: add(rc.gauge, rc.g); break;
+    case ControlKind::kFill: add(rc.fill, rc.f); break;
+  }
+}
+
+// Each control goes to the row whose hit area holds its middle (the nearest
+// row's letters if two do), else to `loose` (the page's own).
+void AttachControls(std::vector<Item>& items, const std::vector<Control>& controls, RowControls* loose) {
+  for (const Control& c : controls) {
+    Item* row = nullptr;
+    float best = 1e9f;
+    for (auto& it : items) {
+      if (c.box.cy() < it.hit.y0 || c.box.cy() > it.hit.y1) continue;
+      const float d = std::abs(c.box.cy() - it.ink.cy());
+      if (d < best) best = d, row = &it;
+    }
+    if (!row) {
+      if (loose) AddControl(*loose, c);
+      continue;
+    }
+    AddControl(row->ctl, c);
+    row->hit.x0 = std::min(row->hit.x0, c.box.x0 - kControlMargin);
+    row->hit.x1 = std::max(row->hit.x1, c.box.x1 + kControlMargin);
+  }
+}
+
+bool NearBox(const Box& b, float x, float y, float margin) {
+  // Thin pictures (a gauge's bar) get at least a row's height around them.
+  const float grow_y = std::max(margin, (12.0f - (b.y1 - b.y0)) * 0.5f);
+  return x >= b.x0 - margin && x <= b.x1 + margin && y >= b.y0 - grow_y && y <= b.y1 + grow_y;
+}
+
+// The arrow under (x, y): its button code (left / right), else 0.
+uint32_t ArrowAt(const RowControls& rc, float x, float y) {
+  const bool l = rc.left && NearBox(rc.l, x, y, kControlMargin);
+  const bool r = rc.right && NearBox(rc.r, x, y, kControlMargin);
+  if (l && r) return std::abs(x - rc.l.cx()) <= std::abs(x - rc.r.cx()) ? pm::kCodeLeft : pm::kCodeRight;
+  return l ? pm::kCodeLeft : r ? pm::kCodeRight : 0;
+}
+
+bool GaugeAt(const RowControls& rc, float x, float y) {
+  return rc.gauge && rc.g.x1 - rc.g.x0 >= 4.0f && NearBox(rc.g, x, y, 3.0f);
+}
+
+// For the page log: " L x0,y0-x1,y1 R ... G ... F ..." (arrows, gauge, fill).
+std::string DescribeControls(const RowControls& rc) {
+  std::string s;
+  auto add = [&s](bool has, const char* tag, const Box& b) {
+    if (has) s += fmt::format(" {} {:.0f},{:.0f}-{:.0f},{:.0f}", tag, b.x0, b.y0, b.x1, b.y1);
+  };
+  add(rc.left, "L", rc.l);
+  add(rc.right, "R", rc.r);
+  add(rc.gauge, "G", rc.g);
+  add(rc.fill, "F", rc.f);
+  return s;
+}
 
 bool IsText(uint8_t* base, uint32_t elem) {
   const uint32_t vt = ReadU32(base, elem);
@@ -544,12 +713,20 @@ bool HasValues(uint8_t* base, uint32_t page) {
 
 // Where each selectable item of the page is drawn and can be pointed at, in
 // menu space. `system` is the page's menu system (a message box draws its
-// buttons from its system's button list, not from the page).
-std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint32_t system) {
+// buttons from its system's button list, not from the page). [menus-brightness]
+// With the arrows and gauges drawn on each row; `loose` gets the page's own
+// (drawn on no row).
+std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint32_t system,
+                            RowControls* loose = nullptr) {
   std::vector<Item> items;
   const int count = ReadS16(base, page + pm::kPageCount);
   const uint32_t list = ReadU32(base, page + pm::kPageItems);
-  if (count <= 0 || count > 64 || !Valid(list)) return items;
+  if (count <= 0 || count > 64 || !Valid(list)) {
+    // [menus-brightness] A page's own slider (only a page that takes left /
+    // right: a page sliding out may still draw its arrows for a moment).
+    if (loose && HasValues(base, page)) AttachControls(items, DrawnControls(system), loose);
+    return items;
+  }
   // A scrolling list draws only a window of its items.
   int first = 0, shown = count;
   if (ReadU16(base, page + pm::kPageFlags) & 1) {
@@ -576,7 +753,9 @@ std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint3
     it.left_aligned = (ReadU16(base, label + pm::kTextAlign) & pm::kAlignLeft) != 0;
     items.push_back(it);
   }
-  LayOutHitAreas(items, HasValues(base, page));
+  const bool values = HasValues(base, page);
+  LayOutHitAreas(items, values);
+  if (!buttons && values) AttachControls(items, DrawnControls(system), loose);  // [menus-brightness]
   return items;
 }
 
@@ -634,10 +813,17 @@ bool IsDirection(uint32_t code) {
   return code == pm::kCodeUp || code == pm::kCodeDown || code == pm::kCodeLeft || code == pm::kCodeRight;
 }
 
+// [menus-brightness] Game thread: the code our Press is sending right now, and
+// the arrow key held into the game (pressed with hold, not yet released), for
+// FromPcInput.
+uint32_t g_pressing_code = 0;
+uint32_t g_holding_code = 0;
+
 // The release the pad's input sends when a direction is let go: the page
 // stops repeating it. Without it a page repeats the direction for ever
 // (the "endless scrolling" of mouse wheel and arrow keys before).
 void Release(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code) {
+  if (g_holding_code == code) g_holding_code = 0;  // [menus-brightness]
   VCall(ctx, base, system, pm::kSysRelease, code, MenuPlayer(ctx, base, system));
 }
 
@@ -645,7 +831,10 @@ void Release(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code) {
 void Press(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code, bool hold = false) {
   const uint64_t player = MenuPlayer(ctx, base, system);
   REXLOG_DEBUG("cod3: menu input {} (player {})", code, player);
+  g_pressing_code = code;  // [menus-brightness]
+  if (hold && IsDirection(code)) g_holding_code = code;
   VCall(ctx, base, system, pm::kSysButton, code, player);
+  g_pressing_code = 0;
   if (IsDirection(code) && !hold) Release(ctx, base, system, code);
 }
 
@@ -691,6 +880,101 @@ void KeysTakeOver(Hover& h, float x, float y) {
 }
 
 bool PageLocked(uint8_t* base, uint32_t page) { return ReadU8(base, page + pm::kPageLocked) != 0; }
+
+// ---------------------------------------------------------------------------
+// [menus-brightness] A gauge follows the pointer: a click on it, and the
+// pointer while the button stays down. The game's brightness is set directly
+// (menu_video.h SetSlider); any other gauge moves by its row's own left /
+// right steps, at most one a frame, toward the pointer, and stops on the
+// step that reaches or passes it (where its fill ends shows where it is).
+// It never keeps going on its own: it waits for the pointer to move, ends
+// when the button is up and it has arrived, and gives up after a bounded
+// number of steps or when the page changes.
+// ---------------------------------------------------------------------------
+constexpr int kMaxDragSteps = 400;
+
+struct Drag {
+  bool active = false;
+  uint32_t page = 0;
+  int item = -1;           // the row, or -1: the page's own slider
+  bool released = false;   // the button is up: finish at the last place
+  float x = 0.0f;          // where the pointer wants the gauge (menu x)
+  float stop_x = -1.0f;    // arrived (or passed) with the pointer here
+  int last_dir = 0;        // the last step's direction
+  float last_frac = -1.0f; // where the fill was before it
+  float step = 0.0f;       // how far one step moved the fill
+  int steps = 0, still = 0, wait = 0;
+  bool direct = false;     // set directly (the game's brightness)
+};
+Drag g_drag;  // game thread only
+
+void StartDrag(uint32_t page, int item, float x) {
+  g_drag = Drag{};
+  g_drag.active = true;
+  g_drag.page = page;
+  g_drag.item = item;
+  g_drag.x = x;
+}
+
+void EndDrag(const char* why) {
+  if (g_drag.active && REXCVAR_GET(cod3_menu_trace))
+    REXLOG_INFO("cod3: menu trace: gauge of item {} let go ({}, {} steps)", g_drag.item, why, g_drag.steps);
+  g_drag = Drag{};
+}
+
+void UpdateDrag(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float px, bool down) {
+  Drag& d = g_drag;
+  if (!d.active) return;
+  if (d.page != page) return EndDrag("page changed");
+  if (!d.released) d.x = px;  // the pointer's latest place: where it was let go too
+  if (!down) d.released = true;
+  RowControls loose;
+  const std::vector<Item> items = ItemRects(ctx, base, page, system, &loose);
+  const RowControls* rc = &loose;
+  if (d.item >= 0) {
+    const Item* it = FindItem(items, d.item);
+    // Wait for the highlight to settle on the row (a click on another row).
+    if (!it || Selected(base, page) != d.item || PageLocked(base, page)) {
+      if (++d.wait > kClickWaitFrames) EndDrag("row not reached");
+      return;
+    }
+    rc = &it->ctl;
+  }
+  const float width = rc->g.x1 - rc->g.x0;
+  if (!rc->gauge || width < 4.0f) return EndDrag("no gauge");
+  const float target = std::clamp((d.x - rc->g.x0) / width, 0.0f, 1.0f);
+  if (cod3::videomenu::SetSlider(base, page, d.item, target)) {
+    if (!d.direct || d.released) REXLOG_INFO("cod3: menu slider set to {:.2f} of its range{}", target, d.released ? "" : " (held)");
+    d.direct = true;
+    if (d.released) EndDrag("set");
+    return;
+  }
+  if (!rc->fill) return EndDrag("no fill");
+  const float frac = std::clamp((rc->f.x1 - rc->g.x0) / width, 0.0f, 1.0f);
+  if (d.stop_x >= 0.0f) {  // arrived: wait for the pointer to move on
+    if (d.released) return EndDrag("arrived");
+    if (std::abs(d.x - d.stop_x) < 1.0f) return;
+    d.stop_x = -1.0f, d.last_dir = 0, d.last_frac = -1.0f, d.still = 0;
+  }
+  if (d.last_dir != 0 && d.last_frac >= 0.0f) {
+    const float moved = std::abs(frac - d.last_frac);
+    if (moved < 1e-4f) {
+      if (++d.still >= 3) d.stop_x = d.x, d.last_dir = 0;  // at an end, or the row doesn't move
+      return;
+    }
+    d.still = 0, d.step = moved;
+  }
+  const float diff = target - frac;
+  const int dir = std::abs(diff) <= std::max(0.004f, d.step * 0.5f) ? 0 : diff > 0.0f ? 1 : -1;
+  if (dir == 0 || (d.last_dir != 0 && dir != d.last_dir)) {  // there, or one step past it
+    d.stop_x = d.x, d.last_dir = 0;
+    if (d.released) EndDrag("arrived");
+    return;
+  }
+  if (++d.steps > kMaxDragSteps) return EndDrag("too many steps");
+  Press(ctx, base, system, dir > 0 ? pm::kCodeRight : pm::kCodeLeft);
+  d.last_dir = dir, d.last_frac = frac;
+}
 
 // ---------------------------------------------------------------------------
 // Footer prompts ("[ENTER] SELECT [ESC] BACK", "(A) SELECT (B) BACK") are
@@ -773,6 +1057,24 @@ void NoteLine(uint8_t* base, uint32_t line, float sy) {
   }
 }
 
+// [menus-brightness] A picture drawn inside a menu system's draw: noted when
+// it is an arrow or a gauge (see "Arrows and gauges" above).
+void NoteControl(uint8_t* base, uint32_t quad) {
+  namespace fe = cod3::addr::fe;
+  const uint32_t system = t_drawing_system;
+  if (!system || !Valid(quad)) return;
+  if (!(ReadU8(base, quad + pm::kTextVisibility) & 0x4) || !(ReadF32(base, quad + fe::kElemOpacity) > 0.05f)) return;
+  Control c;
+  if (!ControlKindOf(GuestString(base, ReadU32(base, quad + fe::kQuadName), 64), &c.kind)) return;
+  if (!QuadBox(base, quad, &c.box)) return;
+  c.system = system;
+  c.quad = quad;
+  c.frame = ReadU32(base, pm::kFrameCount);
+  std::lock_guard lock(g_control_mutex);
+  std::erase_if(g_controls, [&c](const Control& o) { return o.quad == c.quad || c.frame - o.frame > 2; });
+  if (g_controls.size() < 128) g_controls.push_back(c);
+}
+
 // The prompt of `system` under (x, y), drawn in the last two frames.
 std::optional<Prompt> PromptAt(uint32_t system, float x, float y) {
   const uint32_t frame = FrameNow();
@@ -785,8 +1087,55 @@ std::optional<Prompt> PromptAt(uint32_t system, float x, float y) {
 // A left click: the item under the pointer (its value side on option rows),
 // a footer prompt, or, on a page without items ("Press Start", a results
 // screen), go on.
+// Acts on item `index` with `code` (A, or a step left / right): at once when
+// it is highlighted already, else once the highlight has moved there.
+void ClickItem(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, const std::vector<Item>& items,
+               int index, uint32_t code) {
+  const bool was_selected = Selected(base, page) == index;
+  if (!was_selected) SelectItem(ctx, base, page, items, index);
+  if (was_selected && !PageLocked(base, page)) {
+    Press(ctx, base, system, code);
+    return;
+  }
+  // The highlight is (still) moving there: act once it has settled.
+  g_hover.click_code = code;
+  g_hover.click_item = index;
+  g_hover.click_frames = 0;
+  g_hover.target = index;
+  g_hover.tries = 0;
+}
+
 void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float x, float y) {
-  const std::vector<Item> items = ItemRects(ctx, base, page, system);
+  EndDrag("new click");  // [menus-brightness]
+  RowControls loose;
+  const std::vector<Item> items = ItemRects(ctx, base, page, system, &loose);
+  // [menus-brightness] An arrow steps its row's value its way; a gauge goes
+  // to the place clicked (and follows the pointer while the button is held).
+  // The page's own (Options > SCREEN) likewise, without a row.
+  if (HasValues(base, page)) {
+    for (const auto& row : items) {
+      if (const uint32_t code = ArrowAt(row.ctl, x, y)) {
+        if (REXCVAR_GET(cod3_menu_trace)) REXLOG_INFO("cod3: menu trace: arrow {} of item {} clicked", code, row.index);
+        ClickItem(ctx, base, system, page, items, row.index, code);
+        return;
+      }
+      if (GaugeAt(row.ctl, x, y)) {
+        if (Selected(base, page) != row.index) SelectItem(ctx, base, page, items, row.index);
+        StartDrag(page, row.index, x);
+        g_hover.target = row.index;
+        g_hover.tries = 0;
+        return;
+      }
+    }
+    if (const uint32_t code = ArrowAt(loose, x, y)) {
+      Press(ctx, base, system, code);
+      return;
+    }
+    if (GaugeAt(loose, x, y)) {
+      StartDrag(page, -1, x);
+      return;
+    }
+  }
   const Item* it = ItemAt(items, x, y);
   if (!it) {
     if (const auto prompt = PromptAt(system, x, y)) {
@@ -798,46 +1147,53 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
     if (items.empty()) Press(ctx, base, system, IsTitlePage(base, page) ? pm::kCodeStart : pm::kCodeA);
     return;  // beside the items: nothing, like a PC menu
   }
-  // An option row (label on the left, the page takes left / right): a click
-  // right of the label steps the value; the half of the value side decides
-  // the direction, like the arrows drawn on both sides of the value.
+  // An option row (the page takes left / right): a click on its value steps
+  // it toward the half clicked. [menus-brightness] With both arrows drawn the
+  // value is what lies between them; else (no arrows found) the old rule:
+  // right of a left-aligned label, split half way to the column's edge.
   uint32_t code = pm::kCodeA;
-  if (HasValues(base, page) && it->left_aligned && x > it->ink.x1 + 8.0f) {
+  const RowControls& rc = it->ctl;
+  const bool values = HasValues(base, page);
+  if (values && rc.left && rc.right) {
+    if (x >= rc.l.x0 - kControlMargin && x <= rc.r.x1 + kControlMargin)
+      code = x < (rc.l.cx() + rc.r.cx()) * 0.5f ? pm::kCodeLeft : pm::kCodeRight;
+  } else if (values && !rc.left && !rc.right && !rc.gauge && it->left_aligned && x > it->ink.x1 + 8.0f) {
     const float mid = (it->ink.x1 + it->hit.x1) * 0.5f;
     code = x < mid ? pm::kCodeLeft : pm::kCodeRight;
   }
-  const bool was_selected = Selected(base, page) == it->index;
-  if (!was_selected) SelectItem(ctx, base, page, items, it->index);
-  if (was_selected && !PageLocked(base, page)) {
-    Press(ctx, base, system, code);
-    return;
-  }
-  // The highlight is (still) moving there: act once it has settled.
-  g_hover.click_code = code;
-  g_hover.click_item = it->index;
-  g_hover.click_frames = 0;
-  g_hover.target = it->index;
-  g_hover.tries = 0;
+  ClickItem(ctx, base, system, page, items, it->index, code);
 }
 
 // Logs each new page once with where its items are drawn (letters) and can
 // be pointed at (hit), in menu space (640x480), for the notes and for bug
 // reports. With cod3_menu_trace also whenever that changes (pages slide in,
 // a message box gets new buttons) and the footer prompts.
+void DumpPanel(uint8_t* base, uint32_t panel, const char* what);  // [menus-brightness] below
+
 void LogPage(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page) {
   static uint32_t last_page = 0, last_vtable = 0;
   static std::string last_rects;
   const uint32_t vt = ReadU32(base, page);
   const bool new_page = page != last_page || vt != last_vtable;
   const bool trace = REXCVAR_GET(cod3_menu_trace);
-  if (!new_page && !trace) return;
-  const auto items = ItemRects(ctx, base, page, system);
+  // [menus-brightness] The arrows and gauges are known once the page has been
+  // drawn: a new page is logged again (once) when they show up.
+  static int controls_wait = 0;  // frames left to look for them
+  if (new_page) controls_wait = 120;
+  if (!new_page && !trace && controls_wait <= 0) return;
+  if (!new_page && controls_wait > 0) --controls_wait;
+  RowControls loose;
+  const auto items = ItemRects(ctx, base, page, system, &loose);
   std::string rects;
   for (const auto& it : items)
-    rects += fmt::format(" [{}: {:.0f},{:.0f}-{:.0f},{:.0f} hit {:.0f},{:.0f}-{:.0f},{:.0f}]", it.index,
+    rects += fmt::format(" [{}: {:.0f},{:.0f}-{:.0f},{:.0f} hit {:.0f},{:.0f}-{:.0f},{:.0f}{}]", it.index,
                          it.ink.x0, it.ink.y0, it.ink.x1, it.ink.y1, it.hit.x0, it.hit.y0, it.hit.x1,
-                         it.hit.y1);
-  if (!new_page && rects == last_rects) return;
+                         it.hit.y1, DescribeControls(it.ctl));  // [menus-brightness] arrows, gauge
+  if (const std::string own = DescribeControls(loose); !own.empty()) rects += " [page:" + own + "]";
+  const bool has_controls = rects.find(" L ") != std::string::npos || rects.find(" G ") != std::string::npos;
+  const bool controls_now = !new_page && has_controls && controls_wait > 0;
+  if (has_controls) controls_wait = 0;
+  if (!new_page && !controls_now && (!trace || rects == last_rects)) return;
   last_page = page;
   last_vtable = vt;
   last_rects = rects;
@@ -845,6 +1201,10 @@ void LogPage(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page) {
               vt, ReadU32(base, system), ReadS16(base, page + pm::kPageCount), Selected(base, page),
               rects);
   if (!trace) return;
+  // [menus-brightness] The pause menu's Options and Options > SCREEN keep
+  // their panel at +56: dump it once (layout of the added row, help bar).
+  if (vt == cod3::addr::fe::adv::kVtable || vt == cod3::addr::brightness::kPageVtable)
+    DumpPanel(base, ReadU32(base, page + cod3::addr::fe::adv::kPanel), "page");
   std::string prompts;
   {
     const uint32_t frame = FrameNow();
@@ -881,9 +1241,10 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
     h = Hover{};
     h.page = page;
     h.last_selected = Selected(base, page);
+    g_holding_code = 0;  // [menus-brightness] a new page forgets a held direction too
   }
 
-  bool moved = false, over = false;
+  bool moved = false, over = false, left_down = false;
   float x = 0.0f, y = 0.0f;
   std::optional<Request> request;
   {
@@ -893,6 +1254,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
     moves_seen = g_input.moves;
     over = g_input.over;
     x = g_input.x, y = g_input.y;
+    left_down = g_input.left_down;  // [menus-brightness]
     // One event per frame, like the pad; old ones (asked as a menu
     // closed) are dropped, but never a release.
     while (!g_input.requests.empty() && !request) {
@@ -920,6 +1282,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
   if (Selected(base, page) != h.last_selected) {
     if (trace) REXLOG_INFO("cod3: menu trace: {} -> {} (pad or the game)", h.last_selected, Selected(base, page));
     KeysTakeOver(h, x, y);
+    EndDrag("the pad moved");  // [menus-brightness]
   }
   const int start_selected = Selected(base, page);
   const int start_target = h.target;
@@ -931,7 +1294,10 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
       h.click_item = -1;
     } else if (request->ask != Ask::kRelease) {
       KeysTakeOver(h, x, y);
+      EndDrag("keys");  // [menus-brightness]
     }
+  } else if (g_drag.active) {
+    // [menus-brightness] The pointer drags a gauge: the highlight stays.
   } else if (moved && !over) {
     h.pointed = -1;
   } else if (moved) {
@@ -992,6 +1358,9 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
         break;
     }
   }
+  // [menus-brightness] A gauge being dragged (or going to where it was
+  // clicked): at most one step a frame.
+  if (!request || request->ask == Ask::kClick) UpdateDrag(ctx, base, system, page, x, left_down);
   if (trace && (Selected(base, page) != start_selected || h.target != start_target || request || moved)) {
     const char* what = !request ? "pointer"
                        : request->ask == Ask::kClick ? "click"
@@ -1393,6 +1762,10 @@ void NoteLineDrawn(uint8_t* base, uint32_t line, double y_scale) {
   NoteLine(base, line, float(y_scale));
 }
 
+bool FromPcInput(uint32_t code) {  // [menus-brightness]
+  return code && (g_pressing_code == code || g_holding_code == code);
+}
+
 void UpdateCursor(rex::ui::Window* window) {
   if (!window || !REXCVAR_GET(cod3_pc_menus)) return;
   RefreshPictureAspect();
@@ -1601,6 +1974,34 @@ REX_HOOK_RAW(DialogMenuSystem__vfunc_14) {
   t_drawing_system = ctx.r3.u32;
   __imp__DialogMenuSystem__vfunc_14(ctx, base);
   t_drawing_system = outer;
+}
+
+// [menus-brightness] The picture draw (PanelQuad::Draw, this): arrows and
+// gauges drawn by a menu are noted for the mouse.
+REX_EXTERN(__imp__PanelQuad__vfunc_1);
+REX_HOOK_RAW(PanelQuad__vfunc_1) {
+  const uint32_t quad = ctx.r3.u32;
+  __imp__PanelQuad__vfunc_1(ctx, base);
+  if (t_drawing_system && REXCVAR_GET(cod3_pc_menus)) NoteControl(base, quad);
+}
+
+// [menus-brightness] Options > SCREEN's OnLeft / OnRight (this): the page
+// only flashes its arrows here and moves the brightness in its draw from the
+// pad's D-pad and stick, which the mouse and keys don't reach. A press from
+// them (an arrow clicked, an arrow key, also held) moves it by the D-pad's
+// step here; the pad's own presses are left to the page.
+REX_EXTERN(__imp__sub_824BC2C0);
+REX_HOOK_RAW(sub_824BC2C0) {
+  if (ReadU32(base, ctx.r3.u32) == cod3::addr::brightness::kPageVtable && cod3::pcmenu::FromPcInput(pm::kCodeLeft))
+    cod3::videomenu::StepBrightness(base, false, "Options > SCREEN");
+  __imp__sub_824BC2C0(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_824BC248);
+REX_HOOK_RAW(sub_824BC248) {
+  if (ReadU32(base, ctx.r3.u32) == cod3::addr::brightness::kPageVtable && cod3::pcmenu::FromPcInput(pm::kCodeRight))
+    cod3::videomenu::StepBrightness(base, true, "Options > SCREEN");
+  __imp__sub_824BC248(ctx, base);
 }
 
 // Dialog AddButton(page, key, callback): no "Select Storage Device" button.

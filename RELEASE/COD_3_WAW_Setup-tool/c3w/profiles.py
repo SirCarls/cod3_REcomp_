@@ -20,7 +20,7 @@ import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
-from . import common, upscale, waw
+from . import common, pc_games, upscale, waw
 
 PROFILES_DIR = "profiles"
 FORMAT = "cod3-setup-profile"
@@ -40,9 +40,15 @@ SETTING_TYPES: Dict[str, type] = {
     "cleanup": bool, "keep_sdk": bool, "upscale_textures": bool, "upscale_model": str,
     "upscale_noise": int, "upscale_scale": int, "cod3_windowed": bool, "cod3_args": str,
 }
+# Call of Duty 2 and United Offensive (c3w/pc_games.py): the same choices each.
+PC_GAME_IDS = ("cod2", "coduo")
+for _game in PC_GAME_IDS:
+    SETTING_TYPES.update({f"{_game}_install": str, f"{_game}_copy_dir": str, f"{_game}_full_copy": bool,
+                          f"{_game}_language": str, f"{_game}_map": str, f"{_game}_port": int,
+                          f"{_game}_hostname": str, f"{_game}_max_clients": int})
 # Settings that hold paths (a list of paths for waw_map_packs).
 PATH_KEYS = ("cod3_source", "waw_steam", "waw_xbox360", "waw_pc_disc", "output_dir", "work_dir",
-             "waw_map_packs")
+             "waw_map_packs") + tuple(f"{g}_{k}" for g in PC_GAME_IDS for k in ("install", "copy_dir"))
 # Settings with a fixed set of values.
 ALLOWED: Dict[str, tuple] = {
     "waw_alternative": (waw.XBOX360, waw.PC_DISC),
@@ -50,7 +56,14 @@ ALLOWED: Dict[str, tuple] = {
     "upscale_noise": tuple(upscale.NOISE_LEVELS),
     "upscale_scale": tuple(upscale.SCALES),
 }
+for _game in PC_GAME_IDS:
+    ALLOWED[f"{_game}_language"] = pc_games.LANGUAGES
 JOBS_RANGE = (1, 256)
+# Whole numbers with a range: (low, high).
+INT_RANGES: Dict[str, tuple] = {"jobs": JOBS_RANGE}
+for _game in PC_GAME_IDS:
+    INT_RANGES[f"{_game}_port"] = pc_games.PORT_RANGE
+    INT_RANGES[f"{_game}_max_clients"] = pc_games.MAX_CLIENTS_RANGE
 
 # Names Windows keeps for devices, with or without an extension.
 _DEVICES = {"con", "prn", "aux", "nul", "conin$", "conout$"} | \
@@ -129,8 +142,8 @@ def clean_settings(settings: Any, notes: Optional[List[str]] = None) -> dict:
                                                 not _CONTROL.search(v) for v in value)
         if ok and key in ALLOWED:
             ok = value in ALLOWED[key]
-        if ok and key == "jobs":
-            ok = JOBS_RANGE[0] <= value <= JOBS_RANGE[1]
+        if ok and key in INT_RANGES:
+            ok = INT_RANGES[key][0] <= value <= INT_RANGES[key][1]
         if not ok:
             _note(notes, f"Left out {key}: its value isn't valid.")
             continue

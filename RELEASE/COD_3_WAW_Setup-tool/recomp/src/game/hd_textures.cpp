@@ -198,6 +198,14 @@ void ApplyHdPack(const std::filesystem::path& root, bool gpu) {
 void ApplyHdTextures(const std::filesystem::path& root, bool gpu) {
   if (g_state.load() != HdTextures::kUndecided) return;
   ApplyHdPack(root, gpu);
+  // The SDK's live switch is only turned off for a moment, by cod3_hd_compare
+  // (game/screenshot.h): a value saved in cod3.toml in that moment would
+  // keep the pack off at every start.
+  if (const auto* info = rex::cvar::GetFlagInfo("texture_replacement_enabled");
+      info && info->source == rex::cvar::Source::kConfig) {
+    rex::cvar::ResetToDefault("texture_replacement_enabled");
+    REXLOG_INFO("cod3: texture_replacement_enabled from cod3.toml ignored (the game switches it)");
+  }
   if (!gpu || !rex::cvar::GetFlagInfo(kSdkSetting)) {
     // No GPU emulation, or one without texture replacement (said above).
     g_user_state = HdTextures::kUnsupported;

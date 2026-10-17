@@ -69,6 +69,110 @@ THEMES: Dict[str, Theme] = {t.id: t for t in (
 )}
 THEME_ORDER = ["cod3", "olive", "parchment", "contrast"]
 
+# Each game tab's own colors (c3w/games.py), drawn up for this tool after
+# each game's mood; nothing is taken from the games' files. The Call of Duty
+# 3 tab's own colors are the "cod3" theme above. A tab can also use any of
+# the four themes instead (its theme picker lists its own colors first).
+GAME_PALETTES: Dict[str, Theme] = {t.id: t for t in (
+    # (Its borders are a warm gray, not red: a red box reads as a mistake.)
+    Theme("waw", "World at War", "Charcoal, blood red and bone white.", _game(
+        (14, 12, 12), (22, 18, 18), (40, 34, 33), (58, 48, 46), (76, 60, 56),
+        (52, 42, 40), (84, 56, 52), (128, 44, 40), (19, 15, 15), (36, 26, 25), (104, 94, 90), 0.75,
+        (232, 226, 216), (160, 150, 140), (172, 30, 30), (226, 92, 80),
+        (128, 184, 100), (226, 176, 80), (236, 96, 80))),
+    Theme("cod2", "Call of Duty 2", "Gunmetal, steel and signal orange.", _game(
+        (15, 16, 18), (21, 23, 26), (38, 41, 46), (54, 58, 65), (70, 75, 84),
+        (48, 52, 58), (70, 76, 85), (112, 82, 50), (19, 21, 24), (34, 37, 42), (98, 104, 114), 0.7,
+        (226, 228, 230), (148, 154, 162), (214, 128, 44), (232, 156, 82),
+        (126, 190, 110), (230, 186, 86), (228, 96, 80))),
+    Theme("coduo", "United Offensive", "Olive drab, khaki and field green.", _game(
+        (17, 20, 13), (23, 27, 18), (42, 48, 32), (58, 66, 43), (74, 84, 54),
+        (52, 59, 38), (74, 84, 54), (104, 112, 60), (21, 25, 16), (38, 44, 28), (112, 124, 74), 0.75,
+        (230, 226, 204), (158, 158, 130), (150, 170, 82), (182, 200, 112),
+        (140, 196, 100), (226, 190, 92), (220, 100, 76))),
+)}
+# Every palette by id: the four themes and the games' own.
+ALL_PALETTES: Dict[str, Theme] = {**THEMES, **GAME_PALETTES}
+
+
+def palettes_for(own: str) -> List[str]:
+    """The colors a tab can pick, in its theme list's order: its own
+    palette first, then the four themes (once each)."""
+    return [own] + [t for t in THEME_ORDER if t != own] if own in ALL_PALETTES else list(THEME_ORDER)
+
+
+# On the other games' tabs, Call of Duty 3's colors are named by their look
+# (a theme called "Call of Duty 3" on World at War's tab would confuse).
+OTHER_TAB_NAMES = {"cod3": ("Brass and black", "Black, brass gold and parchment: Call of Duty 3's colors.")}
+
+
+def picker_label(theme_id: str, own: str) -> str:
+    """A palette's name in the theme list of a tab whose own palette is `own`."""
+    if theme_id != own and theme_id in OTHER_TAB_NAMES:
+        return OTHER_TAB_NAMES[theme_id][0]
+    return theme_label(theme_id)
+
+
+def picker_description(theme_id: str, own: str) -> str:
+    if theme_id != own and theme_id in OTHER_TAB_NAMES:
+        return OTHER_TAB_NAMES[theme_id][1]
+    return (ALL_PALETTES.get(theme_id) or THEMES[DEFAULT_THEME]).description
+
+
+def picker_id(label: str, own: str) -> str:
+    """The palette a label in that tab's list stands for (its own if unknown)."""
+    return next((t for t in palettes_for(own) if picker_label(t, own) == label), own)
+
+
+# The type of the header's title and the page titles, per game: the first
+# of these the system has (Windows' own fonts first, then common Linux
+# ones), as (family, weight); else the UI font in bold. Barlow Semi
+# Condensed is the game's own F2 font, which the tool loads from the project
+# (c3w/fonts.py); the rest are system fonts. None comes from a game.
+DISPLAY_FONTS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    "cod3": (("Barlow Semi Condensed SemiBold", "normal"), ("Barlow Semi Condensed", "bold"),
+             ("Bahnschrift SemiBold Condensed", "normal"), ("Bahnschrift", "bold"), ("Roboto Condensed", "bold"),
+             ("Ubuntu Condensed", "normal"), ("DejaVu Sans", "bold"), ("Arial", "bold")),
+    "waw": (("Impact", "normal"), ("Haettenschweiler", "normal"), ("Anton", "normal"), ("Oswald", "bold"),
+            ("League Gothic", "normal"), ("Bebas Neue", "normal"), ("Nimbus Sans Narrow", "bold"),
+            ("Liberation Sans Narrow", "bold"), ("Arial Narrow", "bold"), ("Liberation Sans", "bold"),
+            ("Nimbus Sans", "bold"), ("FreeSans", "bold"), ("Arial", "bold")),
+    "cod2": (("Georgia", "bold"), ("Bitstream Charter", "bold"), ("Charter", "bold"), ("C059", "bold"),
+             ("TeX Gyre Schola", "bold"), ("Century Schoolbook L", "bold"), ("Noto Serif", "bold"),
+             ("DejaVu Serif", "bold"), ("Cambria", "bold")),
+    "coduo": (("Palatino Linotype", "bold"), ("Book Antiqua", "bold"), ("P052", "bold"),
+              ("TeX Gyre Pagella", "bold"), ("URW Palladio L", "bold"), ("Liberation Serif", "bold"),
+              ("Times New Roman", "bold"), ("FreeSerif", "bold"), ("Nimbus Roman", "bold"),
+              ("DejaVu Serif", "bold")),
+}
+
+
+def pick_display_font(game_id: str, families: Iterable[str], fallback: str) -> Tuple[str, str]:
+    """(family, weight) for a game's titles: the first candidate the system
+    has (case doesn't matter), else `fallback` in bold."""
+    have = {f.lower(): f for f in families}
+    for family, weight in DISPLAY_FONTS.get(game_id, ()):
+        if family.lower() in have:
+            return have[family.lower()], weight
+    return fallback, "bold"
+
+
+def assign_display_fonts(game_ids: Iterable[str], families: Iterable[str],
+                         fallback: str) -> Dict[str, Tuple[str, str]]:
+    """Each game's title type, all different where the system allows: a
+    game whose first choice another game already has takes its next one.
+    (On Linux Impact or Georgia are rarely there, and two games falling back
+    to the same font would look alike.)"""
+    have = {f.lower(): f for f in families}
+    used: set = set()
+    out: Dict[str, Tuple[str, str]] = {}
+    for gid in game_ids:
+        there = [(have[f.lower()], w) for f, w in DISPLAY_FONTS.get(gid, ()) if f.lower() in have]
+        pick = next((fw for fw in there if fw[0].lower() not in used), there[0] if there else (fallback, "bold"))
+        used.add(pick[0].lower())
+        out[gid] = pick
+    return out
+
 
 # ---------------------------------------------------------------------------
 # Color math (no Tk)
@@ -141,6 +245,22 @@ def ensure_contrast(fg, backgrounds, target: float = BODY_CONTRAST) -> str:
     return max(("#000000", "#ffffff"), key=lambda x: min(contrast(x, bg) for bg in bgs))
 
 
+def darken_to(color, most: float) -> str:
+    """`color`, mixed toward black just enough that its luminance is at
+    most `most` (the headers' drawings, kept dark behind their titles)."""
+    col = to_hex(color)
+    if luminance(col) <= most:
+        return col
+    lo, hi = 0.0, 1.0
+    for _ in range(14):
+        mid = (lo + hi) / 2
+        if luminance(mix(col, "#000000", mid)) > most:
+            lo = mid
+        else:
+            hi = mid
+    return mix(col, "#000000", hi)
+
+
 def text_on(fill, preferred: Iterable = ()) -> str:
     """Text color for a filled area (a button in the accent color): the first
     preferred color that is readable on it, else black or white."""
@@ -154,7 +274,7 @@ def colors(theme_id: str = DEFAULT_THEME, accent: str = "") -> Dict[str, str]:
     """Every color the tool uses, for a theme and an optional accent
     override, as '#rrggbb'. Text colors are checked against what they're
     drawn on and nudged to stay readable (4.5:1; 7:1 in High contrast)."""
-    theme = THEMES.get(theme_id) or THEMES[DEFAULT_THEME]
+    theme = ALL_PALETTES.get(theme_id) or THEMES[DEFAULT_THEME]
     b = {k: to_hex(v) for k, v in theme.base.items()}
     target = HIGH_CONTRAST if theme.id == "contrast" else BODY_CONTRAST
     light = is_light(b["window"])
@@ -182,7 +302,10 @@ def colors(theme_id: str = DEFAULT_THEME, accent: str = "") -> Dict[str, str]:
     c["text_disabled"] = ensure_contrast(mix(b["text_dim"], b["window"], 0.35),
                                          [c["bg"], c["field_disabled"], c["button_disabled"]], 3.0)
 
-    acc = normalize_accent(accent) or b["accent"]
+    # The accent fills the main button and marks the selected tab and page,
+    # so it stays visible on the window and sidebar (3:1, as any control
+    # needs), however dark or light the color picked.
+    acc = ensure_contrast(normalize_accent(accent) or b["accent"], [c["bg"], c["sidebar"]], 3.0)
     c["accent"] = acc
     c["accent_custom"] = "1" if normalize_accent(accent) else ""
     toward = "#000000" if light else "#ffffff"
@@ -206,16 +329,34 @@ def colors(theme_id: str = DEFAULT_THEME, accent: str = "") -> Dict[str, str]:
     for name in ("good", "warn", "bad"):
         c[name] = ensure_contrast(b[name], [c["bg"], c["surface"], c["well"]], target)
     c["row_alt"] = mix(c["well"], c["text"], 0.04)
+    # The game tabs across the top: a strip a step darker than the sidebar.
+    c["tabbar"] = mix(c["sidebar"], "#000000", 0.12 if light else 0.45)
+    c["tabbar_hover"] = mix(c["tabbar"], b["button_hover"], 0.5)
+    c["tabbar_sel"] = mix(c["tabbar"], acc, 0.14)
+    c["tab_text"] = ensure_contrast(b["text_dim"], [c["tabbar"], c["tabbar_hover"]], target)
+    c["tab_sel_text"] = ensure_contrast(b["text"], [c["tabbar_sel"], c["tabbar"]], target)
+    # Neutral news (a step that comes next): blue, which no palette uses
+    # for good, warning or bad, and which never reads as an error.
+    c["info"] = ensure_contrast("#2f6db5" if light else "#7fa8dc", [c["bg"], c["surface"], c["well"]], target)
+    # Small status labels ("Ready", "Testing", "Next", "Later"): four hues
+    # that can't be mistaken for each other or for the accent (a green or
+    # red accent would look like "Ready" or like an error): green, amber,
+    # blue and gray. Tinted fill, readable text.
+    gray = ensure_contrast(mix(b["text_dim"], "#8c8c8c", 0.75), [c["bg"]], target)
+    for name, base in (("chip_good", c["good"]), ("chip_warn", c["warn"]), ("chip_info", c["info"]),
+                       ("chip_dim", gray)):
+        c[name + "_bg"] = mix(c["bg"], base, 0.18)
+        c[name] = ensure_contrast(base, [c[name + "_bg"]], target)
     c["light"] = "1" if light else ""
     return c
 
 
 def theme_label(theme_id: str) -> str:
-    return (THEMES.get(theme_id) or THEMES[DEFAULT_THEME]).label
+    return (ALL_PALETTES.get(theme_id) or THEMES[DEFAULT_THEME]).label
 
 
 def theme_id_for_label(label: str) -> str:
-    return next((t.id for t in THEMES.values() if t.label == label), DEFAULT_THEME)
+    return next((t.id for t in ALL_PALETTES.values() if t.label == label), DEFAULT_THEME)
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +367,8 @@ current: Dict[str, str] = colors()
 # can't reach (the selected page's stripe, the log's tags, swatches).
 listeners: List[Callable[[Dict[str, str]], None]] = []
 FONTS = ("C3WBody", "C3WBold", "C3WSmall", "C3WHeading", "C3WTitle", "C3WLogo", "C3WNav", "C3WNavBold",
-         "C3WMono", "C3WMonoBold")
+         "C3WMono", "C3WMonoBold", "C3WTab", "C3WAction")
+_ui_family: Dict[int, str] = {}   # the UI font's family, per Tk interpreter (set_game_fonts falls back to it)
 
 
 def setup_fonts(root, windows: bool = False) -> None:
@@ -256,9 +398,11 @@ def setup_fonts(root, windows: bool = False) -> None:
             pass
     specs = {"C3WBody": (1.0, "normal"), "C3WBold": (1.0, "bold"), "C3WSmall": (0.92, "normal"),
              "C3WHeading": (1.12, "bold"), "C3WTitle": (1.6, "bold"), "C3WLogo": (1.3, "bold"),
-             "C3WNav": (1.06, "normal"), "C3WNavBold": (1.06, "bold")}
+             "C3WNav": (1.06, "normal"), "C3WNavBold": (1.06, "bold"), "C3WTab": (0.96, "bold"),
+             "C3WAction": (1.1, "bold")}
     for name, (f, weight) in specs.items():
         _named_font(root, name, family=family, size=scaled(f), weight=weight)
+    _ui_family[id(root.tk)] = family
     fixed = tkfont.nametofont("TkFixedFont", root=root)
     mono_family = fixed.actual("family")
     if windows and "Consolas" in families:
@@ -266,6 +410,45 @@ def setup_fonts(root, windows: bool = False) -> None:
     _named_font(root, "C3WMono", family=mono_family, size=size, weight="normal")
     _named_font(root, "C3WMonoBold", family=mono_family, size=size, weight="bold")
     tkfont.nametofont("TkHeadingFont", root=root).configure(family=family, size=size, weight="bold")
+
+
+GAME_ORDER = ("cod3", "waw", "cod2", "coduo")   # games.GAME_ORDER (which imports nothing from here)
+_assigned: Dict[int, Dict[str, Tuple[str, str]]] = {}   # per Tk interpreter
+
+
+def display_fonts(root) -> Dict[str, Tuple[str, str]]:
+    """Each game's title type on this system (assign_display_fonts), worked
+    out once per window."""
+    import tkinter.font as tkfont
+    key = id(root.tk)
+    if key not in _assigned:
+        fallback = _ui_family.get(key) or tkfont.nametofont("TkDefaultFont", root=root).actual("family")
+        try:
+            families = tkfont.families(root)
+        except Exception:  # noqa: BLE001
+            families = ()
+        _assigned[key] = assign_display_fonts(GAME_ORDER, families, fallback)
+    return _assigned[key]
+
+
+def set_game_fonts(root, game_id: str) -> Tuple[str, str]:
+    """Page titles in the game's display type (DISPLAY_FONTS); everything
+    else keeps the UI font. Returns the (family, weight) used."""
+    fonts = display_fonts(root)
+    family, weight = fonts.get(game_id) or fonts[GAME_ORDER[0]]
+    key = (id(root.tk), "C3WTitle")
+    if key in _made_fonts:
+        _made_fonts[key].configure(family=family, weight=weight)
+    return family, weight
+
+
+def set_chrome_font(root, family: str, weight: str = "normal") -> None:
+    """The tabs and the bottom bar's buttons in the given type (the game's
+    F2 font when it could be loaded): condensed capitals, like a launcher's."""
+    for name in ("C3WTab", "C3WAction"):
+        key = (id(root.tk), name)
+        if key in _made_fonts:
+            _made_fonts[key].configure(family=family, weight=weight)
 
 
 _made_fonts: dict = {}   # Tk deletes a named font when its Python object goes away
@@ -372,6 +555,36 @@ def apply(root, theme_id: str = DEFAULT_THEME, accent: str = "",
           lightcolor=[("pressed", c["sidebar_sel"]), ("active", c["sidebar_hover"])],
           darkcolor=[("pressed", c["sidebar_sel"]), ("active", c["sidebar_hover"])],
           bordercolor=[("active", c["sidebar_hover"]), ("focus", c["sidebar"])])
+    # The game tabs across the top, and the strip they sit in.
+    s.configure("TabBar.TFrame", background=c["tabbar"])
+    s.configure("TabBar.TLabel", background=c["tabbar"], foreground=c["tab_text"], font="C3WSmall")
+    for name, bg, fg in (("GameTab", c["tabbar"], c["tab_text"]), ("GameTabSelected", c["tabbar_sel"],
+                                                                     c["tab_sel_text"])):
+        s.configure(f"{name}.TButton", background=bg, foreground=fg, bordercolor=bg, lightcolor=bg, darkcolor=bg,
+                    focuscolor=c["focus"], focusthickness=1, font="C3WTab", padding=(px(18), px(8)),
+                    relief="flat", anchor="center")
+        hover = c["tabbar_hover"] if name == "GameTab" else bg
+        s.map(f"{name}.TButton", background=[("pressed", c["tabbar_sel"]), ("active", hover)],
+              lightcolor=[("active", hover)], darkcolor=[("active", hover)],
+              bordercolor=[("active", hover), ("focus", bg)], foreground=[("active", c["tab_sel_text"])])
+    # Quiet buttons (Cancel, Open output folder): an outline only, so the
+    # main buttons beside them stand out; the same height as those.
+    s.configure("Ghost.TButton", background=c["bg"], foreground=c["text"], bordercolor=c["border"],
+                lightcolor=c["bg"], darkcolor=c["bg"], relief="solid")
+    s.map("Ghost.TButton",
+          background=[("disabled", c["bg"]), ("pressed", c["button_active"]), ("active", c["button"])],
+          lightcolor=[("disabled", c["bg"]), ("pressed", c["button_active"]), ("active", c["button"])],
+          darkcolor=[("disabled", c["bg"]), ("pressed", c["button_active"]), ("active", c["button"])],
+          bordercolor=[("disabled", c["divider"]), ("focus", c["accent"])],
+          foreground=[("disabled", c["text_disabled"])])
+    # The bottom bar's buttons: bigger, like a launcher's, all one height.
+    s.configure("Big.Accent.TButton", font="C3WAction", padding=(px(26), px(9)))
+    s.configure("Big.TButton", font="C3WAction", padding=(px(20), px(9)))
+    s.configure("Big.Ghost.TButton", font="C3WAction", padding=(px(18), px(9)))
+    # Status labels on the Port status pages.
+    for name in ("good", "warn", "info", "dim"):
+        s.configure(f"Chip{name.title()}.TLabel", background=c[f"chip_{name}_bg"], foreground=c[f"chip_{name}"],
+                    font="C3WBold", padding=(px(8), px(2)), anchor="center")
     s.configure("NavSelected.TButton", background=c["sidebar_sel"], foreground=c["sidebar_sel_text"],
                 bordercolor=c["sidebar_sel"], lightcolor=c["sidebar_sel"], darkcolor=c["sidebar_sel"],
                 focuscolor=c["focus"], font="C3WNavBold", padding=(px(14), px(8)), relief="flat", anchor="w")

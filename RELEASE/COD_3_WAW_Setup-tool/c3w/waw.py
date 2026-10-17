@@ -123,8 +123,11 @@ def _steam_roots() -> List[Path]:
                 roots.append(Path(os.environ[var]) / "Steam")
     else:
         home = Path.home()
-        roots += [home / ".steam" / "steam", home / ".steam" / "root", home / ".local" / "share" / "Steam",
-                  home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam",
+        data_home = Path(os.environ["XDG_DATA_HOME"]) if os.environ.get("XDG_DATA_HOME") else home / ".local" / "share"
+        flatpak = home / ".var" / "app" / "com.valvesoftware.Steam"
+        roots += [home / ".steam" / "steam", home / ".steam" / "root", home / ".steam" / "debian-installation",
+                  data_home / "Steam", home / ".local" / "share" / "Steam",
+                  flatpak / ".local" / "share" / "Steam", flatpak / "data" / "Steam",
                   home / "snap" / "steam" / "common" / ".local" / "share" / "Steam"]
     return [r for r in roots if r.is_dir()]
 
@@ -142,18 +145,29 @@ def _steam_libraries(root: Path) -> List[Path]:
     return libraries
 
 
-def find_steam_waw() -> Optional[Path]:
-    """World at War in any Steam library on this computer, if installed."""
-    seen = set()
+def steam_libraries() -> List[Path]:
+    """Every Steam library folder on this computer, each once (the same
+    library is often reached from two Steam roots through links)."""
+    seen, out = set(), []
     for root in _steam_roots():
         for library in _steam_libraries(root):
-            folder = library / "steamapps" / "common" / STEAM_INSTALL_DIR
-            key = str(folder).lower() if IS_WINDOWS else str(folder)
-            if key in seen:
-                continue
-            seen.add(key)
-            if validate_install(folder)[0]:
-                return folder
+            try:
+                key = str(library.resolve())
+            except OSError:
+                key = str(library)
+            key = key.lower() if IS_WINDOWS else key
+            if key not in seen:
+                seen.add(key)
+                out.append(library)
+    return out
+
+
+def find_steam_waw() -> Optional[Path]:
+    """World at War in any Steam library on this computer, if installed."""
+    for library in steam_libraries():
+        folder = library / "steamapps" / "common" / STEAM_INSTALL_DIR
+        if validate_install(folder)[0]:
+            return folder
     return None
 
 
@@ -436,6 +450,7 @@ __all__ = [
     "STEAM", "XBOX360", "PC_DISC", "NONE", "KIND_LABELS", "OUTPUT_DATA", "CUSTOM_MAPS", "MODS_ENABLED",
     "STOCK_ZOMBIE_MAPS",
     "Source", "CustomMap", "Unpackers", "Cancelled", "validate_install", "find_steamapps", "find_steam_waw",
+    "steam_libraries",
     "check_xbox360_image", "check_pc_disc", "choose_source", "check_source", "guess_kind", "fastfiles",
     "prepare", "unpack_pc_disc", "list_custom_maps", "install_custom_map", "remove_custom_map",
 ]

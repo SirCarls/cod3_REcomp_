@@ -131,7 +131,7 @@ RenderPlan PlanRenderResolution(uint32_t width, uint32_t height, uint32_t edram_
 
 // The largest 16:9 size inside width x height (the game's picture is 16:9).
 void FitSixteenByNine(uint32_t* width, uint32_t* height);
-// The largest size of the given shape (width / height, 16:9 or wider; see
+// The largest size of the given shape (width / height, 4:3 to 48:9; see
 // game/ultrawide.h) inside width x height. A size within 1% of the shape
 // stays as it is (2560x1080 is 2.37:1, "21:9" 2.33:1).
 void FitAspect(uint32_t* width, uint32_t* height, float aspect);

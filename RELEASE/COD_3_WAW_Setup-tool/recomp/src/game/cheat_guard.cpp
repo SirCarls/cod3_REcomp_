@@ -17,6 +17,9 @@
 #include "game/game_api.h"
 #include "game/guest.h"
 #include "game/multiplayer.h"
+#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
+#include "game/protected_dvars.h"
+#endif
 #include "ui/announcement_feed.h"
 #include "ui/game_console.h"
 
@@ -156,6 +159,15 @@ Verdict Check(const std::vector<std::string>& args, Source source, bool cheat_dv
     if (EqualsNoCase(cmd, s)) name_at = 1;
   if (name_at >= args.size()) return v;
   const std::string& name = args[name_at];
+#if !defined(COD3_MP)  // [movement]
+  // A server_sided_protected dvar (game/protected_dvars.h) is the server's
+  // in a match: never set by another player's command.
+  if (protected_dvars::Id id; source == Source::kNetwork && protected_dvars::Find(name, &id)) {
+    v.allowed = false;
+    v.message = "^1" + name + ": not allowed from another player.\n";
+    return v;
+  }
+#endif
   if (IsSvCheatsName(name)) {
     // Routed to CheatsCommand by the console; anywhere else it's refused
     // (the dvar is read-only in the game as well).

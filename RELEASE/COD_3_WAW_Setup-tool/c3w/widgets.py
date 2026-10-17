@@ -29,8 +29,20 @@ def px(n: float) -> int:
     return int(round(n * _UI_SCALE))
 
 
-# Help texts wrap at this width (more on a wide window: see wrap_with()).
+# Help texts wrap at this width at most; on a narrower page, at the width
+# the page has (ScrollFrame re-wraps them when its width changes).
 WRAP = 640
+MIN_WRAP = 160
+# Labels that wrap to the page: (label, their widest wrap at 96 DPI).
+_AUTOWRAP: List[Tuple[object, int]] = []
+
+
+def autowrap(label, wrap: int = WRAP):
+    """Makes a label's text wrap at the room its page has, never wider than
+    `wrap`. Returns the label."""
+    _AUTOWRAP.append((label, wrap))
+    label.configure(wraplength=px(wrap))
+    return label
 
 
 class ScrollFrame(ttk.Frame):
@@ -58,6 +70,22 @@ class ScrollFrame(ttk.Frame):
         self.bind("<Enter>", lambda e: self._wheel(True))
         self.bind("<Leave>", lambda e: self._wheel(False))
         self._busy = False
+        self._rewrap_width = 0
+        self._last_need = (0, 0)
+        self.after(500, self._watch)
+
+    def _watch(self) -> None:
+        """The content can come to want another size without Tk telling
+        this frame (a label's new text: the canvas fixes the content's
+        actual size, so no <Configure> comes). Looked at twice a second
+        while in view: two numbers compared."""
+        try:
+            if self.winfo_ismapped() and \
+                    (self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()) != self._last_need:
+                self._layout()
+            self.after(500, self._watch)
+        except tk.TclError:
+            pass   # the window is gone
 
     def _layout(self) -> None:
         if self._busy:
@@ -65,9 +93,20 @@ class ScrollFrame(ttk.Frame):
         self._busy = True
         try:
             need_w, need_h = self.inner.winfo_reqwidth(), self.inner.winfo_reqheight()
+            self._last_need = (need_w, need_h)
             full_w, full_h = self.winfo_width(), self.winfo_height()
             if full_w <= 1 or full_h <= 1:
                 return  # not drawn yet
+            if self._rewrap(full_w):
+                # Once the wrapped texts have their new size, lay out again:
+                # a moment later, when Tk has passed the new sizes up from
+                # the labels through their frames (one idle pass per level;
+                # the page frame itself gets no <Configure> for it, as the
+                # canvas sets its size). Not update_idletasks() here: Tk
+                # would deliver this frame's own <Configure> inside it, while
+                # busy, and lose it.
+                self.after(15, self._layout)
+                self.after(150, self._layout)    # (and once more, on a busy or slow display)
             # Both bars are decided from the frame's whole size, in one go:
             # deciding each from the canvas (which shrinks when the other bar
             # shows) can flip them back and forth forever.
@@ -94,6 +133,36 @@ class ScrollFrame(ttk.Frame):
                 self.canvas.xview_moveto(0)
         finally:
             self._busy = False
+
+    def _rewrap(self, width: int) -> bool:
+        """Wraps this page's help texts at the room they have: the page's
+        width (less the scrollbar's, always kept free so the wrap doesn't
+        flip with it) from where each text starts, less a margin. Returns
+        whether any changed."""
+        room_w = width - self.vbar.winfo_reqwidth() - px(30)
+        prefix = str(self.inner) + "."
+        changed, alive = False, []
+        for label, most in _AUTOWRAP:
+            try:
+                if not label.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            alive.append((label, most))
+            if not str(label).startswith(prefix):
+                continue
+            x, w = 0, label
+            while w is not None and w is not self.inner:   # where it starts, in the page
+                x += w.winfo_x()
+                w = w.master
+            # Room kept free on its right (a page title's buttons beside its text).
+            reserve = getattr(label, "c3w_reserve", None)
+            want = max(px(MIN_WRAP), min(px(most), room_w - x - (reserve() if reserve else 0)))
+            if int(str(label.cget("wraplength")) or 0) != want:
+                label.configure(wraplength=want)
+                changed = True
+        _AUTOWRAP[:] = alive
+        return changed
 
     def relayout(self) -> None:
         """After content changed its requested size (wrapped text): the
@@ -218,8 +287,10 @@ def page_header(parent, title: str, subtitle: str = "", row: int = 0, columns: i
     text.pack(side="left", fill="x", expand=True)
     ttk.Label(text, text=title, style="Title.TLabel").pack(anchor="w")
     if subtitle:
-        ttk.Label(text, text=subtitle, style="Hint.TLabel", wraplength=px(WRAP), justify="left").pack(
-            anchor="w", pady=(px(2), 0))
+        sub = autowrap(ttk.Label(text, text=subtitle, style="Hint.TLabel", justify="left"))
+        sub.pack(anchor="w", pady=(px(2), 0))
+        # Buttons packed on the header's right later take their room from the text's.
+        sub.c3w_reserve = lambda: sum(k.winfo_reqwidth() + px(12) for k in head.winfo_children() if k is not text)
     return head
 
 
@@ -238,10 +309,58 @@ def section(parent, title: str, row: int, columns: int = 3, top: int = 18) -> tt
 
 def hint(parent, text="", var: Optional[tk.Variable] = None, style: str = "Hint.TLabel",
          wrap: int = WRAP, **kw) -> ttk.Label:
-    """A help text (dim, wrapped)."""
+    """A help text (dim, wrapped at the room its page has, `wrap` at most)."""
     if var is not None:
-        return ttk.Label(parent, textvariable=var, style=style, wraplength=px(wrap), justify="left", **kw)
-    return ttk.Label(parent, text=text, style=style, wraplength=px(wrap), justify="left", **kw)
+        return autowrap(ttk.Label(parent, textvariable=var, style=style, justify="left", **kw), wrap)
+    return autowrap(ttk.Label(parent, text=text, style=style, justify="left", **kw), wrap)
+
+
+class LineProgress(tk.Frame):
+    """A progress bar drawn as a thin line: the divider's color, filled from
+    the left in the accent color (theme.recolor colors both by their
+    role). ttk's own bar can't be made this thin in every theme."""
+
+    def __init__(self, parent, variable: tk.Variable, height: int):
+        super().__init__(parent, height=height, borderwidth=0, highlightthickness=0)
+        self.c3w_role = "divider"
+        self.fill = tk.Frame(self, borderwidth=0, highlightthickness=0)
+        self.fill.c3w_role = "accent"
+        self.var = variable
+        variable.trace_add("write", lambda *a: self._update())
+        theme.recolor(self)
+        theme.recolor(self.fill)
+        self._update()
+
+    def _update(self) -> None:
+        try:
+            value = max(0.0, min(1.0, float(self.var.get())))
+        except (tk.TclError, ValueError):
+            value = 0.0
+        if value <= 0:
+            self.fill.place_forget()
+        else:
+            self.fill.place(x=0, y=0, relheight=1, relwidth=value)
+
+
+def fit_list_width(combo, labels: Sequence[str], most_chars: int = 34) -> None:
+    """A list box as wide as its longest choice, but no wider than
+    `most_chars` characters, so a small window doesn't scroll sideways for
+    it; its drop-down list then still opens wide enough to show every
+    choice whole (ttk's -postoffset)."""
+    want = max([12] + [len(x) + 2 for x in labels])
+    combo.configure(width=min(most_chars, want))
+    if want <= most_chars:
+        return
+    import tkinter.font as tkfont
+    try:
+        f = tkfont.nametofont("TkDefaultFont", root=combo)
+        extra = max(f.measure(x) for x in labels) + px(44) - f.measure("0") * most_chars
+    except tk.TclError:
+        return
+    if extra > 0:
+        style = f"Wide{extra}.TCombobox"
+        ttk.Style(combo).configure(style, postoffset=(0, 0, extra, 0))
+        combo.configure(style=style)
 
 
 def link(parent, text: str, command: Callable[[], None], **kw) -> ttk.Button:

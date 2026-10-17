@@ -7,6 +7,7 @@ Four decompiles run side by side in this project, by different chats and helpers
 | CoD3 | Call of Duty 3, Xbox 360 `default.xex` + `codmp_xenonf.xex` (PowerPC) | Rust ports checked against the original in a CPU emulator | [DECOMP.md](DECOMP.md), [MULTIPLAYER.md](MULTIPLAYER.md) |
 | World at War | PC 1.7 (`CoDWaW.exe`, `CoDWaWmp.exe`) and Xbox 360 (`default.xex`, `default_mp.xex`); also CoD2's Xbox 360 builds, and CoD3's paired with both | Ghidra C with names; Xbox 360 functions paired with PC ones | [WAW_DECOMP.md](WAW_DECOMP.md) |
 | Call of Duty 2, United Offensive (and Call of Duty 1.5) | PC: CoD2 1.3, UO 1.51, CoD 1.5 (x86), all nine executables and game modules; CoD2 Xbox 360 by the World at War chat (`dev/waw-decomp/cod2_360/`) | Both: Ghidra C with names, and Rust ports checked in an emulator (the PC network layer: `iw_pc::net`) | [tools/decomp/x86/README.md](../tools/decomp/x86/README.md), [tools/pc_decomp/README.md](../tools/pc_decomp/README.md), [PC_MULTIPLAYER.md](PC_MULTIPLAYER.md), [NEW_COPY.md](NEW_COPY.md) |
+| Xbox 360 relatives | CoD3's other discs (Germany, Europe Fr/Es/It: the same campaign code; Japan: a later build, 2007-01-31) and the Xbox 360 programs of CoD4, MW2, Black Ops and CoD Classic | World at War's Xbox 360 pipeline; regional builds lined up function by function (`tools/x360_family/build_diff.py`, `rebuild_diff.py`); identical-code matching across games (`same_code.py`); names from KisakCOD, KisakBlack, OpenCoD1 | [X360_FAMILY.md](X360_FAMILY.md) |
 
 The games are one family. Call of Duty (2003) and United Offensive are built on Quake III Arena's
 engine; Call of Duty 2 is their successor; Call of Duty 3's Xbox 360 engine comes from the same
@@ -148,6 +149,14 @@ Found in CoD2 1.3 and UO 1.51 (`docs/PC_MULTIPLAYER.md`); **check each in CoD3's
   in every form, counts anywhere in the table, cut short where the reader stops at the end)
   and mutate only within what the originals survive (`tools/decomp/x86/specs/net_delta.py`,
   `Wire`). (CoD2/UO)
+- **A second language costs little once the checker speaks a line protocol:** the C++ version
+  of the PC decomp (`engine/cpp`, owner 2026-10-15: C++ for developers, Rust stays the full
+  version) has its own answerer (`pc_check_cpp`) for the same specs, so every C++ function is
+  checked exactly like its Rust twin (`pcdecomp.py check --impl cpp`). Porting from the checked
+  Rust (not from the disassembly again) took an evening for 187 functions, and every one matched
+  the originals the first time; running the slow specs on new seeds found a bug in a spec
+  instead (a setting value too large for a float). A chat that wants C++ for `cod3_game` can do
+  the same with `decomp.py`'s protocol. (CoD2/UO)
 - **Join and transport differ by platform:** the PC games use Quake III's `getchallenge` /
   `connect`; CoD3 on the 360 joins through Demonware peer to peer (setup chat, 2026-10-13). The
   game layer above it is the shared part.
@@ -165,6 +174,15 @@ Found in CoD2 1.3 and UO 1.51 (`docs/PC_MULTIPLAYER.md`); **check each in CoD3's
   assertions carry the compiler's function signature; `tools/waw_decomp/method_names.py` names
   260-275 functions per World at War PC program, about 100 per Xbox 360 program and 104 in CoD3
   MP (85 the project's MP names lacked, `bdPacket::serialize` among them). (World at War chat)
+
+### Call of Duty 3's regional builds (2026-10-16)
+
+The German and the Europe (Fr, Es, It) discs' multiplayer programs have the USA build's network code
+unchanged (only two menu panels and one download-map slot differ), so they speak the same protocol.
+The Japanese build (2007-01-31) has a newer Demonware session layer: `bdPacket::serialize` /
+`deserialize` and `bdDataChunk::serialize` are the same code, the connection and session classes
+changed (fields moved, new session checks). Whether it joins a USA console is open. Details:
+[X360_FAMILY.md](X360_FAMILY.md). (x360-family)
 
 ### Master servers and protocol numbers (checked against the executables, 2026-10-15)
 
@@ -272,6 +290,43 @@ community master server. Its numbers, checked against the owner's executables wh
   MSVC 7.1 executables (reached only through pointer tables, glued tail jumps, code after
   padding); `tools/pc_decomp/ghidra_scripts/PcFindFunctions.java` finds them (CoD2 MP 5,507 to
   9,415). (CoD2/UO) World at War's finder found about 3,000 the same way.
+
+- **One empty function behind many names:** the linker folds functions with identical code, so a
+  `{ "name", handler }` table can point several names at one function. In World at War PC SP, 40
+  script builtin entries (file output, rumble, achievements, logging...) and the console command
+  `assert` all point at one `ret`: those builtins do nothing in that program, and a name taken from
+  one table entry names the shared function after only one of them. (World at War) Check: CoD3's
+  builtin tables.
+
+## Fastfiles, mods and custom maps
+
+- **World at War's zone stream** (read from its own loader, PC 1.7 SP, `tools/waw_decomp/zone_loader.py`):
+  a pointer 0 is null, -1 means the data follows inline, -2 inline and registered for later
+  references, any other value v points at block (v-1)>>29, offset (v-1)&0x1FFFFFFF. Alignment
+  applies to where data lands in memory; the file stream has no padding. (World at War) Check:
+  CoD3's fastfiles ([formats/cod3.md](formats/cod3.md)).
+- **Overriding assets** (World at War `DB_LinkXAssetEntry`, the CoD4 engine's rule): of two zones
+  with the same asset, the one with the higher or equal zone flags wins (a mod's `mod.ff` has the
+  highest); only types with a default asset name, plus raw files and map entities, may be
+  overridden, any other type twice is a fatal error. So a mod can replace weapons, models,
+  materials, images, sounds, menus, effects and scripts, not a map's collision or world. (World at War) Check:
+  CoD3.
+- **Where World at War looks for a zone:** the game's `zone\<language>\` first, then the mod folder
+  `<fs_localAppData>\<fs_game>\`, then `<fs_localAppData>\usermaps\<map>\`; `mod.ff` only in the
+  mod folder; `fs_localAppData` = the local application data folder + `\Activision\CoDWaW`. A map is
+  a zombies map when its arena gametype is `zom` or its name contains `nazi_zombie_`. Details:
+  [WAW_DECOMP.md](WAW_DECOMP.md), "Zombies and custom maps". (World at War)
+- **Fixed limits a custom map can hit** (World at War PC 1.7 SP, each read from the comparison
+  that enforces it): 1,024 game entities (1,018 for the map; KisakCOD SP has 2,176), per script VM
+  65,533 variables and 24,573 objects, 48 hint strings, 1,022 localized strings (`setText` takes
+  one per different text, never freed), 511 models, 127 materials, 195 effects, 255 effect-on-tag
+  pairs, 63 looping/positioned sound aliases, 32 actors, 36 sentients, 31 hud elements sent per
+  player, a 2,500 ms infinite-loop timeout (CoD4 5,000). Most index limits end the map with an
+  error. The full list (85, private): `dev/waw-decomp/zone/engine_limits.tsv`; summary in
+  [WAW_DECOMP.md](WAW_DECOMP.md). (World at War) Check: CoD3's own counts.
+- **Sized enums in C++ headers** (`enum X : unsigned __int16`) turned into plain C enums become 4
+  bytes and shift every later member; check a generated header's offsets with a compiler set to the
+  game's ABI (`t4sp_types.py --check`: clang `--target=i686-pc-windows-msvc`). (World at War)
 
 ## Ghidra and tools
 

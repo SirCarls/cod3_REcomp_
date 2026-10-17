@@ -43,6 +43,7 @@ enum class Conv {
   kGameMsaa,    // samples 1 -> off, 2+ -> on when it fits
   kVsync,       // 0/1 -> the two presentation cvars
   kShadows,     // 0/1 -> cod3_shadow_quality off / original
+  kInvertPitch, // 0/1 -> the mouse as the player sees it (MouseLook::SetMouseInverted)
 };
 
 struct Dvar {
@@ -63,6 +64,8 @@ const std::vector<std::string_view>& WawOnlyNames();
 // The value to show for `d`, on World at War's scale. Game dvars come from
 // the snapshot (empty while the game hasn't registered them yet).
 std::string Value(const Dvar& d, const EngineSnapshot& snap);
+// Its default the same way (the target's default, on World at War's scale).
+std::string DefaultValue(const Dvar& d, const EngineSnapshot& snap);
 
 struct SetResult {
   bool ok = true;

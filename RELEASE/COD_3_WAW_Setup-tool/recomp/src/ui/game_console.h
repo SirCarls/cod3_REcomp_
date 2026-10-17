@@ -71,6 +71,10 @@ class GameConsole {
   static bool IsOpen() { return open_.load(); }
   static void SetOpen(bool open) { open_ = open; }
 
+  // The commands the console itself handles (clear, condump, problems ...),
+  // for completion.
+  static const std::vector<const char*>& LocalCommands();
+
  private:
   bool HandleLocal(const std::string& cmd, const std::vector<std::string>& args, cheats::Source source);
   // Whether the game knows `name` as a cheat-protected dvar (from the snapshot).
@@ -93,7 +97,11 @@ class GameConsole {
   static inline std::atomic<bool> open_{false};
 };
 
-// The ImGui view. Created when the console opens, destroyed when it closes.
+class ConsoleView;
+
+// The drop-down window. Created when the console opens, destroyed when it
+// closes. What is inside (output, input line, completion, history) is the
+// ConsoleView that F2 > Console shows too (ui/console_view.h).
 class GameConsoleDialog : public rex::ui::ImGuiDialog {
  public:
   GameConsoleDialog(rex::ui::ImGuiDrawer* drawer, bool full);
@@ -106,34 +114,11 @@ class GameConsoleDialog : public rex::ui::ImGuiDialog {
   void OnDraw(ImGuiIO& io) override;
 
  private:
-  struct Suggestion {
-    std::string name;
-    std::string value;   // empty for commands
-    std::string reset;
-    uint32_t flags = 0;
-    bool is_cvar = false;
-  };
-
-  static int InputCallback(ImGuiInputTextCallbackData* data);
-  void UpdateSuggestions(std::string_view text);
   void DrawConsole(ImGuiIO& io);
-  void DrawOutput(float height);
-  void DrawSuggestions(float x, float y, float width);
 
+  std::unique_ptr<ConsoleView> view_;
   bool full_;
-  bool focus_input_ = true;
-  bool scroll_to_bottom_ = true;
   float open_anim_ = 0.0f;
-  char input_[512] = {};
-  int history_pos_ = -1;
-  std::string typed_prefix_;
-  std::vector<Suggestion> suggestions_;
-  int suggestion_sel_ = -1;
-  uint64_t snapshot_gen_ = 0;
-  EngineSnapshot snapshot_;
-  double last_snapshot_request_ = 0.0;
-  std::vector<ConsoleLine> lines_;
-  uint64_t lines_gen_ = ~0ull;
 };
 
 }  // namespace cod3::ui

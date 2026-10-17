@@ -46,14 +46,25 @@ set(COD3_SOURCES
     src/game/frame_rate.cpp
     src/game/function_profiler.cpp  # [hw-scaling]
     src/game/gpu_wait.cpp  # [hw-scaling]
+    src/game/job_wait.cpp  # [hw-scaling]
     src/game/game_api.cpp
     src/game/hd_textures.cpp
     src/game/job_wake.cpp
     src/game/machine_profile.cpp
+    src/game/keybinds/binds.cpp  # [keybinds] the keyboard's own actions (campaign only)
+    src/game/keybinds/keys.cpp  # [keybinds]
+    src/game/keybinds/model.cpp  # [keybinds]
     src/game/menu_fov.cpp
     src/game/menu_video.cpp
     src/game/mouse_look.cpp
+    src/game/movement/hooks_sp.cpp  # [movement] sprint and the CoD4 movement style (campaign only)
+    src/game/movement/mantle.cpp  # [movement]
+    src/game/movement/menu_movement.cpp  # [movement]
+    src/game/movement/rules.cpp  # [movement]
+    src/game/movement/settings.cpp  # [movement]
+    src/game/movement/sprint_input.cpp  # [movement]
     src/game/multiplayer.cpp
+    src/game/protected_dvars.cpp  # [movement] server_sided_protected dvars
     src/game/pc_menu.cpp
     src/game/button_prompts.cpp
     src/game/perf_stats.cpp
@@ -62,14 +73,21 @@ set(COD3_SOURCES
     src/game/script_fiber.cpp
     src/game/script_threads.cpp
     src/game/settings_sync.cpp
-    src/game/stick_actions.cpp
+    src/game/qte_actions.cpp
+    src/game/screenshot.cpp
     src/game/shadows.cpp
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp
+    src/game/voice_language.cpp  # [voice]
     src/game/watchdog.cpp
     src/ui/announcement_feed.cpp
+    src/ui/console_pages.cpp
+    src/ui/console_view.cpp
+    src/ui/dvar_domain.cpp
     src/ui/game_console.cpp
     src/ui/hud_overlay.cpp
+    src/ui/problem_log.cpp
+    src/ui/qte_spinner.cpp
     src/ui/theme.cpp
     src/ui/waw_dvars.cpp
     src/test_input.cpp
@@ -116,6 +134,14 @@ if(UNIX AND NOT APPLE)
                 $<TARGET_FILE:rex::amd_fidelityfx_vk> $<TARGET_FILE_DIR:cod3>
             VERBATIM)
     endif()
+endif()
+
+# The decomp trace build (docs/DECOMP_TRACE.md): every recompiled function
+# notes when it first runs and who calls it, for mapping unnamed functions.
+# Only in a build folder of its own; normal builds are unchanged.
+option(COD3_DECOMP_TRACE "Build the decomp trace version of the game (slower; maps functions)" OFF)
+if(COD3_DECOMP_TRACE)
+    include(src/game/trace/decomp_trace.cmake)
 endif()
 
 # [cod3mp] The multiplayer program, codmp_xenonf.xex, built next to cod3 from

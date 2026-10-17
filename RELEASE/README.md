@@ -5,14 +5,14 @@ Play **Call of Duty 3** (Xbox 360) natively on Linux and Windows
 - **Call of Duty 3** is rebuilt from your disc as a native program (a static recompilation on the [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk)), with a WaW-style console, an FOV slider, mouse aim, up to 4K and high frame rates.
 - **Both games' files are ripped** into open formats (textures, models, materials, scripts) for the native engine that blends them. World at War itself is never run.
 
-No game files are included. You need your own *Call of Duty 3 (USA, Europe)* Xbox 360 disc image. **World at War is optional:** Call of Duty 3 builds and plays without it. Tick "Also rip World at War" in the setup tool (or leave it out with `--no-waw`) only if you want its files ripped for the new engine.
+No game files are included. You need your own *Call of Duty 3* Xbox 360 disc image: *USA, Europe*, or the German or the French/Spanish/Italian disc (the same game program; multiplayer is built from the USA, Europe disc only). **World at War is optional:** Call of Duty 3 builds and plays without it. Set it up on the setup tool's World at War tab (or leave it out with `--no-waw`) only if you want its files ripped for the new engine.
 
 ## Quick start
 
 1. **Download** the latest release from the [Releases](../../releases) page and unzip it. (Or use **Code → Download ZIP**.)
 2. **Put your games in the `input` folder** (optional, but then they're found by themselves): your Call of Duty 3 `.iso`, and if you don't have World at War on Steam, its Xbox 360 `.iso` and any map pack downloads.
 3. **Start the setup tool:**
-   - **Windows:** double-click `setup.bat`.
+   - **Windows:** double-click `setup.bat`. Put the folder at a short path outside OneDrive first (for example `C:\Games\COD3`); [docs/BUILDING_ON_WINDOWS.md](docs/BUILDING_ON_WINDOWS.md) has what gets installed where and the fixes for common errors.
    - **Linux:** right-click `setup.sh` → *Run as a Program*, or in a terminal: `sh setup.sh`.
    - `setup.sh` also works on Windows in Git Bash, MSYS2 or Cygwin. `setup.bat` is Windows only; it also runs under Wine, where the rips work but the game can't be compiled yet (on Linux, `sh setup.sh` builds the Windows version natively).
 4. Check what it found, tick the **versions** you want (Linux and/or Windows; either system can build both), then press **Build**.
@@ -22,6 +22,8 @@ No game files are included. You need your own *Call of Duty 3 (USA, Europe)* Xbo
 Anything missing is installed for you: Python, Rust, compilers and libraries. You may be asked for your password, or see a Windows permission prompt. The first build of the playable Call of Duty 3 takes 30–120 minutes; you can cancel at any time and press **Build** again to continue where it stopped.
 
 When it's done, start the game from the **Play** page, or open the `output` folder and run `CoD3-x86_64.AppImage` (Linux) or `bin/cod3.exe` (Windows; `bin-windows/cod3.exe` when it was built on Linux).
+
+**One tab per game.** The setup tool has a tab for each game across the top, each with its own pages and main button. **World at War:** your Steam folder or disc and the map packs, then **Rip content**. **Call of Duty 2** and **United Offensive:** **Make a new copy** copies only the game's data archives from your Steam or CB install for the Rust engine ([docs/NEW_COPY.md](docs/NEW_COPY.md)), and **Start LAN server** runs the Rust LAN server your PC game can join ([docs/PC_SERVER.md](docs/PC_SERVER.md)); both programs are built from `engine/` with cargo the first time. No game's program is ever run, copied or changed. Each tab has a **Port status** page.
 
 **Both versions from one system.** On Linux, the Windows version is cross-compiled with llvm-mingw (downloaded for you). On Windows, the Linux version is built inside WSL 2 in a private Ubuntu that the tool sets up and removes again; WSL has to be turned on once (in an administrator PowerShell: `wsl --install --no-distribution`, then restart). macOS isn't supported.
 
@@ -40,7 +42,7 @@ Everything that can stays in the folder you unzipped, unless you choose other pl
 | `output/` | The built game, the ripped files, saves, the game's settings and logs (see below). |
 | `work/` | Temporary build files, deleted at the end. On a path with spaces the build reaches it through a short link (in your cache folder), so the build tools never see the spaces; the files stay here. |
 | `work/tools/` | Downloaded tools (CMake, Ninja, 7-Zip, LLVM, llvm-mingw, appimagetool, waifu2x, as needed), Rust in `work/tools/rust` when your PC has none, and on Windows Python from `setup.bat`. Kept between builds; delete it to free the space (they are downloaded again, with your approval). |
-| `config/` | The setup tool's settings. |
+| `config/` | The setup tool's settings, and in `fonts/` the game's own F2 font (Barlow, unpacked from `recomp/` for the tool's titles; only the tool uses it). |
 | `COD_3_WAW_Setup-tool/`, `engine/`, `docs/`, `tools/` | The source code and its notes. |
 
 Only two things can't live in this folder, because their installers decide where they go: **Linux build packages** (compilers and libraries from your distribution, installed into the system by your package manager, which asks for your password) and on Windows **Visual Studio's Build Tools and the Windows SDK** (Microsoft's installer). A Rust or Python you already had is used where it is.
@@ -82,7 +84,7 @@ python3 COD_3_WAW_Setup-tool/cod3_waw_setup.py map-pack --list   # where to get 
 
 | | |
 |---|---|
-| **Games** | *Call of Duty 3 (USA, Europe)* for Xbox 360, as a disc image. Optionally *World at War*: Steam, Xbox 360 disc image, or PC disc. |
+| **Games** | *Call of Duty 3* for Xbox 360 (USA, Europe; Germany; or France, Spain, Italy), as a disc image. Optionally *World at War*: Steam, Xbox 360 disc image, or PC disc. |
 | **System** | 64-bit Windows 10/11, or 64-bit Linux (Ubuntu/Mint 22+, Debian 13+, Fedora 40+, Arch, openSUSE Tumbleweed). |
 | **Graphics** | A Vulkan GPU driver (on Windows, Direct3D 12 also works). NVIDIA's proprietary driver, AMD and Intel (Mesa) all include Vulkan. |
 | **Disk** | About 7 GB temporary, plus about 7 GB for the game files and 4 GB for the ripped files. |
@@ -99,7 +101,8 @@ python3 COD_3_WAW_Setup-tool/cod3_waw_setup.py map-pack --list   # where to get 
 | `assets/` | The game files from your Call of Duty 3 disc, which the recompiled game reads. |
 | `userdata/` | Saves, console config (`cod3_config.cfg`), shader cache, and the game's log (`logs/cod3.log`). |
 | `logs/` | The setup tool's build logs (the last 10). |
-| `tools/rip` | The ripper, for adding maps later (and `rip.exe` if you made the Windows one). |
+| `tools/rip` | The ripper, for adding maps later (and `rip.exe` if you made the Windows one); `newcopy` and `iw-server` once the Call of Duty 2 / United Offensive tabs used them. |
+| `copies/` | New copies of Call of Duty 2 (`cod2/`) and United Offensive (`coduo/`): their data archives only, for the Rust engine (the default place; the tab can pick another). |
 | `Launcher.sh` / `Launcher.bat` + `launcher/` | The Play page, usable without the setup folder. |
 | `cod3_waw.json` | What was built, and from which sources. |
 
@@ -123,7 +126,7 @@ python3 COD_3_WAW_Setup-tool/cod3_waw_setup.py map-pack --list   # where to get 
 
 Quit in the pause menu (and the end of a mission) brings you back to the main menu: the game restarts itself there, as the Xbox 360 version does.
 
-**Testing and bug reports:** `cod3_log_detail verbose` (or F2 > Performance) logs slow frames with what the emulated GPU did in them, level load times and the frame cost every 10 seconds; `cod3_report` in the console writes `userdata/logs/report-<date>-<time>.txt` to attach next to `userdata/logs/cod3.log`.
+**Testing and bug reports:** `cod3_log_detail verbose` (or F2 > Performance) logs slow frames with what the emulated GPU did in them, level load times and the frame cost every 10 seconds; `cod3_report` in the console writes `userdata/logs/report-<date>-<time>.txt` to attach next to `userdata/logs/cod3.log`. `screenshot` in the console (or F2 > Performance > Logging > Take a screenshot) saves the game's own picture, never the desktop or another window, to `userdata/logs/screenshots/`; with `cod3_log_detail debug` the game also takes one every `cod3_debug_screenshots` seconds (60, 0 = none) while the picture changes, when it gets stuck and with each report. `cod3_hd_compare` (or F2 > Performance > Logging > Compare HD textures) saves the same view with the HD textures and, a moment later, without them.
 
 ## Current status
 

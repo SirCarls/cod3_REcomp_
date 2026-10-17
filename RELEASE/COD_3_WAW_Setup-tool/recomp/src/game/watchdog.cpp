@@ -13,6 +13,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game/program.h"
+#include "game/screenshot.h"
 #include "game/script_threads.h"
 
 #if defined(_WIN32)
@@ -46,33 +48,33 @@ struct CallSite {
   const char* what;
 };
 constexpr CallSite kCallSites[] = {
-    {0x823494F8, "NtWaitForSingleObjectEx in sub_823494C0 (WaitForSingleObjectEx)"},
-    {0x823444FC, "NtWaitForSingleObjectEx in sub_82344420 (a file write finishing)"},
-    {0x82344654, "NtWaitForSingleObjectEx in sub_82344558 (a file read finishing)"},
-    {0x82344494, "NtWriteFile in sub_82344420"},
-    {0x823444E0, "NtWriteFile in sub_82344420"},
-    {0x82345630, "NtWriteFile in sub_823455E8"},
-    {0x823445D0, "NtReadFile in sub_82344558"},
-    {0x82344638, "NtReadFile in sub_82344558"},
-    {0x823455B8, "NtReadFile in sub_82345570"},
-    {0x82349740, "KeDelayExecutionThread in sub_823496E0 (Sleep)"},
-    {0x82345050, "NtYieldExecution in sub_82345040"},
-    {0x822F4DB8, "VdSwap in sub_822F4C28 (presenting a frame)"},
-    {0x822C0FE8, "KeWaitForSingleObject in sub_822C0F90"},
-    {0x822C10A8, "KeWaitForSingleObject in sub_822C1058"},
-    {0x822C10D8, "KeWaitForSingleObject in sub_822C1058"},
-    {0x822C11AC, "KeWaitForMultipleObjects in sub_822C1108"},
-    {0x8230258C, "KeWaitForSingleObject in sub_823024D8"},
-    {0x82302620, "KeWaitForSingleObject in sub_823025B0"},
-    {0x82302D1C, "KeWaitForSingleObject in sub_82302C80"},
-    {0x821960B8, "XMsgInProcessCall in sub_82196070"},
-    {0x82195AC4, "XMsgInProcessCall in sub_82195A90"},
-    {0x82195BE4, "XMsgInProcessCall in sub_82195BA8"},
-    {0x8219627C, "XMsgInProcessCall in sub_82196188"},
-    {0x82195B60, "XMsgStartIORequestEx in sub_82195B00"},
-    {0x82343B14, "XMsgStartIORequest in sub_82343AD8"},
-    {0x82343BA8, "XMsgStartIORequest in sub_82343B58"},
-    {0x82343E9C, "XexLoadImage in sub_82343E80 (loading a level's code)"},
+    {COD3_ADDR(0x823494F8, 0x82319200), "NtWaitForSingleObjectEx in sub_823494C0 (WaitForSingleObjectEx)"},
+    {COD3_ADDR(0x823444FC, 0x823137CC), "NtWaitForSingleObjectEx in sub_82344420 (a file write finishing)"},
+    {COD3_ADDR(0x82344654, 0x82313964), "NtWaitForSingleObjectEx in sub_82344558 (a file read finishing)"},
+    {COD3_ADDR(0x82344494, 0x82313764), "NtWriteFile in sub_82344420"},
+    {COD3_ADDR(0x823444E0, 0x823137B0), "NtWriteFile in sub_82344420"},
+    {COD3_ADDR(0x82345630, 0x82314A00), "NtWriteFile in sub_823455E8"},
+    {COD3_ADDR(0x823445D0, 0x823138E0), "NtReadFile in sub_82344558"},
+    {COD3_ADDR(0x82344638, 0x82313948), "NtReadFile in sub_82344558"},
+    {COD3_ADDR(0x823455B8, 0x82314988), "NtReadFile in sub_82345570"},
+    {COD3_ADDR(0x82349740, 0x82318B90), "KeDelayExecutionThread in sub_823496E0 (Sleep)"},
+    {COD3_ADDR(0x82345050, 0x82314420), "NtYieldExecution in sub_82345040"},
+    {COD3_ADDR(0x822F4DB8, 0x822C3AD8), "VdSwap in sub_822F4C28 (presenting a frame)"},
+    {COD3_ADDR(0x822C0FE8, 0x82291FD8), "KeWaitForSingleObject in sub_822C0F90"},
+    {COD3_ADDR(0x822C10A8, 0x82292098), "KeWaitForSingleObject in sub_822C1058"},
+    {COD3_ADDR(0x822C10D8, 0x822920C8), "KeWaitForSingleObject in sub_822C1058"},
+    {COD3_ADDR(0x822C11AC, 0x8229219C), "KeWaitForMultipleObjects in sub_822C1108"},
+    {COD3_ADDR(0x8230258C, 0x822D117C), "KeWaitForSingleObject in sub_823024D8"},
+    {COD3_ADDR(0x82302620, 0x822D1210), "KeWaitForSingleObject in sub_823025B0"},
+    {COD3_ADDR(0x82302D1C, 0x822D190C), "KeWaitForSingleObject in sub_82302C80"},
+    {COD3_ADDR(0x821960B8, 0x8222C318), "XMsgInProcessCall in sub_82196070"},
+    {COD3_ADDR(0x82195AC4, 0x8239083C), "XMsgInProcessCall in sub_82195A90"},
+    {COD3_ADDR(0x82195BE4, 0), "XMsgInProcessCall in sub_82195BA8"},
+    {COD3_ADDR(0x8219627C, 0x8222C63C), "XMsgInProcessCall in sub_82196188"},
+    {COD3_ADDR(0x82195B60, 0), "XMsgStartIORequestEx in sub_82195B00"},
+    {COD3_ADDR(0x82343B14, 0x82312C8C), "XMsgStartIORequest in sub_82343AD8"},
+    {COD3_ADDR(0x82343BA8, 0x82312D20), "XMsgStartIORequest in sub_82343B58"},
+    {COD3_ADDR(0x82343E9C, 0x823132FC), "XexLoadImage in sub_82343E80 (loading a level's code)"},
 };
 
 std::string KnownCall(uint32_t lr) {
@@ -107,6 +109,8 @@ void Report(double seconds, bool again) {
   REXLOG_WARN("cod3: watchdog:   {}", GuestRegisters());
   REXLOG_WARN("cod3: watchdog:   fibers: {}", cod3::ScriptThreadWatchLine());
   rex::FlushLogging();
+  // At debug log detail, the picture it is stuck on (game/screenshot.h).
+  cod3::shot::Request(cod3::shot::Kind::kAuto, "the game's main thread is stuck");
 }
 
 // The watchdog thread: once a second, has the game thread marked anything?

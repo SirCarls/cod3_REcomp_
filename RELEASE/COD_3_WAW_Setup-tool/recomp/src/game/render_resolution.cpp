@@ -99,7 +99,7 @@ void FitSixteenByNine(uint32_t* width, uint32_t* height) {
 }
 
 void FitAspect(uint32_t* width, uint32_t* height, float aspect) {
-  if (!(aspect > 16.0f / 9.0f + 0.002f)) {
+  if (IsSixteenByNine(aspect)) {
     FitSixteenByNine(width, height);
     return;
   }
@@ -272,30 +272,15 @@ RenderPlan GetRenderPlan() {
 
 namespace {
 // Where the presenter shows a picture of this shape in a window or screen of
-// view_width x view_height, with its rounding (the SDK's ui/presenter.cpp,
-// letterboxing on): the game's 16:9, or round(1000 x shape) x 1000 while the
-// picture is wider (game/ultrawide.cpp). "auto" draws exactly this size.
+// view_width x view_height: its size there, with the presenter's own rule and
+// rounding (game/ultrawide.h PictureInView): with black bars it fits inside
+// the window; without (present_letterbox off) it is stretched to the window.
+// "auto" draws exactly this size.
 void DisplayRect(uint32_t view_width, uint32_t view_height, float aspect, uint32_t* width,
                  uint32_t* height) {
-  const bool wide = aspect > kSixteenByNine + 0.002f;
-  const uint64_t ax = wide ? uint64_t(std::min(4095L, std::lround(1000.0f * aspect))) : 16;
-  const uint64_t ay = wide ? 1000 : 9;
-  const uint64_t w = std::max<uint32_t>(view_width, 1), h = std::max<uint32_t>(view_height, 1);
-  // Without letterboxing (present_letterbox off) the picture fills the
-  // window's width or height and its other side runs past the edges.
-  const bool bars = rex::cvar::GetFlagByName("present_letterbox") != "false";
-  if (w * ay > h * ax) {
-    // Wider than the picture: the height decides, bars at the sides.
-    const uint64_t out_h = (w * ay + ax / 2) / ax;
-    const bool fit = bars && out_h > h;
-    *height = uint32_t(fit ? h : out_h);
-    *width = fit ? uint32_t((h * ax + ay / 2) / ay) : uint32_t(w);
-  } else {
-    const uint64_t out_w = (h * ax + ay / 2) / ay;
-    const bool fit = bars && out_w > w;
-    *width = uint32_t(fit ? w : out_w);
-    *height = fit ? uint32_t((w * ay + ax / 2) / ax) : uint32_t(h);
-  }
+  const PictureRect picture = PictureInView(view_width, view_height, aspect);
+  *width = picture.width;
+  *height = picture.height;
 }
 
 std::string Size(uint32_t width, uint32_t height) { return fmt::format("{}x{}", width, height); }
@@ -306,8 +291,8 @@ RenderPlan PlanForView(const std::string& choice, uint32_t view_width, uint32_t 
     view_width = 1280;
     view_height = 720;
   }
-  // The picture's shape: 16:9 (bars on other windows) or wider, and where the
-  // presenter shows it.
+  // The picture's shape: 16:9 (bars on other windows), wider or narrower,
+  // and where the presenter shows it.
   const float aspect = AspectForWindow(view_width, view_height);
   uint32_t display_width = 0, display_height = 0;
   DisplayRect(view_width, view_height, aspect, &display_width, &display_height);
@@ -331,18 +316,28 @@ RenderPlan PlanForView(const std::string& choice, uint32_t view_width, uint32_t 
     width = display_width;  // "auto": the window or screen, pixel for pixel
     height = display_height;
   } else {
-    // A named resolution counts lines: 1440p on a 21:9 screen is 3440x1440.
-    if (!typed && aspect > kSixteenByNine) width = uint32_t(float(height) * aspect + 0.5f);
+    // A named resolution counts lines: 1440p on a 21:9 screen is 3440x1440,
+    // 1080p in a 4:3 picture 1440x1080.
+    if (!typed && !IsSixteenByNine(aspect)) width = uint32_t(float(height) * aspect + 0.5f);
     // The picture's shape (a typed size within 1% of it stays as typed).
+    const uint32_t typed_width = width, typed_height = height;
     FitAspect(&width, &height, aspect);
+    if (typed && (width != typed_width || height != typed_height))
+      note = fmt::format("{} is {:.2f}:1 but the picture's shape (Aspect ratio) is {:.2f}:1, so the "
+                         "game draws {}. Aspect ratio \"Match the render resolution\" keeps the "
+                         "size's own shape.",
+                         Size(typed_width, typed_height), float(typed_width) / float(typed_height),
+                         aspect, Size(width, height));
     // Never bigger than the window: it would only be shrunk to fit.
     if (width > display_width || height > display_height) {
-      note = fmt::format("{} is bigger than the {} ({}), so the game draws the {}'s size: a bigger "
-                         "picture would only be shrunk to fit.",
-                         typed ? Size(width, height) : choice,
-                         rex::cvar::GetFlagByName("fullscreen") == "true" ? "screen" : "window",
-                         Size(display_width, display_height),
-                         rex::cvar::GetFlagByName("fullscreen") == "true" ? "screen" : "window");
+      if (!note.empty()) note += " ";
+      // The picture's size on the screen or window: the whole of it for the
+      // game's 16:9 on a 16:9 screen, less with bars for another shape.
+      const char* where = rex::cvar::GetFlagByName("fullscreen") == "true" ? "screen" : "window";
+      note += fmt::format("{} is bigger than the picture on the {} ({}), so the game draws that "
+                          "size: a bigger picture would only be shrunk to fit.",
+                          typed ? Size(width, height) : choice, where,
+                          Size(display_width, display_height));
       width = display_width;
       height = display_height;
     }

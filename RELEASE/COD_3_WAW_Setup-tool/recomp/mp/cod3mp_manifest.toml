@@ -11,4 +11,6 @@ game_root = "../assets"
 file_path = "../assets/codmp_xenonf.xex"
 out_directory_path = "generated/codmp"
 # names_mp.toml: readable function names (tools/name_mp_functions.py, SDK patch 0011).
-includes = ["config/codmp.toml", "config/names_mp.toml"]
+# codmp_campaign.toml: the campaign's mid-asm hooks at this program's addresses
+# (tools/mp_aliases.py).
+includes = ["config/codmp.toml", "config/names_mp.toml", "config/codmp_campaign.toml"]

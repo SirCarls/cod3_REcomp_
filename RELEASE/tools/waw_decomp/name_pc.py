@@ -12,8 +12,14 @@ claims it):
 
   public    names from public, open-source projects that target the same
             build (tools/waw_decomp/public_symbols.tsv, verified=yes rows)
+  extra     (optional, --extra, repeatable) tables of names found by hand or by another
+            tool (addr, name, kind, pass, evidence): the typed globals struct_globals.py
+            helped find, the zone loader's functions and vars from zone_loader.py; a row of
+            kind "note" is a comment only (what a function does in zombie mode, say)
   selfname  a function's own name in its error/log strings
             ("BG_ParseCommands: expected animation")
+  method    C++ methods named in their own strings (Demonware's "bdCore::init" log lines,
+            compiler signatures in assertions) when exactly one function has the name
   cmd       console commands: Cmd_AddCommand("name", func, &cmd) -> Cmd_<name>_f
   dvar      dvar registrations: g = Dvar_RegisterX("name", ...) -> dvar_<name>
             (only functions that reach the dvar system's core: material and sound
@@ -24,16 +30,18 @@ claims it):
   reader    the function that looks names up in such a table, named after KisakCOD's
             reader of the same array (--kisak-readers)
   sp / mp   (optional, --other) the other PC executable: identical code, then the
-            only users of the same strings
+            only users of the same strings; only the names that executable found itself
+            (a name it took from this one would come back with no new evidence)
   sp-graph / mp-graph  the other executable's names through matched functions
             (match_builds.py: strings and named globals, then the call graph and
             pointer tables)
   kisak-graph  KisakCOD names from the call graph
+  method    the rest of the methods (a name two functions share: name, name_2)
 
 Usage:
     python3 tools/waw_decomp/name_pc.py --exe CoDWaW.exe --which sp \
         --raw <ghidra export dir> --public tools/waw_decomp/public_symbols.tsv \
-        --out names.tsv [--kisak kisak_strings.tsv] [--other EXE RAW NAMES [--matches sp_mp.tsv]]
+        --out names.tsv [--extra names.tsv] [--kisak kisak_strings.tsv] [--other EXE RAW NAMES [--matches sp_mp.tsv]]
 
 Needs: capstone, pefile (pip).
 """
@@ -127,6 +135,8 @@ def main():
     ap.add_argument("--which", required=True, choices=["sp", "mp"])
     ap.add_argument("--raw", required=True)
     ap.add_argument("--public")
+    ap.add_argument("--extra", action="append", default=[],
+                    help="TSV: addr, name, kind, pass, evidence; taken right after --public (may be given more than once)")
     ap.add_argument("--kisak", help="TSV: name, file, strings (\\x1f separated) from KisakCOD")
     ap.add_argument("--kisak-tables", help="TSV: string, function, file (kisak_strings.py *_tables.tsv)")
     ap.add_argument("--kisak-readers", help="TSV: table, file, function (kisak_strings.py *_readers.tsv);"
@@ -156,8 +166,25 @@ def main():
                 stats["public"] += 1
                 pub_names[name] = addr
 
+    # --- extra
+    for extra in args.extra:
+        for r in read_tsv(extra):
+            addr = int(r["addr"], 16)
+            if r["kind"] == "note":  # a comment only, for a function that keeps its name or has none
+                namer.note(addr, r.get("pass") or "extra", r.get("evidence", ""), keep=True)
+                stats["extra_notes"] += 1
+                continue
+            if r["kind"] == "function" and addr not in funcs:
+                stats["extra_not_function_start"] += 1
+                continue
+            if namer.add(addr, r["name"], r["kind"], r.get("pass") or "extra", r.get("evidence", "")):
+                stats["extra"] += 1
+
     # --- selfname
     pass_selfname(namer, t, stats)
+
+    # --- C++ methods that name exactly one function (the rest at the end)
+    pass_methods(namer, t, stats, unique_only=True)
 
     # --- call sites with pushed immediates (commands and dvars)
     by_func_sites = collections.defaultdict(list)
@@ -419,7 +446,13 @@ def main():
     if args.other:
         o_exe, o_raw, o_names = args.other
         ot = Tables(o_raw)
-        for r in read_tsv(o_names):
+        # Only the other executable's own names: those it took from this one (passes "sp",
+        # "sp-graph" when this is SP) would come back without new evidence, and a wrong one
+        # would keep itself alive from version to version.
+        o_all = read_tsv(o_names)
+        o_rows = [r for r in o_all if r["pass"] != args.which and not r["pass"].startswith(args.which + "-")]
+        stats["other_names_skipped_own"] = len(o_all) - len(o_rows)
+        for r in o_rows:
             if r["kind"] == "function":
                 other_names[int(r["addr"], 16)] = r["name"]
         for a, r in ot.funcs.items():
@@ -436,7 +469,7 @@ def main():
                     stats[label + "-code"] += 1
         pass_transfer(namer, t, ot, other_names, label, stats)
         # the rest of the other executable's names through matched functions (call graph)
-        m = pass_graph(namer, args.raw, o_raw, o_names, label + "-graph", label.upper(), stats,
+        m = pass_graph(namer, args.raw, o_raw, o_rows, label + "-graph", label.upper(), stats,
                        image_here=args.exe, image_there=o_exe)
         if args.matches:
             with open(args.matches, "w", encoding="utf-8") as o:

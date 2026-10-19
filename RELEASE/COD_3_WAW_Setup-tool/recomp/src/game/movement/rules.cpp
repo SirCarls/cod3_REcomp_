@@ -168,6 +168,11 @@ bool IsBounceSlope(float normal_z) {
   return normal_z >= cod4::kBounceMinNormalZ && normal_z < kWalkableNormalZ;
 }
 
+bool BounceApplies(const BounceCase& c) {
+  return c.air_move && c.jumping && c.velocity_z < 0.0f && c.origin_z < c.jump_origin_z + kJumpHeight &&
+         IsBounceSlope(c.normal_z);
+}
+
 bool ProjectKeepSpeed(const float in[3], const float n[3], float out[3]) {
   const float speed = std::sqrt(in[0] * in[0] + in[1] * in[1] + in[2] * in[2]);
   const float into = in[0] * n[0] + in[1] * n[1] + in[2] * n[2];

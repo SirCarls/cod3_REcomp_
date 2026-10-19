@@ -70,6 +70,7 @@ struct MoveContext {
   float scales[7] = {};     // the playerState's own speed scales, put back after Pmove
   int8_t rightmove = 0;     // the usercmd's own sideways input, put back after Pmove
   bool snap = false;        // CoD4 PC's steps: round the velocity after each PmoveSingle
+  bool air_move = false;    // inside PM_AirMove (a bounce happens only there)
 };
 thread_local MoveContext g_move;
 
@@ -603,7 +604,10 @@ REX_HOOK_RAW(sub_82490B70) {
         StepMantle(base, pm, ps))
       return;
   }
+  const bool outer = g_move.air_move;
+  g_move.air_move = true;
   __imp__sub_82490B70(ctx, base);
+  g_move.air_move = outer;
 }
 
 // PM_ClipVelocity(in, normal, out, overbounce).
@@ -618,13 +622,38 @@ REX_HOOK_RAW(sub_8246B138) {
       n[i] = g::ReadF32(base, vn + 4 * i);
     }
     // CoD4's step move projects onto a steep slope (bounces) where CoD3
-    // clips; walls and walkable ground stay the game's clip.
-    if (mv::IsBounceSlope(n[2]) && mv::ProjectKeepSpeed(in, n, out)) {
-      for (int i = 0; i < 3; ++i) g::WriteF32(base, vout + 4 * i, out[i]);
-      if (mv::DebugMovement())
-        REXLOG_INFO("cod3: bounce: ({:.0f} {:.0f} {:.0f}) -> ({:.0f} {:.0f} {:.0f}) on a slope of {:.2f}", in[0],
-                    in[1], in[2], out[0], out[1], out[2], n[2]);
-      return;
+    // clips: a jump falling onto it (mv::BounceApplies). Walls, walkable
+    // ground and every step down while walking stay the game's clip.
+    if (mv::IsBounceSlope(n[2])) {
+      const uint32_t pm = g::ReadU32(base, P.pm);
+      const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
+      mv::BounceCase bounce;
+      bounce.air_move = g_move.air_move;
+      bounce.jumping = (g::ReadU32(base, ps + P.ps.pm_flags) & mv::pmf::kJumping) != 0;
+      bounce.origin_z = g::ReadF32(base, ps + P.ps.origin + 8);
+      bounce.jump_origin_z = g::ReadF32(base, ps + P.ps.jump_origin_z);
+      bounce.velocity_z = in[2];
+      bounce.normal_z = n[2];
+      if (mv::BounceApplies(bounce) && mv::ProjectKeepSpeed(in, n, out)) {
+        for (int i = 0; i < 3; ++i) g::WriteF32(base, vout + 4 * i, out[i]);
+        if (mv::DebugMovement())
+          REXLOG_INFO("cod3: bounce: ({:.0f} {:.0f} {:.0f}) -> ({:.0f} {:.0f} {:.0f}) on a slope of {:.2f}", in[0],
+                      in[1], in[2], out[0], out[1], out[2], n[2]);
+        return;
+      }
+      // A clip on a steep slope left to the game (at most 4 lines a second).
+      static int last_log_time = -1000000;
+      const int t = g::ReadS32(base, Cmd(pm) + P.cmd.server_time);
+      if (mv::DebugMovement() && (t - last_log_time >= 250 || t < last_log_time)) {
+        last_log_time = t;
+        const char* why = !bounce.air_move              ? "the walk move's step down"
+                          : !bounce.jumping              ? "no jump"
+                          : in[2] >= 0.0f                ? "rising"
+                          : mv::BounceApplies(bounce)    ? "straight into it"
+                                                         : "above the jump's top";
+        REXLOG_INFO("cod3: no bounce ({}): ({:.0f} {:.0f} {:.0f}) clipped on a slope of {:.2f}", why, in[0], in[1],
+                    in[2], n[2]);
+      }
     }
   }
   __imp__sub_8246B138(ctx, base);

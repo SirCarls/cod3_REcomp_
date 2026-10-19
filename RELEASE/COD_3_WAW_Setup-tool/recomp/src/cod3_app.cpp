@@ -479,6 +479,11 @@ void Cod3App::OnPostSetup() {
   // [movement] A movement setting changed in the game's Options menus (game
   // thread): the same save (game/movement/settings.h, game/protected_dvars.h).
   cod3::protected_dvars::SetSaveHandler(save_on_ui_thread);
+  // The sound output moved with a switch in the system's sound settings
+  // (SDK patch 0050 sets audio_device on the audio thread): saved like F2's
+  // choice, so the next start (a mission change restarts the game) keeps it.
+  rex::cvar::RegisterChangeCallback("audio_device",
+                                    [save_on_ui_thread](std::string_view, std::string_view) { save_on_ui_thread(); });
 
   // Screenshots for the debug log and bug reports (game/screenshot.h): the
   // game's own picture, read back from the GPU emulation's output, never

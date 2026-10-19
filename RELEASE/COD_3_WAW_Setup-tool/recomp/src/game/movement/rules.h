@@ -58,6 +58,7 @@ inline constexpr float kSprintStartMinimum = 0.25f;  // the game's own test (PM_
 // down, a lowered carry. Port values (no game data has them); visual only.
 inline constexpr float kSprintPoseFallback[3] = {-1.0f, 1.0f, -1.5f};
 inline constexpr float kWalkableNormalZ = 0.7f;      // the game's MIN_WALK_NORMAL
+inline constexpr float kJumpHeight = 39.0f;          // the game's jump step stops 39 above the jump's start
 
 // --- the rules for one player ------------------------------------------------
 // The four parts of the CoD4 style.
@@ -231,6 +232,20 @@ bool IsBounceSlope(float normal_z);
 // `in` projected onto the plane through the origin with `normal`, keeping its
 // speed. False when nothing is left along the plane (then clip as the game).
 bool ProjectKeepSpeed(const float in[3], const float normal[3], float out[3]);
+// When the step move's clip on such a slope becomes a bounce: a jump falling
+// onto it in the air move, below the jump's top (the game's jump step, which
+// needs the jump flag). Never on the walk move's step down: a steep bit of an
+// uneven floor would lift a player walking or strafing up a slight incline
+// (owner 2026-10-16: "randomly raise a couple feet in the air").
+struct BounceCase {
+  bool air_move = false;       // inside the air move (not the walk or ladder move)
+  bool jumping = false;        // the playerState's jump flag
+  float origin_z = 0.0f;       // where the player is
+  float jump_origin_z = 0.0f;  // where the jump started
+  float velocity_z = 0.0f;     // the velocity going into the clip
+  float normal_z = 0.0f;       // the slope's normal
+};
+bool BounceApplies(const BounceCase& c);
 
 // --- mantling ------------------------------------------------------------------------
 namespace mantle {

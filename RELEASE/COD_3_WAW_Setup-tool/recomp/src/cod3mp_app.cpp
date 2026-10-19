@@ -438,6 +438,18 @@ void Cod3MpApp::OnPostSetup() {
       REXLOG_WARN("cod3mp: couldn't save {}: {}", cod3::PathToUtf8(config_path_), e.what());
     }
   });
+  // The sound output moved with a switch in the system's sound settings
+  // (SDK patch 0050 sets audio_device on the audio thread): saved on the UI
+  // thread like F2's choice.
+  rex::cvar::RegisterChangeCallback("audio_device", [this](std::string_view, std::string_view) {
+    app_context().CallInUIThreadDeferred([this]() {
+      try {
+        rex::cvar::SaveConfig(config_path_);
+      } catch (const std::exception& e) {
+        REXLOG_WARN("cod3mp: couldn't save {}: {}", cod3::PathToUtf8(config_path_), e.what());
+      }
+    });
+  });
   // Screenshots for the debug log and bug reports (game/screenshot.h): the
   // game's own picture from the GPU emulation's output, as in the campaign.
   cod3::shot::Start(userdata_dir_ / "logs" / "screenshots", [this](rex::ui::RawImage& image) {

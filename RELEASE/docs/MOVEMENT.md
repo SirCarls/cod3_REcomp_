@@ -5,6 +5,8 @@ the CoD4 style moves in CoD4 PC's 125 fps steps (4.2).**
 Sprint (hold and toggle, keyboard and controller) and the CoD4 sprint and
 speeds were measured in game. Mantling looks for ledges in game (its traces
 work), but no climb has been seen yet; bounces are untested (section 10).
+2.10.13: bounces happen only for a jump falling onto a steep slope (a walk or
+strafe up an uneven incline used to lift the player; 4.4).
 The multiplayer side (cod3mp, built from the same sources) is designed here, with its
 addresses, but CoD3's multiplayer is peer to peer, so its transport
 (section 6) is to be redone; none of this is compiled into cod3mp yet.
@@ -381,6 +383,22 @@ to tell apart in CoD3's maps).
   The port does that at CoD3's two clip calls in the step move (0x8248FB6C and
   0x8248FCD4): the velocity is projected onto the slope keeping its speed.
   Walls (steeper than 0.3) and walkable ground keep the game's clip.
+  - **Only a jump falling onto the slope** (`BounceApplies` in
+    `rules.cpp`): inside the air move (`PM_AirMove`), with the jump flag set,
+    falling, and below the jump's top (its start + 39: the game's own jump
+    step, which the public description ties the projection to). The step
+    move also runs inside the walk move, and its step down there often
+    meets a steep bit of an uneven floor (rocks, roots, seams of the
+    terrain): projected, a walk at 190 into a 0.5 facet leaves at about 165
+    u/s upward, about 17 units (a foot and a half). That was the owner's
+    report on 2026-10-16 ("randomly raise a couple feet in the air every
+    couple seconds ... pressing strafing keys, while on a slight incline",
+    Forest); fixed in setup tool 2.10.13. The second clip call is the walk
+    move's only (disassembly: it runs only while on the ground), so it never
+    bounces now.
+  - With `cod3_debug_movement`, a clip on such a slope left to the game
+    logs `cod3: no bounce (<why>)` (the walk move's step down, no jump,
+    rising, above the jump's top), at most four a second.
 - **CoD4 PC's frame-rate tricks**: the CoD4 style is CoD4 at 125 fps at any
   frame rate (4.2). The 250 and 333 fps behaviors are not offered: the
   port never ties the game's physics to the player's frame rate (owner's
@@ -637,7 +655,16 @@ from the game's own player state, four samples a second of game time;
   not built) and walls at an angle, but no 36-60 unit ledge to climb. The
   debug log tells why each jump didn't climb, so the owner can try a crate
   or a low wall.
-- **Bounces** (PC jump tricks) are built but not tested on a slope yet.
+- **Bounces** (PC jump tricks): a real bounce (a jump falling onto a steep
+  slope) hasn't been seen yet. The 2.10.13 fix (only such a jump bounces)
+  was checked on the owner's PC in Forest on 2026-10-18 (REA sandbox, run
+  `20261018-015315-forest`, `dev/tools/rea/tests/forest_slopes.txt`): in
+  two minutes of walking and strafing up its slopes with the CoD4 style the
+  walk move's step down met a steep bit 39 times (slopes 0.36-0.69), every
+  one left to the game's clip (`no bounce (the walk move's step down)`), the
+  speed upward while walking stayed at most 80 units/s (walking uphill; a
+  jump leaves at 237), no lift; nine jumps reached 41.27 units (two landed
+  higher, 55-57).
 - **The front end's Options** (main menu) has no MOVEMENT page yet: its
   gameplay page has room for six rows; the seven rows are in game (Pause >
   Options > MOVEMENT OPTIONS) and in F2.

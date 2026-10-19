@@ -1160,7 +1160,9 @@ void SettingsWindow::DrawSoundOutput() {
   const std::string playing = rex::audio::CurrentOutputDevice();
   if (!playing.empty()) ImGui::TextDisabled("Playing on: %s", playing.c_str());
   Help("Where the game's sound plays, saved at once and kept when the game restarts between "
-       "missions. A device picked in the system's mixer instead is lost at that restart.");
+       "missions. Switching the output in the system's sound settings while playing moves the "
+       "game's sound too, and this row takes the new device. A stream moved in a mixer instead "
+       "goes back at that restart.");
 }
 
 void SettingsWindow::DrawCrosshair() {

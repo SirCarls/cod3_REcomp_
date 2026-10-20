@@ -31,8 +31,8 @@
 #include "game/hd_textures.h"
 #include "game/program.h"
 #include "game/mouse_look.h"
+#include "game/keybinds/binds.h"     // [keybinds] both programs
 #if !defined(COD3_MP)
-#include "game/keybinds/binds.h"     // [keybinds] campaign only for now
 #include "game/movement/settings.h"  // [movement] campaign only for now
 #endif
 #include "game/render_resolution.h"
@@ -1349,27 +1349,33 @@ void SettingsWindow::DrawControls() {
          "keybind_lstick_left", "keybind_lstick_right", "keybind_lstick_press", "keybind_rstick_up",
          "keybind_rstick_down", "keybind_rstick_left", "keybind_rstick_right", "keybind_rstick_press",
          "keybind_dpad_up", "keybind_dpad_down", "keybind_dpad_left", "keybind_dpad_right", "keybind_back",
-         "keybind_start", "keybind_guide", "cod3_binds_kbm_p1"});
+         "keybind_start", "keybind_guide", "cod3_binds_kbm_p1", "cod3_binds_actions", "cod3_aim_toggle_kbm_p1"});
     dirty_ = true;
   }
-#if !defined(COD3_MP)
-  // [keybinds] The game's own actions with keys of their own (binoculars,
-  // sprint / hold breath ...; game/keybinds/binds.h), above the controller rows.
+  // [keybinds] The game's own actions with keys of their own (fire, aim, use,
+  // reload ...; game/keybinds/binds.h), above the controller rows.
   dirty_ |= cod3::binds::DrawF2Rows();
-  Help("Each row is a controller button and the keys that press it, separated by commas; press "
-       "Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, Up/Down/Left/Right; "
-       "mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written "
-       "MOUSE4 / MOUSE5. The left stick click and the D-pad are empty by default: the binoculars and "
-       "sprint / hold breath have their own keys above.");
+#if !defined(COD3_MP)
+  Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
+       "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
+       "with commas; press Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, "
+       "Up/Down/Left/Right; mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 "
+       "(forward), also written MOUSE4 / MOUSE5. The left stick click and the D-pad are empty by default.");
 #else
-  Help("Each row is a controller button and the keys that press it, separated by commas; press "
-       "Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, Up/Down/Left/Right; "
-       "mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written "
-       "MOUSE4 / MOUSE5. Shift+Up means both together.");
+  Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
+       "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
+       "with commas; press Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, "
+       "Up/Down/Left/Right; mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 "
+       "(forward), also written MOUSE4 / MOUSE5. Shift+Up means both together. The two grenade rows "
+       "throw the frag and the special grenade also when the controller layout swaps the shoulder buttons.");
 #endif
   static const char* kBinds[][2] = {
       {"keybind_right_trigger", "Fire (RT)"},   {"keybind_left_trigger", "Aim (LT)"},
+#if !defined(COD3_MP)
       {"keybind_right_shoulder", "Grenade (RB)"}, {"keybind_left_shoulder", "Smoke grenade (LB)"},
+#else  // [mp-controls] these follow a layout that swaps the shoulders (game/mp/controls_mp.h)
+      {"keybind_right_shoulder", "Frag grenade"}, {"keybind_left_shoulder", "Special grenade"},
+#endif
       {"keybind_a", "Jump (A)"},                {"keybind_b", "Stance (B)"},
       {"keybind_x", "Use/Reload (X)"},          {"keybind_y", "Switch weapon (Y)"},
 #if !defined(COD3_MP)  // [keybinds] the campaign's L3 is +binoculars, which has its own key

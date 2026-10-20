@@ -1,22 +1,34 @@
 // cod3 - the port's keyboard and mouse actions and their keys (plain logic;
 // the game side is game/keybinds/binds.cpp).
 //
-// First step of the key binds plan (dev/agents/keybinds/PLAN.md): the actions that
-// used to be reached only through controller buttons the keyboard pretended
-// to press (the left stick click, the D-pad) are actions of their own. Each
-// action is one of the game's own commands, called directly with a key id of
-// its own (binds.h), never a controller button:
-//   binoculars     +binoculars    (the pad's L3 in layouts A, B, D; B in C)  B
-//   sprintbreath   +sprintbreath  World at War's Shift: hold breath while   SHIFT
-//                                 aiming or through the binoculars, sprint
-//                                 otherwise (game/movement)
-//   holdbreath     +holdbreath    hold breath only (the pad's D-pad up)      -
-//   sprint         +sprint        sprint only (game/movement)                -
-// Up to two keys per action; a key belongs to one action.
+// The key binds plan (dev/agents/keybinds/PLAN.md): each keyboard and mouse key
+// calls one of the game's own actions, never a controller button the keyboard
+// pretends to press. An action is the game's own command, called the way the
+// controller's button calls it (binds.h has how):
+//   Combat   fire (+attack, MOUSE1), aim (+speed, MOUSE2; hold or toggle),
+//            use (+activate, F), reload (+reload, R), melee (+melee, V and
+//            MOUSE3), frag (+grenadeattack, G), smoke (+smokegrenade, 4),
+//            binoculars (+binoculars, B), sprint / hold breath
+//            (+sprintbreath, SHIFT), lean left / right (Q / E); and with no
+//            key by default: the controller's own mixes (use or reload =
+//            the pad's X, use or melee), hold breath, sprint, the lean keys
+//            that switch weapons when not aiming
+//   Stance   jump / stand up (+gostand, SPACE), crouch (togglecrouch, C),
+//            prone (toggleprone, CTRL); no key by default: change stance (the
+//            pad's B: tap crouch, hold prone), crouch / prone while held,
+//            raise / lower stance, +moveup, use or raise stance
+//   Weapons  next / previous weapon (MWHEELDOWN / MWHEELUP), weapon 1 / 2
+//            (weaponslot, 1 / 2), the weapon's other mode
+//   General  objectives / scores (+scores; no key by default: TAB stays the
+//            controller's BACK, which shows them in both programs)
+// Up to two keys per action; a key belongs to one action. Movement (WASD),
+// the pause menu (ESCAPE) and the controller's BACK stay the keyboard's
+// controller rows (keybind_*), and so does everything in the game's menus.
 //
 // Stored in cod3.toml as cod3_binds_kbm_p1: "" = these defaults, otherwise
-// every action: "binoculars=B;sprintbreath=SHIFT;holdbreath=;sprint=" (an
-// empty list = unbound). Only action ids and key names are ever read; any
+// every action: "fire=MOUSE1;aim=MOUSE2;use=F;...;sprint=" (an empty list =
+// unbound; an action the text doesn't list keeps its default unless another
+// action has the key). Only action ids and key names are ever read; any
 // other text is dropped, never run.
 
 #pragma once
@@ -31,16 +43,74 @@
 
 namespace cod3::binds {
 
-enum class Action : uint8_t { kBinoculars, kSprintBreath, kHoldBreath, kSprint, kCount };
+enum class Action : uint8_t {
+  // Combat
+  kFire,
+  kAim,
+  kUse,
+  kReload,
+  kUseReload,
+  kMelee,
+  kUseMelee,
+  kFrag,
+  kSmoke,
+  kBinoculars,
+  kSprintBreath,
+  kHoldBreath,
+  kSprint,
+  kLeanLeft,
+  kLeanRight,
+  kLeanLeftNext,
+  kLeanRightNext,
+  // Stance
+  kJump,
+  kMoveUp,
+  kUseMoveUp,
+  kStance,
+  kCrouch,
+  kCrouchHold,
+  kProne,
+  kProneHold,
+  kLowerStance,
+  kRaiseStance,
+  // Weapons
+  kWeapNext,
+  kWeapPrev,
+  kWeapAlt,
+  kSlot1,
+  kSlot2,
+  // General
+  kScores,
+  kCount
+};
 inline constexpr int kActionCount = static_cast<int>(Action::kCount);
 inline constexpr int kSlots = 2;
 
+// How the game is told (binds.cpp). The game's commands are found by name
+// in its own command list, so the same table serves both programs.
+enum class Delivery : uint8_t {
+  kButton,  // a button command pair: "+attack" on the press, "-attack" on the
+            // release, each with a key id of its own and the time (two keys
+            // are two holders, as two controller buttons would be)
+  kPlain,   // a plain command pair without arguments: "+stance" / "-stance"
+  kOnce,    // one plain command on the press: "togglecrouch"
+  kText,    // console text on the press ("weapnext"; the game's cgame runs
+            // it); text starting with '+' sends its '-' twin on the release
+  kAim,     // +speed / -speed while held, or the game's own aim toggle
+            // ("toggle cl_run") once per press (cod3_aim_toggle_kbm_p1)
+};
+
+enum class Group : uint8_t { kCombat, kStance, kWeapons, kGeneral, kCount };
+const char* GroupName(Group group);
+
 struct ActionDef {
-  const char* id;              // in cod3.toml: "binoculars"
-  const char* label;           // F2 and messages: "Binoculars"
+  const char* id;              // in cod3.toml: "reload"
+  const char* label;           // F2 and messages: "Reload"
   const char* help;            // F2: one sentence
-  const char* command;         // the game's command: "+binoculars"
-  const char* equivalents[3];  // other game bindings that count as this action
+  Group group;
+  Delivery delivery;
+  const char* command;         // the game's command or console text: "+reload"
+  const char* equivalents[4];  // other game bindings that count as this action
                                // (prompts; the controller button used inside an
                                // interaction), nullptr-terminated
   KeyCode defaults[kSlots];    // World at War style
@@ -80,16 +150,17 @@ std::string Assign(KbmSet& set, Action action, int slot, KeyCode key);
 std::string KeysText(const KbmSet& set, Action action);
 bool AssignText(KbmSet& set, Action action, std::string_view text, std::string* note);
 
-// --- one-time move of the old controller-button keys (PLAN.md section 10) ------
-// The keyboard used to press controller buttons through keybind_* settings:
-// keybind_lstick_press = "Shift" (L3: binoculars), keybind_dpad_up =
-// "Shift+Up" (D-pad up: hold breath) ... The campaign doesn't use those any
-// more (app_defaults.h). A player's own keys there move to the actions; the
-// old defaults and every Shift+key combination go.
+// The controller row (keybind_*) the action's controller button is in the
+// campaign's layout A, or nullptr (the one-time move below, and F2's notes).
+const char* RowForAction(Action action);
+
+// --- one-time moves of the old controller-button keys (PLAN.md section 10) ------
+// The keyboard used to press controller buttons through keybind_* settings.
 struct OldBind {
   std::string name;   // "keybind_lstick_press"
   std::string value;  // its value now
   bool from_file;     // the player's cod3.toml set it (else nothing to move)
+  std::string default_value;  // the row's default (MigrateRows: unchanged rows are left alone)
 };
 struct Migration {
   KbmSet set;                 // the keys after the move
@@ -98,9 +169,28 @@ struct Migration {
   std::vector<std::pair<std::string, std::string>> new_values;
   std::vector<std::string> log;  // one line each, for the log
 };
-// `others`: every other keybind_* value, so a key still pressing another
-// controller button (keybind_x "R,F") stays there.
+
+// Version 1 (2026-10-16): the left stick click and the D-pad. keybind_lstick_press
+// = "Shift" (L3: binoculars), keybind_dpad_up = "Shift+Up" (D-pad up: hold
+// breath) ... The campaign doesn't use those any more (app_defaults.h). A
+// player's own keys there move to the actions; the old defaults and every
+// Shift+key combination go. `others`: every other keybind_* value, so a key
+// still pressing another controller button (keybind_x "R,F") stays there.
 Migration Migrate(const KbmSet& current, const std::vector<OldBind>& binds,
                   const std::vector<OldBind>& others);
+
+// Version 2 (2026-10-19): every action has a key of its own now, and the
+// controller rows keep working in the game's menus (and for keys no action
+// has). A row the player changed (`from_file` and not its default):
+//  * a row whose button is one action in layout A (keybind_x: use or reload,
+//    keybind_a: jump ..., RowForAction) gives that action its keys (up to
+//    two), taken from the action that had them by default;
+//  * any other row (movement, BACK, START, the D-pad ...) keeps its keys:
+//    an action that had one of them by default lets it go (ESDF players keep
+//    E, S, D and F for walking).
+// The rows themselves are left as they are (new_values stays empty).
+// `to_actions` false (cod3mp, whose layouts differ from the campaign's
+// layout A): every changed row keeps its keys.
+Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, bool to_actions = true);
 
 }  // namespace cod3::binds

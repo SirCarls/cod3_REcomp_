@@ -106,6 +106,16 @@ struct ThreadReport {
   // The game's waits for the emulated GPU in its Direct3D (game/gpu_wait.h),
   // ms a second by what it waited for (GuestGpuWait); -1 = not counted.
   float guest_gpu_wait_ms[8] = {-1, -1, -1, -1, -1, -1, -1, -1};
+  // The "other" waits' biggest raw reason code and its ms a second (-1: none).
+  int guest_gpu_other_reason = -1;
+  float guest_gpu_other_reason_ms = 0;
+  // The game's render job (game/render_job_timing.h), per job over the last
+  // second; render_jobs_per_s < 0 = not counted (the multiplayer program).
+  float render_jobs_per_s = -1;
+  float render_job_ms = 0, render_job_cpu_ms = 0;  // wall time, the worker's CPU time
+  float back_end_ms = 0, back_end_cpu_ms = 0;      // of which its back end
+  float swaps_elsewhere_per_s = 0;                 // Direct3D swaps not from the render job
+  float main_cpu_ms = -1;  // the game's main thread, CPU time per game frame (-1 = unknown)
 };
 
 // What the game's Direct3D waits for the GPU for (the reason codes of its
@@ -120,9 +130,20 @@ enum class GuestGpuWait {
   kCount
 };
 // Set by game/gpu_wait.cpp (campaign only): total microseconds so far, per
-// GuestGpuWait. The thread profiler turns them into ms a second.
+// GuestGpuWait, then per raw reason code (kGuestGpuWaitRawReasons of them,
+// larger codes in the last). The thread profiler turns them into ms a second.
+constexpr size_t kGuestGpuWaitRawReasons = 32;
 using GuestGpuWaitReader = void (*)(uint64_t* microseconds, size_t count);
 void SetGuestGpuWaitReader(GuestGpuWaitReader reader);
+
+// The game's render job, totals since the start (game/render_job_timing.h).
+struct RenderJobTotals {
+  uint64_t jobs = 0, job_wall_us = 0, job_cpu_us = 0;
+  uint64_t back_end_wall_us = 0, back_end_cpu_us = 0;
+  uint64_t swaps_in_job = 0, swaps_elsewhere = 0;
+};
+using RenderJobReader = void (*)(RenderJobTotals* totals);
+void SetRenderJobReader(RenderJobReader reader);
 
 class ThreadProfiler {
  public:
@@ -144,6 +165,8 @@ class ThreadProfiler {
   static std::string Table(const ThreadReport& report, size_t max_rows);
   // "A 52%, B 50%, C 32%": the busiest few, for one line.
   static std::string Busiest(const ThreadReport& report, size_t count);
+  // "the game's render job 4.10 ms a frame ...", or "" when not counted.
+  static std::string RenderJobLine(const ThreadReport& report);
 
  private:
   ThreadProfiler() = default;
@@ -165,8 +188,10 @@ class ThreadProfiler {
   // Profiler thread only:
   std::unordered_map<uint32_t, Previous> previous_;
   uint64_t previous_time_us_ = 0;
-  uint64_t previous_guest_gpu_waits_[8] = {};
+  uint64_t previous_guest_gpu_waits_[size_t(GuestGpuWait::kCount) + kGuestGpuWaitRawReasons] = {};
   bool have_guest_gpu_waits_ = false;
+  RenderJobTotals previous_render_job_;
+  bool have_render_job_ = false;
   uint64_t previous_lock_spins_won_ = 0, previous_lock_spins_slept_ = 0;
   std::atomic<uint32_t> main_thread_id_{0};
   uint32_t ui_thread_id_ = 0;

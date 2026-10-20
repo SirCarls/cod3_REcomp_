@@ -8,3 +8,7 @@ license.workspace = true
 
 [dependencies]
 machine = { path = "../machine" }
+
+[[test]]
+name = "no_alloc"
+harness = false

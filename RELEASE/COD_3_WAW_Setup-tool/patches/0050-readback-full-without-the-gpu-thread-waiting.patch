@@ -1,0 +1,471 @@
+diff --git a/include/rex/graphics/command_processor.h b/include/rex/graphics/command_processor.h
+index f1d8102..f22b7c2 100644
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -304,6 +304,9 @@ class CommandProcessor {
+     uint64_t serial;
+     bool in_progress;  // Being copied back by the command processor thread.
+     bool cancelled;    // The waiting thread gave up: don't write guest memory.
++    // readback_resolve_full_deferred: the copy recorded at the destination's
++    // last resolve has what the access needs; it is only waited for.
++    bool deferred;
+   };
+   // For the implementations, on the command processor thread: copies resolve
+   // destinations from the GPU's memory to host memory now, waiting for the
+@@ -316,6 +319,23 @@ class CommandProcessor {
+                                    std::vector<const uint8_t*>& data_out) {
+     data_out.assign(count, nullptr);
+   }
++  // readback_resolve full with readback_resolve_full_deferred: for the
++  // implementations, on the command processor thread, once a resolve's copy
++  // back (all of it, or `pieces` of it) is recorded but not waited for:
++  // whether the guest gets it at its next access to the destination instead
++  // of now. The command processor thread then doesn't wait for the GPU at
++  // the resolve; the access waits for the copy (CompleteDeferredReadbacks),
++  // which has usually finished by then. False: copy it back now, as before.
++  bool DeferResolveReadback(uint32_t physical_address, uint32_t length, bool all,
++                            const std::vector<std::pair<uint32_t, uint32_t>>& pieces);
++  // For the implementations that defer: waits for the copies recorded at
++  // each fetched destination's last resolve and gives each one's bytes
++  // (nullptr where it has none: that one is copied back the usual way).
++  virtual bool CanDeferResolveReadbacks() const { return false; }
++  virtual void CompleteDeferredReadbacks(const ResolveFetch* /* fetches */, size_t count,
++                                         std::vector<const uint8_t*>& data_out) {
++    data_out.assign(count, nullptr);
++  }
+   // For the implementations, after a resolve ShouldReadbackResolve said to
+   // copy back: copies the resolve's bytes (`data`, `length` of them) into
+   // guest memory at `physical_address`, all of them or, for a destination in
+@@ -399,6 +419,13 @@ class CommandProcessor {
+     // Copied back whole after each resolve: pages-only is off, or the guest
+     // has touched too much of it for pieces to pay.
+     bool whole;
++    // readback_resolve_full_deferred: the last resolve's copy back is
++    // recorded but not in guest memory yet (all of it, or deferred_pieces as
++    // (offset, length)); those pieces are watched, and the guest's next access
++    // brings it in.
++    bool deferred_pending;
++    bool deferred_all;
++    std::vector<std::pair<uint32_t, uint32_t>> deferred_pieces;
+   };
+   // The 4 KB pieces readback_resolve_cpu_pages_only works in.
+   static constexpr uint32_t kResolveChunkShift = 12;
+@@ -421,6 +448,18 @@ class CommandProcessor {
+   // Writes a fetched destination into guest memory, the pages still
+   // read-watched only (the others were written or freed since its resolve).
+   void CopyResolveFetchToGuest(const ResolveFetch& fetch, const uint8_t* data);
++  // The same for a deferred copy back: only the pieces it holds, which are
++  // then no longer watched.
++  void CopyDeferredReadbackToGuest(ResolveDestination& destination, const ResolveFetch& fetch,
++                                   const uint8_t* data);
++  // Stops a destination's deferred copy back that the guest never asked for
++  // (a new resolve replaces it): its pieces are no longer watched for it.
++  void DropDeferredReadback(ResolveDestination& destination);
++  // Stops watching a range without counting it as the guest's access:
++  // DisablePhysicalMemoryReadWatch calls the read callbacks first, this one
++  // among them, which would mark its pieces read and, under
++  // resolve_fetch_mutex_, wait on itself. The caller holds the global lock.
++  void UnwatchResolveRangeQuietly(uint32_t physical_address, uint32_t length);
+   // A destination is remembered while the guest may still access it; past
+   // this many, new ones are copied back after every resolve like before.
+   static constexpr size_t kMaxResolveDestinations = 256;
+@@ -440,9 +479,15 @@ class CommandProcessor {
+   uint64_t resolve_fetch_next_serial_ = 1;
+   std::atomic<bool> resolve_fetch_requested_{false};
+   std::atomic<uint32_t> resolve_read_callbacks_running_{0};
++  // Set while UnwatchResolveRangeQuietly runs (under the global lock, which
++  // every read callback runs under too): ResolveReadCallback returns at once.
++  bool resolve_unwatching_quietly_ = false;
+   // Command processor thread only.
+   std::vector<ResolveFetch> resolve_fetch_batch_;
+   std::vector<const uint8_t*> resolve_fetch_data_;
++  std::vector<ResolveFetch> resolve_fetch_deferred_batch_;
++  std::vector<const uint8_t*> resolve_fetch_deferred_data_;
++  std::vector<const uint8_t*> resolve_fetch_all_data_;
+ 
+   reg::DC_LUT_30_COLOR gamma_ramp_256_entry_table_[256] = {};
+   reg::DC_LUT_PWL_DATA gamma_ramp_pwl_rgb_[128][3] = {};
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+index 30dfa33..3029a86 100644
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -262,6 +262,9 @@ class VulkanCommandProcessor : public CommandProcessor {
+   bool CanReadBackResolvesNow() const override { return true; }
+   void ReadBackResolvesNow(const ResolveFetch* fetches, size_t count,
+                            std::vector<const uint8_t*>& data_out) override;
++  bool CanDeferResolveReadbacks() const override { return true; }
++  void CompleteDeferredReadbacks(const ResolveFetch* fetches, size_t count,
++                                 std::vector<const uint8_t*>& data_out) override;
+ 
+   void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
+                  uint32_t frontbuffer_height) override;
+@@ -825,6 +828,14 @@ class VulkanCommandProcessor : public CommandProcessor {
+   std::array<VertexBufferState, 96> vertex_buffer_states_{};
+   uint64_t vertex_buffers_in_sync_[2] = {};
+   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
++  // readback_resolve_full_deferred: where each destination's last deferred
++  // copy back went, by MakeReadbackResolveKey of its physical address: its
++  // readback_buffers_ key and slot.
++  struct DeferredReadbackSlot {
++    uint64_t buffer_key;
++    uint32_t index;
++  };
++  std::unordered_map<uint64_t, DeferredReadbackSlot> deferred_readback_slots_;
+   std::unordered_map<uint64_t, ReadbackBuffer> memexport_readback_buffers_;
+ 
+   // The current dynamic state of the graphics pipeline bind point. Note that
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 7ce7068..3becc6c 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -68,6 +68,13 @@ REXCVAR_DEFINE_BOOL(readback_resolve_cpu_pages_only, true, "GPU",
+                     "watched, and touching one brings in its data then (off: all of it after "
+                     "every resolve, as before)")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(readback_resolve_full_deferred, true, "GPU",
++                    "readback_resolve full: a resolve the game's CPU reads is copied back as the "
++                    "GPU gets to it, but brought into guest memory at the CPU's next access to it "
++                    "(which waits for the copy if it hasn't finished), so the GPU thread doesn't "
++                    "wait for the GPU at every such resolve. Same data; off: it waits there, as "
++                    "before (Vulkan)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ REXCVAR_DEFINE_INT32(readback_resolve_cpu_wait_limit_ms, 10000, "GPU",
+                      "readback_resolve_cpu_reads_only: how long the CPU's first access to a "
+                      "resolve waits for its copy (which waits for the host GPU) before going "
+@@ -882,6 +889,10 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallbackThunk(
+ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+     std::unique_lock<std::recursive_mutex>& global_lock, uint32_t physical_address_start,
+     uint32_t length) {
++  if (resolve_unwatching_quietly_) {
++    // This thread is unwatching a range itself (UnwatchResolveRangeQuietly).
++    return {physical_address_start, 0};
++  }
+   resolve_read_callbacks_running_.fetch_add(1, std::memory_order_acq_rel);
+   // The command processor thread can't wait for itself (guest interrupt
+   // callbacks run on it): the access sees the old contents then. Nor can a
+@@ -904,8 +915,9 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+       // In pieces (readback_resolve_cpu_pages_only): only the touched piece is
+       // unwatched, and only it is copied back after each resolve from now on.
+       // Once the guest has touched too much of it, all of it again.
++      bool new_pieces = false;
+       if (!destination.whole && REXCVAR_GET(readback_resolve_cpu_pages_only)) {
+-        MarkResolveChunksRead(destination, physical_address_start, length);
++        new_pieces = MarkResolveChunksRead(destination, physical_address_start, length);
+         const uint32_t chunk_count =
+             uint32_t(((destination_end - 1) >> kResolveChunkShift) -
+                      (destination.address >> kResolveChunkShift) + 1);
+@@ -932,6 +944,14 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+           pending |= destination.fetch_serial && fetch.serial == destination.fetch_serial;
+         }
+         if (can_wait && !pending) {
++          // readback_resolve_full_deferred: the copy recorded at the last
++          // resolve has what this access needs, unless it touched a piece
++          // that copy left out; then a new copy of all of it replaces it.
++          const bool deferred =
++              destination.deferred_pending && (destination.deferred_all || !new_pieces);
++          if (!deferred) {
++            destination.deferred_pending = false;
++          }
+           destination.fetch_serial = resolve_fetch_next_serial_++;
+           ResolveFetch& fetch = resolve_fetches_.emplace_back();
+           fetch.address = destination.address;
+@@ -940,6 +960,7 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+           fetch.serial = destination.fetch_serial;
+           fetch.in_progress = false;
+           fetch.cancelled = false;
++          fetch.deferred = deferred;
+         } else if (!can_wait && REXCVAR_GET(readback_resolve_log)) {
+           REXGPU_INFO(
+               "Resolve readback: {:08X} accessed where it can't wait for its copy (the GPU "
+@@ -1023,49 +1044,184 @@ std::pair<uint32_t, uint32_t> CommandProcessor::ResolveReadCallback(
+ void CommandProcessor::ProcessResolveFetchesNow() {
+   resolve_fetch_requested_.store(false, std::memory_order_relaxed);
+   resolve_fetch_batch_.clear();
++  resolve_fetch_deferred_batch_.clear();
+   {
+     std::lock_guard<std::mutex> fetch_lock(resolve_fetch_mutex_);
+     for (ResolveFetch& fetch : resolve_fetches_) {
+       if (!fetch.in_progress && !fetch.cancelled) {
+         fetch.in_progress = true;
+-        resolve_fetch_batch_.push_back(fetch);
++        (fetch.deferred ? resolve_fetch_deferred_batch_ : resolve_fetch_batch_).push_back(fetch);
+       }
+     }
+   }
+-  if (resolve_fetch_batch_.empty()) {
++  if (resolve_fetch_batch_.empty() && resolve_fetch_deferred_batch_.empty()) {
+     return;
+   }
+ 
++  // Deferred copies (readback_resolve_full_deferred) were recorded at their
++  // resolves: only waited for. One without its copy any more is copied back
++  // the usual way.
++  if (!resolve_fetch_deferred_batch_.empty()) {
++    CompleteDeferredReadbacks(resolve_fetch_deferred_batch_.data(),
++                              resolve_fetch_deferred_batch_.size(),
++                              resolve_fetch_deferred_data_);
++    size_t kept = 0;
++    for (size_t i = 0; i < resolve_fetch_deferred_batch_.size(); ++i) {
++      if (i < resolve_fetch_deferred_data_.size() && resolve_fetch_deferred_data_[i]) {
++        resolve_fetch_deferred_batch_[kept] = resolve_fetch_deferred_batch_[i];
++        resolve_fetch_deferred_data_[kept] = resolve_fetch_deferred_data_[i];
++        ++kept;
++      } else {
++        ResolveFetch fetch = resolve_fetch_deferred_batch_[i];
++        fetch.deferred = false;
++        resolve_fetch_batch_.push_back(fetch);
++      }
++    }
++    resolve_fetch_deferred_batch_.resize(kept);
++    resolve_fetch_deferred_data_.resize(kept);
++  }
++
+   // Waits for the host GPU.
+-  ReadBackResolvesNow(resolve_fetch_batch_.data(), resolve_fetch_batch_.size(),
+-                      resolve_fetch_data_);
++  resolve_fetch_data_.clear();
++  if (!resolve_fetch_batch_.empty()) {
++    ReadBackResolvesNow(resolve_fetch_batch_.data(), resolve_fetch_batch_.size(),
++                        resolve_fetch_data_);
++  }
+ 
+   {
+     // The global critical region guards the read watch state the copy checks.
+     auto global_lock = rex::thread::global_critical_region::AcquireDirect();
+     std::lock_guard<std::mutex> fetch_lock(resolve_fetch_mutex_);
+-    for (size_t i = 0; i < resolve_fetch_batch_.size(); ++i) {
+-      const ResolveFetch& done = resolve_fetch_batch_[i];
++    auto finish = [&](const ResolveFetch& done, const uint8_t* data) {
+       auto it = std::find_if(resolve_fetches_.begin(), resolve_fetches_.end(),
+                              [&](const ResolveFetch& fetch) { return fetch.serial == done.serial; });
+       if (it == resolve_fetches_.end()) {
+-        continue;
++        return;
+       }
+-      if (!it->cancelled && i < resolve_fetch_data_.size() && resolve_fetch_data_[i]) {
+-        CopyResolveFetchToGuest(done, resolve_fetch_data_[i]);
+-        // Every piece still watched now has the last resolve's data.
++      if (!it->cancelled && data) {
+         for (ResolveDestination& destination : resolve_destinations_) {
+-          if (destination.address == done.address && destination.length == done.length) {
++          if (destination.address != done.address || destination.length != done.length) {
++            continue;
++          }
++          if (done.deferred) {
++            CopyDeferredReadbackToGuest(destination, done, data);
++          } else {
++            CopyResolveFetchToGuest(done, data);
++            // Every piece still watched now has the last resolve's data.
+             destination.current = true;
++            destination.deferred_pending = false;
+           }
+         }
+       }
+       resolve_fetches_.erase(it);
++    };
++    for (size_t i = 0; i < resolve_fetch_deferred_batch_.size(); ++i) {
++      finish(resolve_fetch_deferred_batch_[i], resolve_fetch_deferred_data_[i]);
++    }
++    for (size_t i = 0; i < resolve_fetch_batch_.size(); ++i) {
++      finish(resolve_fetch_batch_[i], i < resolve_fetch_data_.size() ? resolve_fetch_data_[i] : nullptr);
+     }
+   }
+   resolve_fetch_cv_.notify_all();
+ }
+ 
++void CommandProcessor::CopyDeferredReadbackToGuest(ResolveDestination& destination,
++                                                   const ResolveFetch& fetch,
++                                                   const uint8_t* data) {
++  if (!destination.deferred_pending) {
++    // A later resolve brought its data in already.
++    return;
++  }
++  destination.deferred_pending = false;
++  if (destination.deferred_all) {
++    CopyResolveFetchToGuest(fetch, data);
++    destination.current = true;
++    return;
++  }
++  // Only the pieces the copy holds; the ones the guest hasn't touched stay
++  // watched and stale (touching one makes a new copy of all of it).
++  constexpr uint32_t kChunk = uint32_t(1) << kResolveChunkShift;
++  uint64_t copied = 0;
++  for (const auto& [offset, piece_length] : destination.deferred_pieces) {
++    const uint64_t start = uint64_t(fetch.address) + offset;
++    const uint64_t end = start + piece_length;
++    for (uint64_t part = start; part < end;) {
++      const uint64_t part_end = std::min(end, (part & ~uint64_t(kChunk - 1)) + kChunk);
++      // Pages written or freed since the resolve aren't watched any more:
++      // they keep what was put there.
++      if (memory::IsPhysicalMemoryReadWatched(*memory_, uint32_t(part))) {
++        std::memcpy(memory_->TranslatePhysical(uint32_t(part)), data + (part - fetch.address),
++                    size_t(part_end - part));
++        copied += part_end - part;
++      }
++      part = part_end;
++    }
++    UnwatchResolveRangeQuietly(uint32_t(start), piece_length);
++  }
++  if (copied) {
++    stats::Add(stats::Counter::kReadbacks);
++    stats::Add(stats::Counter::kReadbackBytes, copied);
++  }
++  if (REXCVAR_GET(readback_resolve_log)) {
++    REXGPU_INFO("Resolve readback: brought in {:08X} ({} bytes) at the CPU's access (deferred)",
++                fetch.address, copied);
++  }
++}
++
++void CommandProcessor::DropDeferredReadback(ResolveDestination& destination) {
++  if (!destination.deferred_pending) {
++    return;
++  }
++  destination.deferred_pending = false;
++  if (destination.deferred_all) {
++    UnwatchResolveRangeQuietly(destination.address, destination.length);
++    return;
++  }
++  for (const auto& [offset, piece_length] : destination.deferred_pieces) {
++    UnwatchResolveRangeQuietly(destination.address + offset, piece_length);
++  }
++}
++
++void CommandProcessor::UnwatchResolveRangeQuietly(uint32_t physical_address, uint32_t length) {
++  resolve_unwatching_quietly_ = true;
++  memory::DisablePhysicalMemoryReadWatch(*memory_, physical_address, length);
++  resolve_unwatching_quietly_ = false;
++}
++
++bool CommandProcessor::DeferResolveReadback(
++    uint32_t physical_address, uint32_t length, bool all,
++    const std::vector<std::pair<uint32_t, uint32_t>>& pieces) {
++  if (!REXCVAR_GET(readback_resolve_full_deferred) || !REXCVAR_GET(readback_resolve_cpu_reads_only) ||
++      !resolve_read_callback_handle_ || !CanReadBackResolvesNow() || !CanDeferResolveReadbacks()) {
++    return false;
++  }
++  physical_address &= 0x1FFFFFFF;
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
++  for (ResolveDestination& destination : resolve_destinations_) {
++    if (destination.address != physical_address || destination.length != length) {
++      continue;
++    }
++    // Only one the guest reads is copied back at all (ShouldReadbackResolve).
++    if (!destination.cpu_reads) {
++      return false;
++    }
++    destination.deferred_pending = true;
++    destination.deferred_all = all;
++    destination.current = false;
++    if (all) {
++      destination.deferred_pieces.clear();
++      memory::EnablePhysicalMemoryReadWatch(*memory_, physical_address, length);
++    } else {
++      destination.deferred_pieces.assign(pieces.begin(), pieces.end());
++      for (const auto& [offset, piece_length] : pieces) {
++        memory::EnablePhysicalMemoryReadWatch(*memory_, physical_address + offset, piece_length);
++      }
++    }
++    return true;
++  }
++  return false;
++}
++
+ void CommandProcessor::CopyResolveFetchToGuest(const ResolveFetch& fetch, const uint8_t* data) {
+   // 4 KB is the smallest guest page; a host page is never smaller.
+   constexpr uint32_t kChunk = 4096;
+@@ -1168,6 +1324,8 @@ bool CommandProcessor::GetResolveCopyPieces(uint32_t physical_address, uint32_t
+     if (destination.address != address || destination.length != length) {
+       continue;
+     }
++    // A deferred copy the guest never asked for: this resolve's replaces it.
++    DropDeferredReadback(destination);
+     if (!destination.cpu_reads || destination.whole) {
+       destination.current = true;
+       return true;
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index 23a831e..a126b7f 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4760,6 +4760,19 @@ bool VulkanCommandProcessor::IssueCopy_ReadbackResolvePath() {
+   }
+   readback.partial[write_index] = !all_pieces;
+ 
++  // readback_resolve_full_deferred: the guest gets this copy at its next
++  // access to the destination (CompleteDeferredReadbacks waits for it then,
++  // usually long done), so this thread doesn't wait for the GPU here.
++  if (!use_delayed_sync &&
++      DeferResolveReadback(written_address, written_length, all_pieces, readback_pieces_)) {
++    readback.submission_written[write_index] = GetCurrentSubmission();
++    readback.written_size[write_index] = written_length;
++    deferred_readback_slots_[MakeReadbackResolveKey(written_address & 0x1FFFFFFF,
++                                                    written_length)] = {resolve_key, write_index};
++    readback.current_index = 1 - readback.current_index;
++    return true;
++  }
++
+   uint32_t read_index = write_index;
+   if (use_delayed_sync) {
+     read_index = 1 - write_index;
+@@ -4852,6 +4865,62 @@ void VulkanCommandProcessor::ReadBackResolvesNow(const ResolveFetch* fetches, si
+   }
+ }
+ 
++void VulkanCommandProcessor::CompleteDeferredReadbacks(const ResolveFetch* fetches, size_t count,
++                                                       std::vector<const uint8_t*>& data_out) {
++  data_out.assign(count, nullptr);
++  // The latest of the copies, waited for once (a submission's fence covers
++  // everything submitted before it).
++  uint64_t await_submission = 0;
++  for (size_t i = 0; i < count; ++i) {
++    auto slot = deferred_readback_slots_.find(MakeReadbackResolveKey(fetches[i].address,
++                                                                    fetches[i].length));
++    if (slot == deferred_readback_slots_.end()) {
++      continue;
++    }
++    auto buffer = readback_buffers_.find(slot->second.buffer_key);
++    if (buffer == readback_buffers_.end()) {
++      continue;
++    }
++    await_submission =
++        std::max(await_submission, buffer->second.submission_written[slot->second.index]);
++  }
++  if (!await_submission) {
++    return;
++  }
++  CheckSubmissionFenceAndDeviceLoss(await_submission);
++  if (await_submission > submission_completed_) {
++    return;
++  }
++
++  const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  for (size_t i = 0; i < count; ++i) {
++    auto slot = deferred_readback_slots_.find(MakeReadbackResolveKey(fetches[i].address,
++                                                                    fetches[i].length));
++    if (slot == deferred_readback_slots_.end()) {
++      continue;
++    }
++    auto buffer = readback_buffers_.find(slot->second.buffer_key);
++    if (buffer == readback_buffers_.end()) {
++      continue;
++    }
++    const ReadbackBuffer& readback = buffer->second;
++    const uint32_t index = slot->second.index;
++    if (readback.buffers[index] == VK_NULL_HANDLE || readback.mapped_data[index] == nullptr ||
++        !readback.submission_written[index] || readback.written_size[index] < fetches[i].length) {
++      continue;
++    }
++    VkMappedMemoryRange readback_memory_range = {};
++    readback_memory_range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++    readback_memory_range.memory = readback.memories[index];
++    readback_memory_range.offset = 0;
++    readback_memory_range.size = VK_WHOLE_SIZE;
++    dfn.vkInvalidateMappedMemoryRanges(device, 1, &readback_memory_range);
++    data_out[i] = static_cast<const uint8_t*>(readback.mapped_data[index]);
++  }
++}
++
+ void VulkanCommandProcessor::EvictOldReadbackBuffers(
+     std::unordered_map<uint64_t, ReadbackBuffer>& buffer_map) {
+   if (buffer_map.empty()) {

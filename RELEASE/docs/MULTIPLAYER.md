@@ -639,6 +639,101 @@ level DLLs). F2 has the same settings meanwhile.
   string): SDK patch 0043; `relaunch.cpp` also prints only the file name now,
   with odd bytes as `\xNN`.
 
+### 4.13 The campaign's keys, controls and crosshair in `cod3mp` (2026-10-19)
+
+Owner, 2026-10-19: "Crosshairs and controls are not being carried over /
+Grenade and special grenade's activations get switched in MP". In
+`recomp/src/game/mp/controls_mp.cpp` (the plain rules in `controls_rules.h`):
+
+- **Grenade keys.** The keyboard presses controller buttons (the SDK's
+  `keybind_*` rows), and the rows are named for the campaign's layout: the
+  right shoulder (G) is `+grenadeattack`, the left one (4) `+smokegrenade`.
+  Multiplayer runs the same `xenon_<layout>.cfg` and then its own
+  `mp_xenon_<layout>.cfg` over it (`Controls_ExecLayoutFiles`, 0x82507AD8),
+  which can give the frag and the special grenade the other shoulder; then G
+  threw the special grenade. After every change to player 1's shoulder binds
+  (`Key_SetBinding` 0x82528550; the bind table is 0x82C35030 + local client *
+  2052 + key * 8, the text at +4; the shoulders are game keys 217 and 218),
+  the two rows are pointed at the buttons that hold the frag and the special
+  grenade, through SDK patch 0056 (`rex::input::mnk::SetButtonRemap`: only the
+  keyboard's presses move; a controller keeps the game's layout). F2 names the
+  rows "Frag grenade" and "Special grenade" in `cod3mp`. The log has the
+  layout each time it changes (`player 1's controller layout A: RT +attack,
+  ...`) and what the keys press.
+- **Controls.** The campaign's Multiplayer item hands its 664-byte control
+  settings (invert, sensitivity, button layout, crosshair ...) to `cod3mp` as
+  launch data, and `MP_ReadLaunchData` copies them into the player's
+  controller profile (0x82C6B730 + profile * 6984; its first 664 bytes are
+  the same block). When that profile's own saved settings are read later
+  (`Profile_SettingsReadDone` 0x824178E0, which assigns the whole block with
+  `ProfileSettings__Assign` 0x824E6098), the campaign's block is put back on
+  top of the first such read of the session, so a switch from the campaign
+  keeps the player's controls; a later read (after a change in multiplayer's
+  own options) is left alone, and so is a read that failed (the game leaves
+  the block and shows a message whose retry reads again). The profile that
+  got the block is the one whose block equals the launch data afterwards
+  (the game copies it by XUID or profile index, and its +92 into all four).
+  Both steps are logged with the values (crosshair, invert aim, sensitivity,
+  button layout).
+- **Crosshair.** Multiplayer has no `cg_drawCrosshair`: its crosshair is drawn
+  while byte +57 of the local player's controller profile is set (the draw
+  gate at 0x82452920). At start `cod3mp` copies the campaign's choice
+  (`seta cg_drawCrosshair` in `userdata/cod3_config.cfg`, kept there by
+  `game/settings_sync.h`) into its own console config; the game then has the
+  dvar from the first frame and the same `settings_sync` keeps it and player
+  1's profile byte together (and applies it again at every map this machine
+  loads as the server). With no choice in either config (the campaign writes
+  one only after a change), the first value the game has becomes it: the
+  handed-over byte, else player 1's profile as first read. A profile read
+  puts the choice back on the byte it loads, so a load is never taken for the
+  player's choice; a change made in multiplayer's own options is written
+  back into the campaign's console config (also when the program ends or
+  hands over), so both programs show the last choice. The F2 crosshair (`cod3_crosshair*`) comes from
+  `cod3.toml` like every shared setting (4.11).
+- **Not yet:** the campaign's own key actions (binoculars, sprint / hold
+  breath on keys of their own, `cod3_binds_kbm_p1`, `game/keybinds/`) are
+  campaign only; in `cod3mp` Shift is the controller's left stick click
+  (`+sprintbreath`) through `keybind_lstick_press`. Split screen: the
+  keyboard is player 1 and only player 1's profile follows the campaign.
+
+Checked in the cloud (no multiplayer data there, so only up to the game
+reading `mp\global.cod`): the crosshair choice taken from the campaign's
+config (`cod3mp: crosshair off (the campaign's choice, ...)`, and the line in
+`cod3mp_config.cfg`); a hand-over block read (`the campaign's control
+settings for profile 1: crosshair off, invert aim on, sensitivity 30/40,
+button layout C`, the values written into the test's launch data), and with
+no choice in either config, the handed-over crosshair taken as the choice
+(the campaign's config left as it was); the SDK
+remap's unit test; the rules' tests. The layout and profile-read hooks run
+only with the disc's multiplayer files (the owner's PC).
+
+### 4.14 Keys that call the game's actions (2026-10-19)
+
+The campaign's key binds (`docs/KEYBINDS.md`) are in `cod3mp` too: while you play, each
+keyboard and mouse key calls one of the game's own actions for player 1 (fire `+attack`,
+reload `+reload`, use `+activate`, the grenades, stance, weapons ...) instead of pressing a
+controller button; in the menus the keys press the `keybind_*` rows' buttons as before. The
+same `game/keybinds/` files serve both programs: the handlers are found by name in the game's
+command list (both programs register the same names), and `addr::keybinds` has multiplayer's
+addresses through `campaign_map.tsv`. Multiplayer's own parts:
+
+- its pad poll (0x82543340, the campaign's `sub_82522138` through `mp_aliases.h`) goes through
+  the local clients once a frame, each with its own copy of the game's kbuttons (696 bytes at 0x82B3FFD0 + cl *
+  696, copied into 0x82B53E20 around the client's poll and, in `Com_Frame`, its frame): the
+  keys' calls copy player 1's set in and out the same way, with `clientActiveIndex` 0;
+- its press rule: `in_joystick` (0x82B3ED7C), byte `g_FEManager+50`, the controller's skip byte
+  (0x82B3EDB8 + pad), the client's front-end object (`*(g_FEManager+208+cl*4)`, its vfunc at
+  +92), and the client in a match (`0x82C7A270 + 184 + cl*3208` == 2: otherwise the game
+  gives every press to the menu keys, so the keys press the controller rows there too);
+- the pad state hook for interactions: `game/keybinds/pad_state_mp.cpp` (0x82314360).
+
+Keys changed in the campaign carry over (multiplayer reads `cod3.toml`); a controller row the
+player changed keeps its keys in play too (once, `cod3mp_binds_version`); the console's `bind`
+for actions is the campaign's only so far. To check on the PC: in a
+match, R reloads, F uses, G / 4 throw the frag / special grenade, C / CTRL / SPACE change stance,
+the wheel and 1 / 2 switch weapons; the menus still take SPACE, ENTER and the arrows;
+`cod3mp.log` has `cod3: key binds: 33 of 33 actions call the game's own commands (multiplayer)`.
+
 ## 5. Unknowns
 
 - How Xenia Canary's main builds handle the secure-address and key calls a
@@ -664,12 +759,15 @@ level DLLs). F2 has the same settings meanwhile.
 - `recomp/src/game/multiplayer.{h,cpp}`: the Multiplayer item, the
   hand-over hook and the match hooks.
 - `tools/name_mp_functions.py`: the multiplayer program's symbol map and
-  codegen names (3,068 functions named, 2,228 of them for the codegen).
+  codegen names (3,071 functions named, 2,231 of them for the codegen; `names_mp.toml` also has role names given by hand, 4.12).
 - `recomp/mp/`: the `cod3mp` target (manifest, `config/codmp.toml`,
   `config/names_mp.toml`, `CMakeLists.txt`, `generated/rexglue.cmake`).
 - `recomp/src/cod3mp_app.{h,cpp}`, `recomp/src/main_mp.cpp`,
-  `recomp/src/game/mp/` (`session`, `menus_mp`, `hud_mp`, `campaign_stubs`
-  and the three generated files): the multiplayer program's own code;
+  `recomp/src/game/mp/` (`session`, `menus_mp`, `hud_mp`, `controls_mp`,
+  `controls_rules.h`, `campaign_stubs` and the three generated files): the
+  multiplayer program's own code;
+  `recomp/src/game/keybinds/` (shared with the campaign; `pad_state_mp.cpp` is `cod3mp`'s only,
+  4.14);
   `recomp/src/game/program.h`: `COD3_ADDR`, `COD3_TEXT`, `kMultiplayer`;
   `recomp/src/game/relaunch.{h,cpp}`: switching between the two programs.
 - `c3w/pipeline.py` (`MP_XEX`, `KNOWN_MP_XEX`, `_copy_mp_xex`), and

@@ -39,6 +39,7 @@
 #include <cxxabi.h>
 #include <elf.h>
 #include <link.h>
+#include <fcntl.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <ucontext.h>
@@ -52,6 +53,12 @@
 // cod3_init.cpp): every game function's Xbox 360 address and the host
 // function it became, ending with {0, nullptr}.
 extern PPCFuncMapping PPCFuncMappings[];
+
+REXCVAR_DEFINE_BOOL(cod3_profile_cpu_timer, false, "cod3/Performance",
+                    "Linux: the function profiler samples with a CPU-time timer on the profiled "
+                    "thread (the old way) instead of a sampling thread. In sandboxed test runs "
+                    "(2026-10-18) the game was killed (SIGKILL) as a timer capture started")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace cod3 {
 
@@ -921,20 +928,49 @@ double CpuSeconds(pid_t tid) {
   return double(ts.tv_sec) + double(ts.tv_nsec) / 1e9;
 }
 
-// Samples `tid` for `seconds`; returns false when the timer can't be set up.
-// `cpu_seconds`: the CPU time the thread used meanwhile. CPU-time timers are
-// only as fine as the kernel's software clock (time(7): HZ is 100, 250, 300
-// or 1000 by kernel), so a thread gets at most one sample per tick: the share
-// of the time it was busy comes from its CPU clock, not from the samples.
-bool Capture(uint32_t tid, int seconds, double* cpu_seconds) {
-#if COD3_SEES_LOCK_OWNER
-  g_sampled_tid.store(int(tid), std::memory_order_relaxed);
-#endif
-  struct sigaction action{}, previous{};
+// A line straight to stderr, which is still written when the process is
+// killed right after (the log is written by a thread of its own). Only
+// async-signal-safe calls, so it works from anywhere.
+void Breadcrumb(const char* text) {
+  const size_t n = std::strlen(text);
+  if (write(STDERR_FILENO, text, n) < 0) return;
+}
+
+bool InstallHandler(struct sigaction* previous) {
+  struct sigaction action{};
   action.sa_sigaction = OnProfSignal;
   action.sa_flags = SA_SIGINFO | SA_RESTART;
   sigemptyset(&action.sa_mask);
-  if (sigaction(SIGPROF, &action, &previous) != 0) return false;
+  return sigaction(SIGPROF, &action, previous) == 0;
+}
+
+// A signal already on its way still finds the handler. After that, one that
+// is somehow later still is ignored rather than ending the game (SIGPROF's
+// default action).
+void RestoreHandler(struct sigaction previous) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  if (!(previous.sa_flags & SA_SIGINFO) && previous.sa_handler == SIG_DFL) previous.sa_handler = SIG_IGN;
+  sigaction(SIGPROF, &previous, nullptr);
+}
+
+// Waits `seconds`, writing how many samples came in after the first 100 ms
+// (so a capture that ends the game shows whether any sample was taken).
+void WaitWhileSampling(int seconds, const char* who) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  char line[160];
+  std::snprintf(line, sizeof(line), "cod3: function profile of %s: %u samples after 0.1 s\n", who,
+                g_sample_count.load());
+  Breadcrumb(line);
+  std::this_thread::sleep_for(std::chrono::milliseconds(seconds * 1000 - 100));
+}
+
+// The old way, cod3_profile_cpu_timer: a CPU-time timer on the profiled
+// thread sends it SIGPROF every millisecond of its CPU time. CPU-time timers
+// are only as fine as the kernel's software clock (time(7): HZ is 100, 250,
+// 300 or 1000 by kernel), so a thread gets at most one sample per tick.
+bool CaptureWithTimer(uint32_t tid, int seconds, double* cpu_seconds, const char* who) {
+  struct sigaction previous{};
+  if (!InstallHandler(&previous)) return false;
 
   sigevent event{};
   event.sigev_notify = SIGEV_THREAD_ID;
@@ -956,16 +992,89 @@ bool Capture(uint32_t tid, int seconds, double* cpu_seconds) {
   every_ms.it_value.tv_nsec = 1000000;
   const double cpu_start = CpuSeconds(pid_t(tid));
   syscall(SYS_timer_settime, timer, 0, &every_ms, nullptr);
-  std::this_thread::sleep_for(std::chrono::seconds(seconds));
+  WaitWhileSampling(seconds, who);
   syscall(SYS_timer_delete, timer);
   *cpu_seconds = CpuSeconds(pid_t(tid)) - cpu_start;
-  // A signal already on its way still finds the handler. After that, one
-  // that is somehow later still is ignored rather than ending the game
-  // (SIGPROF's default action).
-  std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  if (!(previous.sa_flags & SA_SIGINFO) && previous.sa_handler == SIG_DFL) previous.sa_handler = SIG_IGN;
-  sigaction(SIGPROF, &previous, nullptr);
+  RestoreHandler(previous);
   return true;
+}
+
+// Whether the thread is running or ready to run ('R' in /proc/self/task/<tid>/stat,
+// proc(5)), read again from the open file; true when it can't be read.
+bool Runnable(int stat_fd) {
+  if (stat_fd < 0) return true;
+  char buf[512];
+  const ssize_t n = pread(stat_fd, buf, sizeof(buf) - 1, 0);
+  if (n <= 0) return true;
+  buf[n] = '\0';
+  const char* paren = std::strrchr(buf, ')');   // the name can hold spaces and parentheses
+  return !paren || paren[1] != ' ' || paren[2] == 'R';
+}
+
+// The default: this thread looks at the profiled thread every millisecond
+// and sends it SIGPROF (tgkill) when it used CPU time since the last look
+// and is running or ready to run, the way the Windows sampler suspends a
+// thread whose cycle count moved. A waiting thread isn't woken up (a signal
+// would end its wait early), so its waits aren't counted as work. No timer
+// runs on the profiled thread.
+bool CaptureWithSignals(uint32_t tid, int seconds, double* cpu_seconds, const char* who) {
+  const clockid_t clock = ThreadCpuClock(pid_t(tid));
+  timespec ts{};
+  if (clock_gettime(clock, &ts) != 0) return false;   // the thread has ended
+  struct sigaction previous{};
+  if (!InstallHandler(&previous)) return false;
+  auto seconds_of = [](const timespec& t) { return double(t.tv_sec) + double(t.tv_nsec) / 1e9; };
+  const double cpu_start = seconds_of(ts);
+  double last = cpu_start;
+  const pid_t pid = getpid();
+  const std::string stat_path = "/proc/self/task/" + std::to_string(tid) + "/stat";
+  const int stat_fd = open(stat_path.c_str(), O_RDONLY | O_CLOEXEC);
+  const auto start = Clock::now();
+  const auto end = start + std::chrono::seconds(seconds);
+  auto next = start;
+  bool reported = false;
+  while (true) {
+    next += std::chrono::milliseconds(1);
+    const auto now = Clock::now();
+    if (next < now - std::chrono::milliseconds(5)) next = now;   // fell behind: no burst to catch up
+    if (next >= end) break;
+    std::this_thread::sleep_until(next);
+    if (clock_gettime(clock, &ts) != 0) break;   // the thread has ended
+    const double cpu = seconds_of(ts);
+    if (cpu - last >= 0.0002 && Runnable(stat_fd) && syscall(SYS_tgkill, pid, pid_t(tid), SIGPROF) != 0) break;
+    last = cpu;
+    if (!reported && Clock::now() - start >= std::chrono::milliseconds(100)) {
+      reported = true;
+      char line[160];
+      std::snprintf(line, sizeof(line), "cod3: function profile of %s: %u samples after 0.1 s\n", who,
+                    g_sample_count.load());
+      Breadcrumb(line);
+    }
+  }
+  *cpu_seconds = last - cpu_start;
+  if (stat_fd >= 0) close(stat_fd);
+  RestoreHandler(previous);
+  return true;
+}
+
+// Samples `tid` for `seconds`; returns false when sampling can't be set up.
+// `cpu_seconds`: the CPU time the thread used meanwhile; the share of the
+// time it was busy comes from its CPU clock, not from the samples.
+bool Capture(uint32_t tid, int seconds, double* cpu_seconds, const std::string& name) {
+#if COD3_SEES_LOCK_OWNER
+  g_sampled_tid.store(int(tid), std::memory_order_relaxed);
+#endif
+  const bool timer = REXCVAR_GET(cod3_profile_cpu_timer);
+  char line[200];
+  std::snprintf(line, sizeof(line), "cod3: function profile of %s (thread %u): sampling with %s\n", name.c_str(),
+                tid, timer ? "a CPU-time timer (cod3_profile_cpu_timer)" : "a sampling thread");
+  Breadcrumb(line);
+  const bool ok = timer ? CaptureWithTimer(tid, seconds, cpu_seconds, name.c_str())
+                        : CaptureWithSignals(tid, seconds, cpu_seconds, name.c_str());
+  std::snprintf(line, sizeof(line), "cod3: function profile of %s: %s, %u samples\n", name.c_str(),
+                ok ? "done" : "could not start", g_sample_count.load());
+  Breadcrumb(line);
+  return ok;
 }
 
 #elif defined(_WIN32)
@@ -977,7 +1086,7 @@ double CpuSeconds(HANDLE thread) {
   return double(ticks(kernel) + ticks(user)) / 1e7;  // 100 ns units
 }
 
-bool Capture(uint32_t tid, int seconds, double* cpu_seconds) {
+bool Capture(uint32_t tid, int seconds, double* cpu_seconds, const std::string&) {
   HANDLE h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
   if (!h) return false;
   const double cpu_start = CpuSeconds(h);
@@ -1023,7 +1132,7 @@ bool Capture(uint32_t tid, int seconds, double* cpu_seconds) {
 
 #else
 
-bool Capture(uint32_t, int, double*) { return false; }
+bool Capture(uint32_t, int, double*, const std::string&) { return false; }
 
 #endif
 
@@ -1071,10 +1180,13 @@ std::string FunctionProfiler::Start(const std::string& thread, int seconds, int 
       return;
     }
     REXLOG_INFO("cod3: function profile of {} ({}) for {} s: started", row.name, row.role, seconds);
+#if defined(__linux__)
+    Breadcrumb(("cod3: function profile of " + row.name + ": reading the loaded modules\n").c_str());
+#endif
     SetCodeRanges();
     const auto t0 = Clock::now();
     double cpu_seconds = 0;
-    const bool ok = Capture(row.id, seconds, &cpu_seconds);
+    const bool ok = Capture(row.id, seconds, &cpu_seconds, row.name);
     const double secs = std::chrono::duration<double>(Clock::now() - t0).count();
     if (!ok) {
       REXLOG_WARN("cod3: function profile of {}: the sampler could not start", row.name);

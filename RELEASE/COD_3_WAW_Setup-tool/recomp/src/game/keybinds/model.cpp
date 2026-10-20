@@ -8,20 +8,118 @@ namespace cod3::binds {
 
 namespace {
 
-constexpr ActionDef kDefs[kActionCount] = {
+constexpr KeyCode K(char c) { return static_cast<KeyCode>(c); }
+constexpr KeyCode kKeySpace = 0x20;
+
+using D = Delivery;
+using G = Group;
+
+// In Action's order (model.h). The game's commands are the same in both
+// programs (default.xex and codmp_xenonf.xex register the same names).
+constexpr ActionDef kDefs[] = {
+    // --- Combat ----------------------------------------------------------------
+    {"fire", "Fire", "Fires the weapon in your hands while held.", G::kCombat, D::kButton, "+attack", {nullptr},
+     {kMouse1, kNoKey}},
+    {"aim", "Aim down the sights",
+     "Aims down the sights while held, or on and off with each press when Aim toggle (below) is on.",
+     G::kCombat, D::kAim, "+speed", {"toggle cl_run", nullptr}, {kMouse2, kNoKey}},
+    {"use", "Use / interact",
+     "Picks up a weapon, opens a door, mounts a gun, plants a charge (tap or hold, as the hint says); "
+     "never reloads.",
+     G::kCombat, D::kButton, "+activate", {"+activatereload", "+activatemelee", "+activatemoveup", nullptr},
+     {K('F'), kNoKey}},
+    {"reload", "Reload", "Reloads; never uses anything.", G::kCombat, D::kButton, "+reload",
+     {"+activatereload", nullptr}, {K('R'), kNoKey}},
+    {"usereload", "Use or reload (the controller's X)",
+     "Tap to reload, hold to use: the controller's X button on one key.", G::kCombat, D::kButton,
+     "+activatereload", {nullptr}, {kNoKey, kNoKey}},
+    {"melee", "Melee", "Hits with your weapon.", G::kCombat, D::kButton, "+melee", {"+activatemelee", nullptr},
+     {K('V'), kMouse3}},
+    {"usemelee", "Use or melee", "Uses what is in front of you, hits otherwise (a controller layout's mix).",
+     G::kCombat, D::kButton, "+activatemelee", {nullptr}, {kNoKey, kNoKey}},
+    {"frag", "Frag grenade",
+     "Hold to cook, let go to throw; also throws a grenade back when the hint says so.", G::kCombat,
+     D::kButton, "+grenadeattack", {nullptr}, {K('G'), kNoKey}},
+    {"smoke", "Smoke grenade",
+     "Hold and let go to throw a smoke grenade (in multiplayer: your class's special grenade).", G::kCombat,
+     D::kButton, "+smokegrenade", {nullptr}, {K('4'), kNoKey}},
     {"binoculars", "Binoculars",
-     "Hold to look through the binoculars; pressed again while they are up, it steadies them.",
-     "+binoculars", {nullptr}, {kKeyB, kNoKey}},
+     "Hold to look through the binoculars; pressed again while they are up, it steadies them.", G::kCombat,
+     D::kButton, "+binoculars", {nullptr}, {kKeyB, kNoKey}},
     {"sprintbreath", "Sprint / hold breath",
      "World at War's Shift: holds your breath while aiming down the sights or through the binoculars, "
      "sprints otherwise (when Sprint is on, F2 > Game > Movement).",
-     "+sprintbreath", {"+holdbreath", "+sprint", nullptr}, {kKeyShift, kNoKey}},
-    {"holdbreath", "Hold breath",
-     "Holds your breath (steadies a scope or the binoculars) and nothing else.",
-     "+holdbreath", {"+sprintbreath", nullptr}, {kNoKey, kNoKey}},
-    {"sprint", "Sprint",
-     "Sprints (when Sprint is on, F2 > Game > Movement) and nothing else.",
-     "+sprint", {"+sprintbreath", nullptr}, {kNoKey, kNoKey}},
+     G::kCombat, D::kButton, "+sprintbreath", {"+holdbreath", "+sprint", nullptr}, {kKeyShift, kNoKey}},
+    {"holdbreath", "Hold breath", "Holds your breath (steadies a scope or the binoculars) and nothing else.",
+     G::kCombat, D::kButton, "+holdbreath", {"+sprintbreath", nullptr}, {kNoKey, kNoKey}},
+    {"sprint", "Sprint", "Sprints (when Sprint is on, F2 > Game > Movement) and nothing else.", G::kCombat,
+     D::kButton, "+sprint", {"+sprintbreath", nullptr}, {kNoKey, kNoKey}},
+    {"leanleft", "Lean left", "Leans left while held.", G::kCombat, D::kButton, "+leanleft",
+     {"+leanleftswitchnext", nullptr}, {K('Q'), kNoKey}},
+    {"leanright", "Lean right", "Leans right while held.", G::kCombat, D::kButton, "+leanright",
+     {"+leanrightswitchnext", nullptr}, {K('E'), kNoKey}},
+    {"leanleftnext", "Lean left / switch weapon",
+     "Leans left while aiming down the sights, switches weapons otherwise (a controller layout's mix).",
+     G::kCombat, D::kButton, "+leanleftswitchnext", {nullptr}, {kNoKey, kNoKey}},
+    {"leanrightnext", "Lean right / switch weapon",
+     "Leans right while aiming down the sights, switches weapons otherwise (a controller layout's mix).",
+     G::kCombat, D::kButton, "+leanrightswitchnext", {nullptr}, {kNoKey, kNoKey}},
+    // --- Stance ----------------------------------------------------------------
+    {"jump", "Jump / stand up", "Jumps; from crouch or prone, stands up.", G::kStance, D::kButton, "+gostand",
+     {"+moveup", "+activatemoveup", nullptr}, {kKeySpace, kNoKey}},
+    {"moveup", "Raise stance / jump", "Prone to crouch, crouch to standing, and jumps when standing.",
+     G::kStance, D::kButton, "+moveup", {"+gostand", nullptr}, {kNoKey, kNoKey}},
+    {"usemoveup", "Use or raise stance", "Uses what is in front of you, raises your stance otherwise.",
+     G::kStance, D::kButton, "+activatemoveup", {nullptr}, {kNoKey, kNoKey}},
+    {"stance", "Change stance (the controller's B)", "Tap: crouch, or stand up again; hold: go prone.",
+     G::kStance, D::kPlain, "+stance", {nullptr}, {kNoKey, kNoKey}},
+    {"crouch", "Crouch", "Crouches; pressed again, stands up.", G::kStance, D::kOnce, "togglecrouch",
+     {"+stance", "lowerstance", "+movedown", nullptr}, {K('C'), kNoKey}},
+    {"crouchhold", "Crouch while held", "Crouches while held, stands up when let go.", G::kStance, D::kButton,
+     "+movedown", {"+stance", nullptr}, {kNoKey, kNoKey}},
+    {"prone", "Prone", "Goes prone; pressed again, stands up.", G::kStance, D::kOnce, "toggleprone",
+     {"+stance", "goprone", "+prone", nullptr}, {kKeyCtrl, kNoKey}},
+    {"pronehold", "Prone while held", "Goes prone while held, gets up when let go.", G::kStance, D::kButton,
+     "+prone", {"+stance", nullptr}, {kNoKey, kNoKey}},
+    {"lowerstance", "Lower stance", "Standing to crouch, crouch to prone.", G::kStance, D::kOnce,
+     "lowerstance", {"+stance", nullptr}, {kNoKey, kNoKey}},
+    {"raisestance", "Raise stance", "Prone to crouch, crouch to standing.", G::kStance, D::kOnce, "raisestance",
+     {"+gostand", "+moveup", nullptr}, {kNoKey, kNoKey}},
+    // --- Weapons ---------------------------------------------------------------
+    {"weapnext", "Next weapon", "Switches to your next weapon.", G::kWeapons, D::kText, "weapnext", {nullptr},
+     {kWheelDown, kNoKey}},
+    {"weapprev", "Previous weapon", "Switches to your previous weapon.", G::kWeapons, D::kText, "weapprev",
+     {"weapnext", nullptr}, {kWheelUp, kNoKey}},
+    {"weapalt", "Weapon's other mode", "Your weapon's other mode, where it has one.", G::kWeapons, D::kText,
+     "weapalt", {nullptr}, {kNoKey, kNoKey}},
+    {"slot1", "Weapon 1", "Your first weapon.", G::kWeapons, D::kText, "weaponslot 1", {"weapnext", nullptr},
+     {K('1'), kNoKey}},
+    {"slot2", "Weapon 2", "Your second weapon.", G::kWeapons, D::kText, "weaponslot 2", {"weapnext", nullptr},
+     {K('2'), kNoKey}},
+    // --- General ---------------------------------------------------------------
+    {"scores", "Objectives / scores",
+     "Shows the objectives (campaign) or the scores (multiplayer) while held. TAB does the same through "
+     "the controller's BACK row.",
+     G::kGeneral, D::kText, "+scores", {nullptr}, {kNoKey, kNoKey}},
+};
+static_assert(sizeof(kDefs) / sizeof(kDefs[0]) == static_cast<size_t>(kActionCount));
+
+constexpr const char* kGroupNames[] = {"Combat", "Stance", "Weapons", "General"};
+static_assert(sizeof(kGroupNames) / sizeof(kGroupNames[0]) == static_cast<size_t>(Group::kCount));
+
+// The controller rows (keybind_*) and the action their button is in the
+// campaign's layout A (xenon_a.cfg).
+struct RowAction {
+  const char* row;
+  Action action;
+};
+constexpr RowAction kRowActions[] = {
+    {"keybind_right_trigger", Action::kFire},   {"keybind_left_trigger", Action::kAim},
+    {"keybind_a", Action::kJump},               {"keybind_b", Action::kStance},
+    {"keybind_x", Action::kUseReload},          {"keybind_y", Action::kWeapNext},
+    {"keybind_right_shoulder", Action::kFrag},  {"keybind_left_shoulder", Action::kSmoke},
+    {"keybind_rstick_press", Action::kMelee},   {"keybind_lstick_press", Action::kBinoculars},
+    {"keybind_dpad_up", Action::kHoldBreath},
 };
 
 constexpr size_t kMaxText = 4096;
@@ -69,7 +167,18 @@ void Compact(KbmSet& set, int a) {
 
 int Index(Action a) { return static_cast<int>(a); }
 
+Action ActionForRow(std::string_view row) {
+  for (const RowAction& r : kRowActions)
+    if (row == r.row) return r.action;
+  return Action::kCount;
+}
+
 }  // namespace
+
+const char* GroupName(Group group) {
+  const int i = static_cast<int>(group);
+  return i >= 0 && i < static_cast<int>(Group::kCount) ? kGroupNames[i] : "";
+}
 
 const ActionDef& Def(Action action) {
   const int i = Index(action);
@@ -88,6 +197,12 @@ Action ActionByCommand(std::string_view command) {
   for (int i = 0; i < kActionCount; ++i)
     if (SameText(command, kDefs[i].command)) return static_cast<Action>(i);
   return Action::kCount;
+}
+
+const char* RowForAction(Action action) {
+  for (const RowAction& r : kRowActions)
+    if (r.action == action) return r.row;
+  return nullptr;
 }
 
 KbmSet Defaults() {
@@ -266,7 +381,7 @@ bool AssignText(KbmSet& set, Action action, std::string_view text, std::string* 
 }
 
 // ---------------------------------------------------------------------------
-// The one-time move from keybind_*
+// The one-time moves from keybind_*
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -373,6 +488,84 @@ Migration Migrate(const KbmSet& current, const std::vector<OldBind>& binds, cons
     if (!dropped) continue;
     m.new_values.emplace_back(b.name, kept);
     m.log.push_back(b.name + " \"" + std::string(value) + "\" -> \"" + kept + "\" (key combinations removed)");
+  }
+  m.set_changed = !(m.set == current);
+  return m;
+}
+
+Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, bool to_actions) {
+  Migration m;
+  m.set = current;
+  // A row's keys as one text to compare: "r, F" and "R,F" are the same row.
+  auto normal = [](std::string_view value) {
+    std::string out;
+    for (std::string_view name : Split(value, ',')) {
+      if (!out.empty()) out += ',';
+      for (char c : name) out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return out;
+  };
+  // A row the player changed: in cod3.toml and not its default.
+  auto changed = [&normal](const OldBind& r) { return r.from_file && normal(r.value) != normal(r.default_value); };
+  // The row's keys that an action can have (in order, no repeats).
+  auto keys_of = [&m](const OldBind& r) {
+    std::vector<KeyCode> keys;
+    for (std::string_view name : Split(r.value, ',')) {
+      const KeyCode key = ParseKey(name);
+      if (IsCombination(name)) {
+        m.log.push_back(r.name + ": " + std::string(name) + " left out (key combinations aren't used by actions)");
+      } else if (key == kNoKey || IsAlwaysReserved(key)) {
+        if (key == kNoKey) m.log.push_back(r.name + ": '" + std::string(name) + "' isn't a key the actions know");
+      } else {
+        bool dup = false;
+        for (KeyCode k : keys) dup |= k == key;
+        if (!dup) keys.push_back(key);
+      }
+    }
+    return keys;
+  };
+  // 1. Rows that are one action: that action gets the player's keys.
+  for (const OldBind& r : rows) {
+    if (!to_actions || !changed(r)) continue;
+    const Action action = ActionForRow(r.name);
+    if (action == Action::kCount) continue;
+    std::vector<KeyCode> keys = keys_of(r);
+    if (keys.empty()) {
+      m.log.push_back(r.name + " \"" + std::string(Trim(r.value)) + "\": no key to give " + Def(action).id +
+                      ", which keeps " + (KeysText(m.set, action).empty() ? "none" : KeysText(m.set, action)));
+      continue;
+    }
+    if (keys.size() > static_cast<size_t>(kSlots)) {
+      std::string extra;
+      for (size_t i = kSlots; i < keys.size(); ++i) extra += (extra.empty() ? "" : ", ") + KeyName(keys[i]);
+      m.log.push_back(r.name + ": two keys at most for " + Def(action).id + "; " + extra +
+                      " left out (in play they keep the action they have by default, if any)");
+      keys.resize(kSlots);
+    }
+    KbmSet next = m.set;
+    for (int s = 0; s < kSlots; ++s) next.key[Index(action)][s] = kNoKey;
+    for (size_t i = 0; i < keys.size(); ++i) {
+      const std::string n = Assign(next, action, static_cast<int>(i), keys[i]);
+      if (!n.empty()) m.log.push_back(r.name + ": " + n);
+    }
+    m.set = next;
+    m.log.push_back(r.name + " \"" + std::string(Trim(r.value)) + "\" (yours) -> " + Def(action).id + " " +
+                    KeysText(m.set, action));
+  }
+  // 2. Every other row the player changed keeps its keys in play too (every
+  // changed row when `to_actions` is false).
+  for (const OldBind& r : rows) {
+    if (!changed(r) || (to_actions && ActionForRow(r.name) != Action::kCount)) continue;
+    for (KeyCode key : keys_of(r)) {
+      int slot = 0;
+      const Action had = Find(m.set, key, &slot);
+      if (had == Action::kCount) continue;
+      m.set.key[Index(had)][slot] = kNoKey;
+      Compact(m.set, Index(had));
+      const std::string left = KeysText(m.set, had);
+      m.log.push_back(KeyName(key) + " stays with " + r.name + " (yours); " + Def(had).label +
+                      (left.empty() ? " has no key now" : " keeps " + left));
+    }
   }
   m.set_changed = !(m.set == current);
   return m;

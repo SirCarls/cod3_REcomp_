@@ -36,6 +36,10 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/hd_textures.cpp
     ${COD3_SRC}/game/job_wait.cpp
     ${COD3_SRC}/game/job_wake.cpp
+    ${COD3_SRC}/game/keybinds/binds.cpp  # [keybinds] keys that call the game's own actions
+    ${COD3_SRC}/game/keybinds/keys.cpp  # [keybinds]
+    ${COD3_SRC}/game/keybinds/model.cpp  # [keybinds]
+    ${COD3_SRC}/game/keybinds/pad_state_mp.cpp  # [keybinds] cod3mp only: the campaign's is in button_prompts.cpp
     ${COD3_SRC}/game/level_hooks.cpp
     ${COD3_SRC}/game/machine_profile.cpp
     ${COD3_SRC}/game/mouse_look.cpp
@@ -53,6 +57,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/watchdog.cpp
     ${COD3_SRC}/game/mp/campaign_only.cpp
     ${COD3_SRC}/game/mp/campaign_stubs.cpp
+    ${COD3_SRC}/game/mp/controls_mp.cpp
     ${COD3_SRC}/game/mp/hud_mp.cpp
     ${COD3_SRC}/game/mp/menus_mp.cpp
     ${COD3_SRC}/game/mp/session.cpp

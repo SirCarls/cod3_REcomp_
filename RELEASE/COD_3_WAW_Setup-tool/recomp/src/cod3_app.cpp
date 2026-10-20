@@ -68,6 +68,19 @@ REXCVAR_DEFINE_DOUBLE(cod3_volume, 1.0, "cod3/Audio",
     .range(0.0, 2.0)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// The game's 5.1 mix repeats the rear channels in its LFE (subwoofer) slot:
+// in Saint-Lo the slot matched the rear left channel sample for sample
+// (correlation 0.997) and held no bass at all. On the console a receiver's
+// subwoofer filter or the console's stereo downmix keeps it from being
+// heard; a 6-channel output that folds LFE into its speakers (a virtual 5.1
+// device under PipeWire, which mixes LFE in by default) played every rear
+// sound a second time from the middle. Off, the LFE slot is dropped, as the
+// SDK's stereo fold already drops it.
+REXCVAR_DEFINE_BOOL(cod3_audio_lfe, false, "cod3/Audio",
+                    "Send the game's LFE channel to a 5.1 output (in Call of Duty 3 it only repeats the "
+                    "rear channels: off unless comparing)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_BOOL(cod3_no_gpu, false, "cod3",
                     "Run without GPU emulation (no picture; for debugging boot issues)")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
@@ -498,6 +511,16 @@ void Cod3App::OnPostSetup() {
   rex::audio::SetOutputGain(float(REXCVAR_GET(cod3_volume)));
   rex::cvar::RegisterChangeCallback("cod3_volume", [](std::string_view, std::string_view value) {
     rex::audio::SetOutputGain(std::clamp(std::strtof(std::string(value).c_str(), nullptr), 0.0f, 2.0f));
+  });
+  // A 5.1 output without the LFE slot's copy of the rear channels (cod3_audio_lfe).
+  auto set_lfe = [](bool on) {
+    rex::audio::SurroundMix mix;  // center and surround as the game mixes them
+    mix.lfe = on ? 1.0f : 0.0f;
+    rex::audio::SetSurroundMix(mix);
+  };
+  set_lfe(REXCVAR_GET(cod3_audio_lfe));
+  rex::cvar::RegisterChangeCallback("cod3_audio_lfe", [set_lfe](std::string_view, std::string_view value) {
+    set_lfe(value == "true" || value == "1");
   });
 
   cod3::ui::GameConsole::Get().Print(

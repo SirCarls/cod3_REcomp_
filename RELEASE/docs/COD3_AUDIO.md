@@ -177,8 +177,8 @@ this FMOD has.
 
 ## "Some sounds play twice"
 
-The owner's other report. Leads from the code on both sides, for whoever takes the fix (the
-board's claude-setup audio work); none is tested in the game yet.
+The owner's other report. **Fixed 2026-10-19** (setup tool 2.10.17; the fixes are at the end of
+this section). The leads as they were found:
 
 - **The emulator's XMA "output valid" bit (the strongest lead).** Every XMA sound is decoded by
   FMOD's own software XMA codec: NSL asks for software sounds and FMOD has no hardware voices here
@@ -206,6 +206,31 @@ board's claude-setup audio work); none is tested in the game yet.
   stay zero); it loops a sound by setting the context up again, seeking to the packet and
   discarding samples up to the loop start. The loop count of 255 in every stream's `fmt` chunk is
   only read for hardware voices, which this game doesn't use.
+
+**What was fixed (2026-10-19).** Measured in cloud runs with a PipeWire output that takes 1024
+samples at a time, as on the owner's PC: a probe loaded into the game (cloud only) recorded the
+game's 5.1 frames and its XMA calls, and a recorder took what reached the output.
+
+- **The LFE slot repeats the rear channels** (owner: "it might be playing dual mono?"). In
+  Saint-Lô the game's LFE (subwoofer) slot matched the rear left channel sample for sample
+  (correlation 0.997, the rear right 0.988) and held no bass at all (92% of it at 1-2 kHz). NSL
+  takes the center speaker out of 3D panning (`FMOD_System_SetSpeakerPosition` for the center at
+  0, 0, called at 0x8211AF8C), so the center slot stays silent. On the console a receiver's
+  subwoofer filter, or the console's stereo downmix, keeps the LFE slot from being heard. The
+  port passes all six channels to a 6-channel output, and one that folds LFE into its speakers (a
+  virtual 5.1 device under PipeWire, which mixes LFE in by default; the owner's "GoXLRMini Game")
+  played every rear sound a second time from the middle. The port now drops the slot for 6-channel
+  outputs too, as the SDK's stereo fold already did (`cod3_audio_lfe`, off; on only to compare).
+- **The ends of sounds replayed:** the XMA output-valid bit above. SDK patch 0061 clears it only
+  when a pass wrote output and filled the ring. Saint-Lô, two runs each: FMOD reading the same
+  data again 345 and 263 times -> 0, empty rings read as full 717 and 573 -> 0.
+- **The game's mixer asked for audio in bursts.** The SDK ran the game's audio callback once for
+  each frame the output took, so an output that takes four frames at once (1024 samples) had the
+  game asked for four within about a millisecond (spacing median 1.2 ms; the console's hardware
+  asks every 5.33 ms). FMOD's mixer couldn't keep up and handed over a 1024-sample block it had
+  mixed before again. SDK patch 0061 keeps the callbacks 5.33 ms apart while the output has its
+  next period queued (`audio_pace_callbacks`, on). Menu music, 129 s: repeated blocks at the output
+  29 -> 3 (the rest on the cloud's two processors); spacing median 5.4 ms.
 
 ## FMOD in the program
 

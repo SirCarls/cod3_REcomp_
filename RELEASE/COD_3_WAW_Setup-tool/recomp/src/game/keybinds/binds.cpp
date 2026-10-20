@@ -1,36 +1,45 @@
-// cod3 - the campaign's own keyboard and mouse actions (see binds.h).
+// cod3 - keyboard and mouse keys that call the game's own actions (see binds.h).
 //
-// Game side (default.xex; read in the disassembly, notes in dev/agents/keybinds/):
-//   sub_82522138           the pad poll, once before every Com_Frame on the
-//                          game's main thread (hooked here). It takes button
-//                          presses only while in_joystick is on, byte
-//                          0x82A2A17D is 0 and no front-end menu blocks the
-//                          local client (*(g_FEManager+32): byte +28+cl set and
-//                          +12 != 3); releases always pass.
-//   IN_BinocularsDown/Up   0x8250CDB0 / 0x8250CD68  (+binoculars, key and time
-//                          ignored: raise while held, steady once up)
-//   IN_SprintbreathDown/Up 0x8250A040 / 0x8250A038  (empty in the retail game;
-//                          game/movement fills them in)
-//   IN_HoldbreathDown/Up   0x8250CD30 / 0x8250CCF8
-//   IN_SprintDown/Up       0x8250A030 / 0x8250A028  (game/movement)
-//   Sys_Milliseconds       0x82468510
-//   cmd_functions          0x829EBA10: cmd_function_t {+0 next, +4 name,
-//                          +8 type, +12 func} (the startup check)
-//   keys                   0x82A59570 + cl * 2052: 256 x {+0 down, +4 char*
-//                          binding} (the game's own bind table: controller
-//                          buttons only, from xenon_a..d.cfg)
+// Game side, the same in both programs (default.xex / codmp_xenonf.xex; the
+// addresses are addresses.h's addr::keybinds, cod3mp's from
+// mp/config/campaign_map.tsv; notes in dev/agents/keybinds/):
+//   the pad poll           once before every frame on the game's main thread
+//                          (hooked here: sub_82522138 in the campaign,
+//                          0x82543340 in cod3mp). It takes button presses
+//                          only while in_joystick is on and no front-end
+//                          menu blocks the player; releases always pass.
+//                          The campaign: byte 0x82A2A17D must be 0 and
+//                          *(g_FEManager+32) must not block (+28+cl set and
+//                          +12 != 3). cod3mp: g_FEManager+50 must be set,
+//                          the client's controller not busy (0x82B3EDB8+pad)
+//                          and the client's front-end object
+//                          (*(g_FEManager+208+cl*4)) must answer 0 to its
+//                          vfunc at +92, and the client must be in a match
+//                          (+184 == 2; otherwise its presses go to the menu
+//                          keys). cod3mp's poll goes through the local
+//                          clients, with each one's kbuttons copied in.
+//   cmd_functions          the game's command list: {+0 next, +4 name, +8
+//                          type (1 plain, 2 button), +12 func}. Each action's
+//                          command is looked up there by name, so both
+//                          programs need no table of handler addresses.
+//                          Button commands are called (key, time), plain ones
+//                          with nothing, as the pad path 0x82464248 does.
+//   kbuttons               {down[2], downtime, msec, active, wasPressed}, 24
+//                          bytes each: two holders per button (two keys, or a
+//                          key and a controller button). cod3mp keeps them
+//                          per local client (696 bytes each) and copies the
+//                          client's set in around its pad poll and its frame;
+//                          the keys do the same for local client 0.
+//   keys                   qkey_t keys[local client][256] {+0 down, +4 char*
+//                          binding}: the game's own bind table, controller
+//                          buttons only (xenon_a..d.cfg)
 //   pad keys               X 211, A 212, B 213, Y 214, RT 215, LT 216, RB 217,
 //                          LB 218, RS 219, LS 220, D-pad 154-157 (up, down,
-//                          left, right), START 27, BACK 9 (sub_8251DA00)
-//   input                  *0x8290A910: +28 a pad pressed Start, +24 which;
-//                          the pad poll reads that pad, else pad 0
-//   player state           (*0x82A2AB40)[cl + 1] -> +528 -> +140 the zoom
-//                          (1.0 = fully through the sights or the binoculars:
-//                          IN_BinocularsDown steadies then), +1340 bit 0 hold
-//                          breath; kbutton 15 (sprint) at 0x829C8E68 + 15 * 24,
-//                          +16 active
-//   action words           "[HOLD_BINOCS]" ... (table 0x82A8DFF8): BINOCS is
-//                          +binoculars, SPRINT +sprint
+//                          left, right), START 27, BACK 9
+//   input                  +28 a pad pressed Start, +24 which; the pad poll
+//                          reads that pad, else the local client's controller
+//   action words           "[HOLD_USE]" ... (table 0x82A8DFF8; button
+//                          prompts, campaign only)
 
 #include "game/keybinds/binds.h"
 
@@ -62,18 +71,28 @@
 #include "game/decomp_trace.h"
 #include "game/guest.h"
 #include "game/keybinds/model.h"
+#include "game/program.h"
 #include "game/screenshot.h"
 #include "ui/theme.h"
 
 REXCVAR_DEFINE_STRING(cod3_binds_kbm_p1, "", "cod3/Binds",
-                      "Keyboard and mouse keys of the game's own actions (binoculars, sprint / hold breath, "
-                      "hold breath, sprint), e.g. binoculars=B;sprintbreath=SHIFT;holdbreath=;sprint= "
+                      "Keyboard and mouse keys of the game's own actions (fire, aim, use, reload, grenades, "
+                      "stance, weapons ...), e.g. fire=MOUSE1;aim=MOUSE2;use=F;reload=R "
                       "(empty = the defaults; F2 > Controls or the console's bind command set it)");
+REXCVAR_DEFINE_BOOL(cod3_binds_actions, true, "cod3/Binds",
+                    "Keyboard and mouse keys call the game's own actions while you play (fire, aim, use, "
+                    "reload ...); false = every key presses the controller buttons of its keybind_* row, as "
+                    "before");
+REXCVAR_DEFINE_BOOL(cod3_aim_toggle_kbm_p1, false, "cod3/Binds",
+                    "The keyboard and mouse aim key: false = aims while held, true = on and off with each "
+                    "press (the controller keeps the game's own TOGGLE ADS option)");
 REXCVAR_DEFINE_BOOL(cod3_debug_binds, false, "cod3",
                     "Log each key bind action as it reaches the game, and the binoculars, hold breath and "
                     "sprint state (with a screenshot of the game's picture when the binoculars are up)");
 REXCVAR_DEFINE_INT32(cod3_binds_version, 0, "cod3",
                      "Which one-time changes of the key binds have run (set by the game)");
+REXCVAR_DEFINE_INT32(cod3mp_binds_version, 0, "cod3",
+                     "Multiplayer: which one-time changes of the key binds have run (set by the game)");
 
 namespace cod3::binds {
 
@@ -86,35 +105,15 @@ using guest::ReadString;
 using guest::ReadU32;
 using guest::ReadU8;
 using guest::WriteU16;
+using guest::WriteU32;
 using guest::WriteU8;
+namespace kb = addr::keybinds;
 
-// --- the game (default.xex) ------------------------------------------------------------
-constexpr uint32_t kSysMilliseconds = 0x82468510;
-constexpr uint32_t kCmdFunctions = 0x829EBA10;
-constexpr uint32_t kInJoystick = 0x829C295C;  // dvar_t*; int value at +32
-constexpr uint32_t kPadPollOff = 0x82A2A17D;  // byte: the pad poll does nothing
-constexpr uint32_t kFeManager = 0x82A8DF2C;   // g_FEManager
-constexpr uint32_t kKeys = 0x82A59570;        // qkey_t keys[local client][256]
-constexpr uint32_t kKeysStride = 2052;
-constexpr uint32_t kInput = 0x8290A910;       // the input object*
-constexpr uint32_t kEntityList = 0x82A2AB40;  // gentity*[] (index cl + 1)
-constexpr uint32_t kSprintKbutton = 0x829C8E68 + 15 * 24;
-constexpr uint32_t kBinocularsRequest = 0x82A578F4;  // bit 2 while +binoculars is held (not zoomed yet)
-constexpr uint32_t kActionWordText = 0x824DD9A8;      // "[HOLD_BINOCS]" -> its button sentence
-constexpr int kKeyAux1 = 239;  // AUX1, AUX2: key ids no controller sends
-constexpr int32_t kBindsVersion = 1;  // cod3_binds_version after the move from keybind_*
-
-struct Handlers {
-  uint32_t down, up;
-};
-// By Action (model.h).
-constexpr Handlers kHandlers[kActionCount] = {
-    {0x8250CDB0, 0x8250CD68},  // +binoculars
-    {0x8250A040, 0x8250A038},  // +sprintbreath
-    {0x8250CD30, 0x8250CCF8},  // +holdbreath
-    {0x8250A030, 0x8250A028},  // +sprint
-};
-static_assert(sizeof(kHandlers) / sizeof(kHandlers[0]) == static_cast<size_t>(kActionCount));
+constexpr int kKeyAux1 = 239;          // AUX1, AUX2: key ids no controller sends
+constexpr int kPadX = 211;             // the controller's X (the frag throw-back quirk)
+constexpr int32_t kBindsVersion = 2;   // cod3_binds_version after the moves from keybind_*
+constexpr uint32_t kTypePlain = 1;     // cmd_function_t +8
+constexpr uint32_t kTypeButton = 2;
 
 // A controller input as the game's pad key and as the XInput state.
 struct PadInput {
@@ -133,6 +132,8 @@ constexpr PadInput kPadInputs[] = {
 };
 
 bool Valid(uint32_t p) { return p >= 0x10000 && p < 0xC0000000u; }
+// A function in the game's image (0x82xxxxxx).
+bool InImage(uint32_t f) { return (f >> 24) == 0x82 && (f & 3) == 0; }
 
 bool SameText(std::string_view a, std::string_view b) {
   if (a.size() != b.size()) return false;
@@ -142,11 +143,6 @@ bool SameText(std::string_view a, std::string_view b) {
   return true;
 }
 
-int64_t NowMs() {
-  using namespace std::chrono;
-  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
-}
-
 bool Debug() { return REXCVAR_GET(cod3_debug_binds); }
 
 uint32_t LocalClient(uint8_t* base) {
@@ -154,19 +150,34 @@ uint32_t LocalClient(uint8_t* base) {
   return cl < 4 ? cl : 0;
 }
 
+// The local client the keyboard and mouse play: the campaign's one player;
+// player 1 in cod3mp (its pad poll runs once per local client).
+uint32_t KbmClient(uint8_t* base) { return cod3::kMultiplayer ? 0 : LocalClient(base); }
+
 // The game's binding of a controller key ("+binoculars"), "" when none.
 std::string Binding(uint8_t* base, uint32_t cl, int pad_key) {
   if (pad_key <= 0 || pad_key > 255) return "";
-  const uint32_t text = ReadU32(base, kKeys + cl * kKeysStride + uint32_t(pad_key) * 8 + 4);
+  const uint32_t text = ReadU32(base, kb::kKeys + cl * kb::kKeysStride + uint32_t(pad_key) * 8 + 4);
   return Valid(text) ? ReadString(base, text, 64) : "";
 }
 
-// The game's action words ("[HOLD_BINOCS]" -> BINOCS) of these actions.
+// The game's action words ("[HOLD_USE]" -> USE; the table its hints use, NOTES.md
+// (b)) and the command each one stands for. Prompts write the action's key
+// instead of the controller button ("Press and hold [F]").
 struct GameWord {
   const char* word;
   const char* command;
 };
-constexpr GameWord kGameWords[] = {{"BINOCS", "+binoculars"}, {"SPRINT", "+sprint"}};
+constexpr GameWord kGameWords[] = {
+    {"USE", "+activate"},          {"ACTIVATE", "+activate"},
+    {"RELOAD", "+reload"},         {"ATTACK", "+attack"},
+    {"AIM", "+speed"},             {"TOGGLE_AIM", "+speed"},
+    {"MELEE", "+melee"},           {"GRENADE", "+grenadeattack"},
+    {"SMOKEGRENADE", "+smokegrenade"}, {"BINOCS", "+binoculars"},
+    {"SPRINT", "+sprint"},         {"STANCE_UP", "+gostand"},
+    {"STANCE_DOWN", "+stance"},    {"WEAPON_SWAP", "weapnext"},
+    {"LEAN_LEFT", "+leanleftswitchnext"}, {"LEAN_RIGHT", "+leanrightswitchnext"},
+};
 
 // --- the keys (any thread) ---------------------------------------------------------------
 std::mutex g_mutex;          // g_set, g_last_text
@@ -176,6 +187,16 @@ std::atomic<uint32_t> g_generation{1};
 // KeyCode -> (action + 1) | slot << 8, 0 = no action. Read by the listener.
 std::array<std::atomic<uint16_t>, kKeyCodeCount> g_lookup{};
 std::once_flag g_started;
+// The game has the action's command (set by the game thread's lookup): a key
+// of an action it hasn't stays the keyboard row's.
+std::array<std::atomic<bool>, kActionCount> g_action_ok{};
+// The game takes presses for the keyboard's player now (no menu over the
+// game; set by the game thread at every pad poll). Outside play the keys are
+// the keyboard rows' (keybind_*): the game's menus, the pause menu.
+std::atomic<bool> g_in_play{false};
+// + 1 when the game thread lets every action go (a menu opened): keys still
+// held are pressed again when play goes on (Listener::Update).
+std::atomic<uint32_t> g_release_gen{0};
 
 void Load(std::string_view text) {
   std::vector<std::string> notes;
@@ -196,13 +217,15 @@ void Load(std::string_view text) {
   std::string keys;
   for (int a = 0; a < kActionCount; ++a) {
     const std::string k = KeysText(set, static_cast<Action>(a));
-    keys += std::string(a ? ", " : "") + Def(static_cast<Action>(a)).id + " " + (k.empty() ? "-" : k);
+    if (k.empty()) continue;
+    keys += std::string(keys.empty() ? "" : ", ") + Def(static_cast<Action>(a)).id + " " + k;
   }
-  REXLOG_INFO("cod3: key binds: {}", keys);
+  REXLOG_INFO("cod3: key binds: {}", keys.empty() ? "none" : keys);
 }
 
 void EnsureStarted() {
   std::call_once(g_started, [] {
+    for (auto& ok : g_action_ok) ok.store(true, std::memory_order_relaxed);  // until the game says otherwise
     rex::cvar::RegisterChangeCallback(kSettingName,
                                       [](std::string_view, std::string_view value) { Load(value); });
     Load(rex::cvar::GetFlagByName(kSettingName));
@@ -234,12 +257,13 @@ std::string ReservedReason(KeyCode key) {
   return "";
 }
 
-// The keybind_* settings (the keyboard pressing controller buttons) and what
-// each button does in the campaign's default layout.
+// The keybind_* settings (the keyboard pressing controller buttons: in the
+// game's menus, and in play for keys no action has) and what each button
+// does in the campaign's default layout.
 struct OldBindName {
   const char* name;
   const char* label;
-  bool moved;  // its keys moved to an action (model.h Migrate)
+  bool moved;  // version 1 moved its keys to an action (model.h Migrate)
 };
 constexpr OldBindName kOldBinds[] = {
     {"keybind_a", "Jump (A)", false},
@@ -269,8 +293,8 @@ constexpr OldBindName kOldBinds[] = {
     {"keybind_guide", "Guide", false},
 };
 
-// The controller row whose keys include `key` (the action takes the key
-// first, so that row no longer gets it), or nullptr.
+// The controller row whose keys include `key` (the action takes the key in
+// play, the row keeps it in the game's menus), or nullptr.
 const OldBindName* ControllerRowWith(KeyCode key) {
   for (const OldBindName& b : kOldBinds) {
     const std::string v = rex::cvar::GetFlagByName(b.name);
@@ -298,14 +322,17 @@ struct Event {
 constexpr uint32_t kRingSize = 128;
 std::array<Event, kRingSize> g_ring;
 std::atomic<uint32_t> g_ring_head{0}, g_ring_tail{0};
-// A release that didn't fit in the ring: (action, slot) bits, never lost.
-std::atomic<uint32_t> g_release_overflow{0};
+// A release that didn't fit in the ring: one bit per (action, slot), never lost.
+constexpr int kSlotCount = kActionCount * kSlots;
+std::array<std::atomic<uint32_t>, (kSlotCount + 31) / 32> g_release_overflow{};
 
 void Push(const Event& e) {
   const uint32_t head = g_ring_head.load(std::memory_order_relaxed);
   if (head - g_ring_tail.load(std::memory_order_acquire) >= kRingSize) {
-    if (e.kind == Kind::kUp)
-      g_release_overflow.fetch_or(1u << (e.action * kSlots + e.slot), std::memory_order_release);
+    if (e.kind == Kind::kUp) {
+      const int i = e.action * kSlots + e.slot;
+      g_release_overflow[i / 32].fetch_or(1u << (i % 32), std::memory_order_release);
+    }
     return;  // a press is dropped when full
   }
   g_ring[head % kRingSize] = e;
@@ -321,6 +348,30 @@ bool Pop(Event* out) {
 }
 
 std::atomic<bool> g_mnk_mode{true};
+
+// An action a key holds, with nothing done once on the press: pressed again
+// when the game let go of it while the key stayed down (a menu flicker). A
+// use, a grenade, a jump, a one-shot command or a toggle isn't pressed again,
+// as a controller button held through it wouldn't be.
+bool Continuous(Action action) {
+  switch (action) {
+    case Action::kFire:
+    case Action::kSprintBreath:
+    case Action::kHoldBreath:
+    case Action::kSprint:
+    case Action::kLeanLeft:
+    case Action::kLeanRight:
+    case Action::kCrouchHold:
+    case Action::kProneHold:
+    case Action::kBinoculars:
+    case Action::kScores:
+      return true;
+    case Action::kAim:
+      return !REXCVAR_GET(cod3_aim_toggle_kbm_p1);
+    default:
+      return false;
+  }
+}
 
 class Listener final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
  public:
@@ -347,20 +398,30 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
     if (e.scroll_y() == 0 || !Acting()) return;
     const KeyCode code = e.scroll_y() > 0 ? kWheelUp : kWheelDown;
     const uint16_t v = g_lookup[code].load(std::memory_order_relaxed);
-    if (!v) return;
-    int detents = std::abs(e.scroll_y()) / int(rex::ui::MouseEvent::kScrollPerDetent);
-    for (int i = 0; i < std::max(1, std::min(detents, 4)); ++i)
-      Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kTap, code});
+    if (!v || !g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return;
+    // One tap per wheel event (a slot takes one press per poll, as a key does).
+    Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kTap, code});
     e.set_handled(true);
   }
   void OnLostFocus(rex::ui::UISetupEvent&) override { ReleaseAll("the window lost focus"); }
 
   // Every UI frame.
   void Update() {
-    const bool blocked = !g_mnk_mode.load(std::memory_order_relaxed) || (overlay_open && overlay_open()) ||
-                         (window && !window->HasFocus());
-    if (blocked && !blocked_) ReleaseAll("an overlay opened, or keyboard and mouse were turned off");
+    const bool blocked = Blocked() || (window && !window->HasFocus());
+    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened, or the keys were turned off");
     blocked_ = blocked;
+    // The game let every action go (a menu flickered up for a moment): keys
+    // still held, now in play again, press their held actions again (the
+    // others wait for the key to be pressed again, as a held controller
+    // button would).
+    const uint32_t gen = g_release_gen.load(std::memory_order_acquire);
+    if (gen != release_gen_) {
+      release_gen_ = gen;
+      if (!blocked)
+        for (size_t code = 0; code < kKeyCodeCount; ++code)
+          if (const uint16_t v = pressed_[code]; v && Continuous(static_cast<Action>((v & 0xFF) - 1)))
+            Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kDown, uint16_t(code)});
+    }
   }
 
   void ReleaseAll(const char* why) {
@@ -386,19 +447,27 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
     }
   }
 
+  // Keys aren't actions now: they are turned off, an overlay has the input,
+  // or the game isn't taking the player's presses (a menu is open).
+  bool Blocked() const {
+    return !g_mnk_mode.load(std::memory_order_relaxed) || !REXCVAR_GET(cod3_binds_actions) ||
+           (overlay_open && overlay_open()) || !g_in_play.load(std::memory_order_relaxed);
+  }
+
   bool Acting() {
-    const bool blocked = !g_mnk_mode.load(std::memory_order_relaxed) || (overlay_open && overlay_open());
-    if (blocked && !blocked_) ReleaseAll("an overlay opened");
+    const bool blocked = Blocked();
+    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened");
     blocked_ = blocked || (window && !window->HasFocus());
     return !blocked_;
   }
 
   // True when the key is an action's (it is taken: nothing below sees it).
   bool Down(KeyCode code, bool repeat) {
-    if (!Acting()) return false;
     const uint16_t v = g_lookup[code].load(std::memory_order_relaxed);
-    if (!v) return false;
-    if (repeat || pressed_[code]) return true;
+    if (pressed_[code]) return true;  // held since play: still the action's (repeats too)
+    if (!v || !Acting()) return false;
+    if (!g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return false;
+    if (repeat) return true;
     pressed_[code] = v;
     Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kDown, code});
     return true;
@@ -413,10 +482,20 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
 
   uint16_t pressed_[kKeyCodeCount] = {};  // the action each held key pressed
   bool blocked_ = false;
+  uint32_t release_gen_ = 0;              // the last g_release_gen seen
 };
 Listener g_listener;
 
 // --- game thread: the pad poll ------------------------------------------------------------
+// The game's own functions for an action, found by name in its command list.
+struct Handlers {
+  uint32_t down = 0, up = 0;
+};
+Handlers g_handlers[kActionCount];
+uint32_t g_aim_toggle = 0;   // "toggle cl_run": the game's aim toggle
+bool g_looked_up = false;
+bool g_missing[kActionCount] = {};  // looked up again now and then (RetryMissing)
+
 enum class Mode : uint8_t { kNone, kDirect, kPad };
 struct Slot {
   Mode mode = Mode::kNone;
@@ -424,40 +503,159 @@ struct Slot {
   uint8_t triggers = 0;  // kPad: 1 left, 2 right
   uint32_t since_poll = 0;
   bool release_pending = false;  // kPad: let go after the poll that saw it
-  bool tap = false;              // a wheel detent: let go on the next poll
+  bool tap = false;              // kDirect: let go on the next poll (a wheel detent, a very short press)
+  bool silent = false;           // kDirect: the action was already down from its other key
+  bool toggle = false;           // kDirect aim: pressed as a toggle (nothing on the release)
 };
 Slot g_slots[kActionCount][kSlots];
+// The frag key's press made the game hold +activatereload with the
+// controller's X (the throw-back, Deliver); its release lets that go.
+bool g_frag_added_x[kSlots] = {};
 uint32_t g_poll = 0;
-bool g_enabled[kActionCount] = {true, true, true, true};
-bool g_checked = false;
+bool g_was_in_play = false;
 
-struct Delivery {
+// A press or release to call after the pad poll (model.h's Delivery says how).
+struct Pending {
   uint8_t action, slot;
   bool down;
 };
-std::array<Delivery, 64> g_deliveries;
+// Every event of a full ring, the taps let go and the overflow releases fit.
+std::array<Pending, 2 * kRingSize + kSlotCount> g_deliveries;
 size_t g_delivery_count = 0;
 
 std::atomic<uint32_t> g_inject_buttons{0};
 std::atomic<uint32_t> g_inject_triggers{0};
 std::atomic<int32_t> g_inject_user{-1};
 
-// The pad the pad poll reads.
-int ActivePad(uint8_t* base) {
-  const uint32_t input = ReadU32(base, kInput);
-  if (!Valid(input) || !ReadU8(base, input + 28)) return 0;
-  const uint32_t pad = ReadU32(base, input + 24);
+// The game's handler for command `name` (its type in `type`), 0 when none.
+uint32_t FindCommand(uint8_t* base, std::string_view name, uint32_t* type) {
+  int guard = 0;
+  for (uint32_t cmd = ReadU32(base, addr::kCmdFunctions); Valid(cmd) && guard < 4096;
+       cmd = ReadU32(base, cmd), ++guard) {
+    const uint32_t text = ReadU32(base, cmd + 4);
+    if (!Valid(text) || !SameText(ReadString(base, text, 40), name)) continue;
+    *type = ReadU32(base, cmd + 8);
+    return ReadU32(base, cmd + 12);
+  }
+  return 0;
+}
+
+// One action's handlers: true when the game has them, of the kind the action
+// calls (a button command's pair, a plain command's pair, one plain command).
+bool LookUp(uint8_t* base, int a, std::string* why) {
+  const ActionDef& def = Def(static_cast<Action>(a));
+  Handlers h;
+  uint32_t type = 0;
+  switch (def.delivery) {
+    case Delivery::kText:
+      g_handlers[a] = {};
+      return true;  // cgame commands: console text, nothing to look up
+    case Delivery::kOnce:
+      h.down = FindCommand(base, def.command, &type);
+      if (!InImage(h.down) || type != kTypePlain)
+        return *why = std::string(def.command) + " isn't a plain command here", false;
+      break;
+    case Delivery::kButton:
+    case Delivery::kAim:
+    case Delivery::kPlain: {
+      const uint32_t want = def.delivery == Delivery::kPlain ? kTypePlain : kTypeButton;
+      const std::string up = std::string("-") + (def.command + 1);
+      uint32_t up_type = 0;
+      h.down = FindCommand(base, def.command, &type);
+      h.up = FindCommand(base, up, &up_type);
+      if (!InImage(h.down) || !InImage(h.up) || type != want || up_type != want)
+        return *why = std::string(def.command) + " / " + up + " aren't " +
+                      (want == kTypePlain ? "plain" : "button") + " commands here",
+               false;
+      break;
+    }
+  }
+  g_handlers[a] = h;
+  return true;
+}
+
+void LookUpAll(uint8_t* base) {
+  g_looked_up = true;
+  int found = 0;
+  for (int a = 0; a < kActionCount; ++a) {
+    std::string why;
+    const bool ok = LookUp(base, a, &why);
+    g_missing[a] = !ok;
+    g_action_ok[a].store(ok, std::memory_order_relaxed);
+    if (ok)
+      ++found;
+    else
+      REXLOG_WARN("cod3: key binds: {}: {}; its keys press their keyboard row's controller button instead",
+                  Def(static_cast<Action>(a)).id, why);
+  }
+  uint32_t type = 0;
+  g_aim_toggle = FindCommand(base, "toggle cl_run", &type);
+  if (!InImage(g_aim_toggle) || type != kTypeButton) {
+    g_aim_toggle = 0;
+    REXLOG_WARN("cod3: key binds: the game's aim toggle (toggle cl_run) isn't here; the aim key holds");
+  }
+  REXLOG_INFO("cod3: key binds: {} of {} actions call the game's own commands ({})", found, kActionCount,
+              cod3::kMultiplayer ? "multiplayer" : "campaign");
+}
+
+// Actions the game didn't have yet are looked up again now and then (a
+// command registered late); their keys stay the keyboard rows' meanwhile.
+void RetryMissing(uint8_t* base) {
+  for (int a = 0; a < kActionCount; ++a) {
+    if (!g_missing[a]) continue;
+    std::string why;
+    if (!LookUp(base, a, &why)) continue;
+    g_missing[a] = false;
+    g_action_ok[a].store(true, std::memory_order_relaxed);
+    REXLOG_INFO("cod3: key binds: {} found now; its keys call it", Def(static_cast<Action>(a)).id);
+  }
+}
+
+// The pad the pad poll reads for local client `cl`: the one that pressed
+// Start, else pad 0 (the campaign) or the client's own controller (cod3mp).
+int ActivePad(uint8_t* base, uint32_t cl) {
+  const uint32_t input = ReadU32(base, kb::kInput);
+  if (Valid(input) && ReadU8(base, input + 28)) {
+    const uint32_t pad = ReadU32(base, input + 24);
+    return pad < 4 ? int(pad) : 0;
+  }
+  if constexpr (!cod3::kMultiplayer) return 0;
+  const uint32_t pad = ReadU32(base, kb::kLocalClients + kb::kLocalClientPad + cl * kb::kLocalClientStride);
   return pad < 4 ? int(pad) : 0;
 }
 
 // The pad poll's own rule for presses (see the top of this file).
-bool PollTakesPresses(uint8_t* base, uint32_t cl, const char** why) {
-  const uint32_t dvar = ReadU32(base, kInJoystick);
+bool PollTakesPresses(PPCContext& ctx, uint8_t* base, uint32_t cl, const char** why) {
+  const uint32_t dvar = ReadU32(base, kb::kInJoystick);
   if (Valid(dvar) && ReadS32(base, dvar + 32) == 0) return *why = "in_joystick is 0", false;
-  if (ReadU8(base, kPadPollOff)) return *why = "the pad poll is off", false;
-  const uint32_t fe = ReadU32(base, kFeManager + 32);
-  if (Valid(fe) && ReadU8(base, fe + 28 + cl) && ReadS32(base, fe + 12) != 3)
-    return *why = "a game menu is open", false;
+  if (kb::kPadPollOff && ReadU8(base, kb::kPadPollOff)) return *why = "the pad poll is off", false;
+  const uint32_t fe = addr::prompts::kFEManager;
+  if constexpr (!cod3::kMultiplayer) {
+    const uint32_t block = ReadU32(base, fe + kb::kFeBlock);
+    if (Valid(block) && ReadU8(base, block + 28 + cl) && ReadS32(base, block + 12) != 3)
+      return *why = "a game menu is open", false;
+  } else {
+    if (kb::kFeInputOn && !ReadU8(base, fe + kb::kFeInputOn)) return *why = "the game takes no pad input now", false;
+    // Not in a match (the front end, a lobby, loading): the client's presses
+    // are menu keys (the pad poll passes state == 2 to its press path).
+    if (kb::kLocalClientState &&
+        ReadU32(base, kb::kLocalClients + kb::kLocalClientState + cl * kb::kLocalClientStride) != 2)
+      return *why = "the player isn't in a match", false;
+    const uint32_t pad = ReadU32(base, kb::kLocalClients + kb::kLocalClientPad + cl * kb::kLocalClientStride);
+    if (kb::kPadSkip && pad < 4 && ReadU8(base, kb::kPadSkip + pad))
+      return *why = "the player's controller is busy", false;
+    if (kb::kFePerClient) {
+      const uint32_t object = ReadU32(base, fe + kb::kFePerClient + 4 * cl);
+      if (Valid(object)) {
+        const uint32_t vtable = ReadU32(base, object);
+        const uint32_t blocked = Valid(vtable) ? ReadU32(base, vtable + kb::kFeBlockedVfunc) : 0;
+        if (InImage(blocked)) {
+          Call c(ctx, base);
+          if (static_cast<uint8_t>(c.Invoke(blocked, {object}))) return *why = "a game menu is open", false;
+        }
+      }
+    }
+  }
   return true;
 }
 
@@ -482,51 +680,41 @@ const PadInput* PadInputFor(uint8_t* base, uint32_t cl, Action action) {
 
 const char* HolderName(int slot) { return slot == 0 ? "AUX1" : "AUX2"; }
 
-// Once: each handler is the one the game registered for the command.
-void CheckHandlers(uint8_t* base) {
-  g_checked = true;
-  for (int a = 0; a < kActionCount; ++a) {
-    const ActionDef& def = Def(static_cast<Action>(a));
-    const std::string up = std::string("-") + (def.command + 1);
-    uint32_t first_down = 0;
-    bool down_ok = false, up_named = false, up_ok = false;
-    int guard = 0;
-    for (uint32_t cmd = ReadU32(base, kCmdFunctions); Valid(cmd) && guard < 4096; cmd = ReadU32(base, cmd), ++guard) {
-      const uint32_t name = ReadU32(base, cmd + 4);
-      if (!Valid(name)) continue;
-      const std::string n = ReadString(base, name, 32);
-      const uint32_t func = ReadU32(base, cmd + 12);
-      if (SameText(n, def.command)) {
-        if (!first_down) first_down = func;
-        down_ok |= func == kHandlers[a].down;
-      }
-      if (SameText(n, up)) {
-        up_named = true;
-        up_ok |= func == kHandlers[a].up;
-      }
-    }
-    // The campaign registers -sprint's handler under the name "+sprint" a
-    // second time, so a release handler is checked only where its own name
-    // exists.
-    const bool ok = down_ok && (!up_named || up_ok);
-    g_enabled[a] = ok;
-    if (!ok)
-      REXLOG_WARN("cod3: key binds: {} isn't at {:#x} in this game (found {:#x}); the {} key does nothing",
-                  def.command, kHandlers[a].down, first_down, def.label);
-    else if (Debug())
-      REXLOG_INFO("cod3: binds: {} is the game's {:#x}", def.command, kHandlers[a].down);
-  }
-}
-
 void Queue(int a, int s, bool down) {
   if (g_delivery_count < g_deliveries.size()) g_deliveries[g_delivery_count++] = {uint8_t(a), uint8_t(s), down};
 }
 
-void Press(uint8_t* base, uint32_t cl, int a, int s, bool tap) {
+// A delivery kind with one game state per action (not two holders): the press
+// goes out for the first key down, the release for the last key up.
+bool OneState(Delivery d) { return d != Delivery::kButton && d != Delivery::kAim; }
+
+void PressDirect(int a, int s, bool tap) {
+  const ActionDef& def = Def(static_cast<Action>(a));
+  Slot& slot = g_slots[a][s];
+  const bool toggle = def.delivery == Delivery::kAim && REXCVAR_GET(cod3_aim_toggle_kbm_p1) && g_aim_toggle;
+  const bool other_down = g_slots[a][1 - s].mode == Mode::kDirect;
+  slot = {Mode::kDirect, 0, 0, g_poll, false, tap, (OneState(def.delivery) || toggle) && other_down, toggle};
+  if (!slot.silent) Queue(a, s, true);
+}
+
+void ReleaseDirect(int a, int s) {
+  const ActionDef& def = Def(static_cast<Action>(a));
+  Slot& slot = g_slots[a][s];
+  Slot& other = g_slots[a][1 - s];
+  if ((OneState(def.delivery) || slot.toggle) && other.mode == Mode::kDirect) {
+    // The other key still holds the action: it sends the release.
+    if (!slot.silent) other.silent = false;
+  } else if (!slot.silent && !slot.toggle && def.delivery != Delivery::kOnce) {
+    Queue(a, s, false);
+  }
+  slot = {};
+}
+
+void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) {
   Slot& slot = g_slots[a][s];
   if (slot.mode != Mode::kNone) return;
   const Action action = static_cast<Action>(a);
-  if (!g_enabled[a]) return;
+  if (g_missing[a]) return;  // the game doesn't have it (RetryMissing)
   if (InteractionRunning(base, cl)) {
     // The interaction decides, as for a controller: press the button the
     // game binds to this action.
@@ -539,12 +727,11 @@ void Press(uint8_t* base, uint32_t cl, int a, int s, bool tap) {
     return;
   }
   const char* why = "";
-  if (!PollTakesPresses(base, cl, &why)) {
+  if (!PollTakesPresses(ctx, base, cl, &why)) {
     if (Debug()) REXLOG_INFO("cod3: binds: {} not delivered ({})", Def(action).id, why);
     return;
   }
-  slot = {Mode::kDirect, 0, 0, g_poll, false, tap};
-  Queue(a, s, true);
+  PressDirect(a, s, tap);
 }
 
 void Release(int a, int s) {
@@ -557,48 +744,195 @@ void Release(int a, int s) {
       slot.tap = true;
       return;
     }
-    Queue(a, s, false);
-    slot = {};
+    ReleaseDirect(a, s);
   } else if (slot.mode == Mode::kPad) {
     slot.release_pending = true;
   }
 }
 
-void BeforePadPoll(uint8_t* base) {
+// Every action held through the game's commands lets go (a menu opened);
+// controller buttons pressed for an interaction go too.
+void ReleaseEverything(const char* why) {
+  bool any = false;
+  for (int a = 0; a < kActionCount; ++a)
+    for (int s = 0; s < kSlots; ++s) {
+      Slot& slot = g_slots[a][s];
+      if (slot.mode == Mode::kDirect) {
+        ReleaseDirect(a, s);
+        any = true;
+      } else if (slot.mode == Mode::kPad) {
+        slot = {};
+        any = true;
+      }
+    }
+  g_release_gen.fetch_add(1, std::memory_order_release);
+  if (any && Debug()) REXLOG_INFO("cod3: binds: actions let go ({})", why);
+}
+
+void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
+  EnsureStarted();  // the keys and g_action_ok before the first lookup
   ++g_poll;
   g_delivery_count = 0;
-  if (!g_checked) CheckHandlers(base);
-  const uint32_t cl = LocalClient(base);
+  if (!g_looked_up)
+    LookUpAll(base);
+  else if (g_poll % 600 == 0)
+    RetryMissing(base);
+  const uint32_t cl = KbmClient(base);
+  // Is the game taking the player's presses? The listener takes the keys
+  // only then (otherwise they press the keyboard rows' controller buttons).
+  const char* why = "turned off (cod3_binds_actions)";
+  const bool in_play = REXCVAR_GET(cod3_binds_actions) && PollTakesPresses(ctx, base, cl, &why);
+  g_in_play.store(in_play, std::memory_order_relaxed);
+  if (g_was_in_play && !in_play) ReleaseEverything(why);
+  if (in_play != g_was_in_play && Debug())
+    REXLOG_INFO("cod3: binds: keys {} ({})", in_play ? "call the game's actions" : "press the controller rows",
+                in_play ? "in play" : why);
+  g_was_in_play = in_play;
   // Taps from the last poll, and controller buttons that were seen once.
   for (int a = 0; a < kActionCount; ++a)
     for (int s = 0; s < kSlots; ++s) {
       Slot& slot = g_slots[a][s];
-      if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll) Release(a, s);
+      if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll) ReleaseDirect(a, s);
       if (slot.mode == Mode::kPad && slot.release_pending && slot.since_poll < g_poll) slot = {};
     }
-  if (uint32_t overflow = g_release_overflow.exchange(0, std::memory_order_acquire))
-    for (int i = 0; i < kActionCount * kSlots; ++i)
-      if (overflow & (1u << i)) Release(i / kSlots, i % kSlots);
+  // A key held when an interaction starts or ends goes on as a held
+  // controller button would: it stays what it was (fire held onto a turret
+  // keeps firing; X held off a mounted gun does nothing new) until let go.
   Event e;
   while (Pop(&e)) {
     if (e.action >= kActionCount || e.slot >= kSlots) continue;
-    // The campaign has one player; the keyboard is theirs.
-    if (e.kind == Kind::kUp) {
+    if (e.kind == Kind::kUp)
       Release(e.action, e.slot);
-    } else if (cl == 0) {
-      Press(base, cl, e.action, e.slot, e.kind == Kind::kTap);
-    }
+    else if (in_play)
+      Press(ctx, base, cl, e.action, e.slot, e.kind == Kind::kTap);
   }
+  // Releases that didn't fit in the ring, after it (their presses were in it).
+  for (size_t w = 0; w < g_release_overflow.size(); ++w)
+    if (uint32_t overflow = g_release_overflow[w].exchange(0, std::memory_order_acquire))
+      for (int b = 0; b < 32; ++b)
+        if (overflow & (1u << b)) {
+          const int i = int(w) * 32 + b;
+          if (i < kSlotCount) Release(i / kSlots, i % kSlots);
+        }
   uint32_t buttons = 0, triggers = 0;
   for (auto& action : g_slots)
     for (const Slot& slot : action)
       if (slot.mode == Mode::kPad) buttons |= slot.buttons, triggers |= slot.triggers;
-  g_inject_user.store(ActivePad(base), std::memory_order_relaxed);
+  g_inject_user.store(ActivePad(base, cl), std::memory_order_relaxed);
   g_inject_triggers.store(triggers, std::memory_order_relaxed);
   g_inject_buttons.store(buttons, std::memory_order_release);
 }
 
-// --- debug: what the game did with it --------------------------------------------------
+// cod3mp keeps the buttons of each local client apart and copies the client's
+// set into the game's kbuttons around its pad poll and its frame. The keys'
+// commands work on player 1's set the same way, and everything is as before
+// for the game afterwards.
+class PlayerButtons {
+ public:
+  PlayerButtons(uint8_t* base, uint32_t cl) : base_(base), cl_(cl) {
+    if (!kb::kSavedKbuttons || kb::kSavedKbuttonsSize > sizeof(game_)) return;
+    on_ = true;
+    active_ = ReadU32(base, addr::kActiveLocalClient);
+    WriteU32(base, addr::kActiveLocalClient, cl);
+    std::memcpy(game_.data(), base + kb::kKbuttons, kb::kSavedKbuttonsSize);
+    std::memcpy(base + kb::kKbuttons, base + Saved(), kb::kSavedKbuttonsSize);
+  }
+  ~PlayerButtons() {
+    if (!on_) return;
+    std::memcpy(base_ + Saved(), base_ + kb::kKbuttons, kb::kSavedKbuttonsSize);
+    std::memcpy(base_ + kb::kKbuttons, game_.data(), kb::kSavedKbuttonsSize);
+    WriteU32(base_, addr::kActiveLocalClient, active_);
+  }
+  PlayerButtons(const PlayerButtons&) = delete;
+  PlayerButtons& operator=(const PlayerButtons&) = delete;
+
+ private:
+  uint32_t Saved() const { return kb::kSavedKbuttons + cl_ * kb::kSavedKbuttonsSize; }
+  uint8_t* base_;
+  uint32_t cl_;
+  bool on_ = false;
+  uint32_t active_ = 0;
+  std::array<uint8_t, 1024> game_{};
+};
+
+// The +activatereload kbutton is held by the controller's X (211).
+bool HoldsX(uint8_t* base) {
+  const uint32_t button = kb::kKbuttons + kb::kActivateReloadButton;
+  return ReadU32(base, button) == uint32_t(kPadX) || ReadU32(base, button + 4) == uint32_t(kPadX);
+}
+
+void Deliver(PPCContext& ctx, uint8_t* base, uint32_t now, const Pending& d) {
+  const ActionDef& def = Def(static_cast<Action>(d.action));
+  const Handlers& h = g_handlers[d.action];
+  Slot& slot = g_slots[d.action][d.slot];
+  const uint64_t key = uint64_t(kKeyAux1 + d.slot);
+  const char* how = "";
+  switch (def.delivery) {
+    case Delivery::kButton:
+    case Delivery::kAim: {
+      // The aim toggle: the game's own (aimToggle[cl] = !aimToggle[cl]), once per press.
+      const bool toggle = def.delivery == Delivery::kAim && d.down && slot.toggle;
+      if (toggle) {
+        Call(ctx, base).Invoke(g_aim_toggle, {key, now});
+        how = ", toggle";
+        break;
+      }
+      // +grenadeattack throws a grenade back by holding +activatereload with
+      // the controller's X (211), which -grenadeattack never lets go: a
+      // keyboard player would be left holding "use" after the throw.
+      const bool frag = static_cast<Action>(d.action) == Action::kFrag;
+      const bool held_x = frag && HoldsX(base);
+      Call(ctx, base).Invoke(d.down ? h.down : h.up, {key, now});
+      if (frag && d.down) g_frag_added_x[d.slot] = !held_x && HoldsX(base);
+      if (frag && !d.down && g_frag_added_x[d.slot]) {
+        g_frag_added_x[d.slot] = false;
+        const uint32_t up = g_handlers[int(Action::kUseReload)].up;  // -activatereload
+        if (HoldsX(base) && up) {
+          Call(ctx, base).Invoke(up, {uint64_t(kPadX), now});
+          how = ", and -activatereload 211 (the throw-back's X)";
+        }
+      }
+      break;
+    }
+    case Delivery::kPlain:
+      Call(ctx, base).Invoke(d.down ? h.down : h.up);
+      break;
+    case Delivery::kOnce:
+      if (d.down) Call(ctx, base).Invoke(h.down);
+      break;
+    case Delivery::kText: {
+      std::string text;
+      if (d.down)
+        text = def.command;
+      else if (def.command[0] == '+')
+        text = std::string("-") + (def.command + 1);
+      if (text.empty()) break;
+      text += '\n';
+      Call c(ctx, base);
+      c.Invoke(addr::kCbufAddText, {c.PushString(text)});
+      break;
+    }
+  }
+  if (Debug()) {
+    std::string what = def.command;
+    if (!d.down && def.command[0] == '+') what = std::string("-") + (def.command + 1);
+    REXLOG_INFO("cod3: binds: {} {} ({}, holder {}, direct{})", def.id, d.down ? "down" : "up", what,
+                HolderName(d.slot), how);
+  }
+}
+
+// --- debug: what the game did with it (campaign) -------------------------------------------
+#if !defined(COD3_MP)
+int64_t NowMs() {
+  using namespace std::chrono;
+  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+constexpr uint32_t kEntityList = 0x82A2AB40;          // gentity*[] (index cl + 1)
+constexpr uint32_t kSprintKbutton = 0x829C8E68 + 15 * 24;
+constexpr uint32_t kBinocularsRequest = 0x82A578F4;   // bit 2 while +binoculars is held (not zoomed yet)
+constexpr uint32_t kActionWordText = 0x824DD9A8;      // "[HOLD_BINOCS]" -> its button sentence
+
 struct Watch {
   int zoom = -1, breath = -1, sprint = -1, request = -1;
   int64_t up_since = 0;
@@ -609,7 +943,7 @@ struct Watch {
 Watch g_watch;
 
 void PromptCheck(PPCContext& ctx, uint8_t* base, uint32_t cl) {
-  for (const char* word : {"[HOLD_BINOCS]", "[VERB_BINOCS]"}) {
+  for (const char* word : {"[HOLD_BINOCS]", "[VERB_BINOCS]", "[HOLD_USE]", "[RELOAD]"}) {
     Call c(ctx, base);
     const uint32_t w = c.PushString(word);
     const uint32_t text = static_cast<uint32_t>(c.Invoke(kActionWordText, {w}));
@@ -673,25 +1007,21 @@ void WatchState(PPCContext& ctx, uint8_t* base, uint32_t cl) {
   g_watch.breath = breath;
   g_watch.sprint = sprint;
 }
+#endif  // !COD3_MP
 
 void AfterPadPoll(PPCContext& ctx, uint8_t* base) {
   if (g_delivery_count) {
-    Call c(ctx, base);
-    const uint32_t now = static_cast<uint32_t>(c.Invoke(kSysMilliseconds));
+    const uint32_t cl = KbmClient(base);
+    PlayerButtons player(base, cl);  // cod3mp: player 1's buttons
+    const uint32_t now = static_cast<uint32_t>(Call(ctx, base).Invoke(kb::kSysMilliseconds));
     for (size_t i = 0; i < g_delivery_count; ++i) {
-      const Delivery& d = g_deliveries[i];
-      const Handlers& h = kHandlers[d.action];
-      Call call(ctx, base);
-      call.Invoke(d.down ? h.down : h.up, {uint64_t(kKeyAux1 + d.slot), now});
-      if (Debug()) {
-        const ActionDef& def = Def(static_cast<Action>(d.action));
-        REXLOG_INFO("cod3: binds: {} {} ({}{}, holder {}, direct)", def.id, d.down ? "down" : "up", def.command[0] == '+' && !d.down ? "-" : "",
-                    d.down ? def.command : def.command + 1, HolderName(d.slot));
-      }
+      Deliver(ctx, base, now, g_deliveries[i]);
     }
     g_delivery_count = 0;
   }
+#if !defined(COD3_MP)
   if (Debug()) WatchState(ctx, base, LocalClient(base));
+#endif
 }
 
 }  // namespace
@@ -702,30 +1032,62 @@ void AfterPadPoll(PPCContext& ctx, uint8_t* base) {
 
 void MigrateSettings(const std::filesystem::path& config_path) {
   EnsureStarted();
-  if (REXCVAR_GET(cod3_binds_version) >= kBindsVersion) return;
-  std::vector<OldBind> moved, others;
-  for (const OldBindName& b : kOldBinds) {
-    if (!rex::cvar::GetFlagInfo(b.name)) continue;
-    OldBind old{b.name, rex::cvar::GetFlagByName(b.name), rex::cvar::GetFlagSource(b.name) == rex::cvar::Source::kConfig};
-    (b.moved ? moved : others).push_back(std::move(old));
+  const int32_t version = cod3::kMultiplayer ? REXCVAR_GET(cod3mp_binds_version) : REXCVAR_GET(cod3_binds_version);
+  if (version >= kBindsVersion) return;
+  // A row the player set: in the settings file (cod3mp: also the campaign's
+  // cod3.toml, which cod3mp applies before this as runtime values).
+  auto old_bind = [](const OldBindName& b) {
+    const auto* info = rex::cvar::GetFlagInfo(b.name);
+    const rex::cvar::Source source = rex::cvar::GetFlagSource(b.name);
+    const bool players = source == rex::cvar::Source::kConfig ||
+                         (cod3::kMultiplayer && source == rex::cvar::Source::kRuntime);
+    return OldBind{b.name, rex::cvar::GetFlagByName(b.name), players, info ? info->default_value : std::string()};
+  };
+  size_t changes = 0;
+  auto apply = [&changes](const Migration& m) {
+    for (const auto& [name, value] : m.new_values) {
+      if (value.empty())
+        rex::cvar::ResetToDefault(name);
+      else
+        rex::cvar::SetFlagByName(name, value);
+    }
+    if (m.set_changed) Store(m.set);
+    for (const auto& line : m.log) REXLOG_INFO("cod3: key binds: {}", line);
+    changes += m.new_values.size() + (m.set_changed ? 1 : 0);
+  };
+  // Version 1: the left stick click and the D-pad (binoculars, hold breath);
+  // the campaign's only (multiplayer's left stick click is +sprintbreath).
+  if (!cod3::kMultiplayer && version < 1) {
+    std::vector<OldBind> moved, others;
+    for (const OldBindName& b : kOldBinds) {
+      if (!rex::cvar::GetFlagInfo(b.name)) continue;
+      (b.moved ? moved : others).push_back(old_bind(b));
+    }
+    apply(Migrate(CurrentSet(), moved, others));
   }
-  const Migration m = Migrate(CurrentSet(), moved, others);
-  for (const auto& [name, value] : m.new_values) {
-    if (value.empty())
-      rex::cvar::ResetToDefault(name);
-    else
-      rex::cvar::SetFlagByName(name, value);
+  // Version 2: every action has a key of its own; the player's own changes to
+  // the controller rows are kept (model.h MigrateRows). Multiplayer's layouts
+  // aren't the campaign's layout A, so there every changed row keeps its keys.
+  {
+    std::vector<OldBind> rows;
+    for (const OldBindName& b : kOldBinds)
+      if (rex::cvar::GetFlagInfo(b.name)) rows.push_back(old_bind(b));
+    apply(MigrateRows(CurrentSet(), rows, !cod3::kMultiplayer));
   }
-  if (m.set_changed) Store(m.set);
-  for (const auto& line : m.log) REXLOG_INFO("cod3: key binds: {}", line);
   const KbmSet now = CurrentSet();
-  REXLOG_INFO("cod3: key binds call the game's own actions now: binoculars {}, sprint / hold breath {}; keys no "
-              "longer press the controller's left stick click or D-pad ({} setting(s) moved)",
-              KeysText(now, Action::kBinoculars).empty() ? "-" : KeysText(now, Action::kBinoculars),
-              KeysText(now, Action::kSprintBreath).empty() ? "-" : KeysText(now, Action::kSprintBreath),
-              m.new_values.size());
-  REXCVAR_SET(cod3_binds_version, kBindsVersion);
-  if (m.new_values.empty() && !m.set_changed) return;
+  std::string keys;
+  for (const Action a : {Action::kFire, Action::kAim, Action::kUse, Action::kReload, Action::kJump, Action::kCrouch,
+                         Action::kProne, Action::kFrag, Action::kBinoculars})
+    keys += std::string(keys.empty() ? "" : ", ") + Def(a).id + " " +
+            (KeysText(now, a).empty() ? std::string("-") : KeysText(now, a));
+  REXLOG_INFO("cod3: key binds call the game's own actions now ({}); in the game's menus keys still press the "
+              "controller buttons of their keybind_* rows ({} change(s))",
+              keys, changes);
+  if constexpr (cod3::kMultiplayer)
+    REXCVAR_SET(cod3mp_binds_version, kBindsVersion);
+  else
+    REXCVAR_SET(cod3_binds_version, kBindsVersion);
+  if (!changes) return;  // the version goes into cod3.toml with the next save
   try {
     rex::cvar::SaveConfig(config_path);
   } catch (const std::exception& e) {
@@ -757,6 +1119,8 @@ void OnUiFrame() {
   if (g_listener.window) g_listener.Update();
 }
 
+bool InPlay() { return g_in_play.load(std::memory_order_relaxed); }
+
 void ApplyToPad(uint8_t* base, uint32_t user, uint32_t state) {
   const uint32_t buttons = g_inject_buttons.load(std::memory_order_acquire);
   const uint32_t triggers = g_inject_triggers.load(std::memory_order_relaxed);
@@ -784,11 +1148,12 @@ std::string KeyNameForActionWord(std::string_view word) {
 }
 
 std::string KeyNameForCommand(std::string_view binding) {
-  if (binding.empty()) return "";
+  if (binding.empty() || !REXCVAR_GET(cod3_binds_actions)) return "";
   const KbmSet set = CurrentSet();
   // The action whose command it is, then one it counts for.
   for (int pass = 0; pass < 2; ++pass)
     for (int a = 0; a < kActionCount; ++a) {
+      if (!g_action_ok[a].load(std::memory_order_relaxed)) continue;
       const ActionDef& def = Def(static_cast<Action>(a));
       bool match = pass == 0 && SameText(binding, def.command);
       for (const char* eq : def.equivalents) {
@@ -835,7 +1200,8 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
   if (source == cheats::Source::kNetwork) return false;
   std::string command;
   for (size_t i = 2; i < args.size(); ++i) command += (i > 2 ? " " : "") + args[i];
-  const Action action = bind ? ActionByCommand(command) : Action::kCount;
+  Action action = bind ? ActionByCommand(command) : Action::kCount;
+  if (bind && action == Action::kCount) action = ActionById(command);  // "bind K reload" works too
 
   if (action != Action::kCount) {
     if (const std::string why = ReservedReason(key); !why.empty()) {
@@ -854,13 +1220,13 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
     std::string text = key_name + " = " + Def(action).label + " (keyboard and mouse; saved)";
     if (!note.empty()) text += "; " + note;
     if (const OldBindName* row = ControllerRowWith(key))
-      text += "; it no longer presses the controller's " + std::string(row->label);
+      text += "; in the game's menus it still presses the controller's " + std::string(row->label);
     print(false, text + "\n");
     REXLOG_INFO("cod3: key binds: {} from the console", text);
     return true;
   }
   if (had == Action::kCount) return false;
-  // unbind B, or B bound to a command the keyboard can't call yet: B leaves
+  // unbind B, or B bound to a command that isn't one of the actions: B leaves
   // its action (the game's own bind of the key does nothing: its keyboard
   // keys never reach the game).
   Assign(set, had, had_slot, kNoKey);
@@ -868,8 +1234,8 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
   *changed = true;
   std::string text = key_name + " is no longer " + std::string(Def(had).label) + " (saved)";
   if (bind)
-    text += "; keyboard keys can call only Binoculars, Sprint / hold breath, Hold breath and Sprint so far "
-            "(the rest: F2 > Controls > Key bindings)";
+    text += "; keyboard keys call only the actions in F2 > Controls > Key bindings (bind <key> <action>, "
+            "e.g. bind K +reload or bind K reload)";
   print(false, text + "\n");
   REXLOG_INFO("cod3: key binds: {} from the console", text);
   return !bind;
@@ -895,18 +1261,44 @@ bool DrawF2Rows() {
     ImGui::PopTextWrapPos();
   };
   ImGui::TextUnformatted("Actions");
-  help("These keys call the game's own actions directly (not a controller button), so a controller keeps "
-       "working at the same time. Up to two keys each, separated by a comma (B, MOUSE4); empty = none; "
-       "press Enter to apply. Key names: A-Z, 0-9, SHIFT, CTRL, ALT, SPACE, TAB, ENTER, UPARROW ..., "
-       "MOUSE1-MOUSE5, MWHEELUP, MWHEELDOWN. No key combinations (Shift+key). The console's "
-       "bind B +binoculars works too.");
+  bool actions = REXCVAR_GET(cod3_binds_actions);
+  if (ImGui::Checkbox("Keys call the game's actions", &actions)) {
+    rex::cvar::SetFlagByName("cod3_binds_actions", actions ? "true" : "false");
+    changed = true;
+  }
+  help("On: while you play, these keys call the game's own actions directly (not a controller button), "
+       "so every action can have a key of its own and a controller keeps working at the same time. In the "
+       "game's menus, and for keys no action has, keys press the controller buttons of the rows further "
+       "down. Off: every key presses its row's controller button, as before.");
+  bool toggle = REXCVAR_GET(cod3_aim_toggle_kbm_p1);
+  if (ImGui::Checkbox("Aim toggle (keyboard and mouse)", &toggle)) {
+    rex::cvar::SetFlagByName("cod3_aim_toggle_kbm_p1", toggle ? "true" : "false");
+    changed = true;
+  }
+  help("Off: the aim key aims while held. On: each press aims or stops aiming. The controller has its own "
+       "TOGGLE ADS in the game's Options > Controls.");
+  help("Up to two keys each, separated by a comma (B, MOUSE4); empty = none; press Enter to apply. Key names: "
+       "A-Z, 0-9, SHIFT, CTRL, ALT, SPACE, TAB, ENTER, UPARROW ..., MOUSE1-MOUSE5, MWHEELUP, MWHEELDOWN. "
+       "No key combinations (Shift+key). The console's bind K +reload (or bind K reload) works too.");
   if (ImGui::BeginTable("##bind_actions", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+    Group group = Group::kCount;
     for (int a = 0; a < kActionCount; ++a) {
       const Action action = static_cast<Action>(a);
       const ActionDef& def = Def(action);
+      if (def.group != group) {
+        group = def.group;
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextColored(ui::CurrentPalette().accent_text, "%s", GroupName(group));
+        ImGui::TableNextColumn();
+      }
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(def.label);
+      if (g_action_ok[a].load(std::memory_order_relaxed)) {
+        ImGui::TextUnformatted(def.label);
+      } else {
+        ImGui::TextDisabled("%s (not in this game)", def.label);
+      }
       if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", def.help);
       ImGui::TableNextColumn();
       ImGui::PushID(def.id);
@@ -930,14 +1322,6 @@ bool DrawF2Rows() {
         text_gen = 0;  // show what was stored
       }
       ImGui::PopID();
-      for (KeyCode k : set.key[a])
-        if (const OldBindName* row = k ? ControllerRowWith(k) : nullptr) {
-          const std::string line = KeyName(k) + " is in the controller row " + row->label + " too: " + def.label +
-                                   " gets it, that row doesn't.";
-          ImGui::PushTextWrapPos(0.0f);
-          ImGui::TextColored(ui::CurrentPalette().warn, "%s", line.c_str());
-          ImGui::PopTextWrapPos();
-        }
       if (!notes[a].empty()) {
         ImGui::PushTextWrapPos(0.0f);
         ImGui::TextColored(ui::CurrentPalette().warn, "%s", notes[a].c_str());
@@ -957,12 +1341,13 @@ bool DrawF2Rows() {
 // Hooks
 // ---------------------------------------------------------------------------
 
-// The pad poll (once before every frame, the game's main thread): the keys'
-// presses go in first (controller buttons inside an interaction), the game
-// reads its pads, then the direct calls.
+// The pad poll (once before every frame, the game's main thread; cod3mp's
+// through game/mp/mp_aliases.h): the keys' presses go in first (controller
+// buttons inside an interaction), the game reads its pads, then the direct
+// calls.
 REX_EXTERN(__imp__sub_82522138);
 REX_HOOK_RAW(sub_82522138) {
-  cod3::binds::BeforePadPoll(base);
+  cod3::binds::BeforePadPoll(ctx, base);
   __imp__sub_82522138(ctx, base);
   cod3::binds::AfterPadPoll(ctx, base);
 }

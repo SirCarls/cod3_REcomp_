@@ -997,6 +997,36 @@ inline constexpr uint32_t kSetFill = 0x824C0588;
 inline constexpr uint32_t kQuadFillScale = 52;        // float
 }  // namespace brightness
 
+// ---------------------------------------------------------------------------
+// [keybinds] Keyboard and mouse keys that call the game's own actions
+// (game/keybinds/binds.cpp, both programs; cod3mp's values come from
+// mp/config/campaign_map.tsv). The pad poll, sub_82522138, runs once before
+// every frame; it takes presses only while in_joystick is on and no menu
+// blocks the player. The actions' handlers aren't here: binds.cpp finds them
+// by name in the game's command list (kCmdFunctions).
+// ---------------------------------------------------------------------------
+namespace keybinds {
+inline constexpr uint32_t kSysMilliseconds = 0x82468510;   // int Sys_Milliseconds(void)
+inline constexpr uint32_t kInJoystick = 0x829C295C;        // dvar_t* in_joystick; int value at +32
+inline constexpr uint32_t kPadPollOff = 0x82A2A17D;        // byte: the pad poll does nothing (campaign)
+inline constexpr uint32_t kKeys = 0x82A59570;              // qkey_t keys[local client][256]: +4 char* binding
+inline constexpr uint32_t kKeysStride = 2052;              // bytes per local client
+inline constexpr uint32_t kInput = 0x8290A910;             // the input object*: +28 a pad pressed Start, +24 which
+inline constexpr uint32_t kLocalClients = 0x82A98CD0;      // the local clients: +180 the client's controller
+inline constexpr uint32_t kLocalClientPad = 180;
+inline constexpr uint32_t kLocalClientState = 0;           // cod3mp: +184, 2 = in a match (else presses are menu keys)
+inline constexpr uint32_t kLocalClientStride = 188;
+inline constexpr uint32_t kKbuttons = 0x829C8E68;          // kbutton_t[] {down[2], downtime, msec, active, wasPressed}
+inline constexpr uint32_t kActivateReloadButton = 456;     // +activatereload's kbutton (the frag throw-back)
+inline constexpr uint32_t kSavedKbuttons = 0;              // cod3mp: the kbuttons of each local client (0 = one set)
+inline constexpr uint32_t kSavedKbuttonsSize = 696;        // cod3mp: bytes per local client
+inline constexpr uint32_t kPadSkip = 0;                    // cod3mp: byte per pad, set = the poll skips its client
+inline constexpr uint32_t kFeBlock = 32;                   // campaign: *(g_FEManager + 32): +28 + cl blocks, +12 == 3 lets through
+inline constexpr uint32_t kFeInputOn = 0;                  // cod3mp: byte g_FEManager + 50, 0 = no pad input
+inline constexpr uint32_t kFePerClient = 0;                // cod3mp: object* at g_FEManager + 208 + cl * 4
+inline constexpr uint32_t kFeBlockedVfunc = 0;             // cod3mp: that object's vfunc (this) -> u8, non-zero = blocked
+}  // namespace keybinds
+
 }  // namespace cod3::addr
 
 #endif  // COD3_MP

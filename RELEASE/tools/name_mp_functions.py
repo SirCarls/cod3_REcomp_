@@ -59,6 +59,17 @@ KNOWN_MP_FUNCTIONS = [
     (0x825583F8, "Com_Init", "high", "'--- Common Initialization Complete ---'; registers sv_cheats"),
     (0x82415AA0, "MP_ReadLaunchData", "high", "XamLoaderGetLaunchDataSize / XamLoaderGetLaunchData, then "
      "copies the 664-byte controls block (li r5,664) the single-player program stored"),
+    # Controls and profiles (game/mp/controls_mp.cpp, 2026-10-19).
+    (0x82507AD8, "Controls_ExecLayoutFiles", "high", "layout 0-3 in r3: Cbuf_AddText(va('exec %s_<a-d>.cfg', "
+     "'xenon')) then va('exec mp_%s_<a-d>.cfg'), then Cbuf_Execute (the campaign's 0x824E1BD0 runs only the "
+     "first)"),
+    (0x824178E0, "Profile_SettingsReadDone", "high", "a profile settings read's completion (callback at "
+     "0x82417B08): status at request+8, profile at +0x154; on success assigns the 6984-byte block to "
+     "0x82C6B730 + profile * 6984 (0x824E6098), copies its first 664 bytes to 0x82C9BD40 and calls the "
+     "callback at 0x82BCCA8C"),
+    (0x824E6098, "ProfileSettings__Assign", "high", "member-wise copy of a 6984-byte profile settings block "
+     "(0x824DA350 for the first 664 bytes, then XMemCpy of 0x170 at +0x29C and +0x40C, ...); "
+     "Profile_SettingsReadDone's assignment"),
     # The title's network library: one wrapper per NetDll_ import (caller 1 =
     # title). The thin ones (NetDll_socket_wrapper ...) are named by the
     # generic passes; these three have a body of their own (.pdata entries).

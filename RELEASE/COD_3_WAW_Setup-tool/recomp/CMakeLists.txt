@@ -47,6 +47,7 @@ set(COD3_SOURCES
     src/game/function_profiler.cpp  # [hw-scaling]
     src/game/gpu_wait.cpp  # [hw-scaling]
     src/game/job_wait.cpp  # [hw-scaling]
+    src/game/render_job_timing.cpp  # [hw-scaling] the guest render job's time (campaign only)
     src/game/game_api.cpp
     src/game/hd_textures.cpp
     src/game/job_wake.cpp

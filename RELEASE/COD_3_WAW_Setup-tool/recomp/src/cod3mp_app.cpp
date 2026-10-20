@@ -49,7 +49,9 @@
 #include "game/frame_rate.h"
 #include "game/guest.h"
 #include "game/hd_textures.h"
+#include "game/keybinds/binds.h"  // [keybinds]
 #include "game/mouse_look.h"
+#include "game/mp/controls_mp.h"
 #include "game/mp/menus_mp.h"
 #include "game/mp/session.h"
 #include "game/relaunch.h"
@@ -68,6 +70,12 @@
 REXCVAR_DEFINE_DOUBLE(cod3_volume, 1.0, "cod3/Audio",
                       "Master volume: 0 silent, 1 as the game mixes it (World at War: snd_volume)")
     .range(0.0, 2.0)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// As the campaign's (cod3_app.cpp, where the measurement is): multiplayer has
+// the campaign's sound code.
+REXCVAR_DEFINE_BOOL(cod3_audio_lfe, false, "cod3/Audio",
+                    "Send the game's LFE channel to a 5.1 output (in Call of Duty 3 it only repeats the "
+                    "rear channels: off unless comparing)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // The campaign's scripted controller for automated tests (test_input.h).
@@ -188,6 +196,21 @@ int ApplySharedTable(const toml::table& table, const std::string& prefix) {
     if (rex::cvar::SetFlagByName(name, text)) ++applied;
   }
   return applied;
+}
+
+// [mp-controls] One string setting of the campaign's cod3.toml, found the way
+// ApplySharedTable reads names (nested tables join their keys with '_').
+std::optional<std::string> SharedString(const toml::table& table, const std::string& prefix,
+                                        std::string_view name) {
+  for (const auto& [key, value] : table) {
+    const std::string full = prefix.empty() ? std::string(key) : prefix + "_" + std::string(key);
+    if (value.is_table()) {
+      if (auto found = SharedString(*value.as_table(), full, name)) return found;
+    } else if (full == name && value.is_string()) {
+      return value.as_string()->get();
+    }
+  }
+  return std::nullopt;
 }
 
 }  // namespace
@@ -313,6 +336,9 @@ void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
     SetDefault(d.cvar, d.value);
   }
   for (const auto& d : cod3::kKeybindDefaults) SetDefault(d.cvar, d.value);
+  // [keybinds] Keys of the player's own controller rows stay theirs in play
+  // too, once (game/keybinds/binds.h; saved).
+  cod3::binds::MigrateSettings(config_path_);
 }
 
 // The GPU plugin's settings exist only once it is loaded (Cod3App has the
@@ -409,6 +435,23 @@ void Cod3MpApp::OnPostSetup() {
   // binds and the like don't carry over by themselves (cg_fov's default is
   // 80 here, 65 there).
   cod3::Engine::Get().SetConfigPath(user_data_root() / "cod3mp_config.cfg");
+  // [mp-controls] One setting the campaign's console config does carry over:
+  // the crosshair choice (game/mp/controls_mp.h). The campaign's userdata:
+  // this program's when the command line or the environment set it (a
+  // relaunch passes the campaign's command line on), else cod3.toml's
+  // user_data_root, else the folder's userdata/.
+  {
+    std::filesystem::path campaign_userdata = root_dir_ / "userdata";
+    const auto source = rex::cvar::GetFlagSource("user_data_root");
+    if ((source == rex::cvar::Source::kCommandLine || source == rex::cvar::Source::kEnvironment) &&
+        !rex::cvar::GetFlagByName("user_data_root").empty())
+      campaign_userdata = user_data_root();
+    else if (g_shared_settings)
+      if (const auto chosen = SharedString(*g_shared_settings, "", "user_data_root");
+          chosen && !chosen->empty())
+        campaign_userdata = cod3::Utf8ToPath(*chosen);
+    cod3::mpcontrols::TakeCampaignCrosshair(campaign_userdata / "cod3_config.cfg");
+  }
   cod3::ui::GameConsole::Get().SetUserDir(user_data_root());
   // While the console is open, or one of the windows wants the keyboard or
   // the mouse, the game gets no input.
@@ -461,6 +504,15 @@ void Cod3MpApp::OnPostSetup() {
   rex::cvar::RegisterChangeCallback("cod3_volume", [](std::string_view, std::string_view value) {
     rex::audio::SetOutputGain(std::clamp(std::strtof(std::string(value).c_str(), nullptr), 0.0f, 2.0f));
   });
+  auto set_lfe = [](bool on) {  // cod3_audio_lfe, as the campaign
+    rex::audio::SurroundMix mix;
+    mix.lfe = on ? 1.0f : 0.0f;
+    rex::audio::SetSurroundMix(mix);
+  };
+  set_lfe(REXCVAR_GET(cod3_audio_lfe));
+  rex::cvar::RegisterChangeCallback("cod3_audio_lfe", [set_lfe](std::string_view, std::string_view value) {
+    set_lfe(value == "true" || value == "1");
+  });
   cod3::ui::GameConsole::Get().Print(
       cod3::ui::ConsoleChannel::kSystem,
       "Call of Duty 3 multiplayer, static recomp. Press ~ for the console, Shift+~ for the full console, "
@@ -490,13 +542,28 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     cod3::LogFramePacingOnce(window());  // one log line on the frame pacing (game/frame_rate.h)
     if (module_launched_.load(std::memory_order_acquire)) {
       cod3::mp::Tick();      // match state (game/mp/session.h)
+      cod3::mpcontrols::Tick();  // [mp-controls] the crosshair choice back to the campaign
       cod3::mpmenu::Tick();  // the voice / session system check (game/mp/menus_mp.h)
     }
+    // [keybinds] Keys held when an overlay or a game menu opens, or the window loses focus, are let go.
+    cod3::binds::OnUiFrame();
   };
   // Above the ImGui drawer (z 64) so the toggle key never reaches a text box.
   window()->AddInputListener(&key_listener_, 200);
   mouse_listener_.window = window();
   window()->AddInputListener(&mouse_listener_, 199);
+  // [keybinds] Keys that call the game's own actions while you play (fire,
+  // aim, use, reload ...; game/keybinds/binds.h), as in the campaign: above
+  // ImGui and the keyboard/mouse driver, which then never sees them; in the
+  // game's menus the keys go on to the driver (the controller rows). Nothing
+  // while the console or the settings window is open, or while another ImGui
+  // window has the mouse or a text box (the game's own input rule above), or
+  // while one of this program's menu pages is up (game/mp/menus_mp.h).
+  cod3::binds::Attach(window(), 197, [this]() {
+    if (cod3::ui::GameConsole::IsOpen() || settings_ != nullptr || cod3::mpmenu::MenuActive()) return true;
+    auto* drawer = imgui_drawer();
+    return drawer && drawer->HasDialogs() && (drawer->GetIO().WantCaptureMouse || drawer->GetIO().WantTextInput);
+  });
   // Fullscreen refresh rate (F2 > Video; SDK patch 0013).
   window()->SetFullscreenRefreshRate(REXCVAR_GET(cod3_refresh_rate));
 }
@@ -615,6 +682,7 @@ void Cod3MpApp::UpdateMouseCapture() {
 void Cod3MpApp::SaveAll() {
   if (settings_) settings_->SaveIfDirty();
   cod3::Engine::Get().SaveConfig();
+  cod3::mpcontrols::Flush();  // [mp-controls] the crosshair choice into the campaign's config
 }
 
 void Cod3MpApp::SaveAndExit(const char* why) {
@@ -670,8 +738,10 @@ void Cod3MpApp::OnShutdown() {
       window()->SetRelativeMouseMode(false);
       window()->ReleaseMouse();
     }
+    cod3::binds::Detach(window());  // [keybinds]
     window()->RemoveInputListener(&mouse_listener_);
     window()->RemoveInputListener(&key_listener_);
   }
   cod3::Engine::Get().SaveConfig();
+  cod3::mpcontrols::Flush();  // [mp-controls]
 }

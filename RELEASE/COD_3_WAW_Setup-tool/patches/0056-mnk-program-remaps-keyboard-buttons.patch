@@ -1,0 +1,210 @@
+diff --git a/include/rex/input/mnk/mnk_input_driver.h b/include/rex/input/mnk/mnk_input_driver.h
+index c8751b7..4a2998c 100644
+--- a/include/rex/input/mnk/mnk_input_driver.h
++++ b/include/rex/input/mnk/mnk_input_driver.h
+@@ -25,6 +25,19 @@ namespace rex::input::mnk {
+ void SetMouseLookActive(bool active);
+ bool IsMouseLookActive();
+ 
++// The controller button a keyboard bind row presses, as the program wants it.
++// The rows are named for buttons (keybind_right_shoulder ...), and a game may
++// give the row's action to another button than the one the row is named for
++// (a different controller layout). SetButtonRemap(from, to) makes the keys
++// bound to button `from` press button `to` instead; `to` = `from` or 0 puts the
++// row back. Both are single X_INPUT_GAMEPAD_* bits. Only the keyboard's own
++// presses change, never a real controller's. Any thread; read at every state
++// poll.
++void SetButtonRemap(uint16_t from, uint16_t to);
++void ClearButtonRemaps();
++// The button the row of `from` presses now (`from` when not remapped).
++uint16_t RemappedButton(uint16_t from);
++
+ class MnkInputDriver final : public InputDriver,
+                              public rex::ui::WindowInputListener,
+                              public rex::ui::WindowListener {
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index 6533a44..ae123cf 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -167,6 +167,38 @@ bool TokenPressed(const bool (&key_down)[256], std::string_view token, uint8_t l
+ 
+ std::atomic<bool> mouse_look_active{true};
+ 
++// SetButtonRemap: per button bit, the bit its bind row presses (0 = itself).
++// Each slot is independent, so writers on any threads need no lock.
++std::atomic<uint16_t> button_remap[16] = {};
++
++int ButtonBitIndex(uint16_t button) {
++  // A single bit only; anything else is not a button.
++  if (button == 0 || (button & (button - 1)) != 0) {
++    return -1;
++  }
++  int index = 0;
++  while ((button >> index) != 1) {
++    ++index;
++  }
++  return index;
++}
++
++uint16_t ApplyButtonRemaps(uint16_t buttons) {
++  if (buttons == 0) {
++    return 0;
++  }
++  uint16_t out = 0;
++  for (int i = 0; i < 16; ++i) {
++    const uint16_t bit = static_cast<uint16_t>(1u << i);
++    if (!(buttons & bit)) {
++      continue;
++    }
++    const uint16_t to = button_remap[i].load(std::memory_order_relaxed);
++    out |= to ? to : bit;
++  }
++  return out;
++}
++
+ }  // namespace
+ 
+ void SetMouseLookActive(bool active) {
+@@ -177,6 +209,30 @@ bool IsMouseLookActive() {
+   return mouse_look_active.load(std::memory_order_relaxed);
+ }
+ 
++void SetButtonRemap(uint16_t from, uint16_t to) {
++  const int index = ButtonBitIndex(from);
++  if (index < 0 || (to != 0 && ButtonBitIndex(to) < 0)) {
++    REXLOG_WARN("mnk: button remap {:#06x} -> {:#06x} ignored (not single buttons)", from, to);
++    return;
++  }
++  button_remap[index].store(to == from ? 0 : to, std::memory_order_relaxed);
++}
++
++void ClearButtonRemaps() {
++  for (auto& remap : button_remap) {
++    remap.store(0, std::memory_order_relaxed);
++  }
++}
++
++uint16_t RemappedButton(uint16_t from) {
++  const int index = ButtonBitIndex(from);
++  if (index < 0) {
++    return from;
++  }
++  const uint16_t to = button_remap[index].load(std::memory_order_relaxed);
++  return to ? to : from;
++}
++
+ using rex::ui::VirtualKey;
+ 
+ MnkInputDriver::MnkInputDriver(rex::ui::Window* window, size_t window_z_order)
+@@ -347,6 +403,8 @@ X_RESULT MnkInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+     buttons |= X_INPUT_GAMEPAD_DPAD_LEFT;
+   if (IsBindPressed(key_down_, REXCVAR_GET(keybind_dpad_right), exact_keys))
+     buttons |= X_INPUT_GAMEPAD_DPAD_RIGHT;
++  // The program's remaps (SetButtonRemap): the keyboard's presses only.
++  buttons = ApplyButtonRemaps(buttons);
+ 
+   uint8_t lt = IsBindPressed(key_down_, REXCVAR_GET(keybind_left_trigger), exact_keys) ? 0xFF : 0;
+   uint8_t rt = IsBindPressed(key_down_, REXCVAR_GET(keybind_right_trigger), exact_keys) ? 0xFF : 0;
+diff --git a/tests/unit/CMakeLists.txt b/tests/unit/CMakeLists.txt
+index 87e1819..23f45c5 100644
+--- a/tests/unit/CMakeLists.txt
++++ b/tests/unit/CMakeLists.txt
+@@ -17,6 +17,7 @@ add_executable(unit_tests
+     system/achievement_manager_test.cpp
+     system/function_dispatcher_test.cpp
+     input/input_assignment_test.cpp
++    input/mnk_button_remap_test.cpp
+     codegen/codegen_writer_test.cpp
+     codegen/output_partition_test.cpp
+     codegen/output_stamp_test.cpp
+diff --git a/tests/unit/input/mnk_button_remap_test.cpp b/tests/unit/input/mnk_button_remap_test.cpp
+new file mode 100644
+index 0000000..78907cd
+--- /dev/null
++++ b/tests/unit/input/mnk_button_remap_test.cpp
+@@ -0,0 +1,85 @@
++// The program's remaps of the keyboard's controller buttons (SetButtonRemap):
++// the keys of one bind row press another button; a real controller is never
++// touched (the remap lives in the keyboard driver only).
++
++#include <catch2/catch_test_macros.hpp>
++
++#include <cstdint>
++
++#include <rex/cvar.h>
++#include <rex/input/input.h>
++#include <rex/input/mnk/mnk_input_driver.h>
++#include <rex/ui/ui_event.h>
++#include <rex/ui/virtual_key.h>
++
++using rex::input::X_INPUT_GAMEPAD_A;
++using rex::input::X_INPUT_GAMEPAD_LEFT_SHOULDER;
++using rex::input::X_INPUT_GAMEPAD_RIGHT_SHOULDER;
++using rex::input::X_INPUT_STATE;
++namespace mnk = rex::input::mnk;
++using rex::X_RESULT;
++using rex::X_STATUS;
++
++namespace {
++
++constexpr auto kDevice = static_cast<rex::input::DeviceId>(0x4D4E4B00);  // the driver's one device
++
++void Key(mnk::MnkInputDriver& driver, rex::ui::VirtualKey key, bool down) {
++  rex::ui::KeyEvent e(nullptr, key, 1, !down, false, false, false, false);
++  if (down)
++    driver.OnKeyDown(e);
++  else
++    driver.OnKeyUp(e);
++}
++
++uint16_t Buttons(mnk::MnkInputDriver& driver) {
++  X_INPUT_STATE state{};
++  REQUIRE(driver.GetDeviceState(kDevice, &state) == X_ERROR_SUCCESS);
++  return static_cast<uint16_t>(state.gamepad.buttons);
++}
++
++}  // namespace
++
++TEST_CASE("Keyboard rows press the remapped button", "[input][mnk]") {
++  REQUIRE(rex::cvar::SetFlagByName("mnk_mode", "true"));
++  REQUIRE(rex::cvar::SetFlagByName("keybind_right_shoulder", "G"));
++  REQUIRE(rex::cvar::SetFlagByName("keybind_left_shoulder", "4"));
++  REQUIRE(rex::cvar::SetFlagByName("keybind_a", "Space"));
++  mnk::ClearButtonRemaps();
++  mnk::MnkInputDriver driver(nullptr, 0);
++
++  Key(driver, rex::ui::VirtualKey::kG, true);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_RIGHT_SHOULDER);
++
++  // Swap the shoulders: G presses the left one, 4 the right one.
++  mnk::SetButtonRemap(X_INPUT_GAMEPAD_RIGHT_SHOULDER, X_INPUT_GAMEPAD_LEFT_SHOULDER);
++  mnk::SetButtonRemap(X_INPUT_GAMEPAD_LEFT_SHOULDER, X_INPUT_GAMEPAD_RIGHT_SHOULDER);
++  CHECK(mnk::RemappedButton(X_INPUT_GAMEPAD_RIGHT_SHOULDER) == X_INPUT_GAMEPAD_LEFT_SHOULDER);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_LEFT_SHOULDER);
++  Key(driver, rex::ui::VirtualKey::k4, true);
++  CHECK(Buttons(driver) == (X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_RIGHT_SHOULDER));
++  Key(driver, rex::ui::VirtualKey::kG, false);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_RIGHT_SHOULDER);  // 4 alone: the right shoulder now
++  Key(driver, rex::ui::VirtualKey::k4, false);
++
++  // Other rows are untouched.
++  Key(driver, rex::ui::VirtualKey::kSpace, true);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_A);
++  Key(driver, rex::ui::VirtualKey::kSpace, false);
++
++  // Undo one row (to itself), then all.
++  mnk::SetButtonRemap(X_INPUT_GAMEPAD_RIGHT_SHOULDER, X_INPUT_GAMEPAD_RIGHT_SHOULDER);
++  Key(driver, rex::ui::VirtualKey::kG, true);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_RIGHT_SHOULDER);
++  Key(driver, rex::ui::VirtualKey::kG, false);
++  mnk::ClearButtonRemaps();
++  Key(driver, rex::ui::VirtualKey::k4, true);
++  CHECK(Buttons(driver) == X_INPUT_GAMEPAD_LEFT_SHOULDER);
++  Key(driver, rex::ui::VirtualKey::k4, false);
++
++  // Not single buttons: ignored.
++  mnk::SetButtonRemap(X_INPUT_GAMEPAD_LEFT_SHOULDER | X_INPUT_GAMEPAD_A, X_INPUT_GAMEPAD_A);
++  mnk::SetButtonRemap(X_INPUT_GAMEPAD_LEFT_SHOULDER, X_INPUT_GAMEPAD_A | X_INPUT_GAMEPAD_RIGHT_SHOULDER);
++  CHECK(mnk::RemappedButton(X_INPUT_GAMEPAD_LEFT_SHOULDER) == X_INPUT_GAMEPAD_LEFT_SHOULDER);
++  rex::cvar::SetFlagByName("mnk_mode", "false");
++}

@@ -392,6 +392,8 @@ void ThreadProfiler::WorkerLoop() {
     if (every > 0 && !verdict.empty() && now - last_verdict_log >= std::chrono::seconds(every)) {
       last_verdict_log = now;
       REXLOG_INFO("cod3: profiler: {}; busiest: {}", verdict, Busiest(r, 3));
+      if (const std::string job = RenderJobLine(r); !job.empty())
+        REXLOG_INFO("cod3: profiler: {}", job);
     }
     const float hitch_ms = verbose ? 100.0f : 250.0f;
     const auto hitch_gap = verbose ? std::chrono::seconds(5) : std::chrono::seconds(10);
@@ -460,10 +462,15 @@ void ThreadProfiler::WorkerLoop() {
 
 namespace {
 std::atomic<GuestGpuWaitReader> g_guest_gpu_wait_reader{nullptr};
+std::atomic<RenderJobReader> g_render_job_reader{nullptr};
 }  // namespace
 
 void SetGuestGpuWaitReader(GuestGpuWaitReader reader) {
   g_guest_gpu_wait_reader.store(reader, std::memory_order_release);
+}
+
+void SetRenderJobReader(RenderJobReader reader) {
+  g_render_job_reader.store(reader, std::memory_order_release);
 }
 
 void ThreadProfiler::Compute(const FrameCosts& costs) {
@@ -528,16 +535,52 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
   r.lock_spin_won_pct = lock_spin_won_pct;
   if (const GuestGpuWaitReader reader = g_guest_gpu_wait_reader.load(std::memory_order_acquire)) {
     constexpr size_t kGroups = size_t(GuestGpuWait::kCount);
-    uint64_t now_waits[kGroups] = {};
-    reader(now_waits, kGroups);
+    constexpr size_t kAll = kGroups + kGuestGpuWaitRawReasons;
+    uint64_t now_waits[kAll] = {};
+    reader(now_waits, kAll);
     if (period_us > 0 && have_guest_gpu_waits_) {
-      for (size_t i = 0; i < kGroups; ++i)
-        r.guest_gpu_wait_ms[i] =
-            float(double(now_waits[i] - std::min(now_waits[i], previous_guest_gpu_waits_[i])) /
-                  1000.0 / (double(period_us) / 1e6));
+      auto ms_a_second = [&](size_t i) {
+        return float(double(now_waits[i] - std::min(now_waits[i], previous_guest_gpu_waits_[i])) /
+                     1000.0 / (double(period_us) / 1e6));
+      };
+      for (size_t i = 0; i < kGroups; ++i) r.guest_gpu_wait_ms[i] = ms_a_second(i);
+      // Which code the "other" waits mostly were (docs/COD3_D3D.md names the
+      // known ones), for the next look at Direct3D.
+      static constexpr uint32_t kKnown[] = {1, 2, 6, 0xA, 0xC, 0xE};
+      for (uint32_t code = 0; code < kGuestGpuWaitRawReasons; ++code) {
+        const bool known = std::find(std::begin(kKnown), std::end(kKnown), code) != std::end(kKnown) ||
+                           (code >= 7 && code <= 0x11);
+        const float ms = ms_a_second(kGroups + code);
+        if (!known && ms > r.guest_gpu_other_reason_ms) {
+          r.guest_gpu_other_reason = int(code);
+          r.guest_gpu_other_reason_ms = ms;
+        }
+      }
     }
-    for (size_t i = 0; i < kGroups; ++i) previous_guest_gpu_waits_[i] = now_waits[i];
+    for (size_t i = 0; i < kAll; ++i) previous_guest_gpu_waits_[i] = now_waits[i];
     have_guest_gpu_waits_ = true;
+  }
+  if (const RenderJobReader reader = g_render_job_reader.load(std::memory_order_acquire)) {
+    RenderJobTotals now_job;
+    reader(&now_job);
+    const RenderJobTotals& was = previous_render_job_;
+    if (period_us > 0 && have_render_job_ && now_job.jobs >= was.jobs) {
+      const double secs = double(period_us) / 1e6;
+      const uint64_t jobs = now_job.jobs - was.jobs;
+      r.render_jobs_per_s = float(double(jobs) / secs);
+      r.swaps_elsewhere_per_s = float(double(now_job.swaps_elsewhere - was.swaps_elsewhere) / secs);
+      if (jobs > 0) {
+        auto per_job_ms = [&](uint64_t now_us, uint64_t was_us) {
+          return float(double(now_us - std::min(now_us, was_us)) / 1000.0 / double(jobs));
+        };
+        r.render_job_ms = per_job_ms(now_job.job_wall_us, was.job_wall_us);
+        r.render_job_cpu_ms = per_job_ms(now_job.job_cpu_us, was.job_cpu_us);
+        r.back_end_ms = per_job_ms(now_job.back_end_wall_us, was.back_end_wall_us);
+        r.back_end_cpu_ms = per_job_ms(now_job.back_end_cpu_us, was.back_end_cpu_us);
+      }
+    }
+    previous_render_job_ = now_job;
+    have_render_job_ = true;
   }
   std::unordered_map<uint32_t, Previous> next;
   for (const OsThread& t : threads) {
@@ -652,6 +695,10 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
     if (row.role == "game main thread" && !main) main = &row;
     if (row.role == "GPU emulation" && !gpu) gpu = &row;
   }
+  // The main thread's CPU time per game frame (the renderer plan's ceiling,
+  // next to the render job's).
+  if (main && costs.valid && costs.game_fps > 0)
+    r.main_cpu_ms = main->cpu_pct / 100.0f * 1000.0f / costs.game_fps;
   char why[256] = {};
   if (r.valid && costs.valid && F > 0) {
     // The limiter's wait per game frame, on the game's own clock.
@@ -682,7 +729,17 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
                     cap(costs.gpu_wait_ms), F);
     } else if (costs.gpu_thread_ms >= 0.85f * F) {
       // Busy by the clock, but is it working? Its CPU time says.
-      if (gpu && gpu->cpu_pct < 60.0f) {
+      if (gpu && gpu->cpu_pct < 60.0f && gpu->lock_pct >= 15.0f) {
+        // Not the driver: the thread sleeps on the SDK's global lock while
+        // another thread holds it (overnight bench 2026-10-18: 39% of the
+        // time in one level, behind the write-watch fault handler).
+        r.limited_by = "the SDK's global lock, which the GPU emulation thread waits for";
+        std::snprintf(why, sizeof(why),
+                      "the GPU emulation thread is busy %.1f of %.1f ms a frame, uses %.0f%% of a "
+                      "core and waits %.0f%% of the time for the lock (held by %.90s)",
+                      cap(costs.gpu_thread_ms), F, gpu->cpu_pct, gpu->lock_pct,
+                      gpu->lock_holders.empty() ? "not known" : gpu->lock_holders.c_str());
+      } else if (gpu && gpu->cpu_pct < 60.0f) {
         r.limited_by = "the graphics card";
         std::snprintf(why, sizeof(why),
                       "the GPU emulation thread is busy %.1f of %.1f ms a frame but uses only %.0f%% "
@@ -755,6 +812,24 @@ std::string ThreadProfiler::Busiest(const ThreadReport& r, size_t count) {
   return text;
 }
 
+std::string ThreadProfiler::RenderJobLine(const ThreadReport& r) {
+  if (!r.valid || r.render_jobs_per_s < 0.5f) return "";
+  char line[320];
+  int n = std::snprintf(line, sizeof(line),
+                        "the game's render job %.2f ms a frame (%.2f ms of CPU; its back end %.2f ms, "
+                        "%.2f of CPU), %.0f jobs a second",
+                        r.render_job_ms, r.render_job_cpu_ms, r.back_end_ms, r.back_end_cpu_ms,
+                        r.render_jobs_per_s);
+  if (r.main_cpu_ms >= 0 && n > 0 && size_t(n) < sizeof(line))
+    n += std::snprintf(line + n, sizeof(line) - size_t(n),
+                       "; the game's main thread %.2f ms of CPU a frame", r.main_cpu_ms);
+  if (r.swaps_elsewhere_per_s >= 0.5f && n > 0 && size_t(n) < sizeof(line))
+    std::snprintf(line + n, sizeof(line) - size_t(n),
+                  "; Direct3D swapped %.0f times a second outside the render job",
+                  r.swaps_elsewhere_per_s);
+  return line;
+}
+
 std::string ThreadProfiler::Table(const ThreadReport& r, size_t max_rows) {
   std::ostringstream s;
   if (!r.valid) return "(no thread sample yet)\n";
@@ -781,12 +856,19 @@ std::string ThreadProfiler::Table(const ThreadReport& r, size_t max_rows) {
                     r.guest_gpu_wait_ms[i]);
       parts += line;
     }
+    if (r.guest_gpu_other_reason >= 0 && r.guest_gpu_other_reason_ms >= 0.5f) {
+      std::snprintf(line, sizeof(line), "; other mostly reason 0x%X%s, %.0f", r.guest_gpu_other_reason,
+                    r.guest_gpu_other_reason == int(kGuestGpuWaitRawReasons - 1) ? " or above" : "",
+                    r.guest_gpu_other_reason_ms);
+      parts += line;
+    }
     if (total >= 0.5f) {
       std::snprintf(line, sizeof(line), "the game's Direct3D waited for the GPU emulation %.0f ms a second, its threads together (%s)\n",
                     total, parts.c_str());
       s << line;
     }
   }
+  if (const std::string job = RenderJobLine(r); !job.empty()) s << job << "\n";
   for (size_t i = 0; i < r.rows.size() && i < max_rows; ++i) {
     const ThreadRow& t = r.rows[i];
     if (t.cpu_pct < 0.5f && t.guest_wait_pct < 0.5f && t.lock_pct < 0.5f) break;

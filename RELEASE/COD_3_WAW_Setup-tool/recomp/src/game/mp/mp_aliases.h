@@ -44,6 +44,8 @@
 #define __imp__sub_822EBFE8 __imp__sub_822BAD30
 #define sub_822EC168 sub_822BAEB0  // 0x822EC168 -> 0x822BAEB0
 #define __imp__sub_822EC168 __imp__sub_822BAEB0
+#define sub_82344F98 sub_82314360  // 0x82344F98 -> 0x82314360
+#define __imp__sub_82344F98 __imp__sub_82314360
 #define sub_82344FC0 sub_82314390  // 0x82344FC0 -> 0x82314390
 #define __imp__sub_82344FC0 __imp__sub_82314390
 #define sub_82345000 sub_823143D0  // 0x82345000 -> 0x823143D0
@@ -62,5 +64,7 @@
 #define __imp__sub_824AB398 __imp__sub_824CB598
 #define sub_824FDE90 sub_82519178  // 0x824FDE90 -> 0x82519178
 #define __imp__sub_824FDE90 __imp__sub_82519178
+#define sub_82522138 sub_82543340  // 0x82522138 -> 0x82543340
+#define __imp__sub_82522138 __imp__sub_82543340
 #define sub_82525190 sub_82545F88  // 0x82525190 -> 0x82545F88
 #define __imp__sub_82525190 __imp__sub_82545F88

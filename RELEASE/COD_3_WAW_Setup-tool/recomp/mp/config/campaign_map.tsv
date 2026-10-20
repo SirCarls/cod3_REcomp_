@@ -440,3 +440,23 @@ brightness::kPageOnLeft	824BC2C0		later			the campaign's brightness page (pc_men
 brightness::kPageOnRight	824BC248		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
 brightness::kAdvSwapProfile	824E5DF8		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
 brightness::kSetFill	824C0588		later			the campaign's brightness page (pc_menu.cpp, campaign only in cod3mp; MP's option pages are its MP* classes)	
+sub_82522138	82522138	82543340	mp			hand check [keybinds]: the pad poll: in_joystick test first (lwz +32 of 0x82B3ED7C), input+28/+24, 16 pad entries, Sys_Milliseconds for the sticks, entry 15 (BACK) held test; once per frame from 0x82417F78+0x47C (the campaign's from Sys_Main). MP runs it once per local client with that client's kbuttons copied in (0x82B3FFD0 + cl*696)
+keybinds::kSysMilliseconds	82468510	82484D60	mp			hand check: called by the MP pad poll and IN_* (names_mp.toml Sys_Milliseconds)
+keybinds::kInJoystick	829C295C	82B3ED7C	mp			hand check: the pad poll's first test (lis -32076 / lwz -4740); symbols_mp.toml in_joystick
+keybinds::kPadPollOff	82A2A17D	0	dead			the campaign pad poll's 'do nothing' byte: MP's poll has no such test
+keybinds::kKeys	82A59570	82C35030	mp			hand check: Key_SetBinding 0x82528550: lis -32061 / addi 20528, clientActiveIndex*2052 + key*8
+keybinds::kKeysStride			same			Key_SetBinding: mulli 2052 in both
+keybinds::kInput	8290A910	82A875A0	mp			hand check: the input object getter 0x820F9CA8 (lis -32088 / lwz 30112; the campaign's 0x820E7C68); the pad poll reads +28 and +24 in both
+keybinds::kLocalClients	82A98CD0	82C7A270	mp			hand check: the MP pad poll's per-client loop: lis -32056 / addi -23952, +180 the client's controller
+keybinds::kLocalClientPad			same			the client's controller at +180 in both pad polls
+keybinds::kLocalClientState		184	mp			hand check: the MP pad poll passes (*(0x82C7A270 + 184 + cl*3208) == 2) to its press and release paths (0x82543290 / 0x825430A0), which run the bound command only then and give the key to CL_KeyEvent otherwise; Com_Frame counts clients in state 2 the same way
+keybinds::kLocalClientStride		3208	mp			hand check: the MP pad poll steps the clients by 3208 (addi r19,r19,3208; the campaign's 188)
+keybinds::kKbuttons	829C8E68	82B53E20	mp			hand check: IN_GrenadeattackDown 0x8252BC78: lis -32075 / addi 15904, +336 grenadeattack, +456 activatereload (as the campaign's 0x829C8E68)
+keybinds::kActivateReloadButton			same			IN_GrenadeattackDown's throw-back presses kbuttons+456 with key 211 in both
+keybinds::kSavedKbuttons		0x82B3FFD0	mp			hand check: the MP pad poll and Com_Frame copy 696 bytes between it + cl*696 and the kbuttons around each client (lis -32076 / addi -48)
+keybinds::kSavedKbuttonsSize			same			696 bytes per client (li r5,696)
+keybinds::kPadSkip		0x82B3EDB8	mp			hand check: the MP pad poll skips a client whose controller's byte here is set (lis -32076 / addi -4680; lbzx with the client's +180)
+keybinds::kFeBlock	32	0	dead			the campaign pad poll's front-end block (*(g_FEManager+32) +28+cl / +12); MP's poll has its own (kFeInputOn, kFePerClient)
+keybinds::kFeInputOn		50	mp			hand check: the MP pad poll presses and releases pad entries only while byte g_FEManager+50 is set (lbz r11,50(r22))
+keybinds::kFePerClient		208	mp			hand check: the MP pad poll: lwz r3,208+cl*4 of g_FEManager; non-null -> its vfunc at +92 (bctrl), a non-zero byte skips the sticks and the presses
+keybinds::kFeBlockedVfunc		92	mp			see keybinds::kFePerClient (lwz r11,92(r11); mtctr; bctrl; clrlwi r23,r3,24)

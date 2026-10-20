@@ -3,6 +3,7 @@
 
 #include "game/gpu_wait.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -58,6 +59,9 @@ thread_local uint32_t t_reason = 0;
 // How long the game's Direct3D waited, by what for (the thread profiler's
 // GuestGpuWait groups), whether it spun or slept.
 std::atomic<uint64_t> g_wait_us[size_t(cod3::GuestGpuWait::kCount)];
+// The same by the raw reason code (0 ... kRawReasons - 1; larger ones in the
+// last), to say what the "other" waits are.
+std::atomic<uint64_t> g_reason_us[cod3::kGuestGpuWaitRawReasons];
 
 cod3::GuestGpuWait Group(uint32_t reason) {
   using G = cod3::GuestGpuWait;
@@ -71,8 +75,11 @@ cod3::GuestGpuWait Group(uint32_t reason) {
 }
 
 void ReadWaits(uint64_t* microseconds, size_t count) {
-  for (size_t i = 0; i < count && i < size_t(cod3::GuestGpuWait::kCount); ++i)
+  constexpr size_t kGroups = size_t(cod3::GuestGpuWait::kCount);
+  for (size_t i = 0; i < count && i < kGroups; ++i)
     microseconds[i] = g_wait_us[i].load(std::memory_order_relaxed);
+  for (size_t i = kGroups; i < count && i < kGroups + cod3::kGuestGpuWaitRawReasons; ++i)
+    microseconds[i] = g_reason_us[i - kGroups].load(std::memory_order_relaxed);
 }
 
 struct RegisterReader {
@@ -113,8 +120,10 @@ REX_HOOK_RAW(sub_822EBFB8) {
 REX_EXTERN(__imp__sub_822EBFE8);
 REX_HOOK_RAW(sub_822EBFE8) {
   if (t_begin_us != 0) {
-    g_wait_us[size_t(Group(t_reason))].fetch_add(NowMicros() - t_begin_us,
-                                                 std::memory_order_relaxed);
+    const uint64_t waited = NowMicros() - t_begin_us;
+    g_wait_us[size_t(Group(t_reason))].fetch_add(waited, std::memory_order_relaxed);
+    g_reason_us[std::min<uint32_t>(t_reason, cod3::kGuestGpuWaitRawReasons - 1)].fetch_add(
+        waited, std::memory_order_relaxed);
     t_begin_us = 0;
   }
   __imp__sub_822EBFE8(ctx, base);

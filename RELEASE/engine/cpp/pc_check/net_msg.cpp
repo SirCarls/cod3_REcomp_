@@ -186,6 +186,8 @@ std::optional<Answer> huffman_dispatch(Game game, const std::string& f, Args& ar
 
 }  // namespace
 
+const iw_pc::net::MessageTree* message_tree_of(Game game, std::string& error) { return message_tree(game, error); }
+
 std::optional<Answer> dispatch_msg(Game game, const std::string& f, Args& args) {
     if (auto answer = huffman_dispatch(game, f, args)) return answer;
     bool cod2 = game == Game::CallOfDuty2;

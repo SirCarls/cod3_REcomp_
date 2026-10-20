@@ -67,11 +67,15 @@
 
 #![forbid(unsafe_code)]
 
+pub mod client;
 pub mod crt;
 pub mod cstr;
+pub mod fs;
+pub mod game;
 pub mod net;
 pub mod server;
 pub mod shared;
+pub mod x87;
 
 pub use cod3_game::error::{ErrorLevel, GameError};
 

@@ -36,10 +36,15 @@ SETTING_TYPES: Dict[str, type] = {
     "cod3_source": str, "waw_steam": str, "waw_xbox360": str, "waw_pc_disc": str,
     "waw_alternative": str, "waw_map_packs": list, "use_waw": bool,
     "build_linux": bool, "build_windows": bool, "output_dir": str, "work_dir": str,
-    "jobs": int, "build_recomp": bool, "appimage": bool, "install_deps": bool, "fidelityfx": bool,
+    "jobs": int, "build_recomp": bool, "appimage": bool, "install_deps": bool, "fidelityfx_sdk": bool,
     "cleanup": bool, "keep_sdk": bool, "upscale_textures": bool, "upscale_model": str,
     "upscale_noise": int, "upscale_scale": int, "cod3_windowed": bool, "cod3_args": str,
 }
+# Settings older versions kept that mean nothing now: left out quietly.
+# "fidelityfx" (on for everyone) meant AMD CAS / FSR 1, which every build has
+# since SDK patch 0064; the FidelityFX SDK box is "fidelityfx_sdk", off unless
+# ticked (2026-10-19).
+RETIRED_KEYS = ("fidelityfx",)
 # Call of Duty 2 and United Offensive (c3w/pc_games.py): the same choices each.
 PC_GAME_IDS = ("cod2", "coduo")
 for _game in PC_GAME_IDS:
@@ -132,7 +137,8 @@ def clean_settings(settings: Any, notes: Optional[List[str]] = None) -> dict:
     for key, value in settings.items():
         kind = SETTING_TYPES.get(key)
         if kind is None:
-            _note(notes, f"Left out an unknown setting: {str(key)[:40]}")
+            if key not in RETIRED_KEYS:
+                _note(notes, f"Left out an unknown setting: {str(key)[:40]}")
             continue
         ok = isinstance(value, kind) and not (kind is int and isinstance(value, bool))
         if ok and kind is str:

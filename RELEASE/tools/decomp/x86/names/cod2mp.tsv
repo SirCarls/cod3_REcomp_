@@ -36,3 +36,6 @@
 0057B5B6	tolower	CoD2x	C runtime (per-thread locale)
 0057B7D5	toupper	call	C runtime; mirror of tolower (0x0057B5B6), 'a' -> 'A' in the oracle
 0057BA4A	_vsnprintf	CoD2x	CoD2x: Q_vsnprintf; C runtime
+00443A70	Com_BlockChecksum	shape	buffer and length on the stack; MD4 (0x443230 update: ctx esi, length eax, data on the stack; 0x4432D0 final) folded by XOR; called by FS_LoadZipFile on the CRC list
+00443AE0	Com_BlockChecksumKey	shape	buffer, length, key on the stack; MD4 of the key's 4 bytes, then the buffer; FS_LoadZipFile's pure checksum with fs_checksumFeed (0xB1A5B4)
+0043C330	FS_ReferencedIwdPureChecksums	shape	no arguments, returns a static 8192-byte buffer (0xC6E200); "@ ", then va("%i ") of iwd+0x308 for each fs_searchpaths (0x19A1B6C) entry with an iwd (+4), not localized (+0xC), referenced (iwd+0x310); fs_fakeChkSum (0xB1A5C4); fs_checksumFeed (0xB1A5B4) ^ each ^ count; Quake III's FS_ReferencedPakPureChecksums with only its general pass; called by CL_SendPureChecksums

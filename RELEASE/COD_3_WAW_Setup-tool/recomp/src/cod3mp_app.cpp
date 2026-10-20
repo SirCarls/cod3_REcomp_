@@ -537,7 +537,8 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
       // The picture follows the window's shape live (game/ultrawide.h).
       cod3::UpdateDisplayAspect(win->GetActualPhysicalWidth(), win->GetActualPhysicalHeight());
       // A relaunch (back to the campaign) opens the window the same way (game/relaunch.h).
-      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight());
+      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight(),
+                            win->HasFocus());
     }
     cod3::LogFramePacingOnce(window());  // one log line on the frame pacing (game/frame_rate.h)
     if (module_launched_.load(std::memory_order_acquire)) {
@@ -712,7 +713,8 @@ void Cod3MpApp::OnGuestThreadExit(rex::system::XThread* thread) {
   app_context().CallInUIThread([this, relaunch]() {
     SaveAll();
     if (auto* win = window())
-      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight());
+      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight(),
+                            win->HasFocus());
     if (relaunch && cod3::Relaunch(userdata_dir_)) EndProcess("the new instance takes over");
     EndProcess("the game ended");
   });

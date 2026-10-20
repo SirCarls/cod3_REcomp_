@@ -73,6 +73,19 @@ bool IsHostOnlyCommand(std::string_view name);
 Verdict Check(const std::vector<std::string>& args, Source source, bool cheat_dvar);
 // Whether `name` is sv_cheats (any case), the dvar no config may carry.
 bool IsSvCheatsName(std::string_view name);
+// Dvars the game doesn't mark cheat-protected that would let one player see
+// or react to the others better in a multiplayer match: tracers (they show
+// where shots come from), how fast the view settles after a hit, the
+// compass's reach, effect and model culling (thinner smoke far away), the
+// near clip distance (seeing through walls up close), the overall light, the
+// shell-shock blur and red flash, and the game modes' debug drawing (spawn
+// points). cod3mp registers them cheat-protected: the Cvar_Get hook adds the
+// game's own cheat flag, so every guard on cheats covers them (the console,
+// configs, `seta`, the reset at sv_cheats 0, the CHEATS USED mark): they
+// change only with sv_cheats 1, which in a match only the host can set and
+// everyone is told. The campaign keeps them as the game made them.
+// docs/DVARS.md lists them. Any thread; case-insensitive.
+bool IsMultiplayerCheatDvar(std::string_view name);
 
 // --- the cheats command (any thread; the change runs on the guest thread) ----
 // `cheats [0|1]` / `sv_cheats [0|1]`: with no value, reports the state; else

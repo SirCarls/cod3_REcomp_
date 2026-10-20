@@ -23,10 +23,10 @@ The output is derived from the game, so it stays private: it is written to `dev/
 
 | Build | File | Status |
 |---|---|---|
-| PC 1.7, singleplayer + zombies | `CoDWaW.exe` (timestamp 2009-10-29, image base 0x400000) | 14,980 functions found, 14,836 decompiled (the rest are import thunks); 4,036 named + 2,258 named globals; register parameters recovered; types (`dvar_s *` globals, 138 prototypes, 271 typed globals: the plugin's, 26 game globals such as `g_entities`, `level`, `cgArray`, `cls`, `sv`, and the zone loader's vars); a note on every function with zombie-mode code. |
-| PC 1.7, multiplayer | `CoDWaWmp.exe` | 14,994 functions, 14,851 decompiled; 3,631 named + 1,887 named globals; 10,954 functions paired with SP. |
-| Xbox 360, singleplayer + zombies | `default.xex` | 13,708 functions (10,658 from `.pdata`), 13,699 decompiled (with the script handlers the table pass found), every instruction decoded (VMX128 included); 2,413 named + 1,593 named globals (1,522 typed `dvar_s *`); 5,474 functions paired with their PC function (paired functions without a name carry the PC address as a note). |
-| Xbox 360, multiplayer | `default_mp.xex` | 13,003 functions (10,137 from `.pdata`), 12,985 decompiled, every instruction decoded; 2,058 named + 1,516 named globals (1,480 typed `dvar_s *`); 4,569 paired with PC. |
+| PC 1.7, singleplayer + zombies | `CoDWaW.exe` (timestamp 2009-10-29, image base 0x400000) | 14,980 functions found, 14,836 decompiled (the rest are import thunks); 4,111 named + 2,258 named globals; register parameters recovered; types (`dvar_s *` globals, 138 prototypes, 271 typed globals: the plugin's, 26 game globals such as `g_entities`, `level`, `cgArray`, `cls`, `sv`, and the zone loader's vars); a note on every function with zombie-mode code. |
+| PC 1.7, multiplayer | `CoDWaWmp.exe` | 14,994 functions, 14,851 decompiled; 3,723 named + 1,887 named globals; 10,974 functions paired with SP. |
+| Xbox 360, singleplayer + zombies | `default.xex` | 13,708 functions (10,658 from `.pdata`), 13,699 decompiled (with the script handlers the table pass found), every instruction decoded (VMX128 included); 2,465 named + 1,593 named globals (1,522 typed `dvar_s *`); 5,474 functions paired with their PC function (paired functions without a name carry the PC address as a note). |
+| Xbox 360, multiplayer | `default_mp.xex` | 13,003 functions (10,137 from `.pdata`), 12,985 decompiled, every instruction decoded; 2,133 named + 1,516 named globals (1,480 typed `dvar_s *`); 4,569 paired with PC. |
 
 The Xbox 360 executables also hold the console's own libraries (Direct3D, XAudio, the C runtime,
 Bink), which have no PC counterpart, so a good part of their functions will never pair with PC.
@@ -48,6 +48,7 @@ Bink), which have no PC counterpart, so a good part of their functions will neve
 | `carry_addresses.py` | Finds known addresses of one Xbox 360 build in another (CoD3 campaign -> multiplayer): functions through the pairs, places inside functions by lining up the instructions, globals by the addresses the aligned instructions form, strings and RTTI vtables. |
 | `script_usage.py` | Which builtins a set of scripts calls; with `--crossref`, each handler's address in all four builds; `--column NAME=FOLDER` adds a column of calls per folder (one per map). |
 | `script_signatures.py` | What each builtin takes and returns, read from its handler's C: arguments by position and type (`Scr_GetFloat(1)`, `Scr_GetVector(&v, 2)`), the argument counts it tests, what it returns (`Scr_AddInt`...), its own usage and error messages, the other names that share its handler, and KisakCOD's handler of the same name if there is one. |
+| `field_tables.py` | The script field tables (`self.origin`, `ai.goalradius`, `hudelem.alpha`): finds the `{ "name", offset, type, ..., setter, getter }` arrays in a PC or Xbox 360 build by their field names, decodes every entry, pairs each table with the KisakCOD array that shares the most field names (read from KisakCOD's source text, entries spanning lines included), and names a setter or getter that sits in the slot where KisakCOD's entry for the same field names one. Writes an `--extra` table for the naming tools and, with `--tables`, every decoded entry. |
 | `zone_loader.py` | Reads the game's own fastfile loader (PC 1.7 SP) statically: names its `Load_`/`Mark_` functions and types its var globals (for `name_pc.py --extra` and `WawApplyTypes.java`), and writes each structure's load program (private). |
 | `t4sp_types.py` | The T4SP plugin's headers → one C header + typed symbols, for the private decompile; `--check` compiles the header with clang under MSVC's 32-bit layout and checks every documented offset and size, as written and as Ghidra reads it. |
 | `struct_globals.py` | Where a structure lives: each address the code references votes for "base = address − field offset" over the structure's fields (`vote`); `check` makes sure a table of typed globals doesn't overlap and agrees with the names. |
@@ -66,7 +67,8 @@ Passes run strongest first; an address or a name is taken by the first pass that
 | `runtime` (Xbox 360) | The compiler's register save/restore routines (`__savegprlr_14` ... `__restfpr_31`), by their instructions. They have hundreds of callers and look alike, so no other pass may name them; the call-graph pass named six of them wrongly before. | – | 47 / 47 |
 | `public` | Published addresses for this exact build (Plutonium's T4SP plugin, t4-rtx, T4M source, and others), verified against the bytes. | 552 / 46 (+ 130 / 60 globals) | – |
 | `extra` | Private tables of names found by hand with their evidence (`name_pc.py` and `name_x360.py --extra`). PC SP: the typed game globals (see *Types*) the four functions that set them up (`G_InitGame`: `level.clients = g_clients` ... in KisakCOD's order; `G_InitSentients`, `G_InitActors`, `G_InitScrVehicles`), `Com_DPrintf` (prints only while `com_developer` is set, then calls `Com_Printf`), `strstr`, the server's and client's script loaders (both have KisakCOD's `GScr_LoadScriptsAndAnims` strings; the client one loads the client callbacks and ends the client VM's load), the functions that run the player damage, killed and last stand callbacks, and two names the `kisak` pass got wrong from a single shared string: `G_RunFrame` (it had been `DebugDumpAnims`, whose dump is inlined at its end) and `WriteSaveToDevice` (it had been `CG_DispatchServerCommand`; found by checking every `kisak` name's named callees against its KisakCOD function's calls; the same check found MP's `ClearArray`, named `Scr_GetValueString`), and `Sentient_NearestNode`; the zombies table (`zombies` pass): `DB_BuildOSPath` and a note on each function that reads `zombiemode`, plus the network wait (see *Zombies and custom maps*). PC MP and Xbox 360: names checked against Black Ops (x360-family's list of functions with the same code in World at War and Black Ops, where the names differed), each kept only with its own evidence in the strings (`GPad_InitAll` registers the `gpad_*` dvars). PC MP also gets `G_RunFrame`, its player damage and killed callback runners, and notes on the World at War-only actor and vehicle callback runners. A row of kind `note` is a comment only and stays next to whatever name the function gets. | 15 (+ 15 globals, 39 notes) / 5 (+ 4 notes) | 6 / 5 |
-| `fields` (PC SP) | The script field tables (`{ "goalradius", offset, type, setter, getter }`, nine of them: entity, sentient, actor, player, vehicle, hud element, path node, vehicle node, client entity): a setter or getter in the slot where KisakCOD's table of the same field names one gets that name (`ActorScr_SetGoalRadius`). Read from the bytes into the private `zone/script_fields.tsv`, applied with `--extra`. | 41 / – (32 reach MP through `sp`) | – (20 / 5 through `pc-graph`) |
+| `fields` | `field_tables.py` on each build: the setters and getters of the script field tables (entity, sentient, actor, player, hud element, path node, vehicle node and a few smaller ones; 10 to 12 tables per build), named from the same slot of KisakCOD's table (`ActorScr_SetGoalRadius`, `ClientScr_SetScore`, `HudElem_SetAlpha`); KisakCOD's multiplayer tables are preferred for the MP builds. | 64 / 68 | 43 / 47 |
+| `pmove` (PC SP) | The player movement functions (`Pmove`, `PmoveSingle`, `PM_GroundTrace`, `PM_StepSlideMove`, `Jump_Check`, `Mantle_Start`...), matched to KisakCOD's `bgame` functions by call graph, the dvars they read and their constants (private `zone/pmove.md`); two World at War-only ones are named after what they do (`PM_WaterMove`, `PM_GetWaterLevel`). | 62 / – (62 reach MP through `sp`) | – (39 / 35 through `pc-graph`) |
 | `zone` (PC SP) | `zone_loader.py`: the fastfile loader's functions, followed from the asset type switch, named after the structure each one loads (`Load_GfxWorld`, `Mark_XModelPtr`; KisakCOD's name where it has one), and its var globals with their types. | 258 (+ 172 globals) / – (195 reach MP through `sp`) | – |
 | `pc` | The PC function that is the only user of the same strings. A name several functions want goes to the one with the most of those strings (a helper inlined in one build shares a string or two with its caller: `bdConnectionStore::flushAll` on PC has `bdLinkedList::getHead` inside). | – | 897 / 794 |
 | `selfname` | The function's own name in its messages: `"BG_ParseCommands: expected animation"`. | 54 / 64 | 6 / 6 |
@@ -133,7 +135,7 @@ wrongly (99.2%). Its typical mistake is pairing two functions that each exist in
 (an SP-only builtin with an MP-only one in the same place).
 
 With all seeds: Xbox 360 SP pairs 5,474 functions with PC SP, Xbox 360 MP 4,569 with PC MP, and
-PC SP 10,952 with PC MP. `crossref.py` joins the three tables: 13,527 functions, 3,672 of them
+PC SP 10,968 with PC MP. `crossref.py` joins the three tables: 13,527 functions, 3,693 of them
 found in all four builds. In the Xbox 360 C, a paired function that has no name yet carries its PC
 address as a note (`note: pc-graph (PC 005EEE20: the same place in the call graph (3))`), so the
 PC function, which has recovered register parameters and types, can be read next to it.
@@ -206,6 +208,35 @@ addresses):
   variables is such an error: World at War's `Scr_TerminalError` sets its terminal flag and then
   clears it again when it calls `Scr_Error` (Call of Duty 4's does stop the game). A loop that does
   not wait for 2,500 ms is killed in a release run and only warned about while the map loads.
+
+**Player movement** (private `zone/pmove.md`, `pmove_dvars.tsv`): World at War's movement is Call of
+Duty 4's, and in singleplayer it follows KisakCOD's multiplayer branch of the shared code, not its
+singleplayer one. The core constants are CoD4's (`g_speed` 190, gravity 800, friction 5.5, stop
+speed 100, jump height 39, sprint x1.5 for 4 s, step 18, walkable slope 0.7, the same acceleration,
+slide/step and stance tables). World at War adds water (six levels that change friction and speed,
+block prone, crouch and sprint, a separate swim move without gravity, and drowning), the last stand
+player types (no movement input, a prone-height view), players that cannot stand on other players,
+the bayonet charge, and different sprint rules (a second press does not end a sprint, aiming down
+the sights blocks starting one, jumping out of a sprint costs meter). For CoD4-style movement built
+from KisakCOD's singleplayer code, three things World at War shows differently: the ground trace
+lets a player moving away from the surface leave the ground, the crouch check refuses prone on the
+ground with an event, and client prediction uses the multiplayer design.
+
+**Network protocol** (private `zone/network.md`, `netfields.tsv` with all 44 netfield tables of both
+programs read from the bytes): World at War's messages are built on Call of Duty 4's multiplayer
+code but a CoD4 parser will not read them. The server message opcodes moved (server command 8,
+download 9, snapshot 10, end 12 in MP and 11 in SP); every netfield table changed (a larger entity
+state with `targetname`, new field orders, wider fields, new actor tables, more player-state fields)
+and there are new field codes for ranged floats, numbered differently in SP and MP; the gamestate
+has 3,056 config strings and three more sections; network fragments are 1,164 bytes; user commands
+carry separate forward and right moves and 27 button bits; and the connection is answered with a
+Demonware license ID and carries a Demonware ticket instead of using an authorize server.
+Singleplayer co-op (zombies included) is a protocol of its own on top of that: each client has a
+16-frame ring, a snapshot carries the clients, up to 32 actors and their animation commands besides
+the entities, entities can be delta-coded from other entities or a cache sent with the gamestate,
+the local player can read the server's state directly, and there is no XOR encoding. A Rust server
+that wants original clients to join must copy these tables exactly; a Rust-only game can use them as
+the reference for what each snapshot holds.
 
 ## Zombies and custom maps
 

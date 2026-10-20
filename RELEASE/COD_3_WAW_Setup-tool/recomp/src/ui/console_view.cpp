@@ -11,6 +11,7 @@
 
 #include "game/addresses.h"
 #include "ui/dvar_domain.h"
+#include "ui/dvar_help.h"
 #include "ui/waw_dvars.h"
 
 namespace cod3::ui {
@@ -241,6 +242,7 @@ void ConsoleView::DescribeSingleMatch() {
     case Type::kGameDvar:
       d = domain::ForGameDvar(s.name, s.reset);
       single_flags_ = ConsoleFlagString(s.flags);
+      if (const dvar_help::Entry* e = dvar_help::Find(s.name)) single_help_ = e->text;
       break;
     case Type::kWaw:
       d = domain::ForWaw(*s.waw, snapshot_);
@@ -476,6 +478,16 @@ void ConsoleView::DrawSuggestions(ImVec2 pos, bool above, float width) {
             ImGui::SameLine(origin + name_w + 32 + value_w + 24);
             ImGui::TextColored(dim_col, "%s", s.domain.c_str());
           }
+        }
+      }
+      // The highlighted dvar's help line under the list (ui/dvar_help.h).
+      if (suggestion_sel_ >= 0 && suggestion_sel_ < static_cast<int>(suggestions_.size()) &&
+          suggestions_[suggestion_sel_].type == Suggestion::Type::kGameDvar) {
+        if (const dvar_help::Entry* e = dvar_help::Find(suggestions_[suggestion_sel_].name)) {
+          ImGui::Separator();
+          ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - 32.0f);
+          ImGui::TextColored(dim_col, "%s", e->text);
+          ImGui::PopTextWrapPos();
         }
       }
     }

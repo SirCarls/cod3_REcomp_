@@ -1,0 +1,16 @@
+[package]
+name = "iw_join"
+description = "Joins a Call of Duty 2 1.3 or United Offensive 1.51 server (a CB or Steam copy's, or iw-server) with the Rust client's network code, and stays in the game."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[[bin]]
+name = "iw-join"
+path = "src/main.rs"
+
+[dependencies]
+iw_pc = { path = "../../crates/iw_pc" }
+game_sources = { path = "../../crates/game_sources" }

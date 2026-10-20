@@ -23,19 +23,22 @@ checks; they are only read.)
 | | |
 |---|---|
 | `iw_pc/base.h`, `cstr.h`, `crt.h` | bytes, games, the game's errors; C strings in fixed buffers; the C runtime pieces (`tolower`, `strncpy`, `Com_sprintf`'s rules) |
-| `iw_pc/shared/` | strings, info strings, hashes, file filters |
+| `iw_pc/shared/` | strings, info strings, hashes, file filters, the archives' block checksums (MD4) |
+| `iw_pc/fs/` | the search path's archives and the list of their pure checksums a client sends a pure server |
 | `iw_pc/net/msg` | the message buffer (`msg_t`): bits, bytes, strings, angles, key-coded values |
 | `iw_pc/net/huffman` | the message Huffman tree and United Offensive's adaptive coder |
 | `iw_pc/net/protocol_data`, `iw_pc/sha256` | the protocol tables, read from the player's executable and checked by SHA-256 |
 | `iw_pc/net/oob` | packets without a connection: words, `getinfo`/`getstatus` answers, challenges, the connect decision, the server browser entry |
 | `iw_pc/net/netchan` | the connection: header, fragments, scrambling |
 | `iw_pc/net/delta` | delta coding of entities, clients, the player state and player commands, both ways |
+| `iw_pc/net/game_state` | what the server writes into a client's messages: its reliable commands, the snapshot's entity and client lists, the whole snapshot, the game state and its sending (the message types are here too) |
+| `iw_pc/client` | the client's side of the connection: reading the server's messages (the game state, snapshots with their entities and clients, reliable commands, the whole message), the packet's arrival and packets without a connection, joining (`getchallenge`, `connect`), the system info, the client game's clock, making and sending the player's commands, reliable commands and `cp` (pure checksums), downloads, the `connect` command |
 | `pc_check/` | `pc_check_cpp`, the checker's answerer (the protocol of `engine/tools/pc_check`) |
 | `tests/` | unit tests that need no game files (`ctest`) |
 
-The Rust crate also has the server (`iw_pc::server`, `iw-server`) and the game state and
-snapshot writers (`iw_pc::net::game_state`); they are built from the functions above and come
-to C++ when they are checked as functions of their own.
+The Rust crate also has the server (`iw_pc::server`, `iw-server`) and the client's connection driver
+(`iw_pc::client::connection`, `iw-join`); they are built from the functions above and come to
+C++ when they are checked as functions of their own.
 
 ## Building
 

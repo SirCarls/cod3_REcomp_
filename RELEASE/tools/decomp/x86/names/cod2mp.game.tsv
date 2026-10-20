@@ -1,0 +1,36 @@
+# CoD2MP_s.exe 1.3: names for iw_pc::game and the math it uses. address<tab>name<tab>how<tab>evidence
+00426CF0	Vec3Normalize	CoD2x	v in esi, the length on the x87 stack
+00426D80	Vec2Normalize	shape	our name; v in esi: the length of (x, y), then both scaled by 1 / length (as Vec3Normalize, two components); called twice by PM_InertiaTurnTooSharp
+0052FD30	Jump_ReduceFriction	call	ps in eax; the one callee of PM_Friction (pm_flags 0x80000); jump_slowdownEnable (0x0196FF8C); the mac build's name
+00515490	PM_Friction	CoD2x	ps in esi, pml in edi; stopspeed (0x019439E0), friction (0x01943A28)
+005155A0	PM_InertiaTurnTooSharp	strings	our name; "angle is %f (oldVel is (%f,%f), vel is (%f, %f))\n" with inertiaDebug; ps in eax, dir in ecx, (amount); compares with inertiaAngle (0x01943A54)
+00515680	PM_ClampInertia	call	our name; ps in edx, (amount, dir); inertiaMax (0x01943A2C); called by PM_Accelerate
+005156E0	PM_Accelerate	CoD2x	wishdir in eax, ps in edi, pml in ebx, (wishspeed, accel)
+00515810	PM_MoveScale	shape	our name (Call of Duty 4's): ps in ecx, (forward, right, up) floats; speed * max / (sqrt * 127), 0.4 with pm_flags 0x100 or a lean, 3 / 6 / player_spectateSpeedScale (0x01943A1C) for pm_type 2 / 3 / 4; called with (0, 0, 127) by the noclip move
+005158E0	PM_CmdScale	shape	Quake III's name: cmd in esi, ps in edi; the same from the command's forward and right bytes (integers); called by PM_AirMove
+00518F90	PM_DropTimers	CoD2x	ps in eax, pml in esi (msec at +0x28): pm_time, legsTimer, torsoTimer
+00426E90	Vec3NormalizeTo	CoD2x	v in edi, out in esi, the length on the x87 stack
+004274B0	vectoyaw	shape	Quake III's name: v in ecx; 0 for x = y = 0, else atan2(y, x) * 180 / pi, plus 360 below 0; called by PM_SetMovementDir with vLadderVec
+00427750	VecToAngles	CoD2x	v in esi, angles in edi
+00429C60	AngleNormalize180	CoD2x	(angle) on the stack: 16 bits of a turn (ftol2(a * 182.04445) & 0xFFFF * 360 / 65536), less 360 above 180
+00515C30	PM_SetMovementDir	q3	pm in eax, pml in ecx: movementDir (ps+0x9C) from the prone direction, the ladder or the last move (origin - pml+0x60)
+00515430	PM_ClipVelocity	q3	in in ecx, normal in eax, out in edx: v + n * -(b - |b| * 0.001), b = v . n
+005153F0	PM_AddTouchEnt	q3	pm in eax, the entity number in edi: not 0x3FE, not twice, numtouch (pm+0x40) below 32, touchents at pm+0x44
+0052FBD0	Jump_GetStepHeight	shape	Call of Duty 4's name; ps in edx, origin in ecx, the step out in edi: jump_height (0x0196FF94), jump_stepSize (0x0196FF90)
+0052FD90	Jump_ClampVelocity	shape	Call of Duty 4's name; ps in ecx, origin in eax: velocity[2] at most sqrt(2 * (jump_height + jumpOriginZ - z) * gravity)
+005184E0	PM_ShouldMakeFootsteps	shape	Call of Duty 4's name; pm in esi: viewHeightTarget not 40 or 11, pm_flags 0x100 clear, xyspeed (pm+0xDC) >= player_footstepsThreshhold (0x019439D4)
+00403710	RoundFloatToInt	shape	our name; (x) on the stack: fistp(x + 2^-30); called by PM_StepSlideMove and ten client functions
+00515310	PM_playerTrace	shape	Call of Duty 4's name; pm in esi, results in ebx, (start, mins, maxs, end, passEntityNum, contentMask): the handler table at 0x005DB818 (pm+0xE4); started in a body (results+0x23, contents 0x2000000): PM_AddTouchEnt, tracemask loses the bit, traced again
+005301F0	PM_PermuteRestrictiveClipPlanes	shape	Call of Duty 4's name; planes in edx, (velocity, planeCount, permutation): insertion sort by p . v, returns the smallest
+005302A0	PM_SlideMove	q3	(pm, pml, gravity) cdecl: four bumps, MAX_CLIP_PLANES 8, impactSpeed at pml+0x5C, allsolid at trace+0x22
+005153B0	PM_AddEvent	q3	ps in eax, the event in ecx: events (ps+0xA8)[eventSequence (ps+0xA4) & 3] = (byte) event, eventParms (ps+0xB8) 0, eventSequence++
+00516960	PM_FootstepType	shape	Call of Duty 4's name; ps in edx, pml in eax: groundTrace.surfaceFlags 0x2000 none; type (flags >> 20) & 31; prone +0x2F, slowed or leaning +0x18, else +1
+00518380	PM_FootstepEvent	shape	Call of Duty 4's name; old bob cycle in ecx, new in edx, footstep in eax, (pm, pml): (old + 64) ^ (new + 64) bit 7; on a ladder a trace 31 into vLadderVec, type 0x15 for none
+004279C0	AngleVectors	q3	angles in edx, forward in esi, right in edi, up in ebx (each may be NULL); fsincos of a * 0.017453292
+004936E0	Vec3Lerp	shape	Call of Duty 4's name; from in eax, to in edx, out in ecx, (fraction): (to - from) * f + from
+004275B0	vectopitch	shape	Call of Duty 4's name; v in esi: VecToAngles' pitch
+00429B70	AngleSubtract	q3	(a1, a2): a1 - a2 by whole turns to [-180, 180]
+00514700	BG_CheckProne	shape	Call of Duty 4's name; 14 stack arguments (passEntityNum, vPos, fSize, fHeight, fYaw, pfTorsoHeight, pfTorsoPitch, pfWaistPitch, bAlreadyProne, bOnGround, vGroundNormal, handler, proneCheckType, prone_feet_dist); the handler table's trace
+00530130	PM_VerifyPronePosition	shape	Call of Duty 4's name; pm in eax, the start velocity in ebx, (the start origin): prone (pm_flags 1): BG_CheckProne(clientNum, origin, ps+0x578, 30, proneDirection, ps+0x5A8/0x5AC/0x5B0, 1, 1, NULL, handler, 0, 66); failed: origin and velocity back
+00530AC0	PM_StepSlideMove	q3	(pm, pml, gravity): step 18 (prone 10), EV_STEP_VIEW 0x8F with the height + 128, bobCycle at ps+8
+00515FA0	PM_AirMove	q3	pml in eax, (pm): PM_Friction, PM_CmdScale, level forward/right, PM_Accelerate at 1, the ground plane clip inline, PM_StepSlideMove(1), PM_SetMovementDir

@@ -116,11 +116,13 @@ bool IsOneOffArg(const std::string& arg) {
 
 // The window now (NoteWindowState); width 0 until the UI has run.
 std::atomic<bool> g_fullscreen{false};
+std::atomic<bool> g_has_focus{true};
 std::atomic<uint32_t> g_window_width{0}, g_window_height{0};
 
 // Arguments the new instance gets instead of the old ones about the window.
 bool IsWindowArg(const std::string& arg) {
-  for (const char* name : {"--fullscreen", "--window_width", "--window_height"}) {
+  for (const char* name :
+       {"--fullscreen", "--window_width", "--window_height", "--start_in_background"}) {
     const size_t n = std::char_traits<char>::length(name);
     if (arg.compare(0, n, name) == 0 && (arg.size() == n || arg[n] == '=')) return true;
   }
@@ -135,6 +137,10 @@ std::vector<std::string> WindowArgs() {
     out.push_back("--window_width=" + std::to_string(g_window_width.load(std::memory_order_relaxed)));
     out.push_back("--window_height=" + std::to_string(g_window_height.load(std::memory_order_relaxed)));
   }
+  // SDK patch 0063 (an SDK without it would refuse the whole command line).
+  if (rex::cvar::GetFlagInfo("start_in_background"))
+    out.push_back(std::string("--start_in_background=") +
+                  (g_has_focus.load(std::memory_order_relaxed) ? "false" : "true"));
   return out;
 }
 
@@ -279,8 +285,10 @@ bool Spawn(Program program_id, const std::filesystem::path& data_file) {
 
 }  // namespace
 
-void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height) {
+void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height,
+                     bool has_focus) {
   g_fullscreen.store(fullscreen, std::memory_order_relaxed);
+  g_has_focus.store(has_focus, std::memory_order_relaxed);
   g_window_width.store(logical_width, std::memory_order_relaxed);
   g_window_height.store(logical_height, std::memory_order_relaxed);
 }

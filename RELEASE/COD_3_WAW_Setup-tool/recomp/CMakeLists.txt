@@ -85,6 +85,7 @@ set(COD3_SOURCES
     src/ui/console_pages.cpp
     src/ui/console_view.cpp
     src/ui/dvar_domain.cpp
+    src/ui/dvar_help.cpp
     src/ui/game_console.cpp
     src/ui/hud_overlay.cpp
     src/ui/problem_log.cpp

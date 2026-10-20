@@ -55,6 +55,31 @@ So never assume a port carries over: check it against each game, as `iw_pc` does
   sending. (CoD2/UO)
 - **A game's error exit is a result.** Both oracles end the call at `Com_Error` (and the PC
   checker at the games' warning printers) and the port must return the same error. (CoD3, CoD2/UO)
+- **Functions that live on big globals can be checked whole:** the client's message readers
+  keep everything in `cl` (1.6 MB) and part of `clc`. The x86 checker passes such blocks as a
+  `Region` argument: written into the guest before the call, compared byte for byte after it,
+  sparse-coded on the line protocol (`g:`, runs of non-zero bytes), and left out of the oracle's
+  per-write page tracking during the call (a Python hook on each write of a megabyte `memset`
+  is the slow part otherwise). The answerer converts the bytes to the port's structure with a
+  layout table and back; cases fill only what the port models, so the rest is zero on both
+  sides and any stray write by either shows up. A function that writes outside its structure
+  on some input (see "missing count" below) then writes into the compared block or crashes the
+  oracle, which tells you which inputs to leave out. (CoD2/UO) Check: CoD3's client `cl`.
+- **Calls into the rest of the game can be checked as a record:** where a function calls the
+  console variables, the file system or the command buffer and goes on, the x86 checker runs
+  those callees as stand-ins (`StandIn`): each call is recorded with its arguments read as
+  numbers or strings and returns at once (`effect` writes back what the caller reads next, a
+  cvar's new value). The port hands those things to its caller instead (a list of settings,
+  "the client became active"), and the answerer turns that into the same record, which is
+  compared (`CallLog`). A value a case needs from the game itself (an info string its cvars
+  make, a hash of a key) comes from a call of the original made before the case's.
+  (CoD2/UO) Check: CoD3's `CL_SystemInfoChanged`, `CL_FirstSnapshot`.
+- **Unicorn: a hook added after the code ran once isn't seen.** Unicorn keeps translated code,
+  and a code hook added later (a stop or stand-in that only one spec uses) doesn't reach blocks
+  already translated, so a check that runs after another quietly runs the real callee: drop
+  the cache for the hooked address (`uc.ctl_remove_cache(address, address + 1)`). A write to
+  unmapped memory also marks its page (the write hook runs before the fault): an undo step
+  must skip such pages. (CoD2/UO checker) Check: the PowerPC checker's hooks.
 
 ## Floating point
 
@@ -144,6 +169,31 @@ Found in CoD2 1.3 and UO 1.51 (`docs/PC_MULTIPLAYER.md`); **check each in CoD3's
   executable (outside the structure for some tables). A port must also not trust indexes the
   writer never sends: UO's HUD reader takes a 5-bit field index for a 30-field table and reads
   past it. (CoD2/UO) Check: CoD3's readers for the same three.
+- **The client's message loop differs at the end:** Call of Duty 2's `CL_ParseServerMessage`
+  is `do { ... } while (!msg.overflowed)`, so a part that leaves the message overflowed (a
+  field count past its table, a read past the end) quietly ends the message; United Offensive
+  (Quake III's loop) reads on and fails with "Illegible server message". Call of Duty 2 also
+  reads a snapshot's "one more client" bit past the end as -1, taken as yes, then a client
+  numbered -1; and an entity numbered -1 takes its "baseline" from the bytes before the
+  baselines (the end of the last snapshot slot). (CoD2/UO) Check: CoD3's `CL_ParseServerMessage`.
+- **The client's first player command in a packet is coded against a default, not zeros:**
+  Quake III's `CL_WritePacket` starts from a zeroed `nullcmd`; CoD2 and UO start from
+  `MSG_SetDefaultUserCmd(&cl.snap.ps)`: the weapon bytes, pitch and yaw relative to the delta
+  angles, and lean/stance buttons when a player-state flag is set. A server or client that
+  zero-initializes it decodes the first command of every packet wrong. (CoD2/UO) Check: CoD3's
+  `CL_WritePacket` and `SV_UserMove`.
+- **The client keeps time on its own clock and drifts it to the server's.** CoD2 and UO keep
+  Quake III's `CL_SetCGameTime` / `CL_AdjustTimeDelta` shape (jump past 500 ms off, halfway
+  past 100, else a millisecond a snapshot) with changes: both take the time between the last
+  two snapshots off a late clock, CoD2 also 5 ms and drifts toward the new delta (none when
+  equal) and has no `cl_timeNudge`; UO keeps two client clocks (the network code runs on one,
+  the client game's clock on the other, apart only while `cl_avidemo` records). Both send to a
+  LAN server every frame. (CoD2/UO) Check: CoD3's client clock.
+- **A buffer just in front of another can make a long text repeat:** UO builds its `connect`
+  text in a 1024-byte stack buffer right before the one it copies it to, with a forward copy:
+  past 1024 bytes the text starts over (settings over 1014 characters). The port does the same;
+  CoD2's layout differs and runs past its frame at 1023 instead (left out of the checks).
+  (CoD2/UO) Check: CoD3's `CL_CheckForResend`.
 - **Random bytes are a poor input for message readers:** they drive the originals into the
   out-of-table reads above. The checks build messages the way the writers do (every field kind
   in every form, counts anywhere in the table, cut short where the reader stops at the end)
@@ -218,6 +268,12 @@ community master server. Its numbers, checked against the owner's executables wh
   through Demonware's matchmaking (`CL_MP_FindSessions`, `bdMatchMaking`); LAN through
   `localservers`. So cod.pm's masters don't see World at War servers, and a Rust World at War server
   reaches a stock client by LAN or by Demonware's protocol, not by a master. (World at War)
+- **The client reads a server command's first letter only** (`CL_GetServerCommand`, CoD2 and
+  UO): `d` config string, `x`/`y`/`z` a long one in parts, `B`/`n` map restart, `w` disconnect
+  (Quake III's words `cs`, `bcs0`-`2`, `map_restart`, `disconnect` are gone), and the text of
+  `d` is the rest of the line as it is, quotes kept. A long string that is itself a `z` command
+  adding nothing loops forever in the originals. Both games send `cp` (pure checksums) after
+  every game state, pure server or not. (CoD2/UO) Check: CoD3's `CL_GetServerCommand`.
 - **Text colors** (cod.pm's color guide; the color function is the same in CoD 1.5 `0x405240`,
   UO 1.51 `0x405AA0` and CoD2 1.3 `0x4032E0`): `^0`-`^7` index Quake
   III's eight colors, but `^8` and `^9` are the cvars `g_TeamColor_Allies` and `g_TeamColor_Axis`
@@ -233,6 +289,11 @@ community master server. Its numbers, checked against the owner's executables wh
 - **Never trust a published name for the calling convention.** MSVC 7.1 builds (CoD2, UO) pass
   most internal arguments in registers in no fixed order; the function a public table calls
   `Q_stricmp` in CoD2 is really `Q_stricmpn` with `n` in `eax`. Read the prologue. (CoD2/UO)
+- **A registration's result is stored after the next one is set up:** MSVC schedules the
+  `mov [global], eax` of `Dvar_RegisterBool("sv_paused", ...)` after the pushes of the next
+  call, right next to the next name (`push "cl_paused"; mov [0xC27284], eax`), so the global
+  beside a name is usually the one before it. Read the store after the call returns. (CoD2/UO:
+  `cl_paused` and `sv_paused` were swapped in the checks' tables) Check: CoD3's dvar globals.
 - **Self-naming messages** (`"SV_DirectConnect()\n"`, `"%s: ..."` with the name as an argument),
   console command registrations (`Cmd_AddCommand("name", handler)`), dvar/cvar registrations and
   `{ "name", handler }` tables name thousands of functions in every build. (World at War, CoD2/UO)

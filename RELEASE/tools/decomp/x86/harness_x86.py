@@ -27,6 +27,7 @@ from __future__ import annotations
 import math
 import os
 import random
+import re
 import struct
 import shutil
 import subprocess
@@ -34,7 +35,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
 
-from oracle_x86 import CallResult, GuestError, GuestFault, X86Oracle, x87_to_f32_bits, x87_to_f64_bits
+from oracle_x86 import (CallResult, GuestError, GuestFault, StandIn, X86Oracle, x87_to_f32_bits,
+                        x87_to_f64_bits)
 from pe import ROOT
 
 ENGINE = ROOT / "engine"
@@ -236,6 +238,82 @@ class GlobalU32(Arg):
         return oracle.read(self.address, 4)[::-1]
 
 
+class CallLog(Arg):
+    """What the call asked its stand-ins (Spec.stand_ins) to do, in order, as
+    a buffer the answerer fills: for each call its label, a 0 byte, the
+    number of arguments (a byte), then each argument: b"i" and the 32-bit
+    word (big-endian), or b"s", the length (u32, big-endian) and the bytes."""
+    at = "none"
+    mutable = True
+
+    def words(self, oracle, value):
+        return [1]  # not passed; non-zero so that the harness reads it back
+
+    def token(self, value):
+        return "b:"
+
+    def read_back(self, oracle, pointer, value):
+        out = bytearray()
+        for label, values in oracle.calls:
+            out += label.encode() + b"\0" + bytes([len(values)])
+            for v in values:
+                if isinstance(v, (bytes, bytearray)):
+                    out += b"s" + struct.pack(">I", len(v)) + bytes(v)
+                else:
+                    out += b"i" + struct.pack(">i", v)
+        return bytes(out)
+
+
+SPARSE_GAP = 16  # zero bytes that split a run in a sparse region encoding
+
+
+def sparse_encode(data: bytes) -> bytes:
+    """A region's bytes as the size (u32, big-endian), then runs: offset and
+    length (u32 each) and the bytes. Runs are the non-zero bytes, grouped
+    while fewer than SPARSE_GAP zero bytes separate them; the answerers use
+    the same rule, so equal regions give equal encodings."""
+    out = [struct.pack(">I", len(data))]
+    start = end = None
+    for m in re.finditer(rb"[^\x00]+", data):
+        lo, hi = m.span()
+        if start is not None and lo - end < SPARSE_GAP:
+            end = hi
+            continue
+        if start is not None:
+            out.append(struct.pack(">II", start, end - start) + data[start:end])
+        start, end = lo, hi
+    if start is not None:
+        out.append(struct.pack(">II", start, end - start) + data[start:end])
+    return b"".join(out)
+
+
+@dataclass
+class Region(Arg):
+    """A block of the game's globals (a structure like the client's `cl`)
+    the function reads and changes: the value (bytes of `size`) is written
+    to `address` before the call and the whole block is compared after it.
+    The answerer gets it as `g:` (sparse_encode, hex) and returns it the
+    same way in a `b:` token. Writes to it aren't tracked page by page
+    (oracle `untracked`)."""
+    address: int = 0
+    size: int = 0
+    at: str = "none"
+    mutable = True
+
+    def words(self, oracle, value):
+        data = bytes(value)
+        if len(data) != self.size:
+            raise ValueError(f"region value is {len(data)} bytes, not {self.size}")
+        oracle.write(self.address, data)
+        return [self.address]
+
+    def token(self, value):
+        return "g:" + sparse_encode(bytes(value)).hex()
+
+    def read_back(self, oracle, pointer, value):
+        return sparse_encode(oracle.read(self.address, self.size))
+
+
 # --- results -----------------------------------------------------------------------
 
 class Ret:
@@ -329,6 +407,9 @@ class Spec:
                                     # their globals kept (X86Oracle.keep_state): ("MSG_initHuffman",)
     stops: dict[int, str] = field(default_factory=dict)  # end points (address: label) for a function that
                                     # decides what runs next: the call ends at the first one reached (RetStop)
+    stand_ins: dict[int, StandIn] = field(default_factory=dict)  # functions the call doesn't run, recorded
+    import_stand_ins: dict[str, StandIn] = field(default_factory=dict)  # the same for imports (`dll!name`)
+                                    # instead (oracle_x86.StandIn; a CallLog argument compares the record)
 
     @property
     def request_name(self) -> str:
@@ -413,7 +494,12 @@ def guest_call(oracle: X86Oracle, s: Spec, address: int, values: list) -> tuple[
             registers[arg.at] = words[0]
     if s.setup:
         s.setup(oracle, values)
-    result = oracle.call(address, registers, stack, s.callee_pops, s.fpu or GAME_FPU[s.image], stops=s.stops)
+    untracked = [(a.address, a.address + a.size) for a in s.args if isinstance(a, Region)]
+    stand_ins = dict(s.stand_ins)
+    for name, stand_in in s.import_stand_ins.items():
+        stand_ins[oracle.import_stop(name)] = stand_in
+    result = oracle.call(address, registers, stack, s.callee_pops, s.fpu or GAME_FPU[s.image], stops=s.stops,
+                         untracked=untracked, stand_ins=stand_ins)
     if result.stopped is not None:
         return result, pointers
     expected_depth = 1 if s.ret.on_x87 else 0
@@ -509,9 +595,22 @@ def _short(line: str, keep: int = 96) -> str:
     return " ".join(out)
 
 
+def _where(expected: list[str], actual: list[str]) -> str:
+    """Where the first differing long token differs (a byte offset and the
+    bytes around it), which the shortened tokens don't show."""
+    for k, (e, a) in enumerate(zip(expected, actual)):
+        if e == a or len(e) <= 98 and len(a) <= 98:
+            continue
+        i = next((i for i in range(min(len(e), len(a))) if e[i] != a[i]), min(len(e), len(a)))
+        start = max(2, i - 40) & ~1
+        return (f"\n      (token {k} differs at byte {(i - 2) // 2}: original ...{e[start:i + 40]}..."
+                f" rust ...{a[start:i + 40]}...)")
+    return ""
+
+
 def _difference(request: str, expected: list[str], actual: list[str]) -> str:
     return (f"{_short(request)}\n      original: {_short(' '.join(expected))}"
-            f"\n      rust:     {_short(' '.join(actual))}")
+            f"\n      rust:     {_short(' '.join(actual))}{_where(expected, actual)}")
 
 
 def check(s: Spec, oracle: X86Oracle, rust: RustChecker, address: int, rng: random.Random,

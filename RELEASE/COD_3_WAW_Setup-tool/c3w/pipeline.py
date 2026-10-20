@@ -38,9 +38,19 @@ from .xiso import XisoImage
 # Bump this with every release that changes the setup tool or what it builds (owner rule, 2026-10-14):
 # the last number for fixes, the middle one for new features. repair.py compares it with the installed
 # launcher's copy, so a bump also tells existing installs to refresh their launcher.
-TOOL_VERSION = "2.10.18"  # 2.10.18: keys call the game's own actions (both programs): fire, aim, use and reload apart, grenades, stance, lean, weapons ... each on a key of its own, the controller unchanged (docs/KEYBINDS.md); 2.10.17: sounds no longer play twice: the LFE slot's copy of the rear channels dropped on 6-channel outputs (cod3_audio_lfe), the ends of XMA sounds no longer replayed and the game's audio callback paced like the console's hardware (SDK 0061); 2.10.16: multiplayer: the keyboard's grenade keys follow its controller layout (SDK 0056), the campaign's controls kept over the profile's saved ones at a switch, one crosshair choice for both programs; 2.10.15: readback_resolve full without the GPU thread waiting at each resolve (SDK 0050: +6% to +22% fps in full, level with fast); 2.10.14: the GPU emulation no longer waits for the global lock behind /proc/self/maps reads in the write-watch fault handler (SDK 0052, Linux 6.11+: +21% to +71% fps in the levels that waited most); profiler: a sampling thread instead of the CPU-time timer, the render job and Direct3D wait reasons, a verdict for the lock; 2.10.13: CoD4 bounces only for a jump falling onto a steep slope (no lift walking up an uneven incline); the sound output follows a switch of the system's default while playing (SDK 0051); 2.10.12: the CoD4 movement style moves in CoD4 PC's 125 fps steps (its air strafing and jump height) at any frame rate; 2.10.11: sprint in the campaign (hold/toggle) and the optional CoD4 movement style, binoculars on a key of their own (B); 2.10.10: HDR10 output (SDK 0044: BT.2020, PQ, subtle highlights; F2 > Video > Colors); 2.10.9: aspect ratio: custom shapes from 4:3, "Match the render resolution", F2 dropdowns fixed, Letterbox off planned as stretched; 2.10.8: the campaign's port features in multiplayer (cod3mp: frame limit, FOV, crosshair, F2, console, cheat guard, screenshots; tools/mp_aliases.py), clean launch path back to the campaign (SDK 0043); 2.10.7: the game is collected when it ends (no "ghost" left by the launcher); 2.10.6: pause menu BRIGHTNESS, clickable menu arrows and gauges; 2.10.5: readback copies only what the CPU reads (SDK 0049), Direct3D waits by reason; 2.10.4: HD textures on/off screenshot pair (cod3_hd_compare); 2.10.3: debug screenshots of the game's own picture; 2.10.2: texture descriptor sets reused (SDK 0048), profiler: what runs under the global lock; 2.10.1: window paint pipeline kept (SDK 0046), register writes (0047), profiler callers; 2.10.0: settings: the last change wins (SDK 0042, Play page); 2.9.1: the game's job wait sleeps, global lock spin (0045), automatic profiles; 2.9.0: QTE spinner, decomp trace version (--trace-build); 2.8.0: regional discs, console language, F2 picture colors; [voice] 2.7.0: voices from another disc
+TOOL_VERSION = "2.11.1"  # 2.11.1: the SDK fork's download is asked at the start of a build with the other downloads, not midway (a "no" means the official SDK + patch files, not asked again); 2.11.0: the SDK comes from the project's own fork (github.com/SirCarls/COD3-rexglue-sdk, branch cod3, the commit in patches/fork.json) with the official SDK + patch files as the backup, which gives the same SDK (tools/sdk_fork.py checks it); 2.10.23: resolved pictures copied straight into their textures by default (SDK 0062, vulkan_resolve_into_textures on: about 10 fewer texture loads a frame, 7-32% less graphics-card work), also at picture sizes that aren't multiples of 8 (a smaller render percent, a 1366x768 screen); 2.10.22: the Linux version's plain bin/ folder is a More options box (the AppImage stays the default; launchers for both, the other layout's leftovers removed), the FidelityFX SDK (FSR 2 / 3) off unless ticked, Build no longer highlighted once the game is built; 2.10.21: the graphics card's time a frame and by kind on the perf line (SDK 0055, 0058) and every texture load counted with its bytes (0060); the draw constants bound once per buffer page (0054, on), copied in runs (0057), a draw's textures compared with the last set first (0059): +3% to +11% fps on 2 cores; the write-watch page check fast on Linux 5.14-6.10 too (0053); resolved pictures copied straight into their textures (0062, vulkan_resolve_into_textures, off for now: 21-26% less graphics-card work); profiler: "waits for a core"; 2.10.20: F2 > Output scaling no longer offers AMD FSR 2 / 3 (no depth or motion from the game); 2.10.19: the game can start behind the window in use (Play page / F2 "Start behind other windows", --start_in_background=true; SDK 0063) and AMD CAS / FSR 1 are in every build, Linux too (SDK 0064); 2.10.18: keys call the game's own actions (both programs): fire, aim, use and reload apart, grenades, stance, lean, weapons ... each on a key of its own, the controller unchanged (docs/KEYBINDS.md); 2.10.17: sounds no longer play twice: the LFE slot's copy of the rear channels dropped on 6-channel outputs (cod3_audio_lfe), the ends of XMA sounds no longer replayed and the game's audio callback paced like the console's hardware (SDK 0061); 2.10.16: multiplayer: the keyboard's grenade keys follow its controller layout (SDK 0056), the campaign's controls kept over the profile's saved ones at a switch, one crosshair choice for both programs; 2.10.15: readback_resolve full without the GPU thread waiting at each resolve (SDK 0050: +6% to +22% fps in full, level with fast); 2.10.14: the GPU emulation no longer waits for the global lock behind /proc/self/maps reads in the write-watch fault handler (SDK 0052, Linux 6.11+: +21% to +71% fps in the levels that waited most); profiler: a sampling thread instead of the CPU-time timer, the render job and Direct3D wait reasons, a verdict for the lock; 2.10.13: CoD4 bounces only for a jump falling onto a steep slope (no lift walking up an uneven incline); the sound output follows a switch of the system's default while playing (SDK 0051); 2.10.12: the CoD4 movement style moves in CoD4 PC's 125 fps steps (its air strafing and jump height) at any frame rate; 2.10.11: sprint in the campaign (hold/toggle) and the optional CoD4 movement style, binoculars on a key of their own (B); 2.10.10: HDR10 output (SDK 0044: BT.2020, PQ, subtle highlights; F2 > Video > Colors); 2.10.9: aspect ratio: custom shapes from 4:3, "Match the render resolution", F2 dropdowns fixed, Letterbox off planned as stretched; 2.10.8: the campaign's port features in multiplayer (cod3mp: frame limit, FOV, crosshair, F2, console, cheat guard, screenshots; tools/mp_aliases.py), clean launch path back to the campaign (SDK 0043); 2.10.7: the game is collected when it ends (no "ghost" left by the launcher); 2.10.6: pause menu BRIGHTNESS, clickable menu arrows and gauges; 2.10.5: readback copies only what the CPU reads (SDK 0049), Direct3D waits by reason; 2.10.4: HD textures on/off screenshot pair (cod3_hd_compare); 2.10.3: debug screenshots of the game's own picture; 2.10.2: texture descriptor sets reused (SDK 0048), profiler: what runs under the global lock; 2.10.1: window paint pipeline kept (SDK 0046), register writes (0047), profiler callers; 2.10.0: settings: the last change wins (SDK 0042, Play page); 2.9.1: the game's job wait sleeps, global lock spin (0045), automatic profiles; 2.9.0: QTE spinner, decomp trace version (--trace-build); 2.8.0: regional discs, console language, F2 picture colors; [voice] 2.7.0: voices from another disc
 SDK_REPO = "https://github.com/rexglue/rexglue-sdk.git"
 SDK_COMMIT = "c94f5ebdcb3c9d1a460ca48e04f9758448f8d518"   # ReXGlue v0.10.0
+# The project's own copy of the SDK (owner 2026-10-19: "fork rexglue and work
+# myself"): the official commit above with every SDK patch as a commit, on the
+# fork's cod3 branch. patches/fork.json names the fork commit and the patch
+# files it holds. Builds take that commit, plus any patch file it doesn't hold
+# yet; when the fork can't be fetched, or a patch file it holds was changed
+# since, they take the official commit plus every patch file instead, which
+# gives the same tree (tools/sdk_fork.py checks that before a pin moves).
+FORK_FILE = "fork.json"
+_GITHUB_REPO_URL = re.compile(r"^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\.git$")
+_COMMIT_ID = re.compile(r"^[0-9a-f]{40}$")
 
 # default.xex of "Call of Duty 3 (USA, Europe)". The recomp's hooks are tied
 # to this exact build, so other versions would compile into a broken game.
@@ -99,7 +109,9 @@ COD3_DATA = Path("data") / "cod3"
 LOGS = Path("logs")             # setup logs, kept after the build
 KEEP_LOGS = 10
 
-# AMD FidelityFX (FSR / CAS scaling) is built on Windows only. Its build
+# AMD FidelityFX SDK (the temporal FSR 2 / 3, experimental) is built on
+# Windows only; CAS and FSR 1 need no download and are in every build (SDK
+# patch 0064). Its build
 # compiles shaders with AMD's FidelityFX_SC.exe, a Windows program; on Linux
 # the SDK runs it through Wine, and this project runs nothing through Wine.
 # (Found 2026-10-07: the owner's Linux build had used Wine for it.)
@@ -108,6 +120,54 @@ FIDELITYFX_PLATFORMS = ("win",)
 
 def fidelityfx_available() -> bool:
     return host_triple().split("-")[0] in FIDELITYFX_PLATFORMS
+
+
+# The Linux version is one AppImage by default; More options can make it a
+# plain bin/ folder instead (owner 2026-10-19). Each layout gets its own
+# launchers, and a build made one way removes what an earlier build made the
+# other way, so no launcher or Play button starts an old game.
+APPIMAGE_NAME = "CoD3-x86_64.AppImage"
+LINUX_LAUNCHERS = (("cod3", "Call of Duty 3.sh"), ("cod3mp", "Call of Duty 3 Multiplayer.sh"))
+_LAUNCHER_HEAD = '#!/bin/sh\ncd "$(dirname "$0")"'
+
+
+def linux_launcher(program: str, appimage: bool) -> str:
+    """The text of a launcher script next to the game that starts `program`
+    (cod3 or cod3mp): from bin/, or from the AppImage, which picks the program
+    by COD3_PROGRAM (its AppRun). Without FUSE the AppImage runs extracted
+    (APPIMAGE_EXTRACT_AND_RUN), as the Play page starts it."""
+    if not appimage:
+        return f'{_LAUNCHER_HEAD} && exec ./bin/{program} "$@"\n'
+    return (f'{_LAUNCHER_HEAD} || exit 1\n'
+            'command -v fusermount >/dev/null 2>&1 || command -v fusermount3 >/dev/null 2>&1 || '
+            'export APPIMAGE_EXTRACT_AND_RUN=1\n'
+            f'COD3_PROGRAM={program} exec ./{APPIMAGE_NAME} "$@"\n')
+
+
+def is_own_launcher(path: Path) -> bool:
+    """Whether `path` is a launcher script this tool wrote (small, and starts
+    the way linux_launcher's do)."""
+    try:
+        return path.is_file() and not path.is_symlink() and path.stat().st_size < 1024 and \
+            path.read_text(encoding="utf-8", errors="replace").startswith(_LAUNCHER_HEAD)
+    except OSError:
+        return False
+
+
+def stale_linux_files(out: Path, appimage: bool) -> List[Path]:
+    """The other layout's game in the output folder, left by a build made the
+    other way: with the AppImage, the programs and libraries in bin/ (cod3,
+    cod3mp, *.so; never the Windows version's .exe and .dll that a Windows PC
+    puts there); with bin/, the AppImage. Plain files only."""
+    if appimage:
+        bindir = out / "bin"
+        if not bindir.is_dir() or bindir.is_symlink():
+            return []
+        return sorted(f for f in bindir.iterdir()
+                      if f.is_file() and not f.is_symlink()
+                      and (f.name in ("cod3", "cod3mp") or f.name.endswith(".so") or ".so." in f.name))
+    old = out / APPIMAGE_NAME
+    return [old] if old.is_file() and not old.is_symlink() else []
 
 
 @dataclass
@@ -131,12 +191,15 @@ class BuildOptions:
     # is built inside WSL 2 (c3w/wsl.py). By default, this system's own.
     build_linux: bool = IS_LINUX   # Linux version: CoD3-x86_64.AppImage
     build_windows: bool = IS_WINDOWS   # Windows version: cod3.exe (+ the Windows ripper on Linux)
-    appimage: bool = True          # the Linux version as an AppImage (else a bin/ folder)
+    appimage: bool = True          # the Linux version as one AppImage (the default), else a plain bin/ folder
     binaries_only: bool = False    # internal (the build inside WSL): only the game, no rips
     cleanup: bool = True
     keep_sdk: bool = False         # keep the built SDK + downloaded tools for faster rebuilds
     install_deps: bool = True
-    fidelityfx: bool = True        # AMD FSR / CAS output scaling in the game (Windows builds only)
+    # AMD's FidelityFX SDK, for the experimental FSR 2 / 3 (not offered in F2):
+    # off unless ticked (owner 2026-10-19); Windows builds only. CAS and FSR 1
+    # are always built in (SDK patch 0064).
+    fidelityfx: bool = False
     # Optional: the ripped CoD3 textures upscaled with waifu2x (1x, 2x or 4x)
     # into data/cod3/textures_upscaled (c3w/upscale.py), then packed for the
     # playable game into data/cod3/hd_textures. Uses the graphics card.
@@ -517,14 +580,19 @@ class Pipeline:
         return items
 
     def _sdk_install(self) -> Install:
-        return Install("git:rexglue-sdk", "ReXGlue SDK source at a pinned commit, with its submodules (git)",
-                       str(self.work_real / "rexglue-sdk"), "about 1.5 GB", "github.com")
+        fork = read_fork_file(self.patches)
+        source = (f"the project's copy {fork['repo'].removesuffix('.git')} (the official "
+                  "github.com/rexglue/rexglue-sdk if that can't be reached)") if fork else \
+            "github.com/rexglue/rexglue-sdk"
+        return Install("git:rexglue-sdk", f"ReXGlue SDK source at a pinned commit, from {source}, with its "
+                       "submodules (git)", str(self.work_real / "rexglue-sdk"), "about 1.5 GB", "github.com")
 
     def _fidelityfx_install(self) -> Install:
         """AMD's FidelityFX SDK, which the SDK's own CMake setup downloads
-        (git, FetchContent) when FSR / CAS scaling is on (Windows)."""
+        (git, FetchContent) when FSR 2 / 3 is on (Windows)."""
         where = self.work_real / "rexglue-sdk" / "out" / "build" / self.sdk_preset / "_deps"
-        return Install("git:fidelityfx", "AMD FidelityFX SDK source (FSR / CAS scaling in the game), at the "
+        return Install("git:fidelityfx", "AMD FidelityFX SDK source (the experimental FSR 2 / 3, not offered in the game's F2; CAS "
+                       "and FSR 1 don't need it), at the "
                        "commit the ReXGlue SDK pins; downloaded by the SDK's CMake setup. Optional: untick AMD "
                        "FidelityFX under \"Show more options\" to leave it out", str(where),
                        "several hundred MB, up to about 1 GB", "github.com")
@@ -559,6 +627,30 @@ class Pipeline:
                 if IS_WINDOWS else []
             raise SetupError("Still missing:\n  - " + "\n  - ".join(problems) + "\n" + how +
                              ("\n\n" + "\n\n".join(fixes) if fixes else ""))
+        self._ask_sdk_download_early()
+
+    def _ask_sdk_download_early(self) -> None:
+        """When an existing SDK checkout lacks the fork commit the build will
+        start from (a moved pin; the first build with 2.11 in an older work
+        folder), asks for that download now, with the others, instead of
+        midway through the build. A "no" isn't fatal: the build then uses the
+        official commit already there plus the patch files (the same SDK) and
+        doesn't ask again. A new checkout is in the plan asked before."""
+        if not (self.native or self.cross_windows) or not self.tc or not getattr(self.tc, "git", None):
+            return
+        if not (self.sdk_src / ".git").exists():
+            return
+        if self.native and not self.cross_windows and self._sdk_built(self.tc.cxx):
+            return
+        source = self._sdk_source()
+        if not source.fork_commit or self._sdk_has_commit(source.fork_commit):
+            return
+        try:
+            APPROVAL.require([self._sdk_install()], self.log)
+        except SetupError:
+            self._sdk_download_declined = True
+            self.log.info("The SDK fork's download wasn't approved: this build uses the official ReXGlue SDK already "
+                          "in the work folder and the patch files, which gives the same SDK.")
 
     # ------------------------------------------------------------------
     # 3. Game files
@@ -796,13 +888,89 @@ class Pipeline:
         return self.runner.run([self.tc.git, *self._git_config(), *args], cwd=cwd or self.sdk_src,
                                env=self.tc.env, check=check)
 
-    def _clean_checkout(self) -> None:
-        """The pinned commit with nothing else on it, so exactly the current
-        patches go in: an edited or removed patch, or the Windows-only ones a
-        cross build added, don't carry over. Build and install folders (out/)
-        and the submodules are kept."""
-        self._git("checkout", "-q", "--force", SDK_COMMIT)
+    def _clean_checkout(self, commit: Optional[str] = None) -> None:
+        """The pinned commit (the official one unless another is given) with
+        nothing else on it, so exactly the current patches go in: an edited or
+        removed patch, or the Windows-only ones a cross build added, don't
+        carry over. Build and install folders (out/) and the submodules are
+        kept."""
+        self._git("checkout", "-q", "--force", commit or SDK_COMMIT)
         self._git("clean", "-fdq", "-e", "out/")
+
+    FORK_REMOTE = "cod3-fork"
+
+    def _sdk_source(self, cross_windows: bool = False) -> SdkSource:
+        return plan_sdk_source(self.patches, cross_windows, sdk_shaders.version())
+
+    def _sdk_has_commit(self, commit: str) -> bool:
+        """Whether the SDK checkout already has that commit (asked quietly:
+        git's "not a valid object" isn't news for the log)."""
+        assert self.tc
+        if not (self.sdk_src / ".git").exists():
+            return False
+        rc, _ = self.runner.capture([self.tc.git, *self._git_config(), "cat-file", "-e", f"{commit}^{{commit}}"],
+                                    cwd=self.sdk_src, env=self.tc.env)
+        return rc == 0
+
+    def _fetch_fork(self, source: SdkSource) -> bool:
+        """Fetches the fork's pinned commit into the SDK checkout; False when
+        it can't be had (no network, the fork gone or private)."""
+        assert source.fork_repo and source.fork_commit
+        if self._git("remote", "get-url", self.FORK_REMOTE, check=False) == 0:
+            self._git("remote", "set-url", self.FORK_REMOTE, source.fork_repo)
+        else:
+            self._git("remote", "add", self.FORK_REMOTE, source.fork_repo)
+        if self._git("fetch", "--depth", "1", self.FORK_REMOTE, source.fork_commit, check=False) != 0:
+            self._git("fetch", self.FORK_REMOTE, check=False)
+        return self._sdk_has_commit(source.fork_commit)
+
+    def _checkout_sdk(self, source: SdkSource) -> str:
+        """Puts the SDK source in sdk_src and returns the commit it started
+        from: the fork's pinned commit plus the patch files it doesn't hold
+        yet, or, when the fork can't be used or fetched, the official commit
+        plus every patch file (the same tree either way)."""
+        assert self.tc
+        if not (self.sdk_src / ".git").exists():
+            self.sdk_src.mkdir(parents=True, exist_ok=True)
+            self._git("init", "-q")
+            self._git("remote", "add", "origin", SDK_REPO)
+        if source.fork_commit:
+            use_fork = self._sdk_has_commit(source.fork_commit)
+            if not use_fork:
+                try:
+                    if getattr(self, "_sdk_download_declined", False):
+                        raise SetupError("declined at the start of the build")
+                    APPROVAL.require([self._sdk_install()], self.log)
+                except SetupError:
+                    if not self._sdk_has_commit(SDK_COMMIT):
+                        raise
+                    self.log.warn("The SDK download wasn't approved; using the official ReXGlue SDK already in the "
+                                  "work folder and the patch files instead, which gives the same SDK.")
+                else:
+                    self.log.info(f"Downloading the ReXGlue SDK source (the project's fork) into "
+                                  f"{self.work_real / 'rexglue-sdk'}...")
+                    use_fork = self._fetch_fork(source)
+                    if not use_fork:
+                        self.log.warn(f"Couldn't fetch the project's SDK fork ({source.fork_repo}); using the "
+                                      "official ReXGlue SDK and the patch files instead, which gives the same SDK.")
+            if use_fork:
+                newer = f", plus {len(source.fork_patches)} newer patch file(s)" if source.fork_patches else ""
+                self.log.info(f"SDK source: the project's fork {source.fork_repo} at {source.fork_commit[:9]}{newer}")
+                self._clean_checkout(source.fork_commit)
+                self._fetch_submodules()
+                self._apply_patches(source.fork_patches)
+                return source.fork_commit
+        else:
+            self.log.info(f"SDK source: the official ReXGlue SDK and the patch files ({source.why_not_fork}).")
+        if not self._sdk_has_commit(SDK_COMMIT):
+            APPROVAL.require([self._sdk_install()], self.log)
+            self.log.info(f"Downloading the ReXGlue SDK source into {self.work_real / 'rexglue-sdk'}...")
+            if self._git("fetch", "--depth", "1", "origin", SDK_COMMIT, check=False) != 0:
+                self._git("fetch", "origin")
+        self._clean_checkout(SDK_COMMIT)
+        self._fetch_submodules()
+        self._apply_patches(source.official_patches)
+        return SDK_COMMIT
 
     def _apply_patches(self, patches: List[Path]) -> None:
         for p in patches:
@@ -888,9 +1056,7 @@ class Pipeline:
     def _sdk_stamp_data(self, cxx: Optional[Path]) -> dict:
         """What the built SDK depends on; it is built again when any of it
         changes (sdk.stamp.json in the work folder)."""
-        patches = sorted(self.patches.glob("*.patch"))
-        return {"commit": SDK_COMMIT, "fidelityfx": self._fidelityfx, "compiler": str(cxx),
-                "patches": [hashlib.sha1(p.read_bytes()).hexdigest() for p in patches],
+        return {**self._sdk_source().key, "fidelityfx": self._fidelityfx, "compiler": str(cxx),
                 "shaders": sdk_shaders.version(), "backends": "d3d12+vulkan" if IS_WINDOWS else "vulkan"}
 
     def _sdk_built(self, cxx: Optional[Path]) -> bool:
@@ -899,34 +1065,21 @@ class Pipeline:
 
     def sdk(self) -> None:
         assert self.tc
-        patches = sorted(self.patches.glob("*.patch"))
         stamp_data = self._sdk_stamp_data(self.tc.cxx)
         stamp = self.work / "sdk.stamp.json"
         if self._sdk_built(self.tc.cxx):
             self.log.info("ReXGlue SDK already built.")
             return
 
-        # Fetch the pinned commit and its submodules.
-        if not (self.sdk_src / ".git").exists():
-            self.sdk_src.mkdir(parents=True, exist_ok=True)
-            self._git("init", "-q")
-            self._git("remote", "add", "origin", SDK_REPO)
-        head = self.runner.capture([self.tc.git, "rev-parse", "HEAD"], cwd=self.sdk_src)[1].strip()
-        if head != SDK_COMMIT:
-            APPROVAL.require([self._sdk_install()], self.log)
-            self.log.info(f"Downloading the ReXGlue SDK source into {self.work_real / 'rexglue-sdk'}...")
-            if self._git("fetch", "--depth", "1", "origin", SDK_COMMIT, check=False) != 0:
-                self._git("fetch", "origin")
-        self._clean_checkout()
-        self._fetch_submodules()
-
-        self._apply_patches(patches)
+        # The pinned commit (the project's fork, or the official SDK), its
+        # submodules and the patch files that go on top.
+        self._checkout_sdk(self._sdk_source())
 
         fidelityfx = self._fidelityfx
         if self.o.fidelityfx and not fidelityfx:
-            self.log.info("AMD FidelityFX (FSR / CAS scaling) is left out on this system: its build runs AMD's "
-                          "Windows-only shader compiler, which would need Wine. The game uses its standard "
-                          "scaling instead.")
+            self.log.info("AMD's FidelityFX SDK (FSR 2 / 3) is left out on this system: its build runs AMD's "
+                          "Windows-only shader compiler, which would need Wine. CAS and FSR 1 are built in "
+                          "anyway.")
         if fidelityfx and not self._fidelityfx_fetched():
             # The SDK's CMake setup downloads it (git) before anything else.
             try:
@@ -934,8 +1087,8 @@ class Pipeline:
                 self.log.info("The SDK's setup first downloads AMD's FidelityFX SDK with git (no progress is shown; "
                               "it can take several minutes).")
             except SetupError:
-                self.log.warn("AMD FidelityFX wasn't approved for download, so the SDK is built without it (no "
-                              "FSR / CAS scaling in the game).")
+                self.log.warn("AMD's FidelityFX SDK wasn't approved for download, so the SDK is built without "
+                              "it (no FSR 2 / 3; CAS and FSR 1 are built in anyway).")
                 fidelityfx = False
         failed: List[str] = []   # ninja's "FAILED: <file>" lines
         try:
@@ -1201,6 +1354,7 @@ class Pipeline:
     def package(self) -> None:
         bins = self._binaries()
         if IS_LINUX and self.o.appimage and self._appimage(bins):
+            self._remove_other_linux_layout(appimage=True)
             return
         bindir = self.out / "bin"
         bindir.mkdir(parents=True, exist_ok=True)
@@ -1221,15 +1375,37 @@ class Pipeline:
             if mp:
                 self._windows_shortcut(bindir / "cod3mp.exe", self.out / "Call of Duty 3 Multiplayer.lnk")
         else:
-            launcher = self.out / "Call of Duty 3.sh"
-            launcher.write_text('#!/bin/sh\ncd "$(dirname "$0")" && exec ./bin/cod3 "$@"\n', encoding="utf-8")
-            launcher.chmod(0o755)
-            if mp:
-                launcher = self.out / "Call of Duty 3 Multiplayer.sh"
-                launcher.write_text('#!/bin/sh\ncd "$(dirname "$0")" && exec ./bin/cod3mp "$@"\n',
-                                    encoding="utf-8")
-                launcher.chmod(0o755)
+            self._write_linux_launchers(appimage=False, mp=mp)
+            self._remove_other_linux_layout(appimage=False)
         self.log.info(f"Game executable: {self.out / self.exe_rel}")
+
+    def _write_linux_launchers(self, appimage: bool, mp: bool) -> None:
+        """'Call of Duty 3.sh', and 'Call of Duty 3 Multiplayer.sh' when
+        multiplayer was built, start this build's game (bin/ or the AppImage);
+        a multiplayer launcher an earlier build left goes when there is none."""
+        for program, name in LINUX_LAUNCHERS:
+            path = self.out / name
+            if program == "cod3" or mp:
+                path.write_text(linux_launcher(program, appimage), encoding="utf-8")
+                path.chmod(0o755)
+            elif is_own_launcher(path):
+                path.unlink()
+
+    def _remove_other_linux_layout(self, appimage: bool) -> None:
+        """Removes what an earlier build made the other way (stale_linux_files),
+        only inside the output folder; bin/ goes when nothing else is in it."""
+        stale = [f for f in stale_linux_files(self.out, appimage) if is_within(f, self.out)]
+        for f in stale:
+            f.unlink(missing_ok=True)
+        if stale:
+            self.log.info(f"Removed the {'plain bin/ folder' if appimage else 'AppImage'} an earlier build made "
+                          f"({len(stale)} file{'s' if len(stale) != 1 else ''}): this build's "
+                          f"{'AppImage' if appimage else 'bin/ folder'} replaces it.")
+        if appimage:
+            try:
+                (self.out / "bin").rmdir()
+            except OSError:
+                pass   # not there, or other files in it
 
     def _appimage(self, bins: List[Path]) -> bool:
         tool = deps.find_appimagetool(self.tools_dir, self.runner, self.log, self.cancel)
@@ -1254,7 +1430,7 @@ class Pipeline:
             "[Desktop Entry]\nType=Application\nName=Call of Duty 3 (recomp)\nExec=cod3\nIcon=cod3\n"
             "Categories=Game;\nTerminal=false\n", encoding="utf-8")
         (appdir / "cod3.png").write_bytes(make_icon_png())
-        target = self.out / "CoD3-x86_64.AppImage"
+        target = self.out / APPIMAGE_NAME
         env = dict(self.tc.env if self.tc else os.environ)
         env.update({"ARCH": "x86_64", "APPIMAGE_EXTRACT_AND_RUN": "1"})
         # The AppImage starts with the same runtime as appimagetool itself (a
@@ -1268,11 +1444,7 @@ class Pipeline:
             self.log.warn("appimagetool failed; installing as a plain folder instead.")
             return False
         target.chmod(0o755)
-        if (bindir / "cod3mp").exists():
-            launcher = self.out / "Call of Duty 3 Multiplayer.sh"
-            launcher.write_text('#!/bin/sh\ncd "$(dirname "$0")" && COD3_PROGRAM=cod3mp exec ./' + target.name +
-                                ' "$@"\n', encoding="utf-8")
-            launcher.chmod(0o755)
+        self._write_linux_launchers(appimage=True, mp=(bindir / "cod3mp").exists())
         self.exe_rel = target.name
         self.packed["linux"] = [target.name]
         self.log.info(f"Game executable: {target}")
@@ -1367,13 +1539,12 @@ class Pipeline:
         # The SDK, for Windows. Rebuilt only when what goes into it changes.
         sdk_build = self.sdk_src / "out" / "build" / "mingw"
         sdk_install = self.sdk_src / "out" / "install" / "mingw"
-        # Patches only the Windows build needs (patches/mingw). They are kept
-        # out of the main list so they never touch the Linux SDK's headers,
-        # which would make the Linux game rebuild from scratch.
-        cross_patches = sorted((self.patches / "mingw").glob("*.patch"))
-        patches = sorted(self.patches.glob("*.patch")) + cross_patches
-        stamp_data = {"commit": SDK_COMMIT, "toolchain": deps.PORTABLE["llvm-mingw-linux"][2],
-                      "patches": [hashlib.sha1(p.read_bytes()).hexdigest() for p in patches],
+        # Patches only the Windows build needs (patches/mingw) go on last. They
+        # are kept out of the main list (and out of the fork's cod3 branch) so
+        # they never touch the Linux SDK's headers, which would make the Linux
+        # game rebuild from scratch.
+        source = self._sdk_source(cross_windows=True)
+        stamp_data = {**source.key, "toolchain": deps.PORTABLE["llvm-mingw-linux"][2],
                       "shaders": sdk_shaders.version(), "backends": "d3d12+vulkan"}
         stamp = self.work / "sdk-mingw.stamp.json"
         if read_json(stamp) == stamp_data and (sdk_install / "lib" / "cmake" / "rexglue").exists():
@@ -1382,8 +1553,7 @@ class Pipeline:
             # Same checkout as the Linux SDK (already built and installed by
             # now): start from the pinned commit with every patch, mingw ones
             # last. The next Linux SDK build starts clean again.
-            self._clean_checkout()
-            self._apply_patches(patches)
+            self._checkout_sdk(source)
             self.log.info("Configuring the SDK for Windows (llvm-mingw)...")
             self.runner.run([self.tc.cmake, "-S", self.sdk_src, "-B", sdk_build, "-G", "Ninja", *ninja,
                              *cross.sdk_configure_args(toolchain, sdk_install)], cwd=self.sdk_src, env=env)
@@ -1478,7 +1648,7 @@ class Pipeline:
         rc = w.run_root(args, cwd_linux=tool, quiet=True, line_filter=self._relay_inner_log("Linux (WSL)"))
         # Only what this run wrote counts (an AppImage from an earlier build
         # may still be there).
-        fresh = [p for p in (self.out / "CoD3-x86_64.AppImage", self.out / "bin" / "cod3")
+        fresh = [p for p in (self.out / APPIMAGE_NAME, self.out / "bin" / "cod3")
                  if p.exists() and p.stat().st_mtime >= started]
         if rc != 0 or not fresh:
             raise SetupError(f"the build inside WSL stopped (exit code {rc}); see the log above.")
@@ -1538,7 +1708,10 @@ class Pipeline:
                            if self._runs("waw") or "waw_source" not in manifest else manifest["waw_source"]),
             "waw_data": waw.OUTPUT_DATA.as_posix() if self.waw_ripped else manifest.get("waw_data"),
             "ripper": f"tools/{exe_name('rip')}",
-            "sdk_commit": SDK_COMMIT if self.o.build_recomp else manifest.get("sdk_commit"),
+            # The commit the SDK was built from: the project's fork, or the
+            # official one when its patch files were applied instead.
+            "sdk_commit": (read_json(self.work / "sdk.stamp.json").get("fork") or SDK_COMMIT)
+                          if self.o.build_recomp else manifest.get("sdk_commit"),
         })
         manifest.pop("waw_original", None)   # from tool 1.x
         manifest.pop("waw_copy", None)
@@ -1681,6 +1854,95 @@ def lf_patch(patch: Path, scratch: Path) -> Path:
     copy = scratch / patch.name
     copy.write_bytes(data.replace(b"\r\n", b"\n"))
     return copy
+
+
+def patch_hash(patch: Path) -> str:
+    """SHA-1 of a patch file as git applies it (LF line endings, as lf_patch
+    makes them), so a copy whose line endings a Windows sync changed still
+    counts as the same patch."""
+    data = patch.read_bytes()
+    lines = data.split(b"\n")[:-1]
+    if lines and all(line.endswith(b"\r") for line in lines):
+        data = data.replace(b"\r\n", b"\n")
+    return hashlib.sha1(data).hexdigest()
+
+
+def patch_files(patches_dir: Path, cross_windows: bool) -> List[Path]:
+    """Every SDK patch file in the order git applies them: the main list, then
+    (Windows version built on Linux only) the ones in patches/mingw."""
+    found = sorted(patches_dir.glob("*.patch"))
+    if cross_windows:
+        found += sorted((patches_dir / "mingw").glob("*.patch"))
+    return found
+
+
+def read_fork_file(patches_dir: Path) -> Optional[dict]:
+    """patches/fork.json, checked: {"repo": a github.com URL, "commit": a full
+    commit id, "base": the official commit it starts from, "shaders": the
+    c3w/sdk_shaders.py version its resolve shaders were edited with,
+    "patches": {patch file name relative to patches/: patch_hash}}. None when
+    the file is missing or anything in it doesn't look right."""
+    data = read_json(patches_dir / FORK_FILE)
+    try:
+        repo, commit, base = data["repo"], data["commit"], data["base"]
+        shaders, held = data["shaders"], data["patches"]
+    except (KeyError, TypeError):
+        return None
+    if not (isinstance(repo, str) and _GITHUB_REPO_URL.match(repo) and isinstance(commit, str)
+            and _COMMIT_ID.match(commit) and isinstance(base, str) and _COMMIT_ID.match(base)
+            and isinstance(shaders, str) and isinstance(held, dict)):
+        return None
+    for name, h in held.items():
+        # Plain names inside patches/ only (the main list or mingw/).
+        if not (isinstance(name, str) and isinstance(h, str) and re.fullmatch(r"(mingw/)?[A-Za-z0-9_.-]+\.patch", name)
+                and re.fullmatch(r"[0-9a-f]{40}", h)):
+            return None
+    return data
+
+
+@dataclass
+class SdkSource:
+    """Where an SDK checkout comes from. Both routes give the same tree, so
+    `key` (what the built SDK depends on) is the same for both and switching
+    route never rebuilds anything by itself."""
+    official_patches: List[Path]          # applied on top of SDK_COMMIT
+    key: dict
+    fork_repo: Optional[str] = None
+    fork_commit: Optional[str] = None
+    fork_patches: List[Path] = field(default_factory=list)   # the files the fork commit doesn't hold yet
+    why_not_fork: str = ""                # why only the official route is possible ("" if both are)
+
+
+def plan_sdk_source(patches_dir: Path, cross_windows: bool, shaders_version: str) -> SdkSource:
+    """Which commit an SDK checkout starts from and which patch files go on
+    top, for the patch files as they are now."""
+    patches = patch_files(patches_dir, cross_windows)
+    hashes = {p: patch_hash(p) for p in patches}
+    official_key = {"commit": SDK_COMMIT, "patches": [hashes[p] for p in patches]}
+    fork = read_fork_file(patches_dir)
+    why = ""
+    if fork is None:
+        why = f"no usable patches/{FORK_FILE}"
+    elif fork["base"] != SDK_COMMIT:
+        why = f"patches/{FORK_FILE} is for another official commit"
+    elif fork["shaders"] != shaders_version:
+        why = "c3w/sdk_shaders.py changed since that fork commit"
+    else:
+        for name, h in fork["patches"].items():
+            p = patches_dir / name
+            if not p.is_file():
+                why = f"{name}, which that fork commit holds, is gone from patches/"
+                break
+            if patch_hash(p) != h:
+                why = f"{name} changed since that fork commit"
+                break
+    if why:
+        return SdkSource(official_patches=patches, key=official_key, why_not_fork=why)
+    held = set(fork["patches"])
+    newer = [p for p in patches if p.relative_to(patches_dir).as_posix() not in held]
+    return SdkSource(official_patches=patches, fork_repo=fork["repo"], fork_commit=fork["commit"],
+                     fork_patches=newer,
+                     key={"fork": fork["commit"], "patches": [hashes[p] for p in newer]})
 
 
 def missing_levels(build_dir: Path) -> List[str]:

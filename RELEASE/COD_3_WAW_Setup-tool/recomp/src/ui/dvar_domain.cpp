@@ -1,6 +1,7 @@
 // cod3 - dvar and port setting domains, World at War style. See dvar_domain.h.
 
 #include "ui/dvar_domain.h"
+#include "ui/dvar_help.h"
 
 #include <algorithm>
 #include <cctype>
@@ -347,6 +348,11 @@ Domain ForWaw(const waw::Dvar& w, const EngineSnapshot& snap) {
     case Conv::kAimAssist:
     case Conv::kVsync:
     case Conv::kShadows: return Make(Kind::kBool, 0, 1);
+    case Conv::kFraction100: {
+      Domain d = Make(Kind::kFloat, 0.25, 1.0);
+      d.note = "the port's resolution scale: 0.5 draws half the pixels each way";
+      return d;
+    }
     case Conv::kAniso: {
       Domain d = Make(Kind::kInt, 1, 16);
       d.note = "1, 2, 4, 8 or 16 (0 = the game's own filtering)";
@@ -405,6 +411,8 @@ std::string LinesAfterGameAnswer(std::string_view printed) {
   const std::string_view name = printed.substr(1, name_end - 1);
   std::string out;
   for (auto& l : Describe(ForGameDvar(name, reset))) out += "  " + l + "\n";
+  // What it does, in the port's words (ui/dvar_help.h).
+  if (const dvar_help::Entry* e = dvar_help::Find(name)) out += "  " + std::string(e->text) + "\n";
   return out;
 }
 

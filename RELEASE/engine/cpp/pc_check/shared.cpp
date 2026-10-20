@@ -1,6 +1,11 @@
-// Requests for the shared functions (strings, info strings, hashes, filters).
+// Requests for the shared functions (strings, info strings, hashes, filters,
+// block checksums) and the file system's pure checksum list.
+
+#include <algorithm>
 
 #include "iw_pc/cstr.h"
+#include "iw_pc/fs/fs.h"
+#include "iw_pc/shared/checksum.h"
 #include "iw_pc/shared/filter.h"
 #include "iw_pc/shared/hash.h"
 #include "iw_pc/shared/info.h"
@@ -13,6 +18,7 @@ namespace strings = iw_pc::shared::strings;
 namespace info = iw_pc::shared::info;
 namespace hash = iw_pc::shared::hash;
 namespace filter = iw_pc::shared::filter;
+namespace checksum = iw_pc::shared::checksum;
 using iw_pc::ByteSpan;
 using iw_pc::ByteView;
 using iw_pc::Game;
@@ -20,6 +26,26 @@ using iw_pc::Game;
 namespace {
 
 Answer from_status(const iw_pc::Status& status) { return status ? game_error(*status) : nothing(); }
+
+}  // namespace
+
+std::vector<iw_pc::fs::SearchPath> search_paths(ByteView data) {
+    std::vector<iw_pc::fs::SearchPath> paths;
+    for (std::size_t at = 0; at + 5 <= data.size(); at += 5) {
+        std::uint8_t flags = data[at];
+        std::int32_t pure = static_cast<std::int32_t>((std::uint32_t(data[at + 1]) << 24) | (data[at + 2] << 16) |
+                                                      (data[at + 3] << 8) | data[at + 4]);
+        iw_pc::fs::SearchPath path;
+        if (flags & 1) {
+            path.archive = iw_pc::fs::Archive{pure, {(flags & 4) != 0, (flags & 8) != 0, (flags & 16) != 0}};
+        }
+        path.localized = (flags & 2) != 0;
+        paths.push_back(path);
+    }
+    return paths;
+}
+
+namespace {
 
 Answer printed(const std::optional<info::Refusal>& refusal, Game game) {
     if (!refusal) return Answer(Ret(Printed{}));
@@ -119,6 +145,25 @@ std::optional<Answer> dispatch_shared(Game game, const std::string& function, Ar
         return integer(hash::cvar_hash(*name));
     }
     if (f == "Com_HashKey") return integer(hash::hash_key(args.text(0), args.i32(1)));
+    if (f == "va") {  // va("%s", text)
+        ByteView text = args.text(1);
+        auto out = strings::va(game, std::vector<std::uint8_t>(text.begin(), text.end()));
+        if (!out) return game_error(out.error());
+        return string(out.value());
+    }
+    // --- the search path's pure checksums (search path, feed, fake) ------------
+    if (f == "FS_ReferencedIwdPureChecksums" || f == "FS_ReferencedPakPureChecksums") {
+        std::vector<iw_pc::fs::SearchPath> paths = search_paths(args.bytes(0));
+        return string(iw_pc::fs::referenced_pure_checksums(game, paths, args.i32(1), args.i32(2)));
+    }
+    // --- block checksums (data, length[, key]) ---------------------------------
+    if (f == "Com_BlockChecksum" || f == "Com_BlockChecksumKey") {
+        ByteView data = args.bytes(0);
+        std::size_t length = std::min(static_cast<std::size_t>(std::max(args.i32(1), 0)), data.size());
+        ByteView block = data.first(length);
+        if (f == "Com_BlockChecksum") return integer(checksum::block_checksum(block));
+        return integer(checksum::block_checksum_key(block, args.i32(2)));
+    }
     // --- filters -------------------------------------------------------------------
     if (f == "Com_Filter" || f == "Com_FilterPath") {
         ByteView pattern = args.text(0), name = args.text(1);

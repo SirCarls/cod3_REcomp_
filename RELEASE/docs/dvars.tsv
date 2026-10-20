@@ -1,0 +1,472 @@
+name	category	programs	default	flags_campaign	flags_multiplayer	description
+ai_corpseCount	ai	sp	20	A		Most AI bodies left lying in the level; older ones are removed past this.
+ai_debugMayMove	ai	sp	0	C		Debug: shows the AI's checks of whether it may move to a spot.
+ai_disableSpawn	ai	sp	0	C		Debug: no AI spawns while set (a mission can't progress without them).
+ai_NoCriticalSections	ai	sp	1	T		Internal: the AI's thread locking switch (leave it alone).
+ai_noDodge	ai	sp	0	C		AI never side-steps out of the line of fire.
+ai_playerFarAccuracy	ai	sp	0.1			AI accuracy against the player at long range (0-1).
+ai_playerFarRange	ai	sp	2000			Distance (units) from which AI use the long-range accuracy.
+ai_playerNearAccuracy	ai	sp	0.5			AI accuracy against the player up close (0-1).
+ai_playerNearRange	ai	sp	800			Distance (units) up to which AI use the close-range accuracy.
+aitosser_debugenemy	ai	sp,mp	0	C	C	Debug: draws the enemy grenade throwers' (tossers') state.
+aitosser_debugenemyspawner	ai	sp,mp	0	C	C	Debug: draws the enemy tosser spawners.
+aitosser_debugfriendly	ai	sp,mp	0	C	C	Debug: draws the friendly grenade throwers' state.
+animDebug	script	sp				Level script switch (read, never set): animation debugging in the level scripts.
+animscriptent	ai	sp	-1			Debug: the entity number whose animation script is traced (-1 = none).
+arch	sys	sp,mp	ps2			The platform the engine reports (the Xbox 360 build still says "ps2"); read only in practice.
+artist	script	sp				Level script switch: "artist mode" for the level builders (the scripts print "Artist Mode Enabled!").
+artist_drive	script	sp				Hostage's level script switch: an artist mode for the drive.
+autostart	sys	sp	0	I		Internal start-up switch (not used on PC).
+battlechatter_debug	script	sp				Level script switch (read, never set): squad chatter debugging.
+bg_fallDamageMaxHeight	dmg	sp,mp	480	C	C	Fall height (units) that does full damage (kills).
+bg_fallDamageMinHeight	dmg	sp,mp	256	C	C	Fall height (units) where fall damage starts.
+bg_foliagesnd_fastinterval	move	sp,mp	500	C	C	Time (ms) between bush rustle sounds when moving fast.
+bg_foliagesnd_maxspeed	move	sp,mp	180	C	C	Speed at which moving through bushes is loudest.
+bg_foliagesnd_minspeed	move	sp,mp	40	C	C	Slowest speed that makes bushes rustle.
+bg_foliagesnd_resetinterval	move	sp,mp	500	C	C	Time (ms) after leaving bushes before the rustle sounds reset.
+bg_foliagesnd_slowinterval	move	sp,mp	1500	C	C	Time (ms) between bush rustle sounds when moving slowly.
+bg_ladder_yawcap	move	sp,mp	100	C	C	How far (degrees) you can turn to the sides on a ladder.
+bg_lmg_yawcap	move	sp,mp	80	C	C	How far (degrees) you can turn while a machine gun is set up (deployed).
+bg_meleeassistaspeed	move	sp,mp	100	C	C	Melee lunge: speed toward the target.
+bg_meleeassistfov	move	sp,mp	0.75	C	C	Melee lunge: how close to the crosshair (cosine of the angle) a target must be.
+bg_meleeassistrange	move	sp,mp	50	C	C	Melee lunge: farthest target distance (units).
+bg_prone_yawcap	move	sp,mp	85	C	C	How far (degrees) you can turn while prone before you have to shift.
+bg_stickyAimRender	sys	sp,mp	0	C	C	Debug: draws the aim assist's sticky targets.
+bg_viewheight_crouched	move	sp,mp	40	C	C	Eye height (units) while crouched.
+bg_viewheight_prone	move	sp,mp	11	C	C	Eye height (units) while prone.
+bg_viewheight_standing	move	sp,mp	66	C	C	Eye height (units) while standing.
+capture_dir	sys	sp	0	I		Movie capture folder number (developer tool, not used on PC).
+capture_movie	sys	sp,mp		I		Movie capture name (developer tool, not used on PC).
+cg_altTankCam	cam	sp,mp	1			The tank's alternate (closer) chase camera.
+cg_atmos	script	sp	-1			Set by the level scripts at the start of every mission (-1).
+cg_atmosDense	script	sp	999			Set by the level scripts at the start of every mission (999).
+cg_blood	view	sp,mp	0	A	A	Show blood.
+cg_bobAmplitudeDucked	gun	sp,mp	0.026			View bob while crouched.
+cg_bobAmplitudeProne	gun	sp,mp	0.08			View bob while prone.
+cg_bobAmplitudeStanding	gun	sp,mp	0.013			View bob while standing.
+cg_bobMax	gun	sp,mp	8			Largest view bob.
+cg_bobWeaponAmplitude	gun	sp,mp	0.16			Weapon bob size.
+cg_bobWeaponLag	gun	sp,mp	0.25			How far the weapon bob lags behind your steps.
+cg_bobWeaponMax	gun	sp,mp	10			Largest weapon bob.
+cg_bobWeaponRollAmplitude	gun	sp,mp	1.5			How much the weapon rolls as it bobs.
+cg_camerashake	view	sp,mp	1	C	C	Camera shake from explosions and artillery.
+cg_centertime	hud	sp,mp	3	C	C	Seconds a message in the middle of the screen stays up.
+cg_configversion	sys	sp,mp	0	A	A	The saved settings' version (the game resets old ones).
+cg_controllerconfig	input	sp,mp	0	A	A	The controller layout picked in the Options menu.
+cg_crosshairAlpha	xhair	sp,mp	1.0	A	A	Crosshair opacity (0-1).
+cg_crosshairAlphaMin	xhair	sp,mp	0.0	A	A	Crosshair opacity at the start of its fade in.
+cg_crosshairDynamic	xhair	sp,mp	0	A	A	The crosshair spreads with movement and firing.
+cg_crosshairNoGun	xhair	sp,mp	gfx/reticle/hud@center_ads.tga	A	A	The crosshair picture shown with no weapon.
+cg_cursorHints	xhair	sp,mp	3	A	A	How use hints (pick up, open ...) are drawn: 0 none, 1-4 different pulses and fades.
+cg_deadscreen_backdrop	hud	sp,mp	levelshots/deadscreen/defeat_american.tga			Set by the game: the picture behind the death screen.
+cg_deadscreen_levelname	hud	sp,mp	levelshots/level_name_text/hud@bastogne1.tga			Set by the game: the mission name on the death screen.
+cg_draw2D	hud	sp,mp	1	A	A	Draw everything 2D (HUD, crosshair, messages). 0 = clean screenshots.
+cg_drawCrosshair	xhair	sp	1	A		Draw the crosshair.
+cg_drawFPS	hud	sp,mp	0	A	A	Frames-per-second counter (the port adds World at War's modes: 0 off, 1 simple, 2 with ranges, 3 verbose).
+cg_drawGun	gun	sp,mp	1	C	C	Draw your weapon. 0 hides it.
+cg_drawpaused	hud	sp,mp	1			Show the paused screen.
+cg_drawPosition	hud	sp,mp	0	A	A	Debug: prints your position on screen.
+cg_drawStatus	hud	sp,mp	1	A	A	Draw the HUD's status parts (health, ammo, compass).
+cg_errordecay	net	sp,mp	100			How fast a prediction error is smoothed out (ms).
+cg_fov	view	sp,mp	65	T	T	Field of view (degrees). The port allows 65-165 with cg_fovScale; F2 > Video.
+cg_fovScale	view	sp,mp	1	A	A	Multiplies cg_fov (the port's FOV scale; the effective value is 65-165).
+cg_gameBoldMessageWidth	hud	mp	30		A	Multiplayer: widest bold game message (characters).
+cg_gameMessageWidth	hud	mp	70		A	Multiplayer: widest game message (characters).
+cg_gun_move_f	gun	sp,mp	0	C	C	Weapon sway forward while moving.
+cg_gun_move_minspeed	gun	sp,mp	0	C	C	Slowest weapon sway rate.
+cg_gun_move_r	gun	sp,mp	0	C	C	Weapon sway to the right while moving.
+cg_gun_move_rate	gun	sp,mp	0	C	C	Base weapon sway rate.
+cg_gun_move_u	gun	sp,mp	0	C	C	Weapon sway up while moving.
+cg_gun_ofs_f	gun	sp,mp	0	C	C	Weapon pushed forward while crouched or prone.
+cg_gun_ofs_r	gun	sp,mp	0	C	C	Weapon pushed right while crouched or prone.
+cg_gun_ofs_u	gun	sp,mp	0	C	C	Weapon pushed up while crouched or prone.
+cg_gun_rot_minspeed	gun	sp,mp	0	C	C	Slowest weapon turn sway.
+cg_gun_rot_p	gun	sp,mp	0	C	C	Weapon pitch sway as you turn.
+cg_gun_rot_r	gun	sp,mp	0	C	C	Weapon roll sway as you turn.
+cg_gun_rot_rate	gun	sp,mp	0	C	C	Base weapon turn sway rate.
+cg_gun_rot_y	gun	sp,mp	0	C	C	Weapon yaw sway as you turn.
+cg_gunX	gun	sp,mp	0	C	C	Weapon model offset forward (World at War: cg_gun_x).
+cg_gunY	gun	sp,mp	0	C	C	Weapon model offset sideways (World at War: cg_gun_y).
+cg_gunZ	gun	sp,mp	0	C	C	Weapon model offset up (World at War: cg_gun_z).
+cg_hintFadeTime	xhair	sp,mp	100	A	A	Time (ms) a use hint takes to fade.
+cg_hudAlpha	hud	sp,mp	1.0	A	A	HUD opacity (0-1).
+cg_hudcom	script	sp	1			Set by the level scripts: the compass is allowed (1).
+cg_hudCompassMaxRange	hud	sp,mp	1024	A	A	Compass: farthest distance shown (units).
+cg_hudCompassMinRadius	hud	sp,mp	0	A	A	Compass: the smallest ring markers are drawn on.
+cg_hudCompassMinRange	hud	sp,mp	0	A	A	Compass: nearest distance shown (units).
+cg_hudCompassSize	hud	sp,mp	1.0	A	A	Compass size.
+cg_hudCompassSpringyPointers	hud	sp,mp	0	A	A	Compass pointers swing with a spring.
+cg_hudCompassVisible	hud	sp,mp	1	R	R	Set by the game: whether the compass shows.
+cg_hudDamageIconHeight	hud	sp,mp	64	A	A	Height of the arrow that shows where damage came from.
+cg_hudDamageIconInScope	hud	sp,mp	0	A	A	Show the damage arrows while looking through a scope.
+cg_hudDamageIconOffset	hud	sp,mp	128	A	A	Damage arrow distance from the screen's center.
+cg_hudDamageIconTime	hud	sp,mp	2000	A	A	Time (ms) a damage arrow stays up.
+cg_hudDamageIconWidth	hud	sp,mp	128	A	A	Width of the damage arrow.
+cg_hudObjectiveMaxHeight	hud	sp,mp	70	A	A	Objective marker: highest it is drawn above the target.
+cg_hudObjectiveMaxRange	hud	sp,mp	2048	A	A	Objective marker: farthest distance it shows at.
+cg_hudObjectiveMinAlpha	hud	sp,mp	1	A	A	Objective marker: faintest it gets.
+cg_hudObjectiveMinHeight	hud	sp,mp	-70	A	A	Objective marker: lowest it is drawn.
+cg_hudObjectiveNumRings	hud	sp,mp	10	A	A	Objective marker: number of pulse rings.
+cg_hudObjectiveRingSize	hud	sp,mp	64	A	A	Objective marker: pulse ring size.
+cg_hudObjectiveRingTime	hud	sp,mp	10000	A	A	Objective marker: time (ms) one pulse ring takes.
+cg_letterbox	view	sp,mp	0	T	T	Set by the game: the cinematic black bars.
+cg_mpDebugAnimEntity	mp	mp	-1			Debug: the entity whose animations are traced in multiplayer (-1 = none).
+cg_night	view	sp,mp	0	R	R	Set by the game: night vision tint for night missions.
+cg_nopredict	net	sp,mp	0	A	A	Debug: no local prediction of your movement (moves only when the server answers).
+cg_norender	r	sp,mp	0			Debug: the game draws nothing.
+cg_redFlashTime	hud	sp,mp	350			Time (ms) of the red flash when you are hit.
+cg_shellshockblur	shock	sp,mp	1	A	A	Blur the screen while shell-shocked.
+cg_shock_mouse	shock	sp,mp	1	C	C	Slow the view down while shell-shocked (World at War: bg_shock_lookControl).
+cg_shock_mouse_fadeTime	shock	sp,mp	2	C	C	Seconds the shell-shock view slowdown takes to fade.
+cg_shock_mouse_maxpitchspeed	shock	sp,mp	90	C	C	Fastest up/down turning while shell-shocked (degrees/second).
+cg_shock_mouse_maxyawspeed	shock	sp,mp	90	C	C	Fastest left/right turning while shell-shocked (degrees/second).
+cg_shock_mouse_sensitivityscale	shock	sp,mp	0.5	C	C	Look sensitivity while shell-shocked (fraction).
+cg_shock_sound	shock	sp,mp	1	C	C	Play the shell-shock sound.
+cg_shock_soundFadeInTime	shock	sp,mp	0.25	C	C	Shell-shock sound fade in (seconds).
+cg_shock_soundFadeOutTime	shock	sp,mp	2.5	C	C	Shell-shock sound fade out (seconds).
+cg_shock_soundLoopEndDelay	shock	sp,mp	-3.0	C	C	When the shell-shock sound loop ends, relative to the shock's end (seconds).
+cg_shock_soundLoopFadeTime	shock	sp,mp	1.5	C	C	Shell-shock sound loop fade (seconds).
+cg_shock_soundModEndDelay	shock	sp,mp	2	C	C	When the muffled sound ends, relative to the shock's end (seconds).
+cg_shock_soundRoomType	shock	sp,mp	underwater	C	C	The reverb used while shell-shocked (e.g. underwater).
+cg_shock_soundWetLevel	shock	sp,mp	0.5	C	C	How much of the sound goes through that reverb (0-1).
+cg_shock_viewKickFadeTime	shock	sp,mp	3	C	C	Seconds the shell-shock view wobble takes to fade.
+cg_shock_viewKickPeriod	shock	sp,mp	1.75	C	C	Shell-shock view wobble period (seconds).
+cg_shock_viewKickRadius	shock	sp,mp	0.05	C	C	Shell-shock view wobble size.
+cg_shock_volume_announcer	shock	sp,mp	1.0	C	C	Announcer volume while shell-shocked (0-1).
+cg_shock_volume_auto	shock	sp,mp	0.1	C	C	Ambient sound volume while shell-shocked (0-1).
+cg_shock_volume_body	shock	sp,mp	0.1	C	C	Body (footsteps, impacts) volume while shell-shocked (0-1).
+cg_shock_volume_item	shock	sp,mp	0.1	C	C	Item sound volume while shell-shocked (0-1).
+cg_shock_volume_local	shock	sp,mp	1.0	C	C	Your own sounds' volume while shell-shocked (0-1).
+cg_shock_volume_menu	shock	sp,mp	1.0	C	C	Menu sound volume while shell-shocked (0-1).
+cg_shock_volume_music	shock	sp,mp	1.0	C	C	Music volume while shell-shocked (0-1).
+cg_shock_volume_shellshock	shock	sp,mp	1.0	C	C	The shell-shock sound's own volume (0-1).
+cg_shock_volume_voice	shock	sp,mp	0.2	C	C	Voice volume while shell-shocked (0-1).
+cg_shock_volume_weapon	shock	sp,mp	0.5	C	C	Weapon volume while shell-shocked (0-1).
+cg_skybox	r	sp,mp	1	C	C	Draw the sky.
+cg_subtitles	hud	sp,mp	1	A	A	Show subtitles.
+cg_thirdPerson	cam	sp,mp	0	C	C	Third person view.
+cg_thirdPersonAngle	cam	sp,mp	0	C	C	Third person camera angle around you (degrees).
+cg_thirdPersonLock	cam	sp,mp	0	C	C	Third person camera stays behind you instead of turning freely.
+cg_thirdPersonRange	cam	sp,mp	150			Third person camera distance (units).
+cg_tracerchance	fx	sp,mp	0.5			Chance a bullet is drawn as a tracer (0-1).
+cg_tracerlength	fx	sp,mp	150			Tracer length (units).
+cg_tracerSpeed	fx	sp,mp	5200			Tracer speed (units per second).
+cg_tracerwidth	fx	sp,mp	0.8			Tracer width.
+cg_victoryscreen_backdrop	hud	sp,mp	levelshots/victoryscreen/victory_american.jpg			Set by the game: the picture behind the mission complete screen.
+cg_victoryscreen_levelname	hud	sp,mp	levelshots/level_name_text/hud@bastogne1.tga			Set by the game: the mission name on the mission complete screen.
+cg_victoryscreen_menu	script	sp	off			Set by the level scripts: the mission complete screen's menu ("off" until the end).
+cg_viewKickDeflectTime	view	sp,mp	10			Time (ms) the view takes to kick when you are hit.
+cg_viewKickMax	view	sp,mp	90	C	C	Largest view kick when hit (World at War: bg_viewKickMax).
+cg_viewKickReturnTime	view	sp,mp	400			Time (ms) the view takes to come back after a kick.
+cg_viewKickScale	view	sp,mp	2.0	C	C	View kick per point of damage (World at War's bg_viewKickScale x 10).
+cg_viewsize	view	sp,mp	100	A	A	Size of the 3D view (percent, 30-100).
+cg_weaponCycleDelay	input	sp,mp	0	A	A	Delay (ms) between weapon switches while the button is held.
+cg_widescreen	view	sp,mp	0	A	A	16:9 picture and HUD layout (the port's F2 aspect ratio sets it).
+chain	script	sp	0			Level script switch (set to 0 at the start): developer chain test.
+checkpoint	sys	sp,mp	0			Set by the game: the checkpoint being loaded.
+cl_altFireButtonDown	input	sp,mp	0	T	T	Set by the game: the alternate fire button is held (read only in practice).
+cl_analogStickLean	input	sp,mp	0	T	T	Set by the game: leaning with the stick.
+cl_anglespeedkey	input	sp,mp	1.5			How much faster turning keys/stick turn while the speed key is held.
+cl_avidemo	sys	sp,mp	0			Developer: save this many frames a second as pictures (not used on PC; use the port's screenshot).
+cl_binocButtonDown	input	mp	0		T	Multiplayer, set by the game: the binoculars button is held.
+cl_bomberKeyboardMode	input	sp	0	T		Set by the game: the bomber mission's keyboard steering.
+cl_conXOffset	hud	sp,mp	0			Console text left margin (the original console; the port's console is its own).
+cl_debugMove	sys	sp,mp	0			Debug: graphs your movement input.
+cl_disable_ads	input	sp,mp	0	T	T	Set by the game: aiming down the sight is off for the moment.
+cl_forceavidemo	sys	sp,mp	0			Developer: record frames even when the game isn't active.
+cl_frameadvance	sys	sp,mp	0			Debug: step the game one frame at a time.
+cl_freelook	input	sp,mp	1	A	A	Look with the mouse.
+cl_freeze	sys	sp,mp	0			Debug: freezes your input.
+cl_goStandJumpTime	input	sp,mp	0	A	A	Time (ms) the jump button has to be held to stand up from crouch or prone.
+cl_grenadeButtonDown	input	sp,mp	0	T	T	Set by the game: the grenade button is held.
+cl_language	fs	sp,mp	0	AL	AL	The text and voice language (latched: takes effect after a restart).
+cl_languagesavailable	fs	sp,mp	0			Set by the game: which languages the disc has.
+cl_languagetranslate	fs	sp,mp	1	L	L	Translate text through the language files (0 shows the raw string names).
+cl_languagewarnings	fs	sp,mp	0			Debug: warn about strings missing from the language files.
+cl_languagewarningsaserrors	fs	sp,mp	0			Debug: treat missing strings as errors.
+cl_mouseAccel	input	sp,mp	0	A	A	Mouse acceleration (the port's raw mouse aim is separate: F2 > Controls).
+cl_nodelta	net	sp,mp	0			Debug: ask the server for full snapshots instead of changes.
+cl_noprint	sys	sp,mp	0			Print nothing to the console.
+cl_paused	sys	sp				Set by the game: the game is paused.
+cl_pitchspeed	input	sp,mp	140	A	A	Up/down turning speed with the pad or keys (degrees/second).
+cl_restartdeath	sys	sp,mp	0			Set by the game: the mission is restarting after a death.
+cl_running	sys	sp,mp	0	R	R	Set by the game: the client is running (read only).
+cl_sensitivityX	input	sp	0	A		The Options menu's horizontal look sensitivity.
+cl_sensitivityY	input	sp	0	A		The Options menu's vertical look sensitivity.
+cl_showmouserate	sys	sp,mp	0			Debug: print the mouse rate to the console.
+cl_shownet	net	sp,mp	0	T	T	Debug: print network messages (1-4 = more detail).
+cl_showSend	net	sp,mp	0	T	T	Debug: print the commands sent to the server.
+cl_stance	input	sp	0	T		Set by the game: the stance button state.
+cl_stanceHoldTime	input	sp,mp	300			Time (ms) the stance button has to be held to go prone.
+cl_stanceTemp	input	sp,mp	0	T	T	Set by the game: a temporary stance change.
+cl_testAnimWeight	sys	sp,mp	0			Debug: an animation blend weight to test.
+cl_viewPitchCompensate	input	sp,mp	0	R	R	Set by the game: aim compensation up/down (vehicles, turrets).
+cl_viewYawCompensate	input	sp,mp	0	R	R	Set by the game: aim compensation left/right (vehicles, turrets).
+cl_xmodelcheck	sys	sp,mp	0	AL	AL	Debug: check models as they load.
+cl_yawspeed	input	sp,mp	140	A	A	Left/right turning speed with the pad or keys (degrees/second).
+cm_noCurves	sys	sp,mp	0	C	C	Debug: curved surfaces don't collide.
+cm_playerCurveClip	move	sp,mp	1	AC	AC	The player collides with curved surfaces.
+com_animCheck	sys	sp,mp	0			Debug: check the animation trees.
+com_expectedhunkusage	sys	sp,mp	-1			Set by the game: the memory the level is expected to need.
+com_journal	sys	sp				Developer: record or play back input (not used on PC).
+com_maxfps	view	sp,mp	0	A	A	Frame rate cap (the port's frame limiter: 0 = no limit, up to 1000; F2 > Video).
+com_speeds	sys	sp,mp	0			Debug: print how long each part of a frame took.
+com_statmon	sys	sp,mp	0			Debug: the stats monitor on screen.
+con_debug	sys	mp	0		A	Multiplayer: the console's debug output.
+con_minicon	hud	mp	0		A	Multiplayer: a few console lines always on screen.
+conical_spread	gun	sp,mp	1			Weapon spread is a cone (1) rather than flat.
+cull_instances	r	sp,mp	1	T	T	Skip drawing repeated objects out of view.
+debug	script	sp	0			Level script switch (set to 0 at the start): the level scripts' debug output.
+debug_ai_location	script	sp				Mayenne's level script switch (read, never set): AI location debugging.
+debug_audio	script	sp				Level script switch (read, never set): sound debugging in the level scripts.
+debug_battlechatter	script	sp	0			Level script switch (set to 0 at the start): squad chatter debugging.
+debug_drawcone	script	sp				Level script switch ("off" at the start): draws the AI's view cones.
+debug_mortars	script	sp	0			Level script switch (set to 0 at the start): mortar debugging.
+debug_stundraw	script	sp				Level script switch ("off" at the start): draws stun (shell shock) areas.
+debug_tankall	script	sp				Level script switch ("off" at the start): tank debugging, all tanks.
+debug_tanknone	script	sp				Level script switch ("off" at the start): tank debugging off for all tanks.
+debug_tankque	script	sp				Level script switch ("off" at the start): tank debugging, their order queue.
+debug_tanksamples	script	sp				Level script switch ("off" at the start): tank debugging, path samples.
+debugplayerangles	script	sp				Level script switch (read, never set): prints your view angles.
+developer	sys	sp,mp	0	T	T	Developer mode: more console messages (the port shows the game's answers anyway).
+developer_script	sys	sp,mp	0	T	T	Developer mode for scripts: more script messages.
+disable_ai	ai	sp,mp	0	C	C	Debug: AI stop thinking.
+disable_default_streaming	sys	sp,mp	0			Developer: the default streaming of level data is off.
+enemy_radar	mp	sp,mp	1			Enemies show on the compass (firing without a silencer).
+exception	sys	sp,mp	1	I	I	Internal: the game's exception handling switch (leave it alone).
+fallback	script	sp	0			Level script switch (set to 0 at the start): the AI fall back positions' debugging.
+ff_off	script	sp				Level script switch (read, never set): friendly fire mission failure off.
+fixedtime	sys	sp,mp	0	C	C	Debug: a fixed frame time (ms) instead of the real one.
+fs_basegame	fs	sp,mp		I	I	The base game folder (read only).
+fs_basepath	fs	sp,mp		I	I	The install folder (read only).
+fs_cdpath	fs	sp,mp	d:	I	I	The disc folder (read only).
+fs_copyfiles	fs	sp,mp	0	I	I	Developer: copy files from the disc folder (read only).
+fs_debug	fs	sp,mp	0			Debug: print the files the game opens.
+fs_game	fs	sp,mp		I	I	A mod folder (read only; the port doesn't load mods).
+fs_gamedirvar	fs	sp				Set by the game: the mod folder name (empty).
+fs_homepath	fs	sp,mp	<fs_basepath>	I	I	The folder for the player's files (read only).
+fs_ignoreLozalized	fs	sp,mp	0	LC	LC	Debug: ignore the localized files (the name's typo is the game's).
+fs_restrict	fs	sp,mp		I	I	Restrict the files to a demo set (read only).
+fx_count	fx	sp,mp	0	C	C	Debug: print the number of effects.
+fx_cull	fx	sp,mp	1			Skip effects out of view.
+fx_cullbias	fx	sp,mp	0	A	A	Effects culling: distance bias.
+fx_cullscale	fx	sp,mp	1	A	A	Effects culling: distance scale.
+fx_debug	fx	sp,mp	0	C	C	Debug: effect information on screen.
+fx_debugBolt	fx	sp,mp	0	C	C	Debug: effects attached to models.
+fx_draw	fx	sp,mp	1	C	C	Draw effects (0 runs them but draws nothing).
+fx_enable	fx	sp,mp	1	C	C	Effects on (0 = no effects at all).
+fx_freeze	fx	sp,mp	0	C	C	Freeze all effects in place.
+g_accuracyStanceCrouchMod	ai	sp	0.75	C		AI accuracy against a crouched player (fraction).
+g_accuracyStanceProneMod	ai	sp	0.5	C		AI accuracy against a prone player (fraction).
+g_accuracyVsAI	ai	sp	0.0	C		AI accuracy against other AI (0 = the weapon's own).
+g_accuracyVsHero	ai	sp	0.0	C		AI accuracy against the squad's heroes (0 = the weapon's own).
+g_accuracyVsPlayer	ai	sp	0.0	C		AI accuracy against the player (0 = the weapon's own).
+g_aiEffectiveRange	ai	sp	0.0	C		AI effective range override (0 = the weapon's own).
+g_aiMissRange	ai	sp	0.0	C		AI miss distance override (0 = the default).
+g_aiShowTargeting	ai	sp	0.0	C		Debug: shows who the AI are aiming at.
+g_ammoFadeTime	hud	sp,mp	1.0	C	C	Seconds the ammo counter takes to fade.
+g_ammoSolidTime	hud	sp,mp	4.0	C	C	Seconds the ammo counter stays fully shown.
+g_bounds_height_standing	move	sp,mp	70	C	C	Player height (units) for collision while standing.
+g_bounds_width	move	sp,mp	30	C	C	Player width (units) for collision.
+g_changelevel_time	sys	sp,mp	4			Seconds before the next level loads.
+g_compassFadeTime	hud	sp,mp	1.0	C	C	Seconds the compass takes to fade.
+g_compassSolidTime	hud	sp,mp	9.0	C	C	Seconds the compass stays fully shown.
+g_connectpaths	ai	sp	0			Developer: connect the AI paths (a level-making tool).
+g_debugProneCheck	sys	sp,mp	0			Debug: shows the prone space checks.
+g_debugProneCheckDepthCheck	sys	sp,mp	1			Debug: the prone check's depth test.
+g_friendlyfireDist	ai	sp	384			Distance (units) within which you can't fire at a friendly.
+g_friendlyfireUseDist	ai	sp	256			Distance (units) for using (pushing) a friendly.
+g_friendlyfireUseTime	ai	sp	500			Time (ms) for using (pushing) a friendly.
+g_gameskill	sys	sp,mp	1	SRL	SRL	Difficulty: 0 Greenhorn, 1 Regular, 2 Hardened, 3 Veteran (set from the menu; latched).
+g_gravity	move	sp,mp	800			Gravity (units per second squared).
+g_grenadeFadeTime	hud	sp,mp	1.0	C	C	Seconds the grenade counter takes to fade.
+g_grenadeSolidTime	hud	sp,mp	4.0	C	C	Seconds the grenade counter stays fully shown.
+g_knockback	dmg	sp,mp	1000			How hard damage pushes you.
+g_player_maxhealth	dmg	sp,mp	1	RL	RL	The player's most health (set by the game from the difficulty).
+g_playerTrailTime	ai	sp	500	C		How often (ms) the AI note where you were, to follow you.
+g_reloading	sys	sp,mp	0	R	R	Set by the game: a checkpoint or save is loading.
+g_restoreFullCheckpoint	sys	sp	1	T		Loading a checkpoint restores everything (not just the player).
+g_spawnai	ai	sp	1	LC		Spawn AI (latched: from the next level load).
+g_speed	move	sp,mp	190	T	R	Player speed (set by the game).
+g_stanceFadeTime	hud	sp,mp	1.0	C	C	Seconds the stance icon takes to fade.
+g_stanceSolidTime	hud	sp,mp	4.0	C	C	Seconds the stance icon stays fully shown.
+g_useGear	script	sp				Level script switch (read, never set): the soldiers' gear.
+g_useholdtime	input	sp,mp	0	A	A	Time (ms) to hold Use to use things (0 = a press).
+g_vehControlMode	input	sp,mp	1	A	A	Tank and jeep steering: 1 the camera steers, 0 the stick steers (World at War: vehControlMode).
+g_vehicleTexScrollScale	fx	sp,mp	0	C	C	How fast tank tread textures scroll.
+g_weaponAmmoPools	dmg	sp,mp	0			Weapons with the same ammo share it.
+g_weaponrespawn	dmg	sp,mp	5			Seconds before a dropped weapon pickup comes back.
+gAIAllowEnemyReinforcements	ai	sp,mp	1			Enemy reinforcements may spawn.
+gAIAllowFriendlyReinforcements	ai	sp,mp	1			Friendly reinforcements may spawn.
+gAIMaxNumEnemyReinforcements	ai	sp,mp	0			Most enemy reinforcements (0 = the level's own).
+gAIMaxNumReinforcements	ai	sp,mp	0			Most friendly reinforcements (0 = the level's own).
+gAIMaxSpawnedEnemyCount	ai	sp,mp	0			Most enemies alive at once (0 = the level's own).
+gAITosserInvalidateRange	ai	sp,mp	512.000000			Distance (units) at which a grenade thrower's spot stops being used.
+gamedate	sys	sp,mp	Oct  9 2006	R	R	The game's build date (read only).
+gamename	sys	sp,mp	main	SR	SR	The game's name (read only).
+group_killtime	script	sp				Hostage's level script switch (read, never set): a squad's kill timer.
+health_recharge_rate	dmg	mp	30		T	Multiplayer: how fast health comes back (points a second).
+hud_healthOverlay_phaseEnd_pulseDuration	dmg	mp	700		C	Multiplayer: the red damage overlay's last pulse (ms).
+hud_healthOverlay_phaseEnd_toAlpha	dmg	mp	0.0		C	Multiplayer: the red damage overlay's opacity at its end.
+hud_healthOverlay_phaseOne_pulseDuration	dmg	mp	150		C	Multiplayer: the red damage overlay's first pulse (ms).
+hud_healthOverlay_phaseThree_pulseDuration	dmg	mp	400		C	Multiplayer: the red damage overlay's third pulse (ms).
+hud_healthOverlay_phaseThree_toAlphaMultiplier	dmg	mp	0.6		C	Multiplayer: the red damage overlay's opacity in the third pulse.
+hud_healthOverlay_phaseTwo_pulseDuration	dmg	mp	320		C	Multiplayer: the red damage overlay's second pulse (ms).
+hud_healthOverlay_phaseTwo_toAlphaMultiplier	dmg	mp	0.7		C	Multiplayer: the red damage overlay's opacity in the second pulse.
+hud_healthOverlay_pulseStart	dmg	mp	0.35		C	Multiplayer: the health fraction below which the red overlay pulses.
+hud_healthOverlay_regenPauseTime	dmg	mp	5000		CT	Multiplayer: time (ms) after a hit before health comes back.
+hummer	script	sp				Fuel Plant's and Saint-Lo's level script switch (read, never set): a jeep test.
+ik_ADS	gun	sp	0	C		The arms follow the weapon (inverse kinematics) while aiming down the sight.
+in_debugjoystick	input	sp,mp	0	T	T	Debug: print the controller's input.
+in_joyBallScale	input	sp,mp	0.02	A	A	Trackball scale (unused on PC).
+in_joystick	input	sp,mp	1	AL	AL	Use the controller.
+in_mouse	input	sp,mp	0	AL	AL	Use the mouse (the port reads the mouse itself).
+in_stickLegacy	input	sp,mp	0	A	A	The controller's legacy stick layout.
+in_stickSouthPaw	input	sp,mp	0	A	A	The controller's left-handed (southpaw) stick layout.
+instance_lods	r	sp,mp	1	T	T	Repeated objects use lower detail models far away.
+introScreen	hud	sp	1			Show the mission's intro text (the port skips it with cod3_skip_movies; set by the game).
+journal	sys	sp,mp	0	I	I	Developer: record or play back input (read only).
+joy_threshold	input	sp,mp	25	A	A	Controller stick dead zone.
+letterbox_enabled	view	sp	0			Set by the game: the cinematic black bars are allowed.
+livegrenadeangle	dmg	sp,mp	60			How far (degrees) from your view a live grenade shows its warning icon.
+loading_movies	sys	sp		I		Set by the game: the movies shown while loading.
+logfile	sys	sp,mp	0			Write the console to a log file (0 off, 1 buffered, 2 flushed at once; the port has its own log).
+m_filter	input	sp,mp	0	A	A	Smooth the mouse over two frames.
+m_forward	input	sp,mp	0.25	A	A	Forward speed from the mouse when moving with it.
+m_pitch	input	sp,mp	0.7	A	A	Mouse up/down speed (degrees per count); negative inverts.
+m_side	input	sp,mp	0.25	A	A	Sideways speed from the mouse when moving with it.
+m_yaw	input	sp,mp	0.7	A	A	Mouse left/right speed (degrees per count).
+mapname	sys	sp,mp	nomap	SR	SR	The current map (read only).
+max_drones	ai	sp	100	T		Most drones (simple background soldiers) at once.
+melee_clinch	script	sp				Level script switch (read, never set): the melee struggle (battle action) test.
+mg42	script	sp				Level script switch ("off" at the start): machine gun nest debugging.
+mp_debug	mp	mp	0			Multiplayer debug output from the game modes.
+mp_debugrender	mp	mp	0			Multiplayer debug drawing.
+mp_debugrenderspawnpoints	mp	mp	0			Multiplayer debug: draws the spawn points.
+mp_friendlyfire	mp	mp	1			Friendly fire in team modes.
+mp_gametype	mp	mp	dm			The game mode (dm, tdm, ctf, war, bas ...; set from the match settings).
+mp_gametypename	mp	mp				Set by the game: the game mode's name.
+mp_headIconDistAbovePlayer	hud	mp	16			Multiplayer: name/rank icon height above a player (units).
+mp_headIconDistAboveVehicle	hud	mp	60			Multiplayer: icon height above a vehicle (units).
+mp_headIconHeight	hud	mp	16			Multiplayer: head icon size.
+mp_headIconMinScreenSize	hud	mp	20			Multiplayer: the smallest a head icon gets far away.
+mp_headIconReviveMaxAlphaDist	hud	mp	2000			Multiplayer: distance where the revive icon is faintest.
+mp_headIconReviveMinAlphaDist	hud	mp	1000			Multiplayer: distance where the revive icon starts to fade.
+mp_itemIconDistAboveItem	hud	mp	15			Multiplayer: icon height above an item (units).
+mp_itemIconHeight	hud	mp	16			Multiplayer: item icon size.
+mp_itemIconMaxAlphaDist	hud	mp	2000			Multiplayer: distance where item icons are faintest.
+mp_itemIconMinAlphaDist	hud	mp	1000			Multiplayer: distance where item icons start to fade.
+mp_itemIconMinScreenSize	hud	mp	16			Multiplayer: the smallest an item icon gets far away.
+mp_lastmanstanding	mp	mp	0			Last man standing rounds.
+mp_objectiveFarAlpha	hud	mp	0			Multiplayer: objective icon opacity far away.
+mp_objectiveFarAlphaDist	hud	mp	10			Multiplayer: distance for the far opacity.
+mp_objectiveMaxSize	hud	mp	50			Multiplayer: largest objective icon.
+mp_objectiveMinSize	hud	mp	20			Multiplayer: smallest objective icon.
+mp_objectiveNearAlpha	hud	mp	20			Multiplayer: objective icon opacity up close.
+mp_objectiveNearAlphaDist	hud	mp	0			Multiplayer: distance for the near opacity.
+mp_objectiveSize	hud	mp	0			Multiplayer: objective icon size (0 = automatic).
+mp_roundlimit	mp	mp	0			Rounds in a match (0 = no limit).
+mp_scorelimit	mp	mp	0			Score that ends the match (0 = no limit).
+mp_teambalance	mp	mp	0			Keep the teams even.
+mp_timelimit	mp	mp	1			Minutes in a match.
+name	mp	sp,mp	Unknown Soldier	A	A	Your player name.
+nextdemo	sys	sp				Set by the game: the next demo to play.
+nextmap	sys	sp,mp	map_restart	T	T	The command run when the level ends (set by the game).
+no_shrimps	script	sp				Level script switch (read, never set): leaves out some of the level's scenery.
+notank	script	sp				Level script switch (read, never set): no tanks.
+num_banks	sys	sp,mp	80.000000	I	I	Set by the game: the number of sound banks.
+outsideMapEnts	sys	sp,mp	0	C	C	Debug: allows entities outside the map.
+path_assist	script	sp				Mace's level script switch: path help for the player.
+player_deathInvulnerableTime	dmg	sp	1000	C		Time (ms) after a deadly hit during which you can't be hit again (the save from a near death).
+player_deathInvulnerableToMelee	dmg	sp	1	C		That last-moment protection also covers melee.
+pmove_fixed	move	sp,mp	0			Fixed movement steps (pmove_msec) instead of the frame time.
+pmove_msec	move	sp,mp	8			The movement step (ms) when pmove_fixed is on.
+quickevents	script	sp				Mayenne's level script switch: quick events (battle actions) test.
+r_clear	r	sp,mp	0	C	C	Debug: clear the screen each frame (shows what isn't drawn).
+r_cullBModels	r	sp,mp	1			Skip drawing brush models out of view.
+r_cullXModels	r	sp,mp	1			Skip drawing models out of view.
+r_drawentities	r	sp,mp	1	C	C	Draw entities (models, weapons, characters).
+r_dynamiclight	r	sp,mp	1	A	A	Dynamic lights (muzzle flashes, explosions).
+r_finish	r	sp,mp	0	A	A	Wait for the GPU each frame.
+r_flares	r	sp,mp	1	A	A	Light flares.
+r_fog	r	sp,mp	1	C	C	Fog.
+r_fullbright	r	sp,mp	0	LC	LC	No lighting: everything fully lit.
+r_fullscreen	r	sp,mp	1	AL	AL	Full screen (the port's window mode: F2 > Video; World at War's r_fullscreen works too).
+r_LightScale	r	sp,mp	1.0	T	T	Light brightness scale.
+r_lockpvs	r	sp,mp	0	C	C	Debug: keep the current visibility, then look around to see what is culled.
+r_lodbias	r	sp,mp	0	A	A	Model detail bias (higher = lower detail sooner).
+r_lodscale	r	sp,mp	1	A	A	Model detail distance scale.
+r_logFile	r	sp,mp	0			Debug: log the renderer's calls for this many frames.
+r_maxEntLights	r	sp,mp	8	A	A	Most lights on one model.
+r_minEntLightIntensity	r	sp,mp	0.02	AC	AC	Faintest light that lights a model.
+r_mode	r	sp,mp	3	AL	AL	The screen mode (the port's resolution is F2 > Video; World at War's r_mode 1920x1080 works).
+r_nocull	r	sp,mp	0	C	C	Debug: draw everything, in view or not.
+r_noportals	r	sp,mp	0	C	C	Debug: ignore portals (visibility).
+r_norefresh	r	sp,mp	0	C	C	Debug: don't draw the 3D view.
+r_offsetfactor	r	sp,mp	-1	C	C	Decal depth offset factor.
+r_offsetunits	r	sp,mp	-2	C	C	Decal depth offset units.
+r_portalOnly	r	sp,mp	0	C	C	Debug: draw only what portals see.
+r_profileDrawElements	r	sp,mp	0	C	C	Debug: time the draw calls.
+r_showLocationalDamage	r	sp,mp	0	C	C	Debug: shows the hit zones (head, chest, limbs).
+r_showportals	r	sp,mp	0	C	C	Debug: outline the portals.
+r_showSkeletons	r	sp,mp	0	C	C	Debug: draw the characters' skeletons.
+r_showsurfcounts	r	sp,mp	0	C	C	Debug: print the number of surfaces drawn.
+r_showtricounts	r	sp,mp	0	C	C	Debug: print the number of triangles drawn.
+r_showtris	r	sp,mp	0	C	C	Debug: wireframe over everything.
+r_singlecell	r	sp,mp	0	C	C	Debug: draw only the cell the camera is in.
+r_speeds	r	sp,mp	0	C	C	Debug: renderer statistics.
+r_swapDelay	r	sp,mp	0	A	A	Debug: wait (ms) after each frame is shown.
+r_testshadow	r	sp,mp	1	T	T	Internal shadow test switch (leave it alone; it isn't an off switch: use cod3_shadow_quality).
+r_texturebits	r	sp,mp	0	AL	AL	Texture color depth (latched; the port's GPU emulation decides).
+r_textureMode	r	sp,mp	GL_LINEAR_MIPMAP_NEAREST	A	A	Texture filter (the port's anisotropic filtering is F2 > Video).
+r_uifullscreen	r	sp,mp	0			Set by the game: a full screen menu is up.
+r_vc_compile	r	sp,mp	0	L	L	Developer: build the vertex cache.
+r_vc_makelog	r	sp,mp	0	L	L	Developer: write the vertex cache log.
+r_vc_showlog	r	sp,mp	0			Developer: show the vertex cache log.
+r_verbose	r	sp,mp	0			Debug: more renderer messages.
+r_weightMipMaps	r	sp,mp	0	L	L	Developer: weighted texture mipmaps.
+r_zfar	r	sp,mp	8192	C	C	Far drawing distance (0 = from the level's fog).
+r_znear	r	sp,mp	6.0	T	T	Near drawing distance (things closer aren't drawn).
+RadarFakeFriendlies	mp	sp,mp	0			Debug: fake friendly markers on the compass.
+remove_nonheroes	script	sp				Mayenne's level script switch: removes the soldiers who aren't heroes.
+scr_conspeed	hud	mp	3			Multiplayer: how fast the original console slides open.
+sensitivityX	input	sp	1	A		Look sensitivity left/right (the Options menu sets it).
+sensitivityY	input	sp	1	A		Look sensitivity up/down (the Options menu sets it).
+setplayerpitch	script	sp				Level script switch: sets your view pitch at the start (0 = no).
+setplayeryaw	script	sp				Level script switch: sets your view yaw at the start (0 = no).
+shock_screen_blur_fadein_time	shock	sp,mp	0.25	C	C	Seconds the shell-shock blur takes to come in.
+shock_screen_blur_fadeout_time	shock	sp,mp	0.75	C	C	Seconds the shell-shock blur takes to go.
+shock_screen_blur_level	shock	sp,mp	0.6	C	C	How strong the shell-shock blur is.
+shock_screen_blur_time	shock	sp,mp	5.0	C	C	Seconds the shell-shock blur lasts.
+shock_screen_feedback	shock	sp,mp	0.03	C	C	The shell-shock blur's trail (how much of the last frame is kept).
+show_playerdist	sys	sp,mp	0			Debug: prints distances to the player.
+showdrop	net	sp,mp	0	T	T	Debug: print dropped network packets.
+showpackets	net	sp,mp	0	T	T	Debug: print network packets.
+showvehmap	sys	sp,mp	0			Debug: shows the vehicle path map.
+sim_nextgen	script	sp				Mayenne's level script switch: a next-gen simulation test.
+skipto	script	sp	0			Level script switch (set to 0 at the start): developer skip to a later part of the mission.
+sound_debug	sys	sp,mp	0			Debug: sound information.
+start	script	sp	start			Level script switch ("start" at the start): the start point of the mission (developer).
+sv_cheats	sys	sp,mp	0	R	R	Cheats on (read only: use the port's sv_cheats / cheats command; in multiplayer only the host, and everyone is told).
+sv_framerate_smoothing	net	sp,mp	1			Smooth the server's frame rate.
+sv_killserver	net	sp,mp	0			Set by the game: shut the server down.
+sv_mapname	net	sp,mp		SR	SR	The server's map (read only).
+sv_pakNames	net	sp,mp		R	R	Set by the game: the server's data packs.
+sv_paks	net	sp,mp		R	R	Set by the game: the server's data pack checksums.
+sv_referencedPakNames	net	sp,mp		R	R	Set by the game: the data packs in use.
+sv_referencedPaks	net	sp,mp		R	R	Set by the game: the checksums of the data packs in use.
+sv_running	net	sp,mp	0	R	R	Set by the game: a server is running (read only).
+sv_serverid	net	sp,mp	0	R	R	Set by the game: the server instance (read only).
+sv_showCommands	net	sp,mp	0			Debug: print the commands players send.
+sys_cpuid	sys	sp,mp	1			Set by the game: the CPU type.
+timerbars_advance	sys	mp	1		T	Multiplayer debug: the frame timing bars' advance part.
+timerbars_dma	sys	mp	1		T	Multiplayer debug: the frame timing bars' DMA part.
+timerbars_on	sys	mp	0		T	Multiplayer debug: frame timing bars on screen.
+timerbars_scene	sys	mp	1		T	Multiplayer debug: the frame timing bars' scene part.
+timerbars_user	sys	mp	1		T	Multiplayer debug: the frame timing bars' user part.
+timescale	sys	sp,mp	1	C	C	Game speed (cheat; the port keeps it 1 outside sv_cheats 1).
+truck_drawtags	script	sp				Level script switch ("off" at the start): draws the trucks' attachment points.
+ui_campaign	sys	sp	american			Set by the game: the campaign of the current mission (american, british, canadian, polish).
+ui_deadquote	hud	sp				Set by the level scripts: the quote on the death screen.
+ui_victoryquote	hud	sp	@VICTORYQUOTE_HE_CONQUERS_WHO_ENDURES			Set by the level scripts: the quote on the mission complete screen.
+viewlog	sys	sp,mp	0	C	C	Debug: show the console log window.

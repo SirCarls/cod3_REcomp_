@@ -61,7 +61,7 @@ fn size(value: i32, name: &str) -> Result<usize, String> {
 }
 
 /// The channel in argument `i`, and its profiling pointer (not part of the port).
-fn chan_from(game: Game, args: &mut Args, i: usize) -> Result<(Netchan, i32), String> {
+pub(crate) fn chan_from(game: Game, args: &mut Args, i: usize) -> Result<(Netchan, i32), String> {
     let bytes = args.buffer(i).ok_or("NULL netchan")?;
     let max = max_message_length(game);
     if bytes.len() != chan_token_size(game) {
@@ -92,7 +92,12 @@ fn chan_from_bytes(game: Game, bytes: &[u8], max: usize) -> Result<(Netchan, i32
     Ok((chan, word(bytes, 10)))
 }
 
-fn chan_to(chan: &Netchan, profile: i32, args: &mut Args, i: usize) -> Result<(), String> {
+pub(crate) fn chan_to(
+    chan: &Netchan,
+    profile: i32,
+    args: &mut Args,
+    i: usize,
+) -> Result<(), String> {
     let bytes = args.buffer(i).ok_or("NULL netchan")?;
     chan_to_bytes(chan, profile, bytes);
     Ok(())

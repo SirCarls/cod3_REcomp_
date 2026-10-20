@@ -189,4 +189,13 @@ void default_extension(ByteSpan path, std::size_t max_size, ByteView extension) 
     crt::sprintf(path, max_size, formatted);
 }
 
+Expected<std::vector<std::uint8_t>> va(Game game, std::vector<std::uint8_t> formatted) {
+    bool cod2 = game == Game::CallOfDuty2;
+    if (formatted.size() >= (cod2 ? 0x400u : 0x7D00u)) {
+        return GameError::drop(cod2 ? "Attempted to overrun string in call to va()"
+                                    : "Attempted to overrun string in call to va()\n");
+    }
+    return formatted;
+}
+
 }  // namespace iw_pc::shared::strings

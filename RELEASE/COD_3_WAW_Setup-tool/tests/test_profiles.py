@@ -25,7 +25,7 @@ def settings(project: Path) -> dict:
         "waw_pc_disc": "", "waw_alternative": "xbox360", "waw_map_packs": [str(project / "input" / "patch.exe")],
         "use_waw": False, "build_linux": True, "build_windows": False,
         "output_dir": str(project / "output"), "work_dir": str(project / "work"), "jobs": 4,
-        "build_recomp": True, "appimage": True, "install_deps": True, "fidelityfx": True, "cleanup": True,
+        "build_recomp": True, "appimage": True, "install_deps": True, "fidelityfx_sdk": False, "cleanup": True,
         "keep_sdk": False, "upscale_textures": True, "upscale_model": "photo", "upscale_noise": 1,
         "upscale_scale": 2, "cod3_windowed": False, "cod3_args": "--fullscreen=false",
     }

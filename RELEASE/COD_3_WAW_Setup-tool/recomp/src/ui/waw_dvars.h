@@ -44,6 +44,7 @@ enum class Conv {
   kVsync,       // 0/1 -> the two presentation cvars
   kShadows,     // 0/1 -> cod3_shadow_quality off / original
   kInvertPitch, // 0/1 -> the mouse as the player sees it (MouseLook::SetMouseInverted)
+  kFraction100, // 0.25-1 -> a percent setting 25-100 (cod3_render_percent)
 };
 
 struct Dvar {

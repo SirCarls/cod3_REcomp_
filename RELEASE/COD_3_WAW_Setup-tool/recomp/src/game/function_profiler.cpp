@@ -597,6 +597,9 @@ std::filesystem::path WriteProfile(const ThreadRow& thread, double seconds, doub
   // offsets, for matching the library's build later).
   std::map<std::string, std::map<std::string, uint64_t>> callers_of;
   std::map<std::string, std::map<uintptr_t, uint64_t>> offsets_of;
+  // Inside the SDK's own named functions: where in them, in 16-byte steps
+  // by module offset (objdump --start-address shows those instructions).
+  std::map<std::string, std::map<uintptr_t, uint64_t>> spots_of;
   bool estimated_names = false;
   // A sample's function and its callers as far as the stack words show:
   // "A <- B <- C".
@@ -631,6 +634,8 @@ std::filesystem::path WriteProfile(const ThreadRow& thread, double seconds, doub
       ++held_samples;
       held_chains[chain_of(i, p)]++;
     }
+    if (p.start && p.module.rfind("ReXGlue", 0) == 0)
+      if (Module* mod = module_of(pc)) spots_of[key][(pc - mod->base) & ~uintptr_t(15)]++;
     if (WantsCallers(p)) {
       // The first candidate right after a call instruction.
       uintptr_t ret = 0;
@@ -779,6 +784,36 @@ std::filesystem::path WriteProfile(const ThreadRow& thread, double seconds, doub
       list += part;
     }
     if (!list.empty()) out << "    at " << list << "\n";
+  }
+  // The SDK's hottest functions, inside: which instructions (for reading the
+  // machine code of a build without debug information).
+  bool spots_header = false;
+  int spot_functions = 0;
+  for (const Place& p : ranked) {
+    if (spot_functions == 6) break;
+    const std::string key = p.module + "\n" + p.name;
+    auto found = spots_of.find(key);
+    if (found == spots_of.end() || double(p.samples) / total < 0.02) continue;
+    if (!spots_header) {
+      out << "\n== Inside the SDK's hottest functions ==\n"
+             "(16-byte spots by offset in the module's file, busiest first: objdump -d\n"
+             "--start-address=OFFSET on that library shows the instructions.)\n";
+      spots_header = true;
+    }
+    ++spot_functions;
+    std::snprintf(line, sizeof(line), "%6.1f%%  %s  %s\n", 100.0 * double(p.samples) / total,
+                  p.name.c_str(), p.module.c_str());
+    out << line;
+    std::vector<std::pair<uint64_t, uintptr_t>> spots;
+    for (const auto& [offset, n] : found->second) spots.push_back({n, offset});
+    std::sort(spots.rbegin(), spots.rend());
+    Module* mod = module_of(p.start);
+    for (size_t i = 0; i < spots.size() && i < 8; ++i) {
+      const uintptr_t in_function = mod ? spots[i].second + mod->base - p.start : 0;
+      std::snprintf(line, sizeof(line), "    %5.1f%% of it  at 0x%" PRIxPTR " (+0x%" PRIxPTR ")\n",
+                    100.0 * double(spots[i].first) / double(p.samples), spots[i].second, in_function);
+      out << line;
+    }
   }
   if (estimated_names)
     out << "\n(memcpy and the other C library routines named without the library's debug\n"

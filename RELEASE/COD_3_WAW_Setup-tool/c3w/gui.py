@@ -172,8 +172,16 @@ class App(Pages, LogPage, Games):
         self.v_jobs = tk.IntVar(value=int(s.get("jobs", common.recommended_jobs())))
         self.v_recomp = tk.BooleanVar(value=s.get("build_recomp", True))
         self.v_appimage = tk.BooleanVar(value=s.get("appimage", True))
+        # More options asks the other way round: a plain bin/ folder instead of
+        # the AppImage, the default (owner 2026-10-19). Same choice, kept in step.
+        self.v_bin_folder = tk.BooleanVar(value=not self.v_appimage.get())
+        self.v_bin_folder.trace_add("write", lambda *_: self._sync_linux_layout(from_box=True))
+        self.v_appimage.trace_add("write", lambda *_: self._sync_linux_layout(from_box=False))
         self.v_install = tk.BooleanVar(value=s.get("install_deps", True))
-        self.v_ffx = tk.BooleanVar(value=s.get("fidelityfx", True))
+        # AMD's FidelityFX SDK (the experimental FSR 2 / 3): off unless ticked
+        # (owner 2026-10-19). A new key: the old "fidelityfx" was on for everyone
+        # and meant CAS / FSR 1, which every build has now (SDK patch 0064).
+        self.v_ffx = tk.BooleanVar(value=s.get("fidelityfx_sdk", False))
         self.v_upscale = tk.BooleanVar(value=s.get("upscale_textures", False))
         self.v_upscale_model = tk.StringVar()
         self.v_upscale_noise = tk.StringVar()
@@ -760,6 +768,7 @@ class App(Pages, LogPage, Games):
         ttk.Label(vf, text="Versions:").pack(side="left", padx=(0, px(8)))
         self.cb_linux = ttk.Checkbutton(vf, text="Linux (AppImage)", variable=self.v_linux)
         self.cb_linux.pack(side="left")
+        self._sync_linux_layout(from_box=False)   # "Linux (bin/ folder)" when More options says so
         self.cb_windows = ttk.Checkbutton(vf, text="Windows (.exe)", variable=self.v_windows)
         self.cb_windows.pack(side="left", padx=(px(14), 0))
         for cb in (self.cb_linux, self.cb_windows):
@@ -798,14 +807,26 @@ class App(Pages, LogPage, Games):
         ttk.Label(jf, text=f"{common.cpu_count()} CPU threads, {common.total_ram_gb():.0f} GB RAM "
                            f"(about 2 GB per build thread; {common.recommended_jobs()} recommended)",
                   style="Hint.TLabel").pack(side="left", padx=(px(10), 0))
-        checks = [("Linux version as an AppImage (otherwise a plain bin/ folder)", self.v_appimage)]
-        if fidelityfx_available():
-            checks.append(("AMD FidelityFX: FSR / CAS output scaling in game", self.v_ffx))
-        checks += [("Delete temporary files when done", self.v_cleanup),
-                   ("Keep the built SDK for faster rebuilds (downloaded tools are always kept)", self.v_keep_sdk)]
-        for i, (text, var) in enumerate(checks):
-            ttk.Checkbutton(self.adv, text=text, variable=var).grid(row=2 + i, column=0, columnspan=3, sticky="w",
-                                                                   pady=px(1))
+        ffx_why = ("" if fidelityfx_available() else
+                   "Windows only: building it runs AMD's Windows shader compiler, and this tool runs nothing "
+                   "through Wine. Linux builds have AMD CAS and FSR 1 all the same.")
+        checks = [("Linux version as a plain bin/ folder instead of the AppImage", self.v_bin_folder,
+                   "Off (the default): the Linux version is one file, CoD3-x86_64.AppImage. On: a bin/ folder "
+                   "with the game's programs and libraries. Either way 'Call of Duty 3.sh' starts it, and a "
+                   "build removes what an earlier build made the other way.", ""),
+                  ("Build with AMD's FidelityFX SDK (FSR 2 / 3, experimental; downloads several hundred MB)",
+                   self.v_ffx,
+                   "Off by default. AMD CAS and FSR 1 are in every build without it (F2 > Video > Output "
+                   "scaling). FSR 2 / 3 aren't offered in F2: the game gives them no depth or motion, so they "
+                   "can't work as meant; set present_effect in cod3.toml to try them.", ffx_why),
+                  ("Delete temporary files when done", self.v_cleanup, "", ""),
+                  ("Keep the built SDK for faster rebuilds (downloaded tools are always kept)", self.v_keep_sdk,
+                   "", "")]
+        for i, (text, var, help_text, why) in enumerate(checks):
+            cb = ttk.Checkbutton(self.adv, text=text, variable=var, state="disabled" if why else "normal")
+            cb.grid(row=2 + i, column=0, columnspan=3, sticky="w", pady=px(1))
+            if help_text or why:
+                tip(cb, help_text, reason=(lambda w=why: w) if why else None)
         self._toggle_options(show=False)
 
         hint(t, "Nothing is downloaded before you approve the list (what, from where, into which folder). "
@@ -820,6 +841,17 @@ class App(Pages, LogPage, Games):
         if not hasattr(self, "_label_frames"):
             self._label_frames: List = []
         self._label_frames.append(frame)
+
+    def _sync_linux_layout(self, from_box: bool) -> None:
+        """v_appimage (saved, profiles, the build) and More options' "plain
+        bin/ folder" box are one choice; the Linux version box names it."""
+        if from_box:
+            if self.v_appimage.get() == self.v_bin_folder.get():
+                self.v_appimage.set(not self.v_bin_folder.get())
+        elif self.v_bin_folder.get() == self.v_appimage.get():
+            self.v_bin_folder.set(not self.v_appimage.get())
+        if hasattr(self, "cb_linux"):
+            self.cb_linux.configure(text="Linux (AppImage)" if self.v_appimage.get() else "Linux (bin/ folder)")
 
     def _update_versions(self) -> None:
         state = "normal" if self.v_recomp.get() else "disabled"
@@ -1288,7 +1320,8 @@ class App(Pages, LogPage, Games):
             "build_linux": self.v_linux.get(), "build_windows": self.v_windows.get(),
             "output_dir": self.v_out.get(),
             "work_dir": self.v_work.get(), "jobs": self._jobs(), "build_recomp": self.v_recomp.get(),
-            "appimage": self.v_appimage.get(), "install_deps": self.v_install.get(), "fidelityfx": self.v_ffx.get(),
+            "appimage": self.v_appimage.get(), "install_deps": self.v_install.get(),
+            "fidelityfx_sdk": self.v_ffx.get(),
             "cleanup": self.v_cleanup.get(), "keep_sdk": self.v_keep_sdk.get(),
             "upscale_textures": self.v_upscale.get(), "upscale_model": self._upscale_model_key(),
             "upscale_noise": self._upscale_noise_level(), "upscale_scale": self._upscale_scale(),
@@ -1304,7 +1337,7 @@ class App(Pages, LogPage, Games):
                    "work_dir": self.v_work, "cod3_args": self.v_cod3_args}
         bools = {"use_waw": self.v_use_waw, "build_linux": self.v_linux, "build_windows": self.v_windows,
                  "build_recomp": self.v_recomp, "appimage": self.v_appimage, "install_deps": self.v_install,
-                 "fidelityfx": self.v_ffx, "cleanup": self.v_cleanup, "keep_sdk": self.v_keep_sdk,
+                 "fidelityfx_sdk": self.v_ffx, "cleanup": self.v_cleanup, "keep_sdk": self.v_keep_sdk,
                  "upscale_textures": self.v_upscale, "cod3_windowed": self.v_cod3_windowed}
         for k, var in strings.items():
             if isinstance(s.get(k), str):

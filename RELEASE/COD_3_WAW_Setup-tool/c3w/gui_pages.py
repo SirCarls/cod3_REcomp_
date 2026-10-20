@@ -42,8 +42,8 @@ SHORTCUTS = [("Ctrl+B", "The tab's main button (Build, Rip, Make a copy)"), ("Ct
 # The game's settings on the Play page, in groups (game_settings.SETTINGS
 # keys; one the list doesn't name goes under "More").
 GS_GROUPS = [
-    ("Display", ["fullscreen", "cod3_render_resolution", "cod3_render_method", "cod3_render_percent",
-                 "cod3_live_resolution", "cod3_aspect_ratio", "vsync", "cod3_max_fps"]),
+    ("Display", ["fullscreen", "start_in_background", "cod3_render_resolution", "cod3_render_method",
+                 "cod3_render_percent", "cod3_live_resolution", "cod3_aspect_ratio", "vsync", "cod3_max_fps"]),
     ("Graphics", ["swap_post_effect", "anisotropic_override", "cod3_shadow_quality", "cod3_hd_textures",
                   "cod3_user_textures", "cod3_graphics_api"]),
     ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]

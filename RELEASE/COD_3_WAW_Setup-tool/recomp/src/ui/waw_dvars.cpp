@@ -147,6 +147,39 @@ const Dvar kDvars[] = {
     {"loc_warningsAsErrors", Kind::kGame, "cl_languagewarningsaserrors", Conv::kSame,
      "Untranslated text is an error"},
     {"vehControlMode", Kind::kGame, "g_vehControlMode", Conv::kSame, "Tank controls"},
+    // --- Call of Duty 4 names (from its public dvar lists) -------------------
+    {"r_lodScaleRigid", Kind::kGame, "r_lodscale", Conv::kSame,
+     "Model detail distance scale (Call of Duty 3 has one scale for every model)"},
+    {"r_lodScaleSkinned", Kind::kGame, "r_lodscale", Conv::kSame,
+     "Model detail distance scale (Call of Duty 3 has one scale for every model)"},
+    // --- Match rules (the host's, in multiplayer) -------------------------------
+    {"g_gametype", Kind::kGame, "mp_gametype", Conv::kSame,
+     "Game mode, by this game's names: dm, tdm, ctf, hq, scf, dom, war, sd (war is Call of Duty 3's own mode)"},
+    {"scr_teambalance", Kind::kGame, "mp_teambalance", Conv::kSame, "Keep the teams even"},
+    {"scr_dm_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_dm_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_dm_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_tdm_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_tdm_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_tdm_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_ctf_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_ctf_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_ctf_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_hq_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_hq_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_hq_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_scf_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_scf_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_scf_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_dom_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_dom_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_dom_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_war_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_war_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_war_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
+    {"scr_sd_timelimit", Kind::kGame, "mp_timelimit", Conv::kSame, "Minutes in a match (one limit for every mode)"},
+    {"scr_sd_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
+    {"scr_sd_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
 
     // --- Port settings (F2) ----------------------------------------------------
     {"sensitivity", Kind::kPort, "cod3_sensitivity", Conv::kSame, "Mouse sensitivity (default 5)"},
@@ -178,6 +211,8 @@ const Dvar kDvars[] = {
      "Sun shadows of soldiers and models: 0 = off, 1 = on (the same setting as sm_enable)"},
     {"snd_volume", Kind::kPort, "cod3_volume", Conv::kSame, "Master volume (0-1)"},
     {"snd_menu_master", Kind::kPort, "cod3_volume", Conv::kSame, "Master volume (0-1)"},
+    {"r_scaleViewport", Kind::kPort, "cod3_render_percent", Conv::kFraction100,
+     "Draw fewer pixels for speed: a fraction from 0.25 to 1 (F2 > Video > Resolution scale)"},
 };
 
 std::vector<Dvar> MakeAll() {
@@ -218,6 +253,7 @@ std::string FromTarget(const Dvar& d, const std::string& v) {
     case Conv::kGameMsaa: return v == "1" || (v != "0" && cod3::GetRenderPlan().msaa) ? "2" : "1";
     case Conv::kVsync: return Truthy(v) ? "0" : "1";  // immediate allowed = no vsync
     case Conv::kShadows: return v == "off" ? "0" : "1";
+    case Conv::kFraction100: return Num(ToNum(v) / 100.0);
     default: return v;
   }
 }
@@ -330,6 +366,9 @@ SetResult Set(const Dvar& d, const std::string& value) {
     }
     case Conv::kGameMsaa: v = ToNum(value) >= 2.0 ? "1" : "0"; break;
     case Conv::kShadows: v = Truthy(value) ? "original" : "off"; break;
+    case Conv::kFraction100:
+      v = std::to_string(static_cast<int>(std::lround(std::clamp(ToNum(value), 0.25, 1.0) * 100.0)));
+      break;
     case Conv::kVsync: {
       // V-Sync on = immediate presentation not allowed.
       const std::string allow = Truthy(value) ? "false" : "true";

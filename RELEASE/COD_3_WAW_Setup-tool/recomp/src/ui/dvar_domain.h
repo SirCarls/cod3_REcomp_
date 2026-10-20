@@ -90,8 +90,8 @@ std::vector<std::string> InfoLines(std::string_view name, std::string_view value
 // For the game's own answer to a dvar name typed alone (Cvar_Command prints
 // "\"%s\" is:\"%s^7\" default:\"%s^7\"\n", through Com_DPrintf in this build;
 // game/print_hooks.cpp always shows it): the domain lines that World at War
-// prints after it, ready to print ("  Domain is ...\n"), or empty when
-// `printed` is any other line. Any thread.
+// prints after it, and the dvar's help line (ui/dvar_help.h), ready to print
+// ("  Domain is ...\n"), or empty when `printed` is any other line. Any thread.
 std::string LinesAfterGameAnswer(std::string_view printed);
 
 }  // namespace cod3::ui::domain

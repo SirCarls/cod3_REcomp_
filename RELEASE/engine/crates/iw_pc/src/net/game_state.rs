@@ -183,30 +183,80 @@ pub fn write_game_state(
     result
 }
 
-/// What a snapshot carries.
-#[derive(Clone, Copy)]
-pub struct Snapshot<'a> {
-    /// The server's time.
-    pub server_time: i32,
-    /// How many snapshots back the one this is a change from is (0: none).
-    pub delta_num: u8,
-    /// Flags: the server's map-restart bit, 1 for a rate-delayed client, 2
-    /// for a client not in the game yet.
-    pub snap_flags: u8,
-    /// The player state the client has (`None`: send it whole).
-    pub player_from: Option<&'a [u8]>,
-    /// The player state now.
-    pub player_to: &'a [u8],
-    /// The entities the client has and the ones now, each sorted by number.
-    pub entities_from: &'a [&'a [u8]],
-    pub entities_to: &'a [&'a [u8]],
-    /// The baseline of an entity number (for entities the client doesn't have).
-    pub baseline: &'a dyn Fn(i32) -> &'a [u8],
-    /// The clients the client has and the ones now, each sorted by number.
-    pub clients_from: &'a [&'a [u8]],
-    pub clients_to: &'a [&'a [u8]],
-    /// Padding: this many no-op bytes at the end (`sv_padPackets`).
-    pub padding: usize,
+/// The parts of a client (`client_t`) sending it a game state reads and
+/// changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GameStateClient {
+    /// `client->state` (0: a free slot); 3 (primed: loading the map) after.
+    pub state: i32,
+    /// The connection still has fragments of a message to send.
+    pub unsent_fragments: bool,
+    /// Cleared (Quake III's `pureAuthentic`): the client's pure checksums
+    /// count again only once it sends them for this game state.
+    pub pure_authentic: i32,
+    /// Set to the outgoing sequence: the message the game state leaves in.
+    pub gamestate_message_num: i32,
+    /// The connection's outgoing sequence (read only).
+    pub outgoing_sequence: i32,
+    /// The last reliable command sent (`reliableSent`): set to the last one
+    /// queued, as the game state carries them all.
+    pub reliable_sent: i32,
+}
+
+/// The connection a game state goes out on (the server's netchan).
+pub trait GameStateLink {
+    /// Sends the connection's next fragment (`Netchan_TransmitNextFragment`);
+    /// returns whether more remain.
+    fn transmit_next_fragment(&mut self) -> bool;
+    /// Sends the finished message (`SV_SendMessageToClient`: compressed,
+    /// scrambled, sent); returns whether it was too big for one packet and
+    /// left fragments to send.
+    fn send_message(&mut self, msg: &Msg) -> bool;
+}
+
+/// Sends a client its game state. First the rest of a message still going
+/// out in fragments (while the slot is in use), then the client is primed
+/// (state 3, `pure_authentic` cleared, `gamestate_message_num` = the
+/// outgoing sequence), the game state is written ([`write_game_state`])
+/// into `buffer` (at most [`game_state_buffer_size`] bytes of it: a longer
+/// game state ends overflowed, cut where it stopped fitting) and sent.
+/// United Offensive then sends the first fragment at once when the message
+/// left some and `timescale` (the `timescale` setting's integer) is 0; Call
+/// of Duty 2 leaves them for the next frames. Returns the first config
+/// string or command that was too long (sent empty after a warning).
+///
+/// Original: `SV_SendClientGameState` at 0x004549A0 (CoD2MP_s.exe 1.3; client on the stack)
+/// Original: `SV_SendClientGameState` at 0x0045A8F0 (CoDUOMP.exe 1.51; client on the stack)
+pub fn send_client_game_state(
+    game: Game,
+    tables: &FieldTables,
+    client: &mut GameStateClient,
+    state: &GameState,
+    timescale: i32,
+    buffer: &mut [u8],
+    link: &mut dyn GameStateLink,
+) -> Result<(), StringTooLong> {
+    while client.state != 0 && client.unsent_fragments {
+        client.unsent_fragments = link.transmit_next_fragment();
+    }
+    client.state = 3;
+    client.pure_authentic = 0;
+    client.gamestate_message_num = client.outgoing_sequence;
+    let size = game_state_buffer_size(game).min(buffer.len());
+    let mut msg = Msg::new(game, &mut buffer[..size]);
+    let result = write_game_state(&mut msg, tables, state);
+    client.reliable_sent = state.commands.sequence;
+    if link.send_message(&msg) {
+        client.unsent_fragments = true;
+    }
+    if game == Game::UnitedOffensive
+        && timescale == 0
+        && client.state != 0
+        && client.unsent_fragments
+    {
+        client.unsent_fragments = link.transmit_next_fragment();
+    }
+    result
 }
 
 /// The number that ends an entity list (`ENTITYNUM_NONE`).
@@ -278,27 +328,150 @@ pub fn write_packet_clients(msg: &mut Msg, tables: &FieldTables, from: &[&[u8]],
     msg.write_bit0();
 }
 
-/// Writes a snapshot: its message type, the server time, the delta number,
-/// the flags, the player state, the entity and client lists, and the padding.
+/// One of a client's snapshot frames as the server keeps it
+/// (`clientSnapshot_t`): the player state and where the frame's entities
+/// and clients are in the server's rings.
+#[derive(Clone, Copy)]
+pub struct SnapshotFrame<'a> {
+    pub player: &'a [u8],
+    pub num_entities: i32,
+    pub num_clients: i32,
+    pub first_entity: i32,
+    pub first_client: i32,
+}
+
+/// The server's rings of snapshot entities and clients
+/// (`svs.snapshotEntities`, `svs.snapshotClients`; each frame's lists are
+/// runs in them) and the entities' baselines.
+#[derive(Clone, Copy)]
+pub struct SnapshotRings<'a> {
+    pub entities: &'a [&'a [u8]],
+    pub clients: &'a [&'a [u8]],
+    /// `svs.nextSnapshotEntities`: where the next frame's entities go; a
+    /// frame whose entities start more than the ring's size before it has
+    /// been overwritten.
+    pub next_entities: i32,
+    pub baseline: &'a dyn Fn(i32) -> &'a [u8],
+}
+
+/// The client's side of a snapshot (`client_t`'s fields the writer reads).
+pub struct SnapshotClient<'a> {
+    /// `client->state` (4: in the game; 1: a zombie, just dropped).
+    pub state: i32,
+    /// Whether the client counts as in the game for the snapshot's flags:
+    /// set while it is (state 4), cleared in any state but 1, kept in state
+    /// 1 (the originals' word at +4).
+    pub active: bool,
+    /// The last message the client acknowledged (`deltaMessage`; 0 or less:
+    /// none).
+    pub delta_message: i32,
+    /// The rate held this snapshot back (`rateDelayed`).
+    pub rate_delayed: bool,
+    /// The connection's outgoing sequence: this snapshot's frame is
+    /// `frames[outgoing & 31]`.
+    pub outgoing_sequence: i32,
+    /// The client's 32 frames (`PACKET_BACKUP`).
+    pub frames: &'a [SnapshotFrame<'a>],
+}
+
+/// Why a snapshot went out whole although the client had acknowledged one
+/// (the originals print it when `developer` is set).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeltaRefused {
+    /// The acknowledged message is 29 or more back ("Delta request from out
+    /// of date packet").
+    OutOfDatePacket,
+    /// Its entities have been overwritten in the ring ("Delta request from
+    /// out of date entities").
+    OutOfDateEntities,
+}
+
+/// Writes a client's snapshot: the frame for this message, as a change from
+/// the last frame the client acknowledged when that one is usable (the
+/// client is in the game, the frame is less than 29 messages back and its
+/// entities are still in the ring; otherwise whole), with the server's time,
+/// how far back that frame is (0: none), the flags (the server's map-restart
+/// bit; 1 for a rate-delayed client; 2 for one not in the game), then the
+/// player state, the entities, the clients and `padding` no-op bytes
+/// (`sv_padPackets`). A message the client acknowledged ahead of this one
+/// counts as usable (a negative distance), as in the originals.
 ///
-/// Original: `SV_WriteSnapshotToClient` at 0x0045D7C0 (CoD2MP_s.exe 1.3; the message part)
-/// Original: `SV_WriteSnapshotToClient` at 0x00464390 (CoDUOMP.exe 1.51; the message part)
-pub fn write_snapshot(msg: &mut Msg, tables: &FieldTables, snapshot: &Snapshot) {
+/// Original: `SV_WriteSnapshotToClient` at 0x0045D7C0 (CoD2MP_s.exe 1.3; client ecx, msg eax)
+/// Original: `SV_WriteSnapshotToClient` at 0x00464390 (CoDUOMP.exe 1.51; client eax, msg esi)
+pub fn write_snapshot_to_client(
+    msg: &mut Msg,
+    tables: &FieldTables,
+    client: &mut SnapshotClient,
+    rings: &SnapshotRings,
+    time: i32,
+    snap_flag_server_bit: i32,
+    padding: i32,
+) -> Option<DeltaRefused> {
+    const PACKET_BACKUP: i32 = 32;
     let ops = server_ops(msg.game);
+    let slot = |sequence: i32| (sequence & (PACKET_BACKUP - 1)) as usize;
+    let frame = client.frames[slot(client.outgoing_sequence)];
+    let mut refused = None;
+    let mut old: Option<SnapshotFrame> = None;
+    let mut last_frame = 0;
+    if client.delta_message > 0 && client.state == 4 {
+        let back = client.outgoing_sequence.wrapping_sub(client.delta_message);
+        if back >= PACKET_BACKUP - 3 {
+            refused = Some(DeltaRefused::OutOfDatePacket);
+        } else {
+            let candidate = client.frames[slot(client.delta_message)];
+            let oldest = rings
+                .next_entities
+                .wrapping_sub(rings.entities.len() as i32);
+            if candidate.first_entity < oldest {
+                refused = Some(DeltaRefused::OutOfDateEntities);
+            } else {
+                old = Some(candidate);
+                last_frame = back;
+            }
+        }
+    }
     msg.write_byte(ops.snapshot);
-    msg.write_long(snapshot.server_time);
-    msg.write_byte(snapshot.delta_num);
-    msg.write_byte(snapshot.snap_flags);
-    delta::write_delta_playerstate(msg, tables, snapshot.player_from, snapshot.player_to);
-    write_packet_entities(
-        msg,
-        tables,
-        snapshot.entities_from,
-        snapshot.entities_to,
-        snapshot.baseline,
-    );
-    write_packet_clients(msg, tables, snapshot.clients_from, snapshot.clients_to);
-    for _ in 0..snapshot.padding {
+    msg.write_long(time);
+    msg.write_byte(last_frame as u8);
+    let mut flags = snap_flag_server_bit;
+    if client.rate_delayed {
+        flags |= 1;
+    }
+    match client.state {
+        4 => client.active = true,
+        1 => {}
+        _ => client.active = false,
+    }
+    if !client.active {
+        flags |= 2;
+    }
+    msg.write_byte(flags as u8);
+    delta::write_delta_playerstate(msg, tables, old.map(|o| o.player), frame.player);
+    // A frame's run in a ring (the originals take each index modulo the
+    // ring's size as they go).
+    fn run<'r>(ring: &[&'r [u8]], first: i32, count: i32) -> Vec<&'r [u8]> {
+        let size = ring.len().max(1) as i32;
+        (0..count.max(0))
+            .filter_map(|k| {
+                ring.get(first.wrapping_add(k).rem_euclid(size) as usize)
+                    .copied()
+            })
+            .collect()
+    }
+    let (from_entities, from_clients) = match old {
+        Some(o) => (
+            run(rings.entities, o.first_entity, o.num_entities),
+            run(rings.clients, o.first_client, o.num_clients),
+        ),
+        None => (Vec::new(), Vec::new()),
+    };
+    let to_entities = run(rings.entities, frame.first_entity, frame.num_entities);
+    let to_clients = run(rings.clients, frame.first_client, frame.num_clients);
+    write_packet_entities(msg, tables, &from_entities, &to_entities, rings.baseline);
+    write_packet_clients(msg, tables, &from_clients, &to_clients);
+    for _ in 0..padding.max(0) {
         msg.write_byte(ops.nop);
     }
+    refused
 }

@@ -8,9 +8,9 @@
 //
 // Everything typed is executed by the game's own command buffer (Q3 Cbuf), so
 // engine commands (map, devmap, god, noclip, give, set/seta/toggle, exec, vstr,
-// bind, cmdlist ...) and "<cvar> <value>" all work. A few console-side
-// commands are handled locally: clear, condump, cvarlist, find, fov,
-// sv_cheats (= cheats), quit. Cheat commands and cheat-protected dvars pass
+// bind ...) and "<cvar> <value>" all work. A few console-side commands are
+// handled locally: clear, condump, cvarlist, find, help, cmdlist, dvarexport,
+// fov, sv_cheats (= cheats), quit. Cheat commands and cheat-protected dvars pass
 // the cheat guard first (game/cheat_guard.h).
 
 #pragma once
@@ -77,6 +77,8 @@ class GameConsole {
 
  private:
   bool HandleLocal(const std::string& cmd, const std::vector<std::string>& args, cheats::Source source);
+  // help <name> / help <words> (ui/dvar_help.h).
+  void PrintHelp(const std::string& words);
   // Whether the game knows `name` as a cheat-protected dvar (from the snapshot).
   bool IsCheatDvar(const std::string& name);
   // World at War dvar names (waw_dvars.h). Returns true when fully handled;

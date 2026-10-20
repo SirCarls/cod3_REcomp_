@@ -572,6 +572,17 @@ void SettingsWindow::DrawVideo() {
          "(borderless). Applies at once and is kept for the next start.");
   }
   {
+    // SDK patch 0063 (start_in_background). Only read when the game starts,
+    // so changing it needs no restart now.
+    bool start_only = false;
+    dirty_ |= CvarCheckbox("Start behind other windows", "start_in_background", &start_only);
+    Help("The game's window opens behind the window you're using and doesn't take the keyboard, "
+         "so you can keep working while it starts; click it or its taskbar button to play "
+         "(fullscreen begins then). While you're playing, the game's own restarts (the end of "
+         "a mission, quitting to the menu, multiplayer) still open in front. Used from the next "
+         "start.");
+  }
+  {
     // The refresh rates the monitor offers at its current resolution
     // (SDK patch 0013). Picking one makes fullscreen an exclusive display mode
     // at that rate; "Desktop" keeps borderless at the desktop's own mode.
@@ -987,15 +998,31 @@ void SettingsWindow::DrawVideo() {
        "places them exactly like the Xbox 360 but is about twice the work for the GPU. Leave it "
        "on. Applies after a restart.");
   {
-    const char* v[] = {"bilinear", "cas", "fsr", "fsr2", "fsr3"};
+    // FSR 2 / 3 aren't offered (owner 2026-10-19): the game gives them no depth
+    // or motion vectors, so they can't work as meant. A value already saved (a
+    // Windows build made with the FidelityFX option) is still shown as the
+    // current one; picking another drops it.
+    const std::string cur = Get("present_effect");
+    const bool temporal = cur == "fsr2" || cur == "fsr3";
+    const char* v[] = {"bilinear", "cas", "fsr", cur.c_str()};
     const char* n[] = {"Bilinear", "AMD CAS (sharpen)", "AMD FSR 1 (spatial)",
-                       "AMD FSR 2 (experimental)", "AMD FSR 3 (experimental)"};
-    dirty_ |= CvarCombo("Output scaling", "present_effect", v, n, 5, &restart_needed_);
-    Help("How the finished picture is stretched to the window. Bilinear is plain and soft; CAS "
-         "sharpens it; FSR upscales while rebuilding edges (FSR 2 and 3 are experimental here).");
-    if (auto* info = rex::cvar::GetFlagInfo("present_effect");
-        info && info->constraints.allowed_values.size() <= 1)
-      Help("AMD CAS / FSR need a build with FidelityFX enabled (setup tool option).");
+                       cur == "fsr3" ? "AMD FSR 3 (experimental, no longer offered)"
+                                     : "AMD FSR 2 (experimental, no longer offered)"};
+    dirty_ |= CvarCombo("Output scaling", "present_effect", v, n, temporal ? 4 : 3,
+                        &restart_needed_);
+    // SDK patch 0064: CAS and FSR 1 are in every build.
+    Help("How the finished picture is fitted to the window. Bilinear is plain and soft. AMD CAS "
+         "sharpens it. AMD FSR 1 upscales with sharper edges, but only when the game draws fewer "
+         "pixels than the window shows (a lower Render resolution, a Resolution scale under "
+         "100%, or Xbox 360 original); at the window's own size it sharpens like CAS. Applies "
+         "after a restart.");
+    if (auto* info = rex::cvar::GetFlagInfo("present_effect"); info) {
+      const auto& allowed = info->constraints.allowed_values;
+      if (info->constraints.HasAllowedValues() &&
+          std::find(allowed.begin(), allowed.end(), "cas") == allowed.end())
+        Help("AMD CAS and FSR need the game built with SDK patch 0064 (run the setup tool's "
+             "build again).");
+    }
   }
   {
     const char* v[] = {"-1", "0", "1", "2", "3", "4", "5"};

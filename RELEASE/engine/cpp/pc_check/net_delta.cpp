@@ -61,7 +61,25 @@ std::string read_into(Args& args, std::size_t i, F f) {
     return error;
 }
 
+// A table argument (its name, as specs/net_delta.py's TABLES has it); nullptr if unknown.
+const net::FieldTable* table(const net::FieldTables& t, ByteView name) {
+    std::string n(name.begin(), name.end());
+    if (n == "entity") return &t.entity;
+    if (n == "entity12") return t.entity_alternate ? &*t.entity_alternate : nullptr;
+    if (n == "client") return &t.client;
+    if (n == "archived") return &t.archived_entity;
+    if (n == "player") return &t.player;
+    if (n == "hud") return &t.hud_elem;
+    if (n == "objective") return &t.objective;
+    return nullptr;
+}
+
+// United Offensive's MSG_WriteEntityTableFlag: the callback a check of MSG_WriteDeltaStruct may pass.
+constexpr std::int32_t kUoTableFlag = 0x0044AF00;
+
 }  // namespace
+
+const net::FieldTables* field_tables(Game game, std::string& error) { return tables(game, error); }
 
 std::optional<Answer> dispatch_delta(Game game, const std::string& f, Args& args) {
     std::string error;
@@ -89,6 +107,43 @@ std::optional<Answer> dispatch_delta(Game game, const std::string& f, Args& args
                               [&](net::Msg& m) {
                                   net::write_delta_client(m, *t, from ? &from_view : nullptr, to ? &to_view : nullptr, force);
                               }),
+                     nothing());
+    }
+    if (f == "MSG_WriteDeltaStruct") {  // msg, from, to, force, field count, number bits, table, [UO: callback,] change bit
+        const auto* t = need_tables();
+        if (!t) return Answer::fail(error);
+        auto from = state(args, 1), to = state(args, 2);
+        if (!from) return Answer::fail("NULL from");
+        const net::FieldTable* tb = table(*t, args.bytes(6));
+        if (!tb) return Answer::fail("unknown table");
+        std::int32_t count = args.i32(4);
+        if (count < 0 || static_cast<std::size_t>(count) > tb->fields().size()) return Answer::fail("field count past the table");
+        net::TableFlag flag = nullptr;
+        std::int32_t change_bit = args.i32(7);
+        if (game == Game::UnitedOffensive) {
+            std::int32_t callback = args.i32(7);
+            if (callback == kUoTableFlag) flag = net::write_entity_table_flag;
+            else if (callback != 0) return Answer::fail("unknown callback");
+            change_bit = args.i32(8);
+        }
+        net::StructCoding coding{std::span<const net::NetField>(tb->fields()).first(static_cast<std::size_t>(count)),
+                                 static_cast<std::uint32_t>(args.i32(5)), change_bit != 0, flag};
+        bool force = args.i32(3) != 0;
+        ByteView from_view(*from), to_view = to ? ByteView(*to) : ByteView{};
+        return after(with_msg(args, 0, game,
+                              [&](net::Msg& m) { net::write_delta_struct(m, from_view, to ? &to_view : nullptr, force, coding); }),
+                     nothing());
+    }
+    if (f == "MSG_WriteDeltaHudElems") {  // msg, from, to, count
+        const auto* t = need_tables();
+        if (!t) return Answer::fail(error);
+        auto from = state(args, 1), to = state(args, 2);
+        if (!from) return Answer::fail("NULL from");
+        if (!to) return Answer::fail("NULL to");
+        std::int32_t count = args.i32(3);
+        if (count < 0) return Answer::fail("negative count");
+        return after(with_msg(args, 0, game,
+                              [&](net::Msg& m) { net::write_delta_hud_elems(m, *t, *from, *to, static_cast<std::size_t>(count)); }),
                      nothing());
     }
     if (f == "MSG_WriteDeltaPlayerstate") {  // msg, from, to
@@ -142,6 +197,34 @@ std::optional<Answer> dispatch_delta(Game game, const std::string& f, Args& args
             });
         });
         return after(e, integer(removed ? 1 : 0));
+    }
+    if (f == "MSG_ReadDeltaStruct") {  // msg, from, to (out), number, field count, table
+        const auto* t = need_tables();
+        if (!t) return Answer::fail(error);
+        auto from = state(args, 1);
+        if (!from) return Answer::fail("NULL from");
+        std::int32_t number = args.i32(3);
+        const net::FieldTable* tb = table(*t, args.bytes(5));
+        if (!tb) return Answer::fail("unknown table");
+        if (args.i32(4) < 0 || static_cast<std::size_t>(args.i32(4)) != tb->fields().size()) return Answer::fail("the checks pass whole tables");
+        bool removed = false;
+        std::string e = read_into(args, 2, [&](Bytes& to) {
+            return with_msg(args, 0, game, [&](net::Msg& m) { removed = net::read_delta_struct(m, *from, to, number, *tb); });
+        });
+        return after(e, integer(removed ? 1 : 0));
+    }
+    if (f == "MSG_ReadDeltaHudElems") {  // msg, from, to (out), count
+        const auto* t = need_tables();
+        if (!t) return Answer::fail(error);
+        auto from = state(args, 1);
+        if (!from) return Answer::fail("NULL from");
+        std::int32_t count = args.i32(3);
+        if (count < 0) return Answer::fail("negative count");
+        std::string e = read_into(args, 2, [&](Bytes& to) {
+            return with_msg(args, 0, game,
+                            [&](net::Msg& m) { net::read_delta_hud_elems(m, *t, *from, to, 0, static_cast<std::size_t>(count)); });
+        });
+        return after(e, nothing());
     }
     if (f == "MSG_ReadDeltaPlayerstate") {  // msg, from, to (out)
         const auto* t = need_tables();

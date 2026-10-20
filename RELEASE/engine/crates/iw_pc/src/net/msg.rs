@@ -57,7 +57,7 @@ pub const MAX_STRING_CHARS: usize = 1024;
 pub const BIG_INFO_STRING: usize = 8192;
 
 /// `65536 / 360` as the games store it (an `f32`): degrees to 16-bit angle steps.
-const ANGLE16_SCALE: f32 = 65536.0 / 360.0;
+pub(crate) const ANGLE16_SCALE: f32 = 65536.0 / 360.0;
 /// `256 / 360` as an `f32`: degrees to 8-bit angle steps.
 const ANGLE8_SCALE: f32 = 256.0 / 360.0;
 /// `360 / 65536`, exact in an `f32`: 16-bit angle steps to degrees.
@@ -184,7 +184,7 @@ pub(crate) fn ftol2(value: f64) -> i64 {
 /// differ beyond `f32`'s exponent range (an infinity where the x87 keeps a
 /// huge finite number, or a lost bit far below 1), and truncating to an
 /// integer gives the same result there.
-fn scaled(game: Game, angle: f32, scale: f32) -> f64 {
+pub(crate) fn scaled(game: Game, angle: f32, scale: f32) -> f64 {
     match game {
         Game::CallOfDuty2 => f64::from(angle * scale),
         Game::UnitedOffensive => f64::from(angle) * f64::from(scale),

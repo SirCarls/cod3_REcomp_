@@ -1,6 +1,8 @@
 # Cross-play: the PC games (CB copy) and the Rust version
 
-**Status (2026-10-13): research done, nothing ported yet.** This page records how
+**Status (2026-10-16): the protocol, the Rust server and the client's network code are
+ported and checked against both games; the Rust client (`iw-join`) joins the Rust server
+and stays in the game; the CB side of both is the owner's test (section 12).** This page records how
 Call of Duty 2 1.3 and Call of Duty: United Offensive 1.51 talk to each other over the
 network, read from the two multiplayer executables (`CoD2MP_s.exe` and `CoDUOMP.exe`), and
 the plan for the Rust version to speak exactly the same protocol. The goal (owner,
@@ -18,7 +20,8 @@ in the Unicorn emulator to confirm the Huffman coder, as the decomp checker does
   1.4.6.8 as its `mss32.dll`, or UO 1.51) sees the Rust server in the LAN list or joins it by
   address, and plays. The Rust server must answer the same packets, in the same bytes, as a
   CB dedicated server of the same version.
-- **Rust client, CB server (later):** the same protocol from the other side.
+- **Rust client, CB server:** the same protocol from the other side. Its network code is
+  ported (section 12, item 8); `iw-join` runs it against a server.
 - **The server decides.** Both games are client-server: the server runs the game, clients
   send their inputs and predict their own movement. The movement code must match for smooth
   play, but a small mismatch only causes a correction, never a split game (section 9).
@@ -202,7 +205,15 @@ list). Unlike Quake III there is no area mask.
 **Server commands** use one letter instead of Quake III's words: `d` = config string
 changed (`d <index> <text>`), `x`, `y`, `z` = pieces of a long config string, `w` =
 disconnected with a reason, `B` = map restart, `n` = map restart keeping players' data. The
-game adds its own (for example `v` = set a client setting).
+game adds its own (for example `v` = set a client setting). The client looks only at the
+first word's first letter (`CL_GetServerCommand`, both games): `dog 1 x` is a config string
+change. The text of `d` (and the third word of `x`, `y`, `z`) is the rest of the line as it
+is, quotes included, so a server sends it unquoted. `x <index> <text>` starts the long
+string as the text `d <index> <text>`, `y` and `z` append to it (at most 8191 characters)
+and `z` then runs the result as a command. A long string that is itself a `z` command
+adding nothing makes the originals run it forever (the client hangs); the ports stop there.
+Call of Duty 2 shows a `w` reason followed by `PB` as PunkBuster's own text, any other
+localized.
 
 **Server id:** one byte. A new map adds 16 (skipping 0 in the high half); a map restart
 counts up the low half. A client sending an old id with the same high half is put back into
@@ -263,9 +274,15 @@ A pure server makes clients use only the game archives it has (`.iwd` in CoD2, `
 2. The server lists its archives in the system info: CoD2 `sv_iwds`, `sv_iwdNames`,
    `sv_referencedIwds`, `sv_referencedIwdNames`; UO `sv_paks`, `sv_pakNames`,
    `sv_referencedPaks`, `sv_referencedPakNames`.
-3. The client answers with a `cp` command: CoD2 `cp @ <pure checksums of the archives it
-   used> <check number>`; UO `cp <cgame archive> <ui archive> @ <...> <check number>` (the
-   archives holding the client game and menu DLLs, as Quake III's virtual machines).
+3. The client answers with a `cp` command, after every game state, pure server or not
+   (both games' `CL_DownloadsComplete`; a server that isn't pure ignores it): CoD2
+   `cp @ <pure checksums of the archives it used> <check number>`; UO
+   `cp <cgame archive> <ui archive> @ <...> <check number>` (the first archives holding
+   `uo_cgame_mp_x86.dll` and `uo_ui_mp_x86.dll`, as Quake III's virtual machines; these two
+   are neither counted nor XORed). Localized archives are never listed; a non-zero
+   `fs_fakeChkSum` (the mark of a file read from outside any archive) follows each part. The
+   list is cut at 8191 characters, the command at 1023. Ported and checked:
+   `iw_pc::fs::referenced_pure_checksums`, `client::send_pure_checksums`.
 4. The server checks that every listed archive is one of its own and that the check number
    (`checksumFeed` XOR all checksums XOR their count) is right. Only a failed `cp` drops the
    player ("EXE_UNPURECLIENTDETECTED"), and only with `sv_pure` on.
@@ -344,6 +361,130 @@ forward, back, right, left; United Offensive two more for up and down), which ar
 with a negative bit count (Call of Duty 2 does), so a -1 in an 8-bit field arrives as 255; a
 field count past the table makes Call of Duty 2 mark the message overflowed and stop, while
 United Offensive reads the whole table.
+
+**Status (2026-10-16):** the client's half of the messages (item 8) is ported and checked
+against both games, in Rust (`iw_pc::client`) and in C++ (`engine/cpp/iw_pc/client`): reading
+the server's messages and building the client's own, the eight functions in item 8's table,
+4,000 cases each, run with the client's own globals (`cl`, `clc`, the client's channel) laid
+out as the games keep them and compared byte for byte afterwards, the packets sent included.
+The server session test now runs the Rust server against a client built from them too (its
+sender and its parser), for both games. Found on the way: Call of Duty 2's `CL_ParseServerMessage` ends quietly after a part that
+left the message overflowed (a field count past its table, or a read past the end), while
+United Offensive reads on and fails with "Illegible server message"; Call of Duty 2 reads a
+snapshot's client list past the end as "one more client", numbered -1. And the client codes
+the first player command of each packet against a command made from the latest snapshot's
+player state (`MSG_SetDefaultUserCmd`: weapons, view angles, lean and stance buttons), not
+against zeros as Quake III does.
+
+**Status (2026-10-16, later):** the rest of the client's connection is ported and checked
+the same way, in Rust and C++: the packet's arrival (`CL_PacketEvent`), packets without a
+connection (`CL_ConnectionlessPacket`), joining (`CL_CheckForResend`, `Sys_IsLANAddress`),
+the system info (`CL_SystemInfoChanged`), the client's clock (`CL_SetCGameTime`,
+`CL_FirstSnapshot`, `CL_AdjustTimeDelta`) and the player's commands (`CL_FinishMove`,
+`CL_CreateNewCommands`, `CL_ReadyToSendPacket`); 225 functions in all (both games counted apart). Where the originals
+call the rest of the client (console variables, the file system, the command buffer), the
+checks run them as stand-ins that record each call, and compare the record with what the
+port hands its caller. `iw_pc::client::connection` puts the pieces together into a client
+frame and `iw-join` runs it over UDP: it joins `iw-server` for both games and stays in the
+game (also `crates/iw_pc/tests/client_join.rs`). Found on the way:
+
+- United Offensive builds the `connect` text in a 1024-byte buffer right in front of the one
+  it copies it to, with a forward copy: settings of more than 1014 characters make the text
+  start over (`connect "...`) from byte 1024 on. Call of Duty 2's text stays whole, but from
+  1023 characters its copy runs past the stack frame. Real settings are far shorter.
+- United Offensive's client keeps two clocks: the network code (resends, packet times, pings)
+  runs on one, the client game's clock on the other (they differ only while `cl_avidemo`
+  records).
+- The clocks' drift: United Offensive keeps Quake III's (+1 ms a snapshot, -2 after an
+  extrapolated one) but first takes the time between the last two snapshots off a late clock;
+  Call of Duty 2 also takes 5 ms off, drifts toward the new delta instead (none when equal)
+  and has no `cl_timeNudge`.
+- Both send a packet every frame to a server on the LAN (Quake III: only to loopback); United
+  Offensive keeps `cl_maxpackets` within 15 to 100, Call of Duty 2 leaves it to the dvar.
+- Call of Duty 2 sends `getchallenge 0 "<hash of the CD key>"`, United Offensive plain
+  `getchallenge`; both hand each packet's text to PunkBuster's client library first when it is
+  loaded (`iw-join` sends a made-up hash; a LAN server only keeps it, as the PunkBuster id).
+
+**Status (2026-10-16, evening):** pure servers, the client's side: the archives' block
+checksums (`Com_BlockChecksum`, `Com_BlockChecksumKey`: MD4, RFC 1320, folded by XOR), the
+list of the referenced archives' pure checksums (`FS_ReferencedIwdPureChecksums` /
+`FS_ReferencedPakPureChecksums`) and the `cp` command (`CL_SendPureChecksums`, with
+`CL_AddReliableCommand`), and the client game's side of the server commands
+(`CL_GetServerCommand`, `CL_ConfigstringModified`), the time-out (`CL_CheckTimeout`) and
+changed settings (`CL_CheckUserinfo`, with `va`), ported and checked in Rust and C++; and on
+the server's side, the writers of a client's reliable commands and of a snapshot's entity
+and client lists (`SV_UpdateServerCommandsToClient`, `SV_EmitPacketEntities`,
+`SV_EmitPacketClients`), which `iw-server` had used unchecked, and the whole snapshot writer
+`SV_WriteSnapshotToClient` (which frame to delta from, the flags), which `iw-server` now uses
+(253 functions in all). The connection driver sends `cp` after each game state, as both games do
+(section 8), so `iw-join` can join a pure Call of Duty 2 server, and reads the server's
+commands as the client game does: config string changes are applied, and `w` (which it had
+looked for as Quake III's `disconnect`) ends the connection. Found on the way: both games send `cp` to
+every server, pure or not; United Offensive's list starts with the archives holding its
+client game and user interface modules (the file system marks them as it opens
+`uo_cgame_mp_x86.dll` and `uo_ui_mp_x86.dll`, names it keeps scrambled); and
+`CL_AddReliableCommand` errs only when more than the ring's size is unacknowledged, so with
+exactly the ring's size it overwrites the oldest unacknowledged command (Quake III's
+comparison). The server commands' findings are in section 7.1. Call of Duty 2 also gives
+up joining when the server stops answering for `cl_connectTimeout` seconds (Quake III and
+United Offensive only time out once connected), and its `va` holds 1023 characters
+(United Offensive's 31999), so settings longer than 1012 characters make its `userinfo`
+command a dropping error. The checks' tables had `cl_paused` and `sv_paused` the wrong
+way round (Dvar_RegisterBool's result is stored after the next call is set up); the clock
+uses both together, so nothing changed but the names.
+
+**2026-10-20:** the game state sender `SV_SendClientGameState`, whole, ported and checked in
+Rust and C++ (with downloads below: 258 checks in all, the two games counted apart): the fragments of a message still going out are sent
+first while the slot is in use, the client is primed (`pureAuthentic` cleared,
+`gamestateMessageNum` = the outgoing sequence), the game state goes into a buffer of the
+game's message size (Call of Duty 2: 0x20000 bytes of a global block; United Offensive: 0x8000
+on the stack; a longer one ends overflowed) and out through `SV_SendMessageToClient`. United
+Offensive alone then sends the first fragment at once when the message left some and
+`timescale`'s integer is 0. `iw-server` sends game states with it. The 4,000-case reruns of
+the 20 functions of 2026-10-16 pass in both languages (seed 20261017; run on the owner's PC and
+in the cloud); the one case that didn't was the check's own input: a generated United
+Offensive message bigger than the client's 0x8000-byte decompression buffer (the client
+decompresses without a limit, so the original wrote past it; servers never send one), so the
+message generators keep within each game's `max_msglen` now.
+
+**2026-10-20, downloads:** `CL_ParseDownload` ported and checked in Rust and C++, both games
+(`iw_pc::client::download`): blocks (block 0 carries the size; each acknowledged with `nextdl
+<n>`; a later block than expected asks again with `retransdl <n>`, an extension of both games;
+an empty block ends the file: closed, renamed from its temporary name, two packets at once, the
+next download), and block -1, the server's redirect to a web address (ET's `wwwdl` protocol:
+`wwwdl ack`, `wwwdl fail`, `wwwdl bbl8r`; Call of Duty 2 has it as a function of its own,
+`CL_ParseDownloadRedirect` at 0x413E70, our name). The file system, the menus' numbers
+(United Offensive's `cl_download*` cvars; Call of Duty 2's block at `*0x5CF444`), the web
+download and the shell are the caller's (`DownloadHost`; stand-ins in the check, also
+`ShellExecuteA`, `GetForegroundWindow` and `ShowWindow` through the oracle's new import
+stand-ins). Two things a client should know: a redirect with flag 2 makes both games open
+the server's address with the system's shell (`ShellExecuteA` "open": whatever program
+handles it) and quit; and when block 0 carries a negative size, United Offensive passes the
+server's text to `Com_Error` as the format itself (Call of Duty 2 as a `%s` argument), so a
+server's `%` sequences are formatted with whatever is on the stack. United Offensive also
+refuses a redirect for a file in its bad-checksum list; Call of Duty 2 doesn't check.
+
+**2026-10-20, later:** the four delta coders the callers' checks covered until now are
+checked on their own too, in Rust and C++, both games, 4,000 cases each:
+`MSG_WriteDeltaStruct` and `MSG_ReadDeltaStruct` with every field table, numbers wider than
+their bits, any force and change-bit words and United Offensive's table flag callback or none;
+the HUD element arrays' `MSG_WriteDeltaHudElems` (any length up to the full one) and
+`MSG_ReadDeltaHudElems` (`iw_pc::net::delta::write_delta_hud_elems` / `read_delta_hud_elems`,
+public now; the length is the caller's: Call of Duty 2 passes it in ecx, United Offensive in
+ecx with the old array in ebx). And the `connect` console command, `CL_Connect_f`, is ported
+whole (`iw_pc::client::connect::connect_command`; the connection driver runs it) and checked:
+sounds stopped, a local server told to quit when the name is `localhost` and one runs (Call
+of Duty 2 sets a flag in its menus' block, United Offensive shuts its server down with
+`EXE_SERVERQUIT` and sets `sv_killserver`), one server frame, the old connection ended, the
+console closed, the name kept (255 characters) and resolved, port 28960 when none was given,
+then the state (challenging for loopback and bot addresses, connecting for the rest), the
+connect time -99999 and no connect packets yet; Call of Duty 2 copies `net_qport` and closes
+its menus, United Offensive sets `cl_currentServerAddress`. Before a server on the network
+both games check the CD key (`CL_CDKeyValidate`, our name: a CRC of the key compared with the
+key's check text; `EXE_ERR_INVALID_CD_KEY` drops): not ported, the host answers (the Rust
+client sends no CD key). 268 checks in all (Call of Duty 2 135, United Offensive 133); still
+without one of their own: the Huffman tree's building (`Huff_Init`, `Huff_addRef` and the
+helpers it calls, `MSG_initHuffman`), `MSG_Init` and `__ftol2`.
 
 The ports go into `engine/crates/iw_pc/src/net/`, one module per area, each function ported
 from both executables and checked against them with the x86 oracle (one function run in the
@@ -426,7 +567,9 @@ column below and the private notes say which, for the oracle.
    | `CL_ConnectionlessPacket`, `CL_CheckForResend`, `CL_ServerInfoPacket` | 0x40E750, 0x40E100, 0x4B34E0 | 0x412880, 0x411E60, 0x4155F0 |
    | `Info_ValueForKey`, `Info_SetValueForKey` | 0x44AA90, 0x44AE10 | 0x44FB70, 0x44FF50 |
 
-5. **`pure.rs`** — MD4 checksums of archives, the system info lists, the `cp` check.
+5. **Pure checksums** (`iw_pc::shared::checksum`, `iw_pc::fs`) — MD4 checksums of archives,
+   the client's `cp` list (checked); the system info lists and the server's `cp` check are
+   next.
 
    | Function | CoD2 1.3 | UO 1.51 |
    |---|---|---|
@@ -434,6 +577,7 @@ column below and the private notes say which, for the oracle.
    | MD4 update, final | 0x443230, 0x4432D0 | (called by the above) |
    | `FS_LoadZipFile` (CRC list) | 0x4234E0 | 0x42E970 |
    | `FS_LoadedIwdPureChecksums` | 0x43C000 | (to find) |
+   | `FS_ReferencedIwdPureChecksums` / `FS_ReferencedPakPureChecksums` (the client's `cp` list) | 0x43C330 | 0x440F50 |
    | `SV_VerifyIwds_f` / `SV_VerifyPaks_f` (`cp`) | 0x4558F0 | 0x45B860 |
    | `FS_PureServerSetLoadedIwds` (client) | 0x43C550 | (to find) |
 
@@ -450,7 +594,7 @@ column below and the private notes say which, for the oracle.
    | `MSG_WriteDeltaClient`, `MSG_ReadDeltaClient` | 0x4456C0, 0x445C20 | 0x44AFE0, 0x44B4C0 |
    | `MSG_ReadDeltaFields` (objectives) | 0x445990 | 0x44B1E0 (inline in the player state reader) |
    | `MSG_WriteDeltaPlayerstate`, `MSG_ReadDeltaPlayerstate` | 0x445EC0, 0x446CA0 | 0x44B7B0, 0x44C5C0 |
-   | HUD elements write, read | 0x445C60, 0x445DB0 | 0x44B510, 0x44B690 |
+   | `MSG_WriteDeltaHudElems`, `MSG_ReadDeltaHudElems` (HUD element arrays) | 0x445C60, 0x445DB0 | 0x44B510, 0x44B690 |
    | `SV_SendClientGameState` | 0x4549A0 | 0x45A8F0 |
    | `SV_WriteSnapshotToClient` | 0x45D7C0 | (to find) |
    | `SV_ExecuteClientMessage`, `SV_UserMove` | 0x456300, 0x4560B0 | 0x45C230, 0x45C010 |
@@ -467,14 +611,88 @@ column below and the private notes say which, for the oracle.
    fields, and write outside the structure. The writers never send any of this. The port
    copies field -1 when it lies inside the structure (the offset is read from the executable
    with the tables) and otherwise reads only the table and marks the message overflowed;
-   the checks don't generate the cases that would make the originals write outside.
+   the checks don't generate the cases that would make the originals write outside. The
+   client's readers inherit this: a client whose count is missing has the originals copy the
+   word 0xDC (Call of Duty 2) or 0xE0 (United Offensive) bytes on, two clients further along
+   the ring; a Call of Duty 2 baseline in a game state, 0x390038 bytes past the zeroed entity
+   on the stack, which isn't there (the original crashes).
 
 7. **Server state machine** (after the six modules): challenge table, client slots, the
    connect sequence (challenge → connect → game state → `cp` → snapshots), reliable command
    queues, timeouts. Built on the ported functions, with the game itself (scripts, physics)
    coming from the rest of the Rust decomp.
 
-8. **Client side** (later): the same modules from the other side, then the CB-server join.
+8. **Client side**: the same modules from the other side, then the CB-server join. The
+   message readers, `iw_pc::client` (Rust) and `engine/cpp/iw_pc/client` (C++), checked
+   against both games (`tools/decomp/x86/specs/net_client.py`):
+
+   | Function | CoD2 1.3 | UO 1.51 | Calls (CoD2 / UO) |
+   |---|---|---|---|
+   | `CL_ParseServerMessage` | 0x4143E0 | 0x419500 | eax = msg / stack |
+   | `CL_ParseGamestate` (the message part) | 0x413BD0 | 0x418D10 | eax = msg / ebx = msg |
+   | `CL_ParseSnapshot` | 0x4136C0 | 0x418870 | eax = msg / ecx = msg |
+   | `CL_ParsePacketEntities` | 0x412FB0 | 0x418150 (+ `CL_DeltaEntity` 0x418010) | stack: msg, old, new |
+   | `CL_ParsePacketClients` | 0x413310 | 0x4184E0 | stack: msg, old, new |
+   | `CL_ParseCommandString` (CoD2x: `CL_ServerCommand`) | 0x414380 | 0x4194A0 | edx = msg / eax = msg |
+   | `CL_WritePacket` (the client's message: reliable commands, player commands) | 0x408E80 | 0x40CC80 | none (globals) |
+   | `MSG_SetDefaultUserCmd` (the first command's base) | 0x4449C0 | 0x44A1E0 | stack: ps; ebx / edi = cmd |
+   | `CL_PacketEvent` (a packet arrives) | 0x40F250 | 0x4131B0 | eax / ecx = msg; stack: from |
+   | `CL_ConnectionlessPacket` | 0x40E750 | 0x412880 | stack: from, msg |
+   | `CL_CheckForResend` (`getchallenge`, `connect`) | 0x40E100 | 0x411E60 | none |
+   | `Sys_IsLANAddress` | 0x467100 | 0x46D2C0 | stack: netadr |
+   | `CL_SystemInfoChanged` | 0x4139E0 | 0x418B80 | none |
+   | `CL_SetCGameTime`, `CL_FirstSnapshot`, `CL_AdjustTimeDelta` (the clock) | 0x403080, 0x402EC0, 0x402D70 | 0x405840, 0x4056A0, 0x405560 | none |
+   | `CL_FinishMove` | 0x408A90 | 0x40C8A0 | eax = cmd |
+   | `CL_CreateNewCommands` (with the caller's `CL_CreateCmd`, 0x408B00 / 0x40C900) | 0x408BB0 | 0x40CAD0 | none |
+   | `CL_ReadyToSendPacket` | 0x408C10 | 0x40CB60 | none |
+   | `CL_AddReliableCommand` | 0x40C000 | 0x40F930 | stack: command |
+   | `CL_GetServerCommand` (the client game's server commands, section 7.1) | 0x401710 | 0x401630 | eax = number |
+   | `CL_ConfigstringModified` (`d`) | 0x401550 | 0x401480 | none (the words) |
+   | `CL_CheckTimeout` | 0x40F470 | 0x413390 | none |
+   | `CL_CheckUserinfo` (with `va`, 0x44A990 / 0x44FAB0) | 0x40F530 | 0x4137C0 | none |
+   | `CL_SendPureChecksums` (`cp`; with `FS_ReferencedIwdPureChecksums` / `FS_ReferencedPakPureChecksums`, 0x43C330 / 0x440F50) | 0x40D680 | 0x411450 | none |
+   | `CL_Connect_f` (the `connect` command; the CD key check `CL_CDKeyValidate`, 0x4B3B20 / 0x416F40, is the host's answer) | 0x4B3900 | 0x410FE0 | none (the words) |
+   | `SV_UpdateServerCommandsToClient` | 0x45D9F0 | 0x464580 | eax = msg; CoD2 stack, UO edi = client |
+   | `SV_EmitPacketEntities` | 0x45D450 | 0x464000 | ecx = msg; CoD2 eax = old first, stack: old count, new count, new first; UO eax = new first, stack: old count, old first, new count |
+   | `SV_EmitPacketClients` | 0x45D5C0 | 0x464170 | edx = msg; CoD2 eax = old first, ecx = new first, stack: old count, new count; UO ecx = new first, stack: old count, old first, new count |
+   | `SV_SendClientGameState` (whole; with `SV_UpdateServerCommandsToClient`, the delta writers) | 0x4549A0 | 0x45A8F0 | stack = client |
+   | `CL_ParseDownload` (with `CL_AddReliableCommand`; CoD2's redirect in `CL_ParseDownloadRedirect`, 0x413E70, our name; UO's inline) | 0x4140B0 | 0x418F90 | CoD2 esi = msg, UO ecx = msg |
+
+   The connection driver (`iw_pc::client::connection`) runs them as the originals' client
+   frame does; what it does more simply or leaves out: after a game state, the downloads and
+   the map loading of `CL_DownloadsComplete` (0x40DC30 in Call of Duty 2) are cut to its
+   states, `cp` (section 8; the command's name is hidden in the executable as `Va ` + 13 and
+   15) and its three messages; server commands go through `CL_GetServerCommand` as the
+   client game asks for them (config strings applied, `w` ends the connection), the rest to
+   the caller. With no archives given it sends `cp @ <feed>`, which a pure Call of Duty 2
+   server (a CB server's default) accepts; a pure United Offensive server also wants the
+   client game's and user interface's archives. Each frame also sends changed settings
+   (`CL_CheckUserinfo`) and gives up on a quiet server (`CL_CheckTimeout`). Download
+   messages go through `CL_ParseDownload` (`iw_pc::client::download`, checked): the driver
+   asks for no downloads, so a server's blocks get `stopdl` as in the originals, and it starts
+   no web downloads and opens no web pages (`Event::OpenUrlRefused`; see below). The key
+   server's authorization
+   (`CL_RequestAuthorization`, 0x40D130 / 0x410BB0) is left out on purpose: it is the
+   game's CD key check. Not ported yet: United Offensive's
+   `sv_onlyVisibleClients` handling in `CL_DeltaEntity` (a trace through the map for each
+   player entity carried over, when the server asked for it in `challengeResponse`); the
+   readers read snapshots as the original does with it off.
+
+   The client's globals in the checks (where the readers keep their state):
+
+   | | CoD2 1.3 | UO 1.51 |
+   |---|---|---|
+   | `cl` (cleared by a game state) | 0x96B650, 0x195D94 bytes | 0x49581A0, 0x17BB34 bytes |
+   | `cl.snapshots` (32), size of one | 0x9D0DB0, 0x26D8 | 0x4964550, 0x4534 |
+   | `cl.entityBaselines`, `parseEntities`, `parseClients` | 0xA1E8B0, 0xA5A8B0, 0xAD28B0 | 0x49EEBD0, 0x4A2BBD0, 0x4AA5BD0 |
+   | `clc` (the part read), server commands | 0x609FE8-0x64A19C, 0x62A12C (128) | 0x4DC8860-0x4DE9680, 0x4DD89A8 (64) |
+   | `clc` reliable commands, `clc.netchan` | 0x60A120 (128), 0x64A198 | 0x4DC899C (64), 0x4DE9658 |
+   | `cl.cmds` (128), `cl.cmdNumber`, `cl.serverId` | 0x9CFE2C, 0x9D0C2C, 0x98FDF8 | 0x49637CC, 0x49643CC, 0x49637A8 |
+   | `cls.realtime`, `cls.state` | 0x68A520, 0x609FE0 | 0x4AD3E84, 0x4AD3D60 |
+   | the client game's clock (`cls.realtime` as it sees it) | 0x68A520 | 0x4AD3E80 |
+   | `cl.serverTime`, `oldServerTime`, `oldFrameServerTime`, `serverTimeDelta`, `extrapolatedSnapshot` | 0x96DD40-0x96DD54 | 0x495C6D8-0x495C6EC |
+   | the weapon, (CoD2: off-hand), the client game's angles, `cl.viewangles` | 0x98FDC8, 0x98FDCC, 0x98FDE0, 0x98FDEC | 0x496376C, 0x4963790, 0x496379C |
+   | `clc.serverAddress`, `connectTime`, `connectPacketCount`, `challenge` | 0x609FF4, 0x60A008, 0x60A00C, 0x60A110 | 0x4DC886C, 0x4DC8880, 0x4DC8884, 0x4DC8988 |
 
 First milestone: a Rust LAN server that a CB client lists, joins and stays connected to on
 an empty map (`sv_pure 0`): items 1 to 4, the game state and empty snapshots from item 6,
@@ -485,10 +703,8 @@ and item 7's connect sequence.
 - **UO pure check:** which `.pk3` holds `uo_cgame_mp_x86.dll` and `uo_ui_mp_x86.dll` on a
   normal installation (the server needs their pure checksums when `sv_pure` is on). Needs the
   owner's archive list or the files.
-- **Exact `cp` timing:** whether a client sends `cp` when the server is not pure (the server
-  ignores it either way).
-- **UO details still to port and check:** its `CL_Netchan_Decode`, `SV_WriteSnapshotToClient`
-  and the pure-list functions are not yet located; the meaning of UO's second
+- **UO details still to port and check:** its `CL_Netchan_Decode`, `SV_WriteSnapshotToClient`,
+  `FS_LoadedPakPureChecksums` and `FS_PureServerSetLoadedPaks` are not yet located; the meaning of UO's second
   `challengeResponse` number and of entity type 12.
 - **Game scripts and player identity:** players get identity number 0 without the authorize
   server; game scripts that use it (bans, stats) see 0 for everyone.

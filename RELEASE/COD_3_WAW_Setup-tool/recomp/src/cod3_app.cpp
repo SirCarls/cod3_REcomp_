@@ -559,7 +559,8 @@ void Cod3App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     if (auto* win = window()) {
       cod3::UpdateDisplayAspect(win->GetActualPhysicalWidth(), win->GetActualPhysicalHeight());
       // A new instance (mission end, quit to menu, multiplayer) opens the same way (game/relaunch.h).
-      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight());
+      cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight(),
+                            win->HasFocus());
     }
     // windows-fps: one log line on the frame pacing (game/frame_rate.h).
     cod3::LogFramePacingOnce(window());

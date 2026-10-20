@@ -66,3 +66,17 @@ inline Answer after(const std::string& error, Answer ok) { return error.empty() 
 const iw_pc::net::GameExecutable* game_executable(iw_pc::Game game, std::string& error);
 
 }  // namespace pc_check
+
+namespace iw_pc::net {
+struct FieldTables;
+class MessageTree;
+}  // namespace iw_pc::net
+
+namespace pc_check {
+
+/// `game`'s delta field tables, read once from its executable (net_delta.cpp).
+const iw_pc::net::FieldTables* field_tables(iw_pc::Game game, std::string& error);
+/// `game`'s message Huffman tree, built once from its executable (net_msg.cpp).
+const iw_pc::net::MessageTree* message_tree_of(iw_pc::Game game, std::string& error);
+
+}  // namespace pc_check

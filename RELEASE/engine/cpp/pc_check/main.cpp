@@ -52,6 +52,58 @@ T bits_of(const std::string& text) {
     return out;
 }
 
+// Zero bytes that split a run of a sparse region (harness_x86.py SPARSE_GAP).
+constexpr std::size_t kSparseGap = 16;
+
+std::size_t be_u32(const Bytes& b, std::size_t at) {
+    if (at + 4 > b.size()) throw std::runtime_error("short sparse region");
+    return static_cast<std::size_t>(static_cast<std::uint32_t>(b[at]) << 24 | static_cast<std::uint32_t>(b[at + 1]) << 16 |
+                                    static_cast<std::uint32_t>(b[at + 2]) << 8 | b[at + 3]);
+}
+
+void put_be_u32(Bytes& out, std::size_t v) {
+    for (int k = 3; k >= 0; --k) out.push_back(static_cast<std::uint8_t>(v >> (8 * k)));
+}
+
+Bytes sparse_decode(const Bytes& coded) {
+    Bytes out(be_u32(coded, 0), 0);
+    std::size_t at = 4;
+    while (at < coded.size()) {
+        std::size_t offset = be_u32(coded, at), len = be_u32(coded, at + 4);
+        if (at + 8 + len > coded.size()) throw std::runtime_error("short sparse run");
+        if (offset + len > out.size()) throw std::runtime_error("sparse run past the region");
+        std::copy(coded.begin() + static_cast<std::ptrdiff_t>(at + 8), coded.begin() + static_cast<std::ptrdiff_t>(at + 8 + len),
+                  out.begin() + static_cast<std::ptrdiff_t>(offset));
+        at += 8 + len;
+    }
+    return out;
+}
+
+Bytes sparse_encode(const Bytes& data) {
+    Bytes out;
+    put_be_u32(out, data.size());
+    bool open = false;
+    std::size_t lo = 0, hi = 0;
+    auto flush = [&]() {
+        put_be_u32(out, lo);
+        put_be_u32(out, hi - lo);
+        out.insert(out.end(), data.begin() + static_cast<std::ptrdiff_t>(lo), data.begin() + static_cast<std::ptrdiff_t>(hi));
+    };
+    for (std::size_t i = 0; i < data.size(); ++i) {
+        if (data[i] == 0) continue;
+        if (open && i - hi < kSparseGap) {
+            hi = i + 1;
+            continue;
+        }
+        if (open) flush();
+        open = true;
+        lo = i;
+        hi = i + 1;
+    }
+    if (open) flush();
+    return out;
+}
+
 Arg parse_arg(const std::string& token) {
     auto colon = token.find(':');
     if (colon == std::string::npos) throw std::runtime_error("bad token " + token);
@@ -62,6 +114,7 @@ Arg parse_arg(const std::string& token) {
     if (kind == "s") return value == "-" ? Str{} : Str{parse_hex(value)};
     if (kind == "v") return ReadOnly{parse_hex(value)};
     if (kind == "b") return value == "-" ? Buffer{} : Buffer{parse_hex(value)};
+    if (kind == "g") return Region{sparse_decode(parse_hex(value))};
     throw std::runtime_error("unknown token kind " + kind);
 }
 
@@ -71,7 +124,7 @@ std::optional<Answer> dispatch(const std::string& name, Args& args) {
     std::string image = name.substr(0, dot), function = name.substr(dot + 1);
     if (image != "cod2mp" && image != "uomp") return std::nullopt;
     iw_pc::Game game = game_of(image);
-    for (auto area : {dispatch_msg, dispatch_oob, dispatch_delta, dispatch_shared}) {
+    for (auto area : {dispatch_msg, dispatch_oob, dispatch_delta, dispatch_client, dispatch_game_state, dispatch_game, dispatch_shared}) {
         if (auto answer = area(game, function, args)) return answer;
     }
     return std::nullopt;
@@ -125,6 +178,7 @@ std::string answer(const std::string& line) {
     std::string reply = "ok " + reply_for(*result->ret);
     for (const Arg& arg : args.items) {
         if (auto* b = std::get_if<Buffer>(&arg)) reply += b->value ? " b:" + hex(*b->value) : " b:-";
+        if (auto* r = std::get_if<Region>(&arg)) reply += " b:" + hex(sparse_encode(r->value));
     }
     return reply;
 }

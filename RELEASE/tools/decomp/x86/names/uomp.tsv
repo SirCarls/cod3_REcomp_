@@ -33,3 +33,6 @@
 00450180	Info_SetValueForKey_Big	strings	"BIG Info string length exceeded"; s and value on the stack, key in ecx
 0056D1FD	tolower	shape	C runtime; same code as CoD2's 0x0057B5B6
 0056D2F0	toupper	shape	C runtime; same code as CoD2's 0x0057B7D5
+00449470	Com_BlockChecksum	shape	buffer and length on the stack; MD4 folded by XOR; called by FS_LoadZipFile (0x42E970) on the CRC list
+004494F0	Com_BlockChecksumKey	shape	buffer, length, key on the stack; FS_LoadZipFile's pure checksum with fs_checksumFeed (0x49311E8)
+00440F50	FS_ReferencedPakPureChecksums	strings	"Q_strcat: already overflowed" (inlined); Quake III's three passes: pak+0x312 (uo_cgame_mp_x86.dll, set at 0x42DC44), +0x311 (uo_ui_mp_x86.dll), then "@ " and +0x310; fs_searchpaths 0x389FCFC, fs_fakeChkSum 0x4935308, fs_checksumFeed 0x49311E8; buffer 0x99F3A0

@@ -25,7 +25,7 @@
 //! servers (LAN and direct `connect` only; players get identity 0).
 
 use crate::net::delta::{self, FieldTables};
-use crate::net::game_state::{self, GameState, ServerCommands, Snapshot};
+use crate::net::game_state::{self, GameState, GameStateClient, GameStateLink, ServerCommands};
 use crate::net::huffman::MessageTree;
 use crate::net::msg::Msg;
 use crate::net::netchan::{self, NetAddress, NetSource, Netchan, Packet};
@@ -89,8 +89,6 @@ const ZOMBIE_MS: i32 = 2_000;
 struct Frame {
     player: Vec<u8>,
     clients: Vec<Vec<u8>>,
-    /// The server time it was sent at (`messageSent`), -1 when unused.
-    sent: i32,
 }
 
 struct Client {
@@ -115,6 +113,9 @@ struct Client {
     last_connect_time: i32,
     last_usercmd: Vec<u8>,
     frames: Vec<Frame>,
+    /// Whether the client counts as in the game for its snapshots' flags
+    /// ([`game_state::SnapshotClient::active`]).
+    snapshot_active: bool,
 }
 
 /// The server.
@@ -196,6 +197,15 @@ impl Server {
             .iter()
             .flatten()
             .filter(|c| c.state >= ClientState::Connected)
+            .count()
+    }
+
+    /// How many players are in the game (getting snapshots).
+    pub fn active_count(&self) -> usize {
+        self.clients
+            .iter()
+            .flatten()
+            .filter(|c| c.state == ClientState::Active)
             .count()
     }
 
@@ -412,10 +422,10 @@ impl Server {
                 Frame {
                     player: Vec::new(),
                     clients: Vec::new(),
-                    sent: -1,
                 };
                 PACKET_BACKUP
             ],
+            snapshot_active: false,
         };
         self.clients[slot] = Some(client);
         self.send_oob(from, b"connectResponse", out);
@@ -564,10 +574,17 @@ impl Server {
         true
     }
 
-    /// Player commands: read with the key both sides know; the first one for
-    /// the current map makes a primed client active.
+    /// Player commands: read with the key both sides know, the first one as
+    /// a change from the command the client's player state makes
+    /// ([`delta::set_default_usercmd`], as `SV_UserMove` does and as the
+    /// client's `CL_WritePacket` codes it); the first command for the
+    /// current map makes a primed client active. (The original also puts
+    /// the player state's weapons back into a command naming a weapon that
+    /// doesn't exist: the game module's part, not run here.)
     fn user_move(&mut self, slot: usize, msg: &mut Msg, delta_compressed: bool) {
         let game = self.game;
+        let mut first_base = vec![0u8; delta::usercmd_size(game)];
+        delta::set_default_usercmd(game, &self.player_state(slot), &mut first_base);
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
@@ -587,7 +604,7 @@ impl Server {
             ^ client.message_acknowledge
             ^ self.checksum_feed;
         let size = delta::usercmd_size(game);
-        let mut old = vec![0u8; size];
+        let mut old = first_base;
         let mut cmd = vec![0u8; size];
         for _ in 0..count {
             delta::read_delta_usercmd_key(msg, key, &old, &mut cmd);
@@ -667,13 +684,31 @@ impl Server {
         Some(sent)
     }
 
+    /// The game state, as `SV_SendClientGameState` sends it
+    /// ([`game_state::send_client_game_state`]); the message then goes out
+    /// whole through [`transmit`](Self::transmit), every fragment at once.
     fn send_game_state(&mut self, slot: usize, out: Sink) {
+        /// Keeps the message's length; `transmit` sends it afterwards.
+        struct Deferred(usize);
+        impl GameStateLink for Deferred {
+            fn transmit_next_fragment(&mut self) -> bool {
+                false // (transmit never leaves fragments behind)
+            }
+            fn send_message(&mut self, msg: &Msg) -> bool {
+                self.0 = msg.cursize;
+                false
+            }
+        }
         let game = self.game;
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
-        client.state = ClientState::Primed;
-        client.gamestate_message_num = client.chan.outgoing_sequence;
+        let mut primed = GameStateClient {
+            state: client.state as i32,
+            unsent_fragments: client.chan.unsent_fragments,
+            outgoing_sequence: client.chan.outgoing_sequence,
+            ..GameStateClient::default()
+        };
         let texts: Vec<&[u8]> = client.reliable_commands.iter().map(Vec::as_slice).collect();
         let strings: Vec<&[u8]> = self.config_strings.iter().map(Vec::as_slice).collect();
         let state = GameState {
@@ -688,12 +723,24 @@ impl Server {
             client_num: slot as i32,
             checksum_feed: self.checksum_feed,
         };
-        let mut msg = Msg::new(game, &mut self.message);
-        let _ = game_state::write_game_state(&mut msg, &self.protocol.tables, &state);
-        let length = msg.cursize;
+        let mut link = Deferred(0);
+        // (timescale 1, the usual setting; this server's messages never leave fragments anyway.)
+        let _ = game_state::send_client_game_state(
+            game,
+            &self.protocol.tables,
+            &mut primed,
+            &state,
+            1,
+            &mut self.message,
+            &mut link,
+        );
         drop(texts);
         drop(strings);
-        self.transmit(slot, length, out);
+        if let Some(client) = self.clients[slot].as_mut() {
+            client.state = ClientState::Primed;
+            client.gamestate_message_num = primed.gamestate_message_num;
+        }
+        self.transmit(slot, link.0, out);
     }
 
     /// The player state this server gives a client: still, at the map's
@@ -756,53 +803,48 @@ impl Server {
         let game = self.game;
         let player = self.player_state(slot);
         let clients = self.client_list();
+        let ps_size = delta::player_state_size(game);
         let Some(client) = self.clients[slot].as_mut() else {
             return;
         };
+        // This message's frame first (`SV_BuildClientSnapshot`), then the
+        // snapshot written from the frames as the originals' writer does.
         let frame_index = (client.chan.outgoing_sequence as u32 as usize) % PACKET_BACKUP;
-        // The frame the client last acknowledged, if it is recent enough.
-        let mut delta_num = 0u8;
-        let mut from: Option<Frame> = None;
-        if client.delta_message > 0 && client.state == ClientState::Active {
-            let back = client
-                .chan
-                .outgoing_sequence
-                .wrapping_sub(client.delta_message);
-            if (1..(PACKET_BACKUP as i32 - 3)).contains(&back) {
-                let old = &client.frames[(client.delta_message as u32 as usize) % PACKET_BACKUP];
-                if old.sent >= 0 && !old.player.is_empty() {
-                    delta_num = back as u8;
-                    from = Some(old.clone());
-                }
-            }
+        client.frames[frame_index] = Frame { player, clients };
+        // The client ring: each frame's list in turn (no entities yet).
+        let zero_player = vec![0u8; ps_size];
+        let mut ring: Vec<&[u8]> = Vec::new();
+        let mut frames = Vec::with_capacity(PACKET_BACKUP);
+        for f in &client.frames {
+            let first_client = ring.len() as i32;
+            ring.extend(f.clients.iter().map(Vec::as_slice));
+            frames.push(game_state::SnapshotFrame {
+                player: if f.player.is_empty() {
+                    &zero_player
+                } else {
+                    &f.player
+                },
+                num_entities: 0,
+                num_clients: f.clients.len() as i32,
+                first_entity: 0,
+                first_client,
+            });
         }
-        let mut flags = self.snap_flag_server_bit;
-        if client.state != ClientState::Active {
-            flags |= 2; // not active yet
-        }
-        let last_command = client.last_client_command;
-        let empty: Vec<Vec<u8>> = Vec::new();
-        let from_clients: Vec<&[u8]> = from
-            .as_ref()
-            .map_or(&empty, |f| &f.clients)
-            .iter()
-            .map(Vec::as_slice)
-            .collect();
-        let to_clients: Vec<&[u8]> = clients.iter().map(Vec::as_slice).collect();
+        let mut snapshot_client = game_state::SnapshotClient {
+            state: client.state as i32,
+            active: client.snapshot_active,
+            delta_message: client.delta_message,
+            rate_delayed: false,
+            outgoing_sequence: client.chan.outgoing_sequence,
+            frames: &frames,
+        };
         let zero_entity = [0u8; 0x100];
         let baseline = |_n: i32| -> &[u8] { &zero_entity };
-        let snapshot = Snapshot {
-            server_time: self.time,
-            delta_num,
-            snap_flags: flags,
-            player_from: from.as_ref().map(|f| f.player.as_slice()),
-            player_to: &player,
-            entities_from: &[],
-            entities_to: &[],
+        let rings = game_state::SnapshotRings {
+            entities: &[],
+            clients: &ring,
+            next_entities: 0,
             baseline: &baseline,
-            clients_from: &from_clients,
-            clients_to: &to_clients,
-            padding: 0,
         };
         // Pending reliable commands go first, then the snapshot.
         let texts: Vec<&[u8]> = client.reliable_commands.iter().map(Vec::as_slice).collect();
@@ -812,24 +854,25 @@ impl Server {
             texts: &texts,
         };
         let mut msg = Msg::new(game, &mut self.message);
-        msg.write_long(last_command);
+        msg.write_long(client.last_client_command);
         let _ = game_state::write_server_commands(&mut msg, &commands);
-        game_state::write_snapshot(&mut msg, &self.protocol.tables, &snapshot);
+        let _ = game_state::write_snapshot_to_client(
+            &mut msg,
+            &self.protocol.tables,
+            &mut snapshot_client,
+            &rings,
+            self.time,
+            i32::from(self.snap_flag_server_bit),
+            0,
+        );
         msg.write_byte(game_state::server_ops(game).eof);
         let length = msg.cursize;
+        let active = snapshot_client.active;
+        client.snapshot_active = active;
         drop(texts);
-        drop(from_clients);
-        drop(to_clients);
-        let time = self.time;
-        if self.transmit(slot, length, out).is_some() {
-            if let Some(c) = self.clients[slot].as_mut() {
-                c.frames[frame_index] = Frame {
-                    player,
-                    clients,
-                    sent: time,
-                };
-            }
-        }
+        drop(frames);
+        drop(ring);
+        let _ = self.transmit(slot, length, out);
     }
 
     // --- the clock --------------------------------------------------------------------

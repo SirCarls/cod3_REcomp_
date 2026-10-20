@@ -85,6 +85,10 @@ struct ThreadRow {
   // Waits, % of the period: the game's own events/threads, sleep, spinlock,
   // the SDK's global lock (see rex/thread/thread_stats.h).
   float guest_wait_pct = 0, sleep_pct = 0, spin_pct = 0, lock_pct = 0;
+  // Ready to run but waiting for a free core (Linux: the run-queue wait in
+  // /proc/<tid>/schedstat), % of the period. High on a PC with few cores,
+  // where the GPU emulation thread and the game's main thread take turns.
+  float runq_pct = 0;
   // Who held the global lock while this thread waited for it, busiest
   // first: "Main XThread 11%, rex::thread::Ti 5%" (Linux; SDK thread stats 2).
   std::string lock_holders;
@@ -176,6 +180,7 @@ class ThreadProfiler {
 
   struct Previous {
     uint64_t cpu_ns = 0;
+    uint64_t runq_ns = 0;
     uint64_t wait_us[4] = {};
     std::unordered_map<uint32_t, uint64_t> holder_us;  // global lock wait by holder
   };

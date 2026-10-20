@@ -49,6 +49,14 @@ name = "inflate"
 version = "0.1.0"
 
 [[package]]
+name = "iw_join"
+version = "0.1.0"
+dependencies = [
+ "game_sources",
+ "iw_pc",
+]
+
+[[package]]
 name = "iw_pc"
 version = "0.1.0"
 dependencies = [

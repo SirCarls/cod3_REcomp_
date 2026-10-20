@@ -279,7 +279,11 @@ class Games:
             return
         busy = bool(self.worker and self.worker.is_alive())
         exe, _ = self._play_exe()
-        self.btn_play_bar.configure(state="normal" if exe else "disabled")
+        # The highlighted button is the next step: Build until the game is
+        # built, then Play (owner 2026-10-19: Build "shouldn't be green after
+        # it's succeeded"; the highlight is the accent color).
+        self.btn_build.configure(style=self._action_style(accent=not exe))
+        self.btn_play_bar.configure(state="normal" if exe else "disabled", style=self._action_style(accent=bool(exe)))
         rip_why = "" if busy else self._rip_blocker()
         self.btn_rip.configure(state="disabled" if busy or rip_why else "normal")
         for gid, b in self.pc_actions.items():

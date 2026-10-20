@@ -9,15 +9,18 @@ step of cross-play between the original PC games and the Rust version
 Everything it puts on the wire goes through the ported network code, and every one of those
 functions is checked against the game's own machine code (`tools/decomp/x86/`): message bits,
 Huffman coding, out-of-band packets, the challenge and connect checks, the netchan with its
-scrambling, and the delta coding of entities, clients, the player state and player commands.
+scrambling, the delta coding of entities, clients, the player state and player commands, and
+the writers of a client's reliable commands and of a snapshot's entity and client lists, the
+snapshot writer and the game state sender (`SV_SendClientGameState`, whole: the client primed,
+the message, the fragments around it).
 
 ## What works and what doesn't yet
 
 | | |
 |---|---|
 | LAN browser (`getinfo`), server status (`getstatus`) | yes |
-| Joining: `getchallenge`, `connect`, the game state, entering the game on the first player command | yes (tested end to end against a stand-in client built from the checked pieces; not yet against a real CB client) |
-| Snapshots: the player's own state, the player list, each a change from the last one the client acknowledged | yes; the player is a still spectator at the map's origin. The stand-in client reads them whole with the checked delta readers |
+| Joining: `getchallenge`, `connect`, the game state, entering the game on the first player command | yes (tested end to end against a stand-in client built from the checked pieces, and over UDP with `iw-join`, the Rust client; not yet against a real CB client) |
+| Snapshots: the player's own state, the player list, each a change from the last one the client acknowledged | yes; the player is a still spectator at the map's origin. The stand-in client reads them twice: by hand with the checked delta readers, and with the client's own message parser (`iw_pc::client`, checked against both games), which must find the same; a second run sends the client's messages with the client's own sender (`client::write_packet`, checked too) |
 | Reliable commands both ways, `disconnect`, time-outs | yes |
 | The game itself: spawning, movement, weapons, scores, game types | **no**: that is the game module (scripts and game code), still to be ported |
 | Entities (other players moving, doors, items) | no (nothing runs that would make them) |
@@ -57,6 +60,15 @@ You run the game; nothing here ever does.
    (`~`) and type `connect <address>:28960` (`connect 127.0.0.1:28960` on the same machine).
 4. What to report back if it fails: the last lines of the game's console (`condump file.txt`
    writes them to a file) and the server's output.
+
+`iw-join` (the Rust client's network code, [PC_MULTIPLAYER.md](PC_MULTIPLAYER.md)) joins a
+server and stays in the game, printing each step: `iw-join --game cod2 --server
+127.0.0.1:28960 --seconds 30`. Against `iw-server` it shows the server side works without
+the game; against your CB copy's dedicated server it is the other half of cross-play. It
+sends `cp` with no archives after the game state, which a pure Call of Duty 2 server (the
+default, `sv_pure 1`) accepts, so the CB server needs no `sv_pure 0` for it; a pure United
+Offensive server wants more (PC_MULTIPLAYER.md, section 8), so start that one with
+`+set sv_pure 0`.
 
 **Optional, most useful:** a packet capture of a real session with the original server, so the
 Rust server can be compared byte for byte. Start the original dedicated server
@@ -104,6 +116,8 @@ server id and message acknowledge, and the acknowledged command's text
 - The game module: spawning, `ClientThink` (movement: `PM_*`/`BG_*`), weapons, game types.
 - Entity snapshots (`SV_BuildClientSnapshot`: visibility from the map's PVS).
 - United Offensive's config string numbers from its game module.
-- The client side, so the Rust version can also join a CB server: the delta readers are done
-  and checked; next `CL_ParseGamestate`, `CL_ParseSnapshot` with its entity and client lists,
-  and the client's connect sequence.
+- The client side is ported and checked ([PC_MULTIPLAYER.md](PC_MULTIPLAYER.md), section 12,
+  item 8): `iw-join` joins `iw-server` and sends `cp` for pure servers; next, joining a CB
+  server (the owner).
+- Config string changes for the clients (`SV_SetConfigstring`): `d <index> <text>` with the
+  text unquoted (the client takes the rest of the line as it is), long ones as `x`, `y`, `z`.

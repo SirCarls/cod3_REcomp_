@@ -1,0 +1,53 @@
+# CoDUOMP.exe 1.51: names for iw_pc::client. address<tab>name<tab>how<tab>evidence
+00439D20	Com_DPrintf	shape	cdecl (format, ...); prints only when developer (0x4927EA4) is set; called with "Delta frame too old.\n"
+004194A0	CL_ParseCommandString	shape	msg in eax; CoD2's 0x414380 with a 64-command ring (0x4DD89A8) and clc.serverCommandSequence 0x4DD89A0
+00418D10	CL_ParseGamestate	strings	msg in ebx; "CL_ParseGamestate: bad command byte"; clears cl (0x49581A0, 0x17BB34 bytes) inline; svc_* in Quake III's numbers
+00418B80	CL_SystemInfoChanged	call	called at the end of CL_ParseGamestate (0x418D10) as CoD2's 0x4139E0
+00418010	CL_DeltaEntity	shape	unchanged in eax, old in ecx, newnum in edx, msg and frame on the stack; MSG_ReadDeltaEntity into the entity ring, then the sv_onlyVisibleClients test (0x4DC8990)
+00418150	CL_ParsePacketEntities	strings	"CL_ParsePacketEntities: end of message"; cdecl (msg, oldframe, newframe); entity ring 0x4A2BBD0 (2048 x 0xF4)
+004184E0	CL_ParsePacketClients	strings	"CL_ParsePacketClients: end of message"; cdecl (msg, oldframe, newframe); client ring 0x4AA5BD0
+00418870	CL_ParseSnapshot	strings	msg in ecx; "Delta from invalid frame (not supposed to happen!).\n"; cl.snapshots 0x4964550 (32 x 0x4534)
+00418F90	CL_ParseDownload	selfname	called by CL_ParseServerMessage for svc_download (6)
+00419500	CL_ParseServerMessage	strings	cdecl (msg); "CL_ParseServerMessage: Illegible server message %d\n"; decompresses into a 0x8000-byte local buffer
+0044A1E0	MSG_SetDefaultUserCmd	shape	ps on the stack, cmd in edi; zeroes 6 words, weapon byte from ps+0xD8, pitch and yaw from the view angles (* -182.044) and delta angles (ps+0x4C); called by CL_WritePacket with &cl.snap.ps (0x49581C0)
+0040CC80	CL_WritePacket	strings	"MAX_PACKET_USERCMDS\n", "cl_packetdup"; serverId byte (0x49637A8), reliable commands (0x4DC899C, 64 x 1024), user commands (0x49637CC, 128 x 24) with MSG_WriteDeltaUsercmdKey, MSG_WriteBitsCompress from byte 9, CL_Netchan_Encode (0x4173F0), Netchan_Transmit on clc.netchan (0x4DE9658)
+004131B0	CL_PacketEvent	shape	msg in ecx, from (netadr_t by value) and a word on the stack; 0x412880 for 0xFFFFFFFF packets, "%s: Runt packet\n", "%s:sequenced packet without connection\n", Netchan_Process on clc.netchan (0x4DE9658), CL_Netchan_Decode (0x417460), CL_ParseServerMessage (0x419500)
+00412880	CL_ConnectionlessPacket	strings	"challengeResponse", "connectResponse", "infoResponse", "statusResponse", "Unwanted challenge response received.  Ignored.\n"
+0040FA10	CL_WriteDemoMessage	shape	called by CL_PacketEvent when clc.demorecording (0x4DE9608) and not clc.demowaiting (0x4DE9610)
+00411E60	CL_CheckForResend	strings	"CL_CheckForResend: bad cls.state", "getchallenge", "connect "; cls.state 1 or 2, every 3000 ms (clc.connectTime 0x4DC8880, clc.connectPacketCount 0x4DC8884); Cvar_InfoString(2) with protocol 22, qport (Cvar_FindVar "net_qport", float value), challenge (0x4DC8988); NET_OutOfBandData; cvar_modifiedFlags (0x4927E9C) &= ~2
+00410BB0	CL_RequestAuthorization	call	called by CL_CheckForResend off the LAN or with net_lanauthorize (0x4927D34, integer +0x20)
+00405840	CL_SetCGameTime	strings	"CL_SetCGameTime: !cl.snap.valid", "cl.snap.serverTime < cl.oldFrameServerTime"; cls.state 5 or 6; cl_timeNudge (0x4E19948) clamped to -30..30; cl.serverTime 0x495C6D8, oldServerTime 0x495C6DC, oldFrameServerTime 0x495C6E0, serverTimeDelta 0x495C6E4, extrapolatedSnapshot 0x495C6EC
+004056A0	CL_FirstSnapshot	shape	called by CL_SetCGameTime on a new snapshot while primed: unless snapFlags & 2, cls.state 6, serverTimeDelta = snap.serverTime - cls.realtime, clc.timeDemoBaseTime (0x4DE962C), activeAction (0x4AD3CE8) through Cbuf_AddText (0x42BC10), then Cvar_Set2("activeAction", "", 1)
+00405560	CL_AdjustTimeDelta	strings	"<RESET> ", "<FAST> ", "%i "; Quake III's drift (+1, or -2 after an extrapolated snapshot) with the time between the last two snapshots (0x495C6E8) taken off a late clock
+00410060	CL_ReadDemoMessage	call	called by CL_SetCGameTime while a demo plays
+00405770	CL_TimeDemoFrame	call	called by CL_SetCGameTime with the timedemo cvar (0x4DF96A0); timedemo's frame timing (name ours)
+0042BC10	Cbuf_AddText	call	text in eax; called by CL_FirstSnapshot with activeAction's text and "\n"
+0043DC50	Cvar_Set2	strings	called by CL_SystemInfoChanged for each system info pair with force 1, by CL_FirstSnapshot for activeAction; name, value, force on the stack
+0040C8A0	CL_FinishMove	shape	cmd in eax; weapon byte from 0x496376C, cl.serverTime clamped to snap.serverTime + 5000, angles = ANGLE2SHORT(0x4963790[i] + cl.viewangles[i] (0x496379C))
+0040CAD0	CL_CreateNewCommands	shape	cls.state >= 5: frame_msec (0x4E1CBE0) = com_frameTime (0x4929090) - old_com_frameTime (0x4E1CBD8), at most 200; cl.cmdNumber (0x49643CC) + 1, cmds[& 127] (0x49637CC, 24 bytes) = CL_CreateCmd (0x40C900)
+0040C900	CL_CreateCmd	shape	buffer in ebx; the input, the pitch kept within 90 degrees of the last, CL_FinishMove (0x40C8A0), cl_debugMove's graph (0x4E19980)
+0040CB60	CL_ReadyToSendPacket	strings	"cl_maxpackets", "15", "100"; not while a demo plays or in states 7-8; downloading (0x4DC4508) every 50 ms; before state 5 once a second; loopback or Sys_IsLANAddress every frame; else 1000 / cl_maxpackets (0x4DF969C, kept within 15-100 by Cvar_Set2)
+0040D0D0	CL_SendCmd	shape	cls.state >= 3, not paused (sv_running, cl_paused and sv_paused all 1): CL_CreateNewCommands, then CL_WritePacket when CL_ReadyToSendPacket, else ". " with cl_showSend
+0040F930	CL_AddReliableCommand	strings	"EXE_ERR_CLIENT_CMD_OVERFLOW"; command on the stack; reliableSequence (0x4DC8994) - reliableAcknowledge (0x4DC8998) > 64 is ERR_DROP; reliableCommands[++seq & 63] (0x4DC899C)
+00411450	CL_SendPureChecksums	strings	"Va " (+13, +15: "cp "); FS_ReferencedPakPureChecksums (0x440F50), then CL_AddReliableCommand inlined; a stack cookie (0x5C3610)
+00401480	CL_ConfigstringModified	strings	"configstring > MAX_CONFIGSTRINGS", "MAX_GAMESTATE_CHARS exceeded"; the old game state copied to the stack (0x7004 bytes, __chkstk); CL_SystemInfoChanged (0x418B80) for index 1
+00401630	CL_GetServerCommand	strings	"CL_GetServerCommand: EXE_ERR_RELIABLE_CYCLED_OUT", "bcs exceeded BIG_INFO_STRING"; number in eax; clc.lastExecutedServerCommand 0x4DD89A4; switch on the first letter (table 0x401964 / 0x401948): B n, d, w, x y z (big config string 0x5D06E0)
+00413390	CL_CheckTimeout	strings	"EXE_ERR_SERVER_TIMEOUT"; cl_paused (0x4927EC4) and sv_paused (0x4929068) both set: no time-out; state >= 3 but not 7, 8; realtime (0x4AD3E84) - lastPacketTime (0x4DC8868) > cl_timeout (0x4AD3CDC) * 1000: cl.timeoutcount (0x49581A0)
+004137C0	CL_CheckUserinfo	strings	"userinfo \"%s\""; state >= 2, not cl_paused (0x4927EC4), cvar_modifiedFlags (0x4927E9C) & 2: cleared, CL_AddReliableCommand(va(..., Cvar_InfoString(2) 0x43ED30, flag in edi))
+0043F470	FS_SV_FOpenFileWrite	strings	"FS_SV_FOpenFileWrite: %s\n"; name on the stack; CL_ParseDownload opens the temporary file with it
+0043F7D0	FS_SV_Rename	strings	"FS_SV_Rename: %s --> %s\n"; from in ecx, to on the stack
+0042E290	FS_Write	strings	"FS_Write: 0 bytes written\n", "FS_Write: -1 bytes written\n"; (buffer, length, file)
+0042D0D0	FS_FCloseFile	call	(file); CL_ParseDownload closes the file at its zero-length block
+00411B80	CL_NextDownload	call	no arguments; called by CL_ParseDownload after a file, and when it can't create one
+0042CB20	FS_BuildOSPath	strings	"FS_BuildOSPath: os path length exceeded\n"; base in eax, then (game, qpath, out, 0)
+0043F040	DL_BeginDownload	strings	"ERROR: DL_BeginDownload called with a download request already active\n", "ftp"; (local, remote)
+0046B390	Sys_OpenURL	strings	ShellExecuteA "open", "EXE_ERR_COULDNT_OPEN_URL"; url in esi, then (1); called by CL_ParseDownload for a redirect's flag 2
+0043DFB0	Cvar_SetValue	strings	(name, float): "%i" or "%f" (Com_sprintf), then Cvar_Set; CL_ParseDownload sets cl_downloadSize and cl_downloadCount with it
+00410FE0	CL_Connect_f	cmd	the "connect" console command (registered at 0x00414DF4); "usage: connect [server]\n", "Bad server address\n", "%s resolved to %i.%i.%i.%i:%i\n", "EXE_ERR_INVALID_CD_KEY", "cl_currentServerAddress"
+00454DD0	S_StopAllSounds	q3	(0); Quake III's place: the first call of CL_Connect_f (CL_Disconnect calls it too)
+00439DA0	Com_ShutdownServer	call	our name; (message); CL_Connect_f calls it with "EXE_SERVERQUIT" to join localhost while a server runs, SV_Frame when sv_killserver is set (Quake III's SV_Shutdown places): CL_Disconnect(1), the server's shutdown (0x004609A0), Hunk_Clear
+00463220	SV_Frame	q3	(0); "sv_killserver" handling at its start (Cvar_Set2 back to "0")
+004109F0	CL_Disconnect	q3	(1); closes the demo file (FS_FCloseFile), sets cvars, stops the sounds
+0040B490	Con_Close	q3	no arguments; called by CL_Connect_f after CL_Disconnect, as in Quake III
+0044E420	NET_StringToAdr	q3	(string), the address out in ebx; 0 for a bad name; calls BigShort through 0x009C41AC
+00416F40	CL_CDKeyValidate	shape	our name; key in esi (0x5C51CC), checksum text in edi (0x5C51F0); Q_stricmpn; CL_Connect_f asks it before joining a server on the network (not ported)

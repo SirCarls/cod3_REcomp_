@@ -534,6 +534,10 @@ void Engine::RunAutoexec(PPCContext& ctx, uint8_t* base) {
     // Through the console, so its own commands (sv_cheats, fov, quit ...) work
     // too and the cheat guard applies; game commands still go to the game's
     // command buffer in order.
+    // The console's lists (dvardump, cvarlist, find, help, dvarexport) read the
+    // snapshot: take it now, on the game's thread, so they see what the
+    // level scripts registered since the last command.
+    TakeSnapshot(base);
     ui::GameConsole::Get().Submit(step.commands, cheats::Source::kAutoexec);
   }
   if (autoexec_next_ >= autoexec_steps_.size()) autoexec_done_ = true;

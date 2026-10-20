@@ -45,11 +45,15 @@ bool ProgramInstalled(Program program);
 // that program is here (call after the game's main thread ended).
 bool RelaunchRequested();
 
-// The window as the player has it now (UI thread, every frame; three relaxed
+// The window as the player has it now (UI thread, every frame; four relaxed
 // stores). The new instance starts the same way: fullscreen or windowed at
 // this size, whatever the original command line said (the end of every
 // mission, quitting to the menu and multiplayer all start a new instance).
-void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height);
+// has_focus: with the SDK's start_in_background (patch 0063), the new window
+// opens behind the window in use while this one isn't in use (a game left
+// running in the background stays there) and in front while it's played.
+void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height,
+                     bool has_focus);
 
 // Starts the program the game asked for (RelaunchRequested) with the game's
 // launch data, keeping the command line. Returns false (and logs why) when

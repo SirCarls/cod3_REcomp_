@@ -678,3 +678,172 @@ for image in IMAGES:
     spec(name="MSG_ReadDeltaPlayerstate", image=image, rust="net::delta::read_delta_playerstate",
          args=[Msg(at="ebx", slack=128), State(), out], ret=RetVoid(),
          cases=_read_playerstate_cases(image))
+
+
+# --- the structure coders and the HUD arrays on their own -----------------------------------
+#
+# The callers above pass these their own tables and lengths; checked directly, the structure
+# coders get every table, numbers wider than the number's bits, every force/change-bit word
+# (any non-zero one counts), and United Offensive's callback or none; the HUD coders get
+# arrays with any number of elements in use, and the writer any length up to the full one.
+
+STRUCT_TABLES = {"cod2mp": ("entity", "client", "archived", "player", "hud", "objective"),
+                 "uomp": ("entity", "entity12", "client", "archived", "player", "hud", "objective")}
+TABLE_FLAG = 0x0044AF00   # United Offensive's MSG_WriteEntityTableFlag, the callback MSG_WriteDeltaEntity passes
+
+
+@dataclass
+class Table(Arg):
+    """A pointer to one of the executable's own field tables (the value is its
+    name in TABLES); Rust gets the name."""
+    image: str = ""
+
+    def words(self, oracle, value):
+        return [TABLES[self.image][value][0]]
+
+    def token(self, value):
+        return "v:" + value.encode().hex()
+
+
+def _whole_size(image: str, table: str) -> int:
+    """Bytes a structure of `table` needs: its fields, and the words an
+    unchanged structure's copy takes (4 per field and one more)."""
+    return max(struct_size(image, table), 4 * (len(fields(image, table)) + 1))
+
+
+def _number(rng) -> int:
+    return rng.choice([rng.randint(0, 1023), rng.randint(0, 63), _int_value(rng, 32)])
+
+
+def _write_struct_cases(image: str):
+    def cases(rng):
+        for _ in forever:
+            table = rng.choice(STRUCT_TABLES[image])
+            n = len(fields(image, table))
+            size = _whole_size(image, table)
+            old = random_state(rng, image, table, size)
+            new = changed_from(rng, image, table, old) if rng.random() < 0.75 else random_state(rng, image, table, size)
+            struct.pack_into("<i", old, 0, _number(rng))
+            struct.pack_into("<i", new, 0, struct.unpack_from("<i", old, 0)[0] if rng.random() < 0.8 else _number(rng))
+            if image == "uomp" and rng.random() < 0.5:   # the type the table flag looks at
+                struct.pack_into("<i", new, 4, rng.choice([12, 12, 0, 1, 11, 13]))
+            to = None if rng.random() < 0.08 else bytes(new)
+            count = n if rng.random() < 0.85 else rng.randint(0, n)
+            bits = rng.choice([10, 10, 6, 6, rng.randint(1, 16)])
+            case = [_message(rng), bytes(old), to, rng.choice([0, 0, 1, 2]), count, bits, table]
+            if image == "uomp":
+                case.append(TABLE_FLAG if rng.random() < 0.5 else 0)
+            case.append(rng.choice([0, 0, 1, 1, 5]))
+            yield case
+    return cases
+
+
+def _read_struct_direct_cases(image: str):
+    def cases(rng):
+        for _ in forever:
+            table = rng.choice(STRUCT_TABLES[image])
+            size = _whole_size(image, table)
+            old = random_state(rng, image, table, size)
+            stale = bytes(rng.getrandbits(8) for _ in range(size))
+            offset = preceding_offset(image, table)
+            inside = 0 <= offset <= size - 4
+            m = reader_message(rng, lambda w: put_struct(w, rng, image, table, False),
+                               cut=rng.random() < 0.3, keep_count=not inside)
+            yield [m, bytes(old), stale, _number(rng), len(fields(image, table)), table]
+    return cases
+
+
+def hud_array(rng, image: str, count: int) -> bytearray:
+    """`count` HUD elements: some in use at the start, now and then one after
+    the first unused one."""
+    size = LAYOUT[image]["hud_size"]
+    data = bytearray(count * size)
+    used = rng.choice([0, 1, 2, 5, count, rng.randint(0, count)])
+    for i in range(count):
+        if i < used or rng.random() < 0.05:
+            data[i * size:(i + 1) * size] = _hud_elem(rng, image, size, True)
+    return data
+
+
+def changed_hud_array(rng, image: str, base: bytes, count: int) -> bytearray:
+    size = LAYOUT[image]["hud_size"]
+    data = bytearray(base)
+    k = rng.random()
+    if k < 0.1:
+        return data
+    if k > 0.85:
+        return hud_array(rng, image, count)
+    for _ in range(rng.randint(1, 5)):
+        i = rng.randint(0, min(count - 1, 8))
+        if rng.random() < 0.15:   # an element taken out of use, or brought in
+            struct.pack_into("<i", data, i * size, 0 if rng.random() < 0.5 else rng.randint(1, 9))
+        else:
+            _, offset, bits = rng.choice(fields(image, "hud"))
+            struct.pack_into("<i", data, i * size + offset, field_value(rng, image, bits))
+    return data
+
+
+def put_hud_array(w: Wire, rng, image: str, count: int) -> int:
+    """One HUD array as MSG_WriteDeltaHudElems sends it, random. Returns the
+    byte with the element count's last bit."""
+    hud = fields(image, "hud")
+    sent = rng.choice([0, 1, 2, count, rng.randint(0, count)])
+    w.bits(sent, 5 if image == "cod2mp" else 6)
+    at = (w.bit - 1) >> 3
+    for _ in range(sent):
+        last = rng.choice([0, len(hud) - 1, rng.randint(0, len(hud) - 1)])
+        w.bits(last, 5)
+        for _, _, bits in hud[:last + 1]:
+            put_field(w, rng, image, bits)
+    return at
+
+
+def _write_hud_cases(image: str):
+    full = LAYOUT[image]["hud_count"]
+
+    def cases(rng):
+        for _ in forever:
+            old = hud_array(rng, image, full)
+            new = changed_hud_array(rng, image, bytes(old), full)
+            count = full if rng.random() < 0.8 else rng.randint(0, full)
+            k = rng.random()
+            maxsize = rng.randint(0, 30) if k < 0.15 else rng.randint(30, 300) if k < 0.4 else rng.randint(300, 1400)
+            yield [msg_state(rng, maxsize), bytes(old), bytes(new), count]
+    return cases
+
+
+def _read_hud_cases(image: str):
+    """The full length (as the player state reader passes it: a shorter one
+    with more elements sent has the original write past the array), and Call
+    of Duty 2's messages cut only after the count (a missing count has it zero
+    the element in front of the array)."""
+    full = LAYOUT[image]["hud_count"]
+    size = LAYOUT[image]["hud_size"]
+
+    def cases(rng):
+        for _ in forever:
+            old = hud_array(rng, image, full)
+            m = reader_message(rng, lambda w: put_hud_array(w, rng, image, full),
+                               cut=image == "cod2mp" and rng.random() < 0.3, keep_count=True)
+            stale = bytes(rng.getrandbits(8) for _ in range(full * size)) if rng.random() < 0.5 else b"\xAA" * (full * size)
+            yield [m, bytes(old), stale, full]
+    return cases
+
+
+for image in IMAGES:
+    cod2 = image == "cod2mp"
+    out = Buffer(size=0, terminated=False)
+    write_args = [Msg(at="esi"), State(), State(), Int(), Int(at="eax"), Int(), Table(image=image)]
+    spec(name="MSG_WriteDeltaStruct", image=image, rust="net::delta::write_delta_struct",
+         args=write_args + ([Int()] if cod2 else [Int(), Int()]), ret=RetVoid(),
+         cases=_write_struct_cases(image))
+    to = Buffer(size=0, terminated=False, at="eax") if cod2 else out
+    spec(name="MSG_ReadDeltaStruct", image=image, rust="net::delta::read_delta_struct",
+         args=[Msg(at="ebx", slack=128), State(), to, Int(), Int(), Table(image=image)], ret=RetI32(),
+         cases=_read_struct_direct_cases(image))
+    spec(name="MSG_WriteDeltaHudElems", image=image, rust="net::delta::write_delta_hud_elems",
+         args=[Msg(), State() if cod2 else State(at="ebx"), State(), Int(at="ecx")], ret=RetVoid(),
+         cases=_write_hud_cases(image))
+    spec(name="MSG_ReadDeltaHudElems", image=image, rust="net::delta::read_delta_hud_elems",
+         args=[Msg(slack=128), State(), out, Int()], ret=RetVoid(),
+         cases=_read_hud_cases(image))

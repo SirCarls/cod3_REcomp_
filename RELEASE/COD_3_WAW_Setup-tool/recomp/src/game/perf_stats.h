@@ -44,11 +44,22 @@ struct PerfReport {
   float readbacks = 0, readback_kb = 0;
   float queries = 0;
   float upload_kb = 0, texture_loads = 0, watch_faults = 0;
+  // [hw-scaling] guest memory those texture loads read, in MB (SDK 0060;
+  // -1 = not counted). Every resolved surface the game samples afterwards is
+  // loaded again after each resolve.
+  float texture_load_mb = -1;
   // [hw-scaling] (game/thread_profiler.h)
   float gpu_thread_ms = 0, submit_ms = 0, shader_ms = 0, shaders = 0;
   // [hw-scaling] pictures the window presented a second: the game's frames
   // plus repaints for the UI alone (0 = SDK doesn't count them).
   float presents_per_s = 0;
+  // [hw-scaling] the graphics card's time a frame on the GPU emulation's
+  // command buffers (SDK 0055; -1 = not measured). Next to the frame time it
+  // says how much slower a card could be before it limits the frame rate.
+  float host_gpu_ms = -1;
+  // [hw-scaling] the same by what the card was doing (SDK 0058; -1 = not
+  // measured): draws, transfers, resolves, texture loads, uploads, swap, other.
+  float host_gpu_kind_ms[7] = {-1, -1, -1, -1, -1, -1, -1};
   std::string limited_by;  // "limited by ... (...)", empty until known
 };
 

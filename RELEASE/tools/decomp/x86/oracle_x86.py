@@ -27,6 +27,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 from fractions import Fraction
+from typing import Callable
 
 try:
     from unicorn import (UC_ARCH_X86, UC_HOOK_BLOCK, UC_HOOK_CODE, UC_HOOK_INTR, UC_HOOK_MEM_INVALID,
@@ -249,6 +250,27 @@ GAME_TLS_INDEX, CRT_TLS_INDEX = 1, 2
 GAME_EXITS = {"Com_Error": "error", "Com_Printf": "print", "Com_DPrintf": "print"}
 
 
+@dataclass
+class StandIn:
+    """A function a call doesn't run (one the caller of the function under
+    test provides, such as the console variables or the file system): each
+    call is recorded in X86Oracle.calls, as `label` and the arguments read as
+    `args` says, and returns `result` at once.
+
+    `args`: one (where, kind) pair per argument: where is a stack index
+    (0 = the first argument) or a register name, kind "int" (the 32-bit
+    word, signed) or "str" (the C string it points to). `result`: a number,
+    or a function of the arguments read giving one. `pops`: the bytes of
+    arguments the function removes itself (stdcall's `ret N`). `effect`:
+    what the real function would leave behind that the caller reads back
+    (a function of the oracle and the arguments read), if anything."""
+    label: str
+    args: tuple = ()
+    result: int | Callable = 0
+    pops: int = 0
+    effect: Callable | None = None
+
+
 def _round_up(n: int) -> int:
     return (n + PAGE - 1) & ~(PAGE - 1)
 
@@ -292,6 +314,9 @@ class X86Oracle:
         self.sent: list[tuple[bytes, bytes]] = []   # packets sent during the last call (see _sendto)
         self._end_hooks: set[int] = set()
         self._ends: dict[int, str] = {}
+        self._stand_in_hooks: set[int] = set()
+        self._stand_ins: dict[int, StandIn] = {}
+        self.calls: list[tuple[str, list]] = []   # the stand-ins called during the last call, in order
         self._ended: str | None = None
         self._readonly = [(s.start, s.end) for img in self.images for s in img.sections
                           if not s.flags & 0x80000000]
@@ -413,7 +438,17 @@ class X86Oracle:
         self.uc.reg_write(R.UC_X86_REG_ESP, esp + 4 + 4 * pop_args)
         self.uc.reg_write(R.UC_X86_REG_EIP, ret)
 
+    def import_stop(self, name: str) -> int:
+        """Where a call through an import slot (`dll!name`) lands: a StandIn at
+        this address replaces the import for one call (Spec.import_stand_ins)."""
+        for stop, known in self._import_stops.items():
+            if known == name:
+                return stop
+        raise KeyError(f"no import {name}")
+
     def _on_import(self, uc, address, size, user):
+        if address in self._stand_ins:
+            return   # a stand-in of the spec's (its own hook answers)
         name = self._import_stops.get(address, f"0x{address:08X}")
         stand_in = IMPORT_STAND_INS.get(name)
         if stand_in is None:
@@ -435,6 +470,30 @@ class X86Oracle:
             except GuestFault:
                 self._prints.append(b"?")
             self._return(0)
+
+    def _on_stand_in(self, uc, address, size, user):
+        stand_in = self._stand_ins.get(address)
+        if stand_in is None:
+            return
+        esp = uc.reg_read(R.UC_X86_REG_ESP)
+        values = []
+        try:
+            for where, kind in stand_in.args:
+                if isinstance(where, int):
+                    word = struct.unpack("<I", self.read(esp + 4 + 4 * where, 4))[0]
+                else:
+                    word = uc.reg_read(REGISTERS[where])
+                values.append(self.read_cstr(word, 1 << 16) if kind == "str" else
+                              struct.unpack("<i", struct.pack("<I", word))[0])
+        except GuestFault as e:
+            self._fault = f"stand-in {stand_in.label}: {e}"
+            uc.emu_stop()
+            return
+        self.calls.append((stand_in.label, values))
+        if stand_in.effect is not None:
+            stand_in.effect(self, *values)
+        result = stand_in.result(*values) if callable(stand_in.result) else stand_in.result
+        self._return(result, stand_in.pops // 4)
 
     def _on_end(self, uc, address, size, user):
         if address in self._ends:
@@ -538,21 +597,64 @@ class X86Oracle:
         self.reset()
 
     def reset(self) -> None:
-        """Undoes every write of the previous call: image data back to the file's, the rest to zero."""
+        """Undoes every write of the previous call: image data back to the file's, the rest to zero.
+        (A write to unmapped memory marks its page too, since the write hook runs before the
+        fault: there is nothing to undo there.)"""
         for page in self._dirty:
             for base, data in self._baseline.items():
                 if base <= page < base + len(data):
                     self.uc.mem_write(page, bytes(data[page - base:page - base + PAGE]))  # kept state: a bytearray
                     break
             else:
-                self.uc.mem_write(page, bytes(PAGE))
+                try:
+                    self.uc.mem_write(page, bytes(PAGE))
+                except UcError:
+                    pass
         self._dirty.clear()
         self._heap_next = HEAP
 
     # --- calls ---------------------------------------------------------------
     def call(self, function: int, registers: dict[str, int] | None = None, stack: list[int] = (),
              callee_pops: int = 0, fpu: str = "pc53", max_seconds: float = 20.0,
-             stops: dict[int, str] | None = None) -> CallResult:
+             stops: dict[int, str] | None = None, untracked: list[tuple[int, int]] = (),
+             stand_ins: dict[int, StandIn] | None = None) -> CallResult:
+        """See _call. `stand_ins`: functions (by address) the call doesn't run
+        (StandIn), recorded in `calls`. `untracked`: (start, end) ranges of guest memory whose
+        writes aren't tracked page by page during the call, because the test
+        wrote all of them before the call (so reset() already restores them):
+        a function that clears a megabyte-sized structure would otherwise run
+        a Python hook on every one of its writes."""
+        self._stand_ins = dict(stand_ins or {})
+        for address in self._stand_ins.keys() - self._stand_in_hooks:
+            self.uc.hook_add(UC_HOOK_CODE, self._on_stand_in, begin=address, end=address)
+            self._stand_in_hooks.add(address)
+            # Code already run (by an earlier call) is cached translated, without the new hook.
+            self.uc.ctl_remove_cache(address, address + 1)
+        self.calls = []
+        if not untracked:
+            return self._call(function, registers, stack, callee_pops, fpu, max_seconds, stops)
+        spans = sorted(untracked)
+        uncovered, start = [], 0
+        for lo, hi in spans:
+            if lo > start:
+                uncovered.append((start, lo - 1))
+            start = max(start, hi)
+        uncovered.append((start, 0xFFFFFFFF))
+        for lo, hi in spans:
+            for page in range(lo & ~(PAGE - 1), hi, PAGE):
+                self._dirty.add(page)
+        self.uc.hook_del(self._write_hook)
+        hooks = [self.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_write, begin=lo, end=hi) for lo, hi in uncovered]
+        try:
+            return self._call(function, registers, stack, callee_pops, fpu, max_seconds, stops)
+        finally:
+            for h in hooks:
+                self.uc.hook_del(h)
+            self._write_hook = self.uc.hook_add(UC_HOOK_MEM_WRITE, self._on_write)
+
+    def _call(self, function: int, registers: dict[str, int] | None = None, stack: list[int] = (),
+              callee_pops: int = 0, fpu: str = "pc53", max_seconds: float = 20.0,
+              stops: dict[int, str] | None = None) -> CallResult:
         """Calls a guest function.
 
         `registers`: argument registers by name (eax, ecx, edx, ebx, esi, edi);
@@ -571,6 +673,7 @@ class X86Oracle:
         for address in self._ends.keys() - self._end_hooks:
             uc.hook_add(UC_HOOK_CODE, self._on_end, begin=address, end=address)
             self._end_hooks.add(address)
+            uc.ctl_remove_cache(address, address + 1)   # (see call: cached code lacks the new hook)
         self._ended = None
         self.sent = []
         esp = STACK_TOP

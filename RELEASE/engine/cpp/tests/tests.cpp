@@ -4,10 +4,12 @@
 
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include "iw_pc/net/delta.h"
 #include "iw_pc/net/msg.h"
+#include "iw_pc/shared/checksum.h"
 #include "iw_pc/shared/info.h"
 #include "iw_pc/shared/strings.h"
 
@@ -158,6 +160,22 @@ static void player_commands_survive_the_wire() {
     }
 }
 
+// The test suite in RFC 1320, appendix A.5 (the digest's first bytes, as a
+// little-endian word, then the rest).
+static void md4_matches_rfc_1320() {
+    auto digest = [](const char* text) {
+        auto s = shared::checksum::md4(ByteView(reinterpret_cast<const std::uint8_t*>(text), std::strlen(text)));
+        char hex[33];
+        for (int i = 0; i < 16; ++i) std::snprintf(hex + 2 * i, 3, "%02x", (s[i / 4] >> (8 * (i % 4))) & 0xFF);
+        return std::string(hex);
+    };
+    CHECK(digest("") == "31d6cfe0d16ae931b73c59d7e0c089c0");
+    CHECK(digest("abc") == "a448017aaf21d8525fc10ae87aa6729d");
+    CHECK(digest("message digest") == "d9130a8164549fe818874806e1c7014b");
+    CHECK(digest("12345678901234567890123456789012345678901234567890123456789012345678901234567890") ==
+          "e33b4ddc9c38f2199c3e7b164fcc0536");
+}
+
 int main() {
     bits_and_bytes_interleave();
     readers_past_the_end_differ_by_game();
@@ -165,6 +183,7 @@ int main() {
     structures_survive_the_wire();
     only_call_of_duty_2_extends_the_sign();
     player_commands_survive_the_wire();
+    md4_matches_rfc_1320();
     if (failures == 0) std::printf("all tests passed\n");
     return failures == 0 ? 0 : 1;
 }

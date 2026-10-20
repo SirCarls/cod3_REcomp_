@@ -1062,6 +1062,31 @@ pub fn same_address(a: &NetAddress, b: &NetAddress) -> bool {
     }
 }
 
+/// Whether an address is on the local network (`Sys_IsLANAddress`): a
+/// loopback, bot or IPX address always; an IPv4 address in 10.x, 127.x,
+/// 169.254.x, 172.16-31.x or 192.168.x, or with the first three bytes of
+/// one of the machine's own addresses (`local`, the games' list of up to
+/// 16 found at start). Anything else (broadcast, bad) is not.
+///
+/// Original: `Sys_IsLANAddress` at 0x00467100 (CoD2MP_s.exe 1.3)
+/// Original: `Sys_IsLANAddress` at 0x0046D2C0 (CoDUOMP.exe 1.51)
+pub fn is_lan_address(address: &NetAddress, local: &[[u8; 4]]) -> bool {
+    match address.kind {
+        AddressType::Loopback | AddressType::Bot | AddressType::Ipx => true,
+        AddressType::Ip => {
+            let [a, b, c, _] = address.ip;
+            match a {
+                10 | 127 => true,
+                169 if b == 254 => true,
+                172 if b & 0xF0 == 0x10 => true,
+                192 if b == 168 => true,
+                _ => local.iter().any(|l| l[0] == a && l[1] == b && l[2] == c),
+            }
+        }
+        _ => false,
+    }
+}
+
 /// One remembered challenge, the games' `challenge_t`.
 #[derive(Debug, Clone, Copy)]
 pub struct ChallengeSlot {

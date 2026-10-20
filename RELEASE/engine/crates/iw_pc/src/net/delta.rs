@@ -702,6 +702,18 @@ pub fn player_state_size(game: Game) -> usize {
     player_state_layout(game).size
 }
 
+/// HUD elements in each of the player state's two arrays (Call of Duty 2 31,
+/// United Offensive 63): the length the player state's coders pass to
+/// [`write_delta_hud_elems`] and [`read_delta_hud_elems`].
+pub fn hud_elem_count(game: Game) -> usize {
+    player_state_layout(game).hud_count
+}
+
+/// Bytes of one HUD element (Call of Duty 2 0x80, United Offensive 0x7C).
+pub fn hud_elem_size(game: Game) -> usize {
+    player_state_layout(game).hud_elem_size
+}
+
 /// Objectives in a player state, and the bytes of one.
 const OBJECTIVES: usize = 16;
 const OBJECTIVE_SIZE: usize = 28;
@@ -787,21 +799,26 @@ fn write_short_group(msg: &mut Msg, to: &[u8], at: usize, mask: u32) {
     }
 }
 
-/// HUD elements: how many are in use at the start of `to` (type not 0), then
-/// each as the index of its last changed field and the fields up to and
-/// including it (at least the first one, even unchanged).
+/// Writes one array of HUD elements (`from` and `to`: arrays of `count`
+/// elements; the games pass [`hud_elem_count`]) as a change from `from`: how
+/// many are in use at the start of `to` (type not 0; 5 bits in Call of Duty
+/// 2, 6 in United Offensive), then each as the index of its last changed
+/// field in 5 bits and the fields up to and including it (at least the first
+/// one, even unchanged).
 ///
-/// Original: `MSG_WriteDeltaHudElems` at 0x00445C60 (CoD2MP_s.exe 1.3)
-/// Original: `MSG_WriteDeltaHudElems` at 0x0044B510 (CoDUOMP.exe 1.51)
-fn write_hud_elems(
+/// Original: `MSG_WriteDeltaHudElems` at 0x00445C60 (CoD2MP_s.exe 1.3; count in ecx)
+/// Original: `MSG_WriteDeltaHudElems` at 0x0044B510 (CoDUOMP.exe 1.51; count in ecx, from in ebx)
+pub fn write_delta_hud_elems(
     msg: &mut Msg,
-    fields: &[NetField],
-    layout: &PlayerStateLayout,
+    tables: &FieldTables,
     from: &[u8],
     to: &[u8],
+    count: usize,
 ) {
+    let layout = player_state_layout(tables.game);
+    let fields = tables.hud_elem.fields();
     let size = layout.hud_elem_size;
-    let in_use = (0..layout.hud_count)
+    let in_use = (0..count)
         .take_while(|&i| word_at(to, (i * size) as u32) != 0)
         .count();
     msg.write_bits(in_use as i32, layout.hud_count_bits);
@@ -936,10 +953,15 @@ pub fn write_delta_playerstate(
         msg.write_bit0();
     } else {
         msg.write_bit1();
-        let hud_fields = tables.hud_elem.fields();
         for at in [current, archived] {
             let range = at..at + array;
-            write_hud_elems(msg, hud_fields, layout, &from[range.clone()], &to[range]);
+            write_delta_hud_elems(
+                msg,
+                tables,
+                &from[range.clone()],
+                &to[range],
+                layout.hud_count,
+            );
         }
     }
 }
@@ -993,32 +1015,39 @@ fn read_short_group(msg: &mut Msg, to: &mut [u8], at: usize) {
     }
 }
 
-/// One array of HUD elements (at `at` in the player state), as
-/// [`write_hud_elems`] wrote it: each element sent has its fields up to the
-/// index read and the rest copied from `from`; the elements after the last
-/// one sent are zeroed. A count missing at the end of a Call of Duty 2
-/// message (-1) zeroes from the element in front of the array (the
-/// original's arithmetic; still inside the player state); a missing index
-/// has every field copied.
+/// Reads one array of HUD elements (`count` of them, at `at` in `from` and
+/// `to`; the games pass [`hud_elem_count`] and the arrays' place in the
+/// player state), as [`write_delta_hud_elems`] wrote it: each element sent
+/// has its fields up to the index read and the rest copied from `from`; the
+/// elements after the last one sent are zeroed. A count missing at the end of
+/// a Call of Duty 2 message (-1) zeroes from the element in front of the
+/// array (the original's arithmetic; inside the player state, the elements in
+/// front of `at` here; none when `at` is 0); a missing index has every field
+/// copied.
 ///
 /// United Offensive's table has 30 fields but the index has 5 bits: an index
 /// of 30 or 31, which its writer never sends, has the original read entries
 /// past its table (other data, as offsets outside the element). The port
-/// reads the 30 fields and marks the message overflowed instead.
+/// reads the 30 fields and marks the message overflowed instead. (A message
+/// sending more elements than `count`, which the full length rules out, has
+/// the originals write past the array; the port reads `count`.)
 ///
 /// Original: `MSG_ReadDeltaHudElems` at 0x00445DB0 (CoD2MP_s.exe 1.3)
 /// Original: `MSG_ReadDeltaHudElems` at 0x0044B690 (CoDUOMP.exe 1.51)
-fn read_hud_elems(
+pub fn read_delta_hud_elems(
     msg: &mut Msg,
-    fields: &[NetField],
-    layout: &PlayerStateLayout,
+    tables: &FieldTables,
     from: &[u8],
     to: &mut [u8],
     at: usize,
+    count: usize,
 ) {
+    let layout = player_state_layout(tables.game);
+    let fields = tables.hud_elem.fields();
     let size = layout.hud_elem_size;
+    let hud_count = count;
     let count = msg.read_bits(layout.hud_count_bits);
-    let sent = (count.max(0) as usize).min(layout.hud_count);
+    let sent = (count.max(0) as usize).min(hud_count);
     for i in 0..sent {
         let elem = at + i * size;
         let (old, new) = (&from[elem..elem + size], &mut to[elem..elem + size]);
@@ -1038,8 +1067,8 @@ fn read_hud_elems(
             copy_word(old, new, field.offset);
         }
     }
-    let start = at as isize + count.min(layout.hud_count as i32) as isize * size as isize;
-    let end = at + layout.hud_count * size;
+    let start = at as isize + count.min(hud_count as i32) as isize * size as isize;
+    let end = at + hud_count * size;
     to[start.max(0) as usize..end].fill(0);
 }
 
@@ -1134,9 +1163,8 @@ pub fn read_delta_playerstate(
     // HUD elements: the current array, then the archived one.
     if msg.read_bit() != 0 {
         let array = layout.hud_count * layout.hud_elem_size;
-        let hud_fields = tables.hud_elem.fields();
         for at in [layout.hud + array, layout.hud] {
-            read_hud_elems(msg, hud_fields, layout, from, to, at);
+            read_delta_hud_elems(msg, tables, from, to, at, layout.hud_count);
         }
     }
 }
@@ -1149,6 +1177,103 @@ pub fn usercmd_size(game: Game) -> usize {
     match game {
         Game::CallOfDuty2 => 28,
         Game::UnitedOffensive => 24,
+    }
+}
+
+/// The player command a client's packet codes its first command against:
+/// all zeros, then from the player's state `ps` (the latest snapshot's):
+/// the weapon bytes, the pitch and yaw as 16-bit steps relative to the
+/// state's delta angles (`(-delta - viewangle * -65536 / 360) & 0xFFFF`,
+/// at the game's x87 precision, truncated by `__ftol2`); and, when the
+/// player is leaning or proning in some way (a flag in the state's
+/// `pm_flags`), the matching buttons:
+///
+/// * Call of Duty 2 (flag 0x800000): the button word gets 0x100 or 0x200
+///   (bit 8 or 4 of the word at 0xA0), 0x80 or 0x40 (the float at 0x4C
+///   above or below zero), 0x1000 (the float at 0xDC not zero).
+/// * United Offensive (flag 0x80000): byte 5 gets 0x40 or 0x80 (bit 0x40
+///   or 0x20 of the word at 0x84; byte 0x16 then becomes 0x81), 0x20 or
+///   0x10 (the float at 0x44 above or below zero); byte 4 gets 0x10 (the
+///   float at 0xE0 not zero) and 8 (`pm_flags` bit 0x10000).
+///
+/// `ps` is a [`player_state_size`] state, `cmd` [`usercmd_size`] bytes.
+///
+/// Original: `MSG_SetDefaultUserCmd` at 0x004449C0 (CoD2MP_s.exe 1.3; ps on the stack, cmd in ebx)
+/// Original: `MSG_SetDefaultUserCmd` at 0x0044A1E0 (CoDUOMP.exe 1.51; ps on the stack, cmd in edi)
+pub fn set_default_usercmd(game: Game, ps: &[u8], cmd: &mut [u8]) {
+    let size = usercmd_size(game);
+    cmd[..size].fill(0);
+    let float_at = |offset: u32| f32::from_bits(word_at(ps, offset) as u32);
+    let (delta_angles, angles) = match game {
+        Game::CallOfDuty2 => {
+            cmd[8] = ps[0xD4];
+            cmd[9] = ps[0xD0];
+            (0x54, 0xC)
+        }
+        Game::UnitedOffensive => {
+            cmd[6] = ps[0xD8];
+            (0x4C, 8)
+        }
+    };
+    for i in 0..2u32 {
+        let view = float_at(0xE8 + 4 * i);
+        let steps = ftol2(super::msg::scaled(game, view, -super::msg::ANGLE16_SCALE)) as i32;
+        let delta = word_at(ps, delta_angles + 4 * i);
+        set_word(
+            cmd,
+            angles + 4 * i,
+            delta.wrapping_neg().wrapping_sub(steps) & 0xFFFF,
+        );
+    }
+    let pm_flags = word_at(ps, 0xC);
+    match game {
+        Game::CallOfDuty2 => {
+            if pm_flags & 0x80_0000 == 0 {
+                return;
+            }
+            let mut buttons = word_at(cmd, 4);
+            let lean = word_at(ps, 0xA0);
+            if lean & 8 != 0 {
+                buttons |= 0x100;
+            } else if lean & 4 != 0 {
+                buttons |= 0x200;
+            }
+            let f = float_at(0x4C);
+            if f > 0.0 {
+                buttons |= 0x80;
+            } else if f < 0.0 {
+                buttons |= 0x40;
+            }
+            if float_at(0xDC) != 0.0 {
+                buttons |= 0x1000;
+            }
+            set_word(cmd, 4, buttons);
+        }
+        Game::UnitedOffensive => {
+            if pm_flags & 0x8_0000 == 0 {
+                return;
+            }
+            let lean = word_at(ps, 0x84);
+            if lean & 0x40 != 0 {
+                cmd[5] |= 0x40;
+                cmd[0x16] = 0x81;
+            } else if lean & 0x20 != 0 {
+                cmd[5] |= 0x80;
+                cmd[0x16] = 0x81;
+            }
+            let f = float_at(0x44);
+            if f > 0.0 {
+                cmd[5] |= 0x20;
+            } else if f < 0.0 {
+                cmd[5] |= 0x10;
+            }
+            if float_at(0xE0) != 0.0 {
+                cmd[4] |= 0x10;
+            }
+            if pm_flags & 0x1_0000 != 0 {
+                cmd[4] |= 8;
+            }
+        }
     }
 }
 

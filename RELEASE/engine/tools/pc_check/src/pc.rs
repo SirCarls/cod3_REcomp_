@@ -28,6 +28,30 @@ fn write_out(args: &mut Args, i: usize, text: &[u8]) -> Result<(), String> {
     }
 }
 
+/// A search path from its token (specs/fs_pure.py): for each entry a flags
+/// byte (1 an archive, 2 localized, 4 any file referenced, 8 the user
+/// interface's module, 16 the client game's) and the pure checksum (i32,
+/// big-endian).
+pub fn search_paths(data: &[u8]) -> Vec<iw_pc::fs::SearchPath> {
+    data.chunks_exact(5)
+        .map(|e| {
+            let flags = e[0];
+            let pure_checksum = i32::from_be_bytes([e[1], e[2], e[3], e[4]]);
+            iw_pc::fs::SearchPath {
+                archive: (flags & 1 != 0).then_some(iw_pc::fs::Archive {
+                    pure_checksum,
+                    referenced: iw_pc::fs::Referenced {
+                        any_file: flags & 4 != 0,
+                        ui_module: flags & 8 != 0,
+                        cgame_module: flags & 16 != 0,
+                    },
+                }),
+                localized: flags & 2 != 0,
+            }
+        })
+        .collect()
+}
+
 fn printed(result: Result<(), info::Refusal>, game: Game) -> Ret {
     Ret::Printed(
         result
@@ -51,6 +75,21 @@ pub fn dispatch(image: &str, function: &str, args: &mut Args) -> Option<Answer> 
         return Some(answer);
     }
     if let Some(answer) = crate::net_delta::dispatch(game, function, args) {
+        return Some(answer);
+    }
+    if let Some(answer) = crate::net_client::dispatch(game, function, args) {
+        return Some(answer);
+    }
+    if let Some(answer) = crate::net_game_state::dispatch(game, function, args) {
+        return Some(answer);
+    }
+    if let Some(answer) = crate::net_download::dispatch(game, function, args) {
+        return Some(answer);
+    }
+    if let Some(answer) = crate::net_connect::dispatch(game, function, args) {
+        return Some(answer);
+    }
+    if let Some(answer) = crate::game_pmove::dispatch(game, function, args) {
         return Some(answer);
     }
     Some(match function {
@@ -154,6 +193,31 @@ pub fn dispatch(image: &str, function: &str, args: &mut Args) -> Option<Answer> 
             ))),
         },
         "Com_HashKey" => Ok(Ret::Int(hash::hash_key(args.text(0), args.i32(1)).into())),
+        // va("%s", text): the text, or the buffer's overrun error
+        "va" => iw_pc::shared::strings::va(game, args.text(1).to_vec())
+            .map(|t| Ret::Str(Some(t)))
+            .map_err(crate::game_error),
+        // --- the search path's pure checksums (search path, feed, fake) ----------
+        "FS_ReferencedIwdPureChecksums" | "FS_ReferencedPakPureChecksums" => {
+            let paths = search_paths(args.bytes(0));
+            Ok(Ret::Str(Some(iw_pc::fs::referenced_pure_checksums(
+                game,
+                &paths,
+                args.i32(1),
+                args.i32(2),
+            ))))
+        }
+        // --- block checksums (data, length[, key]) ------------------------------
+        "Com_BlockChecksum" | "Com_BlockChecksumKey" => {
+            let data = args.bytes(0);
+            let length = (args.i32(1).max(0) as usize).min(data.len());
+            let block = &data[..length];
+            Ok(Ret::Int(i64::from(if function == "Com_BlockChecksum" {
+                iw_pc::shared::checksum::block_checksum(block)
+            } else {
+                iw_pc::shared::checksum::block_checksum_key(block, args.i32(2))
+            })))
+        }
         // --- filters -----------------------------------------------------------
         "Com_Filter" | "Com_FilterPath" => {
             let (pattern, name, case_sensitive) = (args.text(0), args.text(1), args.int(2) != 0);

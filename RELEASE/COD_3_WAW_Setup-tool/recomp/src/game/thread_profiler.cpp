@@ -73,6 +73,7 @@ uint64_t NowMicros() {
 struct OsThread {
   uint32_t id = 0;
   uint64_t cpu_ns = 0;
+  uint64_t runq_ns = 0;  // Linux: time ready to run but waiting for a core
   uint64_t created = 0;  // Windows: creation time; the earliest is the window thread
   std::string name;
 };
@@ -146,7 +147,9 @@ std::vector<OsThread> ReadOsThreads() {
     // schedstat: nanoseconds on a CPU, then wait time, then run count.
     const std::string sched = ReadSmallFile(base + "/schedstat");
     if (!sched.empty()) {
-      t.cpu_ns = std::strtoull(sched.c_str(), nullptr, 10);
+      char* rest = nullptr;
+      t.cpu_ns = std::strtoull(sched.c_str(), &rest, 10);
+      t.runq_ns = std::strtoull(rest, nullptr, 10);
     } else {
       // Older kernels without schedstat: utime + stime in clock ticks.
       const std::string stat = ReadSmallFile(base + "/stat");
@@ -586,6 +589,7 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
   for (const OsThread& t : threads) {
     Previous cur;
     cur.cpu_ns = t.cpu_ns;
+    cur.runq_ns = t.runq_ns;
     if (auto it = waits.find(t.id); it != waits.end())
       for (int k = 0; k < 4; ++k) cur.wait_us[k] = it->second[k];
     if (auto it = holder_waits.find(t.id); it != holder_waits.end()) cur.holder_us = it->second;
@@ -602,6 +606,9 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
       const double period = double(period_us);
       row.cpu_pct = float(double(cur.cpu_ns - std::min(cur.cpu_ns, prev->second.cpu_ns)) / 1000.0 /
                           period * 100.0);
+      row.runq_pct = float(std::min(
+          100.0, double(cur.runq_ns - std::min(cur.runq_ns, prev->second.runq_ns)) / 1000.0 /
+                     period * 100.0));
       auto wait_pct = [&](int k) {
         const uint64_t d = cur.wait_us[k] - std::min(cur.wait_us[k], prev->second.wait_us[k]);
         return float(std::min(100.0, double(d) / period * 100.0));
@@ -739,6 +746,17 @@ void ThreadProfiler::Compute(const FrameCosts& costs) {
                       "core and waits %.0f%% of the time for the lock (held by %.90s)",
                       cap(costs.gpu_thread_ms), F, gpu->cpu_pct, gpu->lock_pct,
                       gpu->lock_holders.empty() ? "not known" : gpu->lock_holders.c_str());
+      } else if (gpu && gpu->cpu_pct < 60.0f && gpu->runq_pct >= 15.0f) {
+        // Ready to run but no core free: a PC with few cores, where it takes
+        // turns with the game's main thread and the rest (REA potato suite
+        // 2026-10-19, two cores: called "the graphics card" before this).
+        r.limited_by = "the CPU: the GPU emulation thread waits for a free core";
+        std::snprintf(why, sizeof(why),
+                      "the GPU emulation thread is busy %.1f of %.1f ms a frame, uses %.0f%% of a "
+                      "core and waits %.0f%% of the time for one; the game uses %.0f%% of %d "
+                      "usable cores",
+                      cap(costs.gpu_thread_ms), F, gpu->cpu_pct, gpu->runq_pct, r.process_cpu_pct,
+                      usable_cpus);
       } else if (gpu && gpu->cpu_pct < 60.0f) {
         r.limited_by = "the graphics card";
         std::snprintf(why, sizeof(why),
@@ -871,7 +889,7 @@ std::string ThreadProfiler::Table(const ThreadReport& r, size_t max_rows) {
   if (const std::string job = RenderJobLine(r); !job.empty()) s << job << "\n";
   for (size_t i = 0; i < r.rows.size() && i < max_rows; ++i) {
     const ThreadRow& t = r.rows[i];
-    if (t.cpu_pct < 0.5f && t.guest_wait_pct < 0.5f && t.lock_pct < 0.5f) break;
+    if (t.cpu_pct < 0.5f && t.guest_wait_pct < 0.5f && t.lock_pct < 0.5f && t.runq_pct < 0.5f) break;
     std::snprintf(line, sizeof(line), "%5.0f%%  %-16s %-26s", t.cpu_pct, t.name.c_str(),
                   t.role.c_str());
     s << line;
@@ -886,6 +904,7 @@ std::string ThreadProfiler::Table(const ThreadReport& r, size_t max_rows) {
     add("sleeps", t.sleep_pct);
     add("spins", t.spin_pct);
     add("global lock", t.lock_pct);
+    add("waits for a core", t.runq_pct);
     if (!waits.empty()) s << " " << waits;
     if (t.lock_pct >= 1.0f && !t.lock_holders.empty()) s << " (held by " << t.lock_holders << ")";
     s << "\n";

@@ -171,6 +171,25 @@ pub fn strupr(buffer: &mut [u8]) {
 /// Original: `Q_strcat` at 0x0044F950 (CoDUOMP.exe 1.51)
 pub use cod3_game::shared::strings::strcat;
 
+/// What `va` (the games' formatter into a temporary buffer) leaves for an
+/// already formatted text: the text, or a dropping error when it doesn't
+/// fit the buffer, 1024 bytes in Call of Duty 2 (two per thread, used in
+/// turn), 32000 in United Offensive (copied on into a ring); the error
+/// stands for any text of the buffer's size or more.
+///
+/// Original: `va` at 0x0044A990 (CoD2MP_s.exe 1.3)
+/// Original: `va` at 0x0044FAB0 (CoDUOMP.exe 1.51)
+pub fn va(game: crate::Game, formatted: Vec<u8>) -> Result<Vec<u8>, crate::GameError> {
+    let (size, message) = match game {
+        crate::Game::CallOfDuty2 => (0x400, "Attempted to overrun string in call to va()"),
+        crate::Game::UnitedOffensive => (0x7D00, "Attempted to overrun string in call to va()\n"),
+    };
+    if formatted.len() >= size {
+        return Err(crate::GameError::drop(message));
+    }
+    Ok(formatted)
+}
+
 /// A color code: `^` and a digit (`^0`-`^9`). Quake III accepted any
 /// character but `^` and the terminator after the `^`.
 #[inline]

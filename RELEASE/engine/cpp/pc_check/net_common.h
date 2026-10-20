@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstring>
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -9,6 +10,33 @@
 #include "protocol.h"
 
 namespace pc_check {
+
+// A CallLog buffer being written: each call's label, a 0 byte, the number of arguments, then
+// each (i and a big-endian word, or s, a big-endian length and the bytes).
+class CallLog {
+public:
+    struct Value {
+        bool text;
+        std::int32_t number;
+        iw_pc::ByteView bytes;
+    };
+    static Value i(std::int32_t n) { return {false, n, {}}; }
+    static Value s(iw_pc::ByteView b) { return {true, 0, b}; }
+    static Value s(const char* t) { return {true, 0, iw_pc::ByteView(reinterpret_cast<const std::uint8_t*>(t), std::strlen(t))}; }
+
+    void call(const char* label, std::initializer_list<Value> values) {
+        out.insert(out.end(), label, label + std::strlen(label));
+        out.push_back(0);
+        out.push_back(static_cast<std::uint8_t>(values.size()));
+        for (const Value& v : values) {
+            out.push_back(v.text ? 's' : 'i');
+            std::uint32_t word = v.text ? static_cast<std::uint32_t>(v.bytes.size()) : static_cast<std::uint32_t>(v.number);
+            for (int k = 3; k >= 0; --k) out.push_back(static_cast<std::uint8_t>(word >> (8 * k)));
+            if (v.text) out.insert(out.end(), v.bytes.begin(), v.bytes.end());
+        }
+    }
+    Bytes out;
+};
 
 inline constexpr std::size_t kAddressSize = 20;
 
@@ -56,6 +84,14 @@ inline void record_sent(Bytes& out, const iw_pc::net::NetAddress& to, iw_pc::Byt
     out.insert(out.end(), 8, 0);
     out.insert(out.end(), packet.begin(), packet.end());
 }
+
+/// The channel token in argument `i` (net_netchan.cpp's layout) into
+/// `chan`, with the original's profiling pointer; false and `error` when
+/// the token is bad.
+bool chan_from_arg(iw_pc::Game game, Args& args, std::size_t i, iw_pc::net::Netchan& chan, std::int32_t& profile,
+                   std::string& error);
+/// Writes `chan` back into the channel token in argument `i`.
+void chan_to_arg(const iw_pc::net::Netchan& chan, std::int32_t profile, Args& args, std::size_t i);
 
 /// The spec's description of a server or client: (name, value) pairs, each
 /// a 1-byte name length, the name, a 4-byte big-endian value length, the value.

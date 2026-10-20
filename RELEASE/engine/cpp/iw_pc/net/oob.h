@@ -243,6 +243,13 @@ std::size_t challenge_response_text(Game game, std::int32_t challenge, std::int3
 /// Original: NET_CompareBaseAdrSigned at 0x0044DD50 (CoDUOMP.exe 1.51)
 bool same_base_address(Game game, const NetAddress& a, const NetAddress& b);
 
+/// Whether `address` is on the local network: loopback, bot and IPX
+/// addresses; IPv4 10.x, 127.x, 169.254.x, 172.16-31.x, 192.168.x, or the
+/// same first three bytes as one of `local` (the machine's own addresses).
+/// Original: Sys_IsLANAddress at 0x00467100 (CoD2MP_s.exe 1.3)
+/// Original: Sys_IsLANAddress at 0x0046D2C0 (CoDUOMP.exe 1.51)
+bool is_lan_address(const NetAddress& address, std::span<const std::array<std::uint8_t, 4>> local);
+
 /// What SV_DirectConnect reads of a client slot.
 struct ClientSlotInfo {
     std::int32_t state = 0;

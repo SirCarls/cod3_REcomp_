@@ -1,0 +1,706 @@
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index 93e5941..222ee32 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -594,6 +594,33 @@ class TextureCache {
+   // create the texture - if it's nullptr, occasionally a recreation attempt
+   // should be made.
+   Texture* FindOrCreateTexture(TextureKey key);
++  // The texture made for exactly this key, or nullptr (none is created).
++  Texture* FindExistingTexture(const TextureKey& key) const {
++    auto it = textures_.find(key);
++    return it != textures_.end() ? it->second.get() : nullptr;
++  }
++  // How many textures have been created so far (a search that found none can
++  // tell whether trying again could find one).
++  uint64_t textures_created() const { return textures_created_; }
++  // Any texture whose base level starts at this 4 KB page (a linear search,
++  // for diagnostics), or nullptr.
++  const Texture* FindAnyTextureAtBasePage(uint32_t base_page) const {
++    for (const auto& [key, texture] : textures_) {
++      if (key.base_page == base_page) {
++        return texture.get();
++      }
++    }
++    return nullptr;
++  }
++  // Bindings looked up again at the next RequestTextures (a texture's views
++  // have to change).
++  void RecheckTextureBindings() { texture_became_outdated_.store(true, std::memory_order_release); }
++  // The texture's data was written another way than by loading it, and is
++  // what loading its guest memory would give: up to date (and watched again)
++  // until that memory changes.
++  void MarkTextureUpToDate(Texture& texture) {
++    texture.MakeUpToDateAndWatch(global_critical_region_.Acquire());
++  }
+ 
+   static const LoadShaderInfo& GetLoadShaderInfo(LoadShaderIndex load_shader_index) {
+     assert_true(load_shader_index < kLoadShaderCount);
+@@ -722,6 +749,7 @@ class TextureCache {
+   uint64_t current_submission_time_ = 0;
+ 
+   std::unordered_map<TextureKey, std::unique_ptr<Texture>, TextureKey::Hasher> textures_;
++  uint64_t textures_created_ = 0;
+ 
+   uint64_t textures_total_host_memory_usage_ = 0;
+ 
+diff --git a/include/rex/graphics/vulkan/deferred_command_buffer.h b/include/rex/graphics/vulkan/deferred_command_buffer.h
+index 933c7a0..8631ceb 100644
+--- a/include/rex/graphics/vulkan/deferred_command_buffer.h
++++ b/include/rex/graphics/vulkan/deferred_command_buffer.h
+@@ -213,6 +213,21 @@ class DeferredCommandBuffer {
+                 regions, sizeof(VkBufferImageCopy) * region_count);
+   }
+ 
++  VkImageCopy* CmdCopyImageEmplace(VkImage src_image, VkImageLayout src_image_layout,
++                                   VkImage dst_image, VkImageLayout dst_image_layout,
++                                   uint32_t region_count) {
++    const size_t header_size = rex::align(sizeof(ArgsVkCopyImage), alignof(VkImageCopy));
++    uint8_t* args_ptr = reinterpret_cast<uint8_t*>(
++        WriteCommand(Command::kVkCopyImage, header_size + sizeof(VkImageCopy) * region_count));
++    auto& args = *reinterpret_cast<ArgsVkCopyImage*>(args_ptr);
++    args.src_image = src_image;
++    args.src_image_layout = src_image_layout;
++    args.dst_image = dst_image;
++    args.dst_image_layout = dst_image_layout;
++    args.region_count = region_count;
++    return reinterpret_cast<VkImageCopy*>(args_ptr + header_size);
++  }
++
+   void CmdVkCopyQueryPoolResults(VkQueryPool query_pool, uint32_t first_query, uint32_t query_count,
+                                  VkBuffer dst_buffer, VkDeviceSize dst_offset, VkDeviceSize stride,
+                                  VkQueryResultFlags flags) {
+@@ -394,6 +409,7 @@ class DeferredCommandBuffer {
+     kVkSetStencilWriteMask,
+     kVkSetViewport,
+     kVkWriteTimestamp,
++    kVkCopyImage,
+   };
+ 
+   struct CommandHeader {
+@@ -533,6 +549,16 @@ class DeferredCommandBuffer {
+     uint32_t query;
+   };
+ 
++  struct ArgsVkCopyImage {
++    VkImage src_image;
++    VkImageLayout src_image_layout;
++    VkImage dst_image;
++    VkImageLayout dst_image_layout;
++    uint32_t region_count;
++    // Followed by aligned VkImageCopy[].
++    static_assert(alignof(VkImageCopy) <= alignof(uintmax_t));
++  };
++
+   struct ArgsVkWriteTimestamp {
+     VkPipelineStageFlagBits pipeline_stage;
+     VkQueryPool query_pool;
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+index 5d1bf87..277c4e6 100644
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -816,6 +816,15 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   bool DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used, uint32_t dump_rows,
+                          uint32_t dump_pitch);
+ 
++  // After a resolve copied (and dumped, so dump_rectangles_ are its render
++  // targets): a 32bpp 1x color surface copied without conversion out of one
++  // render target is also copied straight into the texture the game samples
++  // it as, if that texture exists (vulkan_resolve_into_textures), instead of
++  // the texture being loaded again from the resolved memory.
++  void CopyResolveIntoTexture(const draw_util::ResolveInfo& resolve_info,
++                              draw_util::ResolveCopyShaderIndex copy_shader,
++                              VulkanTextureCache& texture_cache);
++
+   bool gamma_render_target_as_unorm16_ = false;
+ 
+   bool depth_unorm24_vulkan_format_supported_ = false;
+diff --git a/include/rex/graphics/vulkan/texture_cache.h b/include/rex/graphics/vulkan/texture_cache.h
+index c51d804..b7288ef 100644
+--- a/include/rex/graphics/vulkan/texture_cache.h
++++ b/include/rex/graphics/vulkan/texture_cache.h
+@@ -134,6 +134,24 @@ class VulkanTextureCache final : public TextureCache {
+   void UseScaledResolveBufferForWrite(uint64_t written_start_scaled,
+                                       uint64_t written_length_scaled);
+ 
++  // A surface just resolved without conversion, still in a render target
++  // image: if a texture already exists for that surface (2D, one level,
++  // tiled; games usually sample what they resolve, every frame), of the
++  // resolve's size or up to 7 texels narrower or shorter (a resolve covers
++  // whole 8x8 blocks, so a 960x540 surface is resolved as 960x544), copies
++  // the texture's part of the image at (source_x, source_y) into it and
++  // marks it up to date, so it isn't loaded again from the resolved memory. red_blue_swap:
++  // the resolve swapped red and blue in memory (the texture's views swap them
++  // back). The source image is transitioned from the given usage to
++  // TRANSFER_SRC_OPTIMAL (transfer read) only if it's copied from. Returns
++  // whether it was.
++  bool CopyResolveIntoTexture(uint32_t dest_base, uint32_t dest_pitch_texels, uint32_t width,
++                              uint32_t height, xenos::TextureFormat format,
++                              xenos::Endian endianness, bool red_blue_swap, VkImage source_image,
++                              VkPipelineStageFlags source_stage_mask,
++                              VkAccessFlags source_access_mask, VkImageLayout source_layout,
++                              uint32_t source_x, uint32_t source_y);
++
+  protected:
+   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
+   bool IsScaledResolveSupportedForFormat(TextureKey key) const override;
+@@ -207,6 +225,15 @@ class VulkanTextureCache final : public TextureCache {
+ 
+     VkImage image() const { return image_; }
+ 
++    // Red and blue are stored the other way around than the guest memory
++    // has them (copied from a render target for a resolve that swapped
++    // them, vulkan_resolve_into_textures): views swap them back.
++    bool red_blue_swapped() const { return red_blue_swapped_; }
++    void set_red_blue_swapped(bool swapped) { red_blue_swapped_ = swapped; }
++    uint32_t ViewSwizzle(uint32_t host_swizzle) const {
++      return red_blue_swapped_ ? SwapRedAndBlueSources(host_swizzle) : host_swizzle;
++    }
++
+     // Doesn't transition (the caller must insert the barrier).
+     Usage SetUsage(Usage new_usage) {
+       Usage old_usage = usage_;
+@@ -265,10 +292,26 @@ class VulkanTextureCache final : public TextureCache {
+       }
+     }
+ 
++    // A host swizzle reading blue where it read red and red where it read blue.
++    static constexpr uint32_t SwapRedAndBlueSources(uint32_t host_swizzle) {
++      uint32_t swapped = 0;
++      for (uint32_t i = 0; i < 4; ++i) {
++        uint32_t source = (host_swizzle >> (3 * i)) & 0b111;
++        if (source == xenos::XE_GPU_TEXTURE_SWIZZLE_R) {
++          source = xenos::XE_GPU_TEXTURE_SWIZZLE_B;
++        } else if (source == xenos::XE_GPU_TEXTURE_SWIZZLE_B) {
++          source = xenos::XE_GPU_TEXTURE_SWIZZLE_R;
++        }
++        swapped |= source << (3 * i);
++      }
++      return swapped;
++    }
++
+     VkImage image_;
+     VmaAllocation allocation_;
+ 
+     Usage usage_ = Usage::kUndefined;
++    bool red_blue_swapped_ = false;
+ 
+     std::unordered_map<ViewKey, VkImageView, ViewKey::Hasher> views_;
+     std::unique_ptr<VulkanTexture> texture_3d_as_2d_;
+@@ -409,6 +452,19 @@ class VulkanTextureCache final : public TextureCache {
+     VmaAllocation allocation;
+   };
+   std::vector<ReplacementStagingBuffer> replacement_staging_buffers_;
++
++  // The texture size each resolved surface was last found with
++  // (CopyResolveIntoTexture). Its texture may be up to 7 texels narrower and
++  // shorter than the resolve, and trying all those sizes for every resolve of
++  // every frame would cost more than the copy saves; a resolve with no texture
++  // at any of them is tried again only once another texture has been created.
++  struct ResolvedSurfaceSize {
++    uint64_t resolve = 0;           // what CopyResolveIntoTexture identifies it by; 0: unused
++    uint64_t textures_created = 0;  // when none was found: textures_created() then
++    uint32_t width = 0;             // the texture's size; 0: none was found
++    uint32_t height = 0;
++  };
++  std::array<ResolvedSurfaceSize, 64> resolved_surface_sizes_{};
+ };
+ 
+ }  // namespace rex::graphics::vulkan
+diff --git a/include/rex/ui/vulkan/functions/device_1_0.inc b/include/rex/ui/vulkan/functions/device_1_0.inc
+index c8bb914..83aef38 100644
+--- a/include/rex/ui/vulkan/functions/device_1_0.inc
++++ b/include/rex/ui/vulkan/functions/device_1_0.inc
+@@ -14,6 +14,7 @@ XE_UI_VULKAN_FUNCTION(vkCmdClearAttachments)
+ XE_UI_VULKAN_FUNCTION(vkCmdClearColorImage)
+ XE_UI_VULKAN_FUNCTION(vkCmdCopyBuffer)
+ XE_UI_VULKAN_FUNCTION(vkCmdCopyBufferToImage)
++XE_UI_VULKAN_FUNCTION(vkCmdCopyImage)
+ XE_UI_VULKAN_FUNCTION(vkCmdCopyImageToBuffer)
+ XE_UI_VULKAN_FUNCTION(vkCmdCopyQueryPoolResults)
+ XE_UI_VULKAN_FUNCTION(vkCmdDispatch)
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 9524b84..dc7e4ef 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -1038,6 +1038,7 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+     new_texture->set_replacement_policy_generation(policy_generation);
+     assert_true(new_texture->key() == key);
+     texture = textures_.emplace(key, std::move(new_texture)).first->second.get();
++    ++textures_created_;
+   }
+   COUNT_profile_set("gpu/texture_cache/textures", textures_.size());
+   texture->LogAction("Created");
+diff --git a/src/graphics/vulkan/deferred_command_buffer.cpp b/src/graphics/vulkan/deferred_command_buffer.cpp
+index 3d3ede7..ea1ddf0 100644
+--- a/src/graphics/vulkan/deferred_command_buffer.cpp
++++ b/src/graphics/vulkan/deferred_command_buffer.cpp
+@@ -156,6 +156,16 @@ void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
+                 rex::align(sizeof(ArgsVkCopyBufferToImage), alignof(VkBufferImageCopy))));
+       } break;
+ 
++      case Command::kVkCopyImage: {
++        auto& args = *reinterpret_cast<const ArgsVkCopyImage*>(stream);
++        dfn.vkCmdCopyImage(
++            command_buffer, args.src_image, args.src_image_layout, args.dst_image,
++            args.dst_image_layout, args.region_count,
++            reinterpret_cast<const VkImageCopy*>(reinterpret_cast<const uint8_t*>(stream) +
++                                                 rex::align(sizeof(ArgsVkCopyImage),
++                                                            alignof(VkImageCopy))));
++      } break;
++
+       case Command::kVkCopyQueryPoolResults: {
+         auto& args = *reinterpret_cast<const ArgsVkCopyQueryPoolResults*>(stream);
+         dfn.vkCmdCopyQueryPoolResults(command_buffer, args.query_pool, args.first_query,
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index 5188ef2..f4c3ea9 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -43,6 +43,12 @@ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+                       "Vulkan render target implementation path")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
++REXCVAR_DEFINE_BOOL(vulkan_resolve_into_textures, true, "GPU/Vulkan",
++                    "A resolved color surface the game samples afterwards is copied straight from "
++                    "the render target into its texture, instead of the texture being loaded "
++                    "again from the resolved memory (32bpp, no MSAA, no conversion, no resolution "
++                    "scaling): less graphics-card work. Applies at once");
++
+ // DEFINE_string(
+ //     render_target_path_vulkan, "",
+ //     "Render target emulation path to use on Vulkan.\n"
+@@ -1293,6 +1299,11 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+           // Invalidate textures and mark the range as scaled if needed.
+           texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                             resolve_info.copy_dest_extent_length);
++          // Before any clear of the render target that follows.
++          if (REXCVAR_GET(vulkan_resolve_into_textures) && !draw_resolution_scaled &&
++              GetPath() == Path::kHostRenderTargets) {
++            CopyResolveIntoTexture(resolve_info, copy_shader, texture_cache);
++          }
+           written_address_out = resolve_info.copy_dest_extent_start;
+           written_length_out = resolve_info.copy_dest_extent_length;
+           copied = true;
+@@ -1904,7 +1915,9 @@ RenderTargetCache::RenderTarget* VulkanRenderTargetCache::CreateRenderTarget(Ren
+     if (image_create_info.format != transfer_format || is_srgb_view_needed) {
+       image_create_info.flags |= VK_IMAGE_CREATE_MUTABLE_FORMAT_BIT;
+     }
+-    image_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
++    // A source of copies too (vulkan_resolve_into_textures; set for all, so
++    // the setting can change while the game runs).
++    image_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+   }
+   if (image_create_info.format == VK_FORMAT_UNDEFINED) {
+     REXGPU_ERROR("VulkanRenderTargetCache: Unknown {} render target format {}",
+@@ -6042,6 +6055,133 @@ bool VulkanRenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInf
+   return DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+ }
+ 
++void VulkanRenderTargetCache::CopyResolveIntoTexture(const draw_util::ResolveInfo& resolve_info,
++                                                     draw_util::ResolveCopyShaderIndex copy_shader,
++                                                     VulkanTextureCache& texture_cache) {
++  // Why a resolve isn't copied, logged once for each reason (the first time
++  // it happens), so a game whose surfaces never take this path says why. The
++  // message is only put together that first time (this runs for every resolve).
++  static uint32_t reasons_logged = 0;
++  auto first_time = [](uint32_t reason) {
++    if (reasons_logged & (uint32_t(1) << reason)) {
++      return false;
++    }
++    reasons_logged |= uint32_t(1) << reason;
++    return true;
++  };
++  auto log_skip = [](const std::string& why) {
++    REXGPU_INFO("vulkan_resolve_into_textures: a resolve not copied into its texture: {}", why);
++  };
++  const draw_util::ResolveEdramInfo edram_info = resolve_info.color_edram_info;
++  const reg::RB_COPY_DEST_INFO dest_info = resolve_info.copy_dest_info;
++  const draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
++      resolve_info.copy_dest_coordinate_info;
++  if (resolve_info.IsCopyingDepth()) {
++    return;
++  }
++  // The texels are copied as they are: one sample (with one sample a "both
++  // samples" or "all samples" select takes that one too, through the full
++  // copy shader, which then repacks 8-bit values exactly), no exponent bias,
++  // a destination format bitwise equal to the render target's.
++  if (edram_info.msaa_samples != xenos::MsaaSamples::k1X || edram_info.format_is_64bpp ||
++      (copy_shader != draw_util::ResolveCopyShaderIndex::kFast32bpp1x2xMSAA &&
++       copy_shader != draw_util::ResolveCopyShaderIndex::kFull32bpp)) {
++    if (first_time(0)) {
++      log_skip(fmt::format("MSAA {}x, 64bpp {}, copy shader {}",
++                           1u << uint32_t(edram_info.msaa_samples),
++                           uint32_t(edram_info.format_is_64bpp), uint32_t(copy_shader)));
++    }
++    return;
++  }
++  if (xenos::ColorRenderTargetFormat(edram_info.format) !=
++          xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
++      dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8 || dest_info.copy_dest_exp_bias ||
++      dest_info.copy_dest_array ||
++      uint32_t(dest_info.copy_dest_endian) > uint32_t(xenos::Endian128::k16in32) ||
++      dest_coordinates.offset_x_div_8 || dest_coordinates.offset_y_div_8) {
++    if (first_time(1)) {
++      log_skip(
++          fmt::format("render target format {}, destination format {}, red/blue swap {}, "
++                      "exponent bias {}, array {}, endian {}, destination offset {},{}",
++                      uint32_t(edram_info.format), uint32_t(dest_info.copy_dest_format),
++                      uint32_t(dest_info.copy_dest_swap), int32_t(dest_info.copy_dest_exp_bias),
++                      uint32_t(dest_info.copy_dest_array), uint32_t(dest_info.copy_dest_endian),
++                      uint32_t(dest_coordinates.offset_x_div_8) * 8,
++                      uint32_t(dest_coordinates.offset_y_div_8) * 8));
++    }
++    return;
++  }
++
++  // One render target owns the whole area (the dump just made of it).
++  uint32_t dump_base, dump_row_length_used, dump_rows, dump_pitch;
++  resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
++  if (dump_rectangles_.size() != 1) {
++    if (first_time(2)) {
++      log_skip(fmt::format("{} render targets own the area", dump_rectangles_.size()));
++    }
++    return;
++  }
++  const ResolveCopyDumpRectangle& rectangle = dump_rectangles_.front();
++  if (rectangle.row_first || rectangle.rows != dump_rows || rectangle.row_first_start ||
++      rectangle.row_last_end != dump_row_length_used || !rectangle.render_target) {
++    if (first_time(3)) {
++      log_skip(
++          fmt::format("the render target owns part of the area (rows {}+{} of {}, tiles {}..{} "
++                      "of {})",
++                      rectangle.row_first, rectangle.rows, dump_rows, rectangle.row_first_start,
++                      rectangle.row_last_end, dump_row_length_used));
++    }
++    return;
++  }
++  auto& vulkan_rt = *static_cast<VulkanRenderTarget*>(rectangle.render_target);
++  const RenderTargetKey rt_key = vulkan_rt.key();
++  if (rt_key.is_depth || rt_key.msaa_samples != xenos::MsaaSamples::k1X ||
++      rt_key.GetColorFormat() != xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
++      rt_key.GetPitchTiles() != edram_info.pitch_tiles || !rt_key.GetPitchTiles()) {
++    if (first_time(4)) {
++      log_skip(fmt::format("the owner is {} (the resolve's pitch {} tiles)", rt_key.GetDebugName(),
++                           uint32_t(edram_info.pitch_tiles)));
++    }
++    return;
++  }
++
++  // Where the area is in the render target's image: its tiles, rows of the
++  // pitch from the render target's base, 80x16 pixels each.
++  const uint32_t pitch_tiles = rt_key.GetPitchTiles();
++  const uint32_t tile_offset =
++      (edram_info.GetBaseTiles() - rt_key.base_tiles) & (xenos::kEdramTileCount - 1);
++  const uint32_t source_x =
++      (tile_offset % pitch_tiles) * xenos::kEdramTileWidthSamples +
++      (resolve_info.coordinate_info.edram_offset_x_div_8 << xenos::kResolveAlignmentPixelsLog2);
++  const uint32_t source_y =
++      (tile_offset / pitch_tiles) * xenos::kEdramTileHeightSamples +
++      (resolve_info.coordinate_info.edram_offset_y_div_8 << xenos::kResolveAlignmentPixelsLog2);
++  const uint32_t width = resolve_info.coordinate_info.width_div_8
++                         << xenos::kResolveAlignmentPixelsLog2;
++  const uint32_t height = resolve_info.height_div_8 << xenos::kResolveAlignmentPixelsLog2;
++  const uint32_t rt_height =
++      GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples);
++  if (source_x + width > pitch_tiles * xenos::kEdramTileWidthSamples ||
++      source_y + height > rt_height) {
++    if (first_time(5)) {
++      log_skip(fmt::format("{}x{} at {},{} is outside the render target ({}x{})", width, height,
++                           source_x, source_y, pitch_tiles * xenos::kEdramTileWidthSamples,
++                           rt_height));
++    }
++    return;
++  }
++
++  if (texture_cache.CopyResolveIntoTexture(
++          resolve_info.copy_dest_base,
++          dest_coordinates.pitch_aligned_div_32 << xenos::kTextureTileWidthHeightLog2, width,
++          height, xenos::TextureFormat::k_8_8_8_8, xenos::Endian(dest_info.copy_dest_endian),
++          dest_info.copy_dest_swap != 0, vulkan_rt.image(), vulkan_rt.current_stage_mask(),
++          vulkan_rt.current_access_mask(), vulkan_rt.current_layout(), source_x, source_y)) {
++    vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++  }
++}
++
+ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
+                                                 uint32_t dump_rows, uint32_t dump_pitch) {
+   assert_true(GetPath() == Path::kHostRenderTargets);
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+index 41965be..b0b5ec9 100644
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -1017,7 +1017,13 @@ VkImageView VulkanTextureCache::RequestSwapTexture(uint32_t& width_scaled_out,
+   if (!texture) {
+     return VK_NULL_HANDLE;
+   }
+-  uint32_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key));
++  // Loaded (if outdated) before the view is chosen: a texture copied from a
++  // render target may store red and blue the other way around.
++  if (!LoadTextureData(*texture)) {
++    return VK_NULL_HANDLE;
++  }
++  uint32_t host_swizzle =
++      texture->ViewSwizzle(GuestToHostSwizzle(fetch.swizzle, GetHostFormatSwizzle(key)));
+   if (swap_source_needs_rb_swap_out) {
+     auto swizzle_component = [](uint32_t swizzle,
+                                 uint32_t component_index) -> xenos::XE_GPU_TEXTURE_SWIZZLE {
+@@ -1032,9 +1038,6 @@ VkImageView VulkanTextureCache::RequestSwapTexture(uint32_t& width_scaled_out,
+   if (texture_view == VK_NULL_HANDLE) {
+     return VK_NULL_HANDLE;
+   }
+-  if (!LoadTextureData(*texture)) {
+-    return VK_NULL_HANDLE;
+-  }
+   texture->MarkAsUsed();
+   VulkanTexture::Usage old_usage = texture->SetUsage(VulkanTexture::Usage::kSwapSampled);
+   if (old_usage != VulkanTexture::Usage::kSwapSampled) {
+@@ -1360,6 +1363,12 @@ bool VulkanTextureCache::LoadTextureDataFromResidentMemoryImpl(Texture& texture,
+   VulkanCommandProcessor::ScopedGpuSection texture_section(
+       command_processor_, VulkanCommandProcessor::GpuSection::kTextureLoads);
+   VulkanTexture& vulkan_texture = static_cast<VulkanTexture&>(texture);
++  // Loaded as the guest memory has it (vulkan_resolve_into_textures may have
++  // stored red and blue the other way before).
++  if (vulkan_texture.red_blue_swapped()) {
++    vulkan_texture.set_red_blue_swapped(false);
++    RecheckTextureBindings();
++  }
+   TextureKey texture_key = vulkan_texture.key();
+ 
+   // Get the pipeline.
+@@ -1954,22 +1963,26 @@ void VulkanTextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask)
+     if (IsSignedVersionSeparateForFormat(binding->key)) {
+       if (binding->texture && uses_unsigned &&
+           host_format_pair.format_unsigned.format != VK_FORMAT_UNDEFINED) {
++        auto* texture = static_cast<VulkanTexture*>(binding->texture);
+         vulkan_binding.image_view_unsigned =
+-            static_cast<VulkanTexture*>(binding->texture)->GetView(false, binding->host_swizzle);
++            texture->GetView(false, texture->ViewSwizzle(binding->host_swizzle));
+       }
+       if (binding->texture_signed && uses_signed &&
+           host_format_pair.format_signed.format != VK_FORMAT_UNDEFINED) {
+-        vulkan_binding.image_view_signed = static_cast<VulkanTexture*>(binding->texture_signed)
+-                                               ->GetView(true, binding->host_swizzle);
++        auto* texture_signed = static_cast<VulkanTexture*>(binding->texture_signed);
++        vulkan_binding.image_view_signed =
++            texture_signed->GetView(true, texture_signed->ViewSwizzle(binding->host_swizzle));
+       }
+     } else {
+       VulkanTexture* texture = static_cast<VulkanTexture*>(binding->texture);
+       if (texture) {
+         if (uses_unsigned && host_format_pair.format_unsigned.format != VK_FORMAT_UNDEFINED) {
+-          vulkan_binding.image_view_unsigned = texture->GetView(false, binding->host_swizzle);
++          vulkan_binding.image_view_unsigned =
++              texture->GetView(false, texture->ViewSwizzle(binding->host_swizzle));
+         }
+         if (uses_signed && host_format_pair.format_signed.format != VK_FORMAT_UNDEFINED) {
+-          vulkan_binding.image_view_signed = texture->GetView(true, binding->host_swizzle);
++          vulkan_binding.image_view_signed =
++              texture->GetView(true, texture->ViewSwizzle(binding->host_swizzle));
+         }
+       }
+     }
+@@ -2462,6 +2475,203 @@ void VulkanTextureCache::UseScaledResolveBufferForWrite(uint64_t written_start_s
+   scaled_resolve_last_written_range_ = std::make_pair(written_start_scaled, written_length_scaled);
+ }
+ 
++bool VulkanTextureCache::CopyResolveIntoTexture(
++    uint32_t dest_base, uint32_t dest_pitch_texels, uint32_t width, uint32_t height,
++    xenos::TextureFormat format, xenos::Endian endianness, bool red_blue_swap, VkImage source_image,
++    VkPipelineStageFlags source_stage_mask, VkAccessFlags source_access_mask,
++    VkImageLayout source_layout, uint32_t source_x, uint32_t source_y) {
++  if (IsDrawResolutionScaled() || !width || !height || (dest_base & 0xFFF) || !dest_pitch_texels ||
++      (dest_pitch_texels & 31) || width > dest_pitch_texels) {
++    return false;
++  }
++  // The key a fetch constant gives for the surface (BindingInfoFromFetchConstant
++  // with one level: no mip page); packed mips may be either.
++  TextureKey key;
++  key.base_page = (dest_base & 0x1FFFFFFF) >> 12;
++  key.dimension = xenos::DataDimension::k2DOrStacked;
++  key.tiled = 1;
++  key.pitch = dest_pitch_texels >> 5;
++  key.format = format;
++  key.endianness = endianness;
++  key.is_valid = 1;
++  auto find_at_size = [&](uint32_t texture_width, uint32_t texture_height) -> Texture* {
++    key.width_minus_1 = texture_width - 1;
++    key.height_minus_1 = texture_height - 1;
++    for (uint32_t packed_mips = 0; packed_mips <= 1; ++packed_mips) {
++      key.packed_mips = packed_mips;
++      if (Texture* texture = FindExistingTexture(key)) {
++        return texture;
++      }
++    }
++    return nullptr;
++  };
++  Texture* found = find_at_size(width, height);
++  if (!found) {
++    // The surface's own size, which the resolve rounded up to whole 8x8
++    // blocks, can be up to 7 texels smaller each way: the size found last time
++    // first, else each of them (not again while no texture has been created
++    // since none was found).
++    constexpr uint32_t kBlock = xenos::kResolveAlignmentPixels;
++    // Every field whole: 17-bit page, 11-bit block counts (up to 8192 / 8),
++    // 9-bit pitch, 6-bit format, 2-bit endianness, and a bit for "used".
++    const uint64_t resolve_id = (uint64_t(1) << 63) | (uint64_t(key.base_page) << 39) |
++                                (uint64_t(width / kBlock) << 28) |
++                                (uint64_t(height / kBlock) << 17) | (uint64_t(key.pitch) << 8) |
++                                (uint64_t(format) << 2) | uint64_t(endianness);
++    ResolvedSurfaceSize& last = resolved_surface_sizes_[(resolve_id * 0x9E3779B97F4A7C15ull) >> 58];
++    const bool same_resolve = last.resolve == resolve_id;
++    if (same_resolve && last.width) {
++      found = find_at_size(last.width, last.height);
++    }
++    if (!found && !(same_resolve && !last.width && last.textures_created == textures_created())) {
++      for (uint32_t narrower = 0; narrower < kBlock && narrower < width && !found; ++narrower) {
++        for (uint32_t shorter = narrower ? 0 : 1; shorter < kBlock && shorter < height && !found;
++             ++shorter) {
++          found = find_at_size(width - narrower, height - shorter);
++        }
++      }
++      last.resolve = resolve_id;
++      last.width = found ? key.GetWidth() : 0;
++      last.height = found ? key.GetHeight() : 0;
++      last.textures_created = textures_created();
++    }
++  }
++  // Why not, once for each reason (vulkan_resolve_into_textures). The message
++  // is only put together that first time (this runs for every resolve).
++  static uint32_t reasons_logged = 0;
++  auto first_time = [](uint32_t reason) {
++    if (reasons_logged & (uint32_t(1) << reason)) {
++      return false;
++    }
++    reasons_logged |= uint32_t(1) << reason;
++    return true;
++  };
++  auto log_skip = [](const std::string& why) {
++    REXGPU_INFO("vulkan_resolve_into_textures: a resolve not copied into its texture: {}", why);
++  };
++  if (!found) {
++    // Usually the surface isn't sampled (yet); a texture at the same address
++    // with another key says what differs. That is a search of every texture,
++    // so only for the first resolves without one, until one is found.
++    static uint32_t searches_left = 64;
++    if (!(reasons_logged & 1) && searches_left) {
++      --searches_left;
++      if (const Texture* other = FindAnyTextureAtBasePage(key.base_page)) {
++        const TextureKey& o = other->key();
++        first_time(0);
++        log_skip(fmt::format(
++            "the texture at 0x{:08X} has another key: {}x{} pitch {} (resolve {}x{} pitch {}), "
++            "format {} ({}), endian {} ({}), tiled {}, dimension {}, mip page {}, levels {}, "
++            "signed {}, scaled {}",
++            dest_base, o.GetWidth(), o.GetHeight(), uint32_t(o.pitch) << 5, width, height,
++            dest_pitch_texels, uint32_t(o.format), uint32_t(format), uint32_t(o.endianness),
++            uint32_t(endianness), uint32_t(o.tiled), uint32_t(o.dimension), uint32_t(o.mip_page),
++            uint32_t(o.mip_max_level) + 1, uint32_t(o.signed_separate),
++            uint32_t(o.scaled_resolve)));
++      }
++    }
++    return false;
++  }
++  if (found->is_replacement() || found->GetGuestMipsSize() || !found->GetGuestBaseSize()) {
++    if (first_time(1)) {
++      log_skip(fmt::format("the texture at 0x{:08X}: replacement {}, mips {} bytes", dest_base,
++                           uint32_t(found->is_replacement()), found->GetGuestMipsSize()));
++    }
++    return false;
++  }
++  // Only a format loaded as a plain copy of its texels holds what the render
++  // target does, bit for bit.
++  const TextureKey found_key = found->key();
++  const uint32_t texture_width = found_key.GetWidth();
++  const uint32_t texture_height = found_key.GetHeight();
++  const HostFormatPair& host_format_pair = GetHostFormatPair(found_key);
++  if (host_format_pair.format_unsigned.load_shader != kLoadShaderIndex32bpb ||
++      host_format_pair.format_unsigned.format != VK_FORMAT_R8G8B8A8_UNORM) {
++    if (first_time(2)) {
++      log_skip(fmt::format("format {} is converted when loaded", uint32_t(format)));
++    }
++    return false;
++  }
++  // Red and blue are swapped back by the views, which some devices can't do
++  // (portability subset).
++  if (red_blue_swap && !command_processor_.GetVulkanDevice()->properties().imageViewFormatSwizzle) {
++    if (first_time(3)) {
++      log_skip("red and blue swapped, and this device's image views can't swap them back");
++    }
++    return false;
++  }
++  VulkanTexture& texture = *static_cast<VulkanTexture*>(found);
++
++  // The render target: from its last use to the copy's source.
++  command_processor_.PushImageMemoryBarrier(
++      source_image, ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT),
++      source_stage_mask, VK_PIPELINE_STAGE_TRANSFER_BIT, source_access_mask,
++      VK_ACCESS_TRANSFER_READ_BIT, source_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++  // The texture: from its last use (sampling, or a copy into it, which must
++  // finish before this one writes) to the copy's destination.
++  texture.MarkAsUsed();
++  VulkanTexture::Usage old_usage = texture.SetUsage(VulkanTexture::Usage::kTransferDestination);
++  VkPipelineStageFlags texture_src_stage_mask, texture_dst_stage_mask;
++  VkAccessFlags texture_src_access_mask, texture_dst_access_mask;
++  VkImageLayout texture_old_layout, texture_new_layout;
++  GetTextureUsageMasks(old_usage, texture_src_stage_mask, texture_src_access_mask,
++                       texture_old_layout);
++  GetTextureUsageMasks(VulkanTexture::Usage::kTransferDestination, texture_dst_stage_mask,
++                       texture_dst_access_mask, texture_new_layout);
++  if (!texture_src_stage_mask) {
++    texture_src_stage_mask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
++  }
++  command_processor_.PushImageMemoryBarrier(
++      texture.image(), ui::vulkan::util::InitializeSubresourceRange(), texture_src_stage_mask,
++      texture_dst_stage_mask, texture_src_access_mask, texture_dst_access_mask, texture_old_layout,
++      texture_new_layout, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, false);
++  command_processor_.SubmitBarriers(true);
++
++  VkImageCopy& region = *command_processor_.deferred_command_buffer().CmdCopyImageEmplace(
++      source_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture.image(),
++      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
++  region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++  region.srcSubresource.mipLevel = 0;
++  region.srcSubresource.baseArrayLayer = 0;
++  region.srcSubresource.layerCount = 1;
++  region.srcOffset.x = int32_t(source_x);
++  region.srcOffset.y = int32_t(source_y);
++  region.srcOffset.z = 0;
++  region.dstSubresource = region.srcSubresource;
++  region.dstOffset.x = 0;
++  region.dstOffset.y = 0;
++  region.dstOffset.z = 0;
++  region.extent.width = texture_width;
++  region.extent.height = texture_height;
++  region.extent.depth = 1;
++
++  // The resolve has written the same texels to the guest memory (with red and
++  // blue swapped if it swapped them), which outdated the texture; it now
++  // holds them. Views made for the other order are looked up again.
++  if (texture.red_blue_swapped() != red_blue_swap) {
++    texture.set_red_blue_swapped(red_blue_swap);
++    RecheckTextureBindings();
++  }
++  MarkTextureUpToDate(texture);
++  static bool logged = false;
++  if (!logged) {
++    logged = true;
++    REXGPU_INFO(
++        "VulkanTextureCache: resolved surfaces copied straight into their textures "
++        "(vulkan_resolve_into_textures), the first {}x{} at 0x{:08X}",
++        texture_width, texture_height, dest_base);
++  }
++  static bool logged_smaller = false;
++  if (!logged_smaller && (texture_width != width || texture_height != height)) {
++    logged_smaller = true;
++    REXGPU_INFO(
++        "VulkanTextureCache: a resolve copied into a texture smaller than it, the first {}x{} "
++        "(resolved as {}x{}, whole 8x8 blocks) at 0x{:08X}",
++        texture_width, texture_height, width, height, dest_base);
++  }
++  return true;
++}
++
+ bool VulkanTextureCache::Initialize() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();

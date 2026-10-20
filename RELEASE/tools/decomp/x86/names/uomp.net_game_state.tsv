@@ -1,0 +1,6 @@
+# CoDUOMP.exe 1.51: names for iw_pc::net::game_state. address<tab>name<tab>how<tab>evidence
+0045A8F0	SV_SendClientGameState	strings	"SV_SendClientGameState() for %s"
+00464000	SV_EmitPacketEntities	shape	the same as Call of Duty 2's (Quake III's)
+00464170	SV_EmitPacketClients	shape	the client states' version
+00464390	SV_WriteSnapshotToClient	strings	"Delta request from out of date packet."
+00464580	SV_UpdateServerCommandsToClient	shape	msg eax, client edi; reliableSequence +0x1060C, reliableAcknowledge +0x10610, commands +0x40C (64 x 0x408), reliableSent +0x10614

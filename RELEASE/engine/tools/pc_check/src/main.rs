@@ -7,7 +7,12 @@
 //! request: <image>.<function> <arg>...      reply: ok <result> <buffer>...   or   err <reason>
 //! i:<decimal>  f:<f32 bits, 8 hex>  d:<f64 bits, 16 hex>  s:<hex string> | s:-  v:<hex bytes, read only>
 //! b:<hex bytes the function may change> | b:-   n: (no result)   p:<hex message> | p:- (printed or not)
+//! g:<hex sparse region> (a block of the game's globals; returned as b:<hex sparse region>)
 //! ```
+//!
+//! A sparse region is its size (u32, big-endian), then runs of non-zero
+//! bytes (offset, length: u32 each, then the bytes), grouped while fewer than
+//! 16 zero bytes separate them (`harness_x86.sparse_encode`).
 //!
 //! Function names carry the executable they belong to (`cod2mp.Q_stricmp`,
 //! `uomp.Q_stricmp`), since the two games' functions of the same name can
@@ -18,7 +23,12 @@
 #![forbid(unsafe_code)]
 
 mod cod3;
+mod game_pmove;
+mod net_client;
+mod net_connect;
 mod net_delta;
+mod net_download;
+mod net_game_state;
 mod net_msg;
 mod net_netchan;
 mod net_oob;
@@ -36,6 +46,8 @@ pub enum Arg {
     Str(Option<Vec<u8>>),
     Bytes(Vec<u8>),
     Buffer(Option<Vec<u8>>),
+    /// A block of the game's globals, whole (decoded from a sparse region).
+    Region(Vec<u8>),
 }
 
 pub struct Args(pub Vec<Arg>);
@@ -110,6 +122,14 @@ impl Args {
         }
     }
 
+    /// A block of globals (`g:`), changed in place.
+    pub fn region(&mut self, i: usize) -> &mut Vec<u8> {
+        match &mut self.0[i] {
+            Arg::Region(v) => v,
+            _ => panic!("argument {i} is not a region"),
+        }
+    }
+
     /// A buffer the function may change; `None` for a NULL pointer.
     pub fn buffer(&mut self, i: usize) -> Option<&mut Vec<u8>> {
         match &mut self.0[i] {
@@ -133,6 +153,58 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Zero bytes that split a run of a sparse region.
+const SPARSE_GAP: usize = 16;
+
+fn u32_at(bytes: &[u8], at: usize) -> Result<usize, String> {
+    bytes
+        .get(at..at + 4)
+        .map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as usize)
+        .ok_or_else(|| "short sparse region".to_string())
+}
+
+fn sparse_decode(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let size = u32_at(bytes, 0)?;
+    let mut out = vec![0u8; size];
+    let mut at = 4;
+    while at < bytes.len() {
+        let (offset, len) = (u32_at(bytes, at)?, u32_at(bytes, at + 4)?);
+        let run = bytes.get(at + 8..at + 8 + len).ok_or("short sparse run")?;
+        out.get_mut(offset..offset + len)
+            .ok_or("sparse run past the region")?
+            .copy_from_slice(run);
+        at += 8 + len;
+    }
+    Ok(out)
+}
+
+fn sparse_encode(data: &[u8]) -> Vec<u8> {
+    let mut out = (data.len() as u32).to_be_bytes().to_vec();
+    let mut run: Option<(usize, usize)> = None;
+    let flush = |out: &mut Vec<u8>, (lo, hi): (usize, usize)| {
+        out.extend_from_slice(&(lo as u32).to_be_bytes());
+        out.extend_from_slice(&((hi - lo) as u32).to_be_bytes());
+        out.extend_from_slice(&data[lo..hi]);
+    };
+    for (i, &b) in data.iter().enumerate() {
+        if b == 0 {
+            continue;
+        }
+        run = match run {
+            Some((lo, hi)) if i - hi < SPARSE_GAP => Some((lo, i + 1)),
+            Some(done) => {
+                flush(&mut out, done);
+                Some((i, i + 1))
+            }
+            None => Some((i, i + 1)),
+        };
+    }
+    if let Some(done) = run {
+        flush(&mut out, done);
+    }
+    out
+}
+
 fn parse_arg(token: &str) -> Result<Arg, String> {
     let (kind, value) = token
         .split_once(':')
@@ -150,6 +222,7 @@ fn parse_arg(token: &str) -> Result<Arg, String> {
         "v" => Arg::Bytes(parse_hex(value)?),
         "b" if value == "-" => Arg::Buffer(None),
         "b" => Arg::Buffer(Some(parse_hex(value)?)),
+        "g" => Arg::Region(sparse_decode(&parse_hex(value)?)?),
         _ => return Err(format!("unknown token kind {kind:?}")),
     })
 }
@@ -188,11 +261,11 @@ fn answer(line: &str) -> String {
         Ret::Printed(Some(s)) => format!("p:{}", hex(&s)),
     };
     for arg in &args.0 {
-        if let Arg::Buffer(b) = arg {
-            reply += &match b {
-                None => " b:-".to_string(),
-                Some(b) => format!(" b:{}", hex(b)),
-            };
+        match arg {
+            Arg::Buffer(None) => reply += " b:-",
+            Arg::Buffer(Some(b)) => reply += &format!(" b:{}", hex(b)),
+            Arg::Region(r) => reply += &format!(" b:{}", hex(&sparse_encode(r))),
+            _ => {}
         }
     }
     reply

@@ -109,6 +109,22 @@ void chan_to_bytes(const Netchan& chan, std::int32_t profile, ByteSpan bytes) {
               bytes.begin() + static_cast<std::ptrdiff_t>(at + kAddressSize + max));
 }
 
+}  // namespace
+
+bool chan_from_arg(Game game, Args& args, std::size_t i, Netchan& chan, std::int32_t& profile, std::string& error) {
+    auto c = chan_from(game, args, i, error);
+    if (!c) return false;
+    chan = *c->chan;
+    profile = c->profile;
+    return true;
+}
+
+void chan_to_arg(const Netchan& chan, std::int32_t profile, Args& args, std::size_t i) {
+    chan_to_bytes(chan, profile, *args.buffer(i));
+}
+
+namespace {
+
 // The original's result after sending: Call of Duty 2 returns whether the
 // packet went out (always, here).
 Answer sent_result(Game game) { return game == Game::CallOfDuty2 ? integer(1) : nothing(); }

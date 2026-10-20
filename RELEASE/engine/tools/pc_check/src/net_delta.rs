@@ -7,7 +7,7 @@
 
 use std::sync::OnceLock;
 
-use iw_pc::net::delta::{self, FieldTables, NetField};
+use iw_pc::net::delta::{self, FieldTable, FieldTables, NetField, StructCoding, TableFlag};
 use iw_pc::net::protocol_data::{self, GameExecutable};
 use iw_pc::Game;
 
@@ -15,7 +15,7 @@ use crate::net_netchan::with_msg;
 use crate::{Answer, Args, Ret};
 
 /// `game`'s field tables, read once from its executable.
-fn tables(game: Game) -> Result<&'static FieldTables, String> {
+pub(crate) fn tables(game: Game) -> Result<&'static FieldTables, String> {
     static TABLES: [OnceLock<Result<FieldTables, String>>; 2] = [OnceLock::new(), OnceLock::new()];
     let slot = &TABLES[usize::from(game == Game::UnitedOffensive)];
     slot.get_or_init(|| {
@@ -42,6 +42,32 @@ fn field(bytes: &[u8]) -> Result<NetField, String> {
         offset: word(0)? as u32,
         bits: word(4)?,
     })
+}
+
+/// A table argument (its name, as specs/net_delta.py's TABLES has it).
+fn table<'t>(tables: &'t FieldTables, name: &[u8]) -> Result<&'t FieldTable, String> {
+    Ok(match name {
+        b"entity" => &tables.entity,
+        b"entity12" => tables
+            .entity_alternate
+            .as_ref()
+            .ok_or("this game has one entity table")?,
+        b"client" => &tables.client,
+        b"archived" => &tables.archived_entity,
+        b"player" => &tables.player,
+        b"hud" => &tables.hud_elem,
+        b"objective" => &tables.objective,
+        _ => return Err(format!("unknown table {}", String::from_utf8_lossy(name))),
+    })
+}
+
+/// United Offensive's `MSG_WriteEntityTableFlag`: the callback a check of
+/// `MSG_WriteDeltaStruct` may pass.
+const UO_TABLE_FLAG: i32 = 0x0044_AF00;
+
+/// A count argument (never negative in the checks).
+fn count(args: &Args, i: usize) -> Result<usize, String> {
+    usize::try_from(args.i32(i)).map_err(|_| "negative count".to_string())
 }
 
 /// A state argument: its bytes, or `None` for NULL.
@@ -84,6 +110,49 @@ pub fn dispatch(game: Game, function: &str, args: &mut Args) -> Option<Answer> {
             let force = args.i32(3) != 0;
             with_msg(args, 0, game, |m| {
                 delta::write_delta_entity(m, tables, &from, to.as_deref(), force)
+            })
+            .map(|_| Ret::Void)
+        })(),
+        // msg, from, to, force, field count, number bits, table, [UO: callback,] change bit
+        "MSG_WriteDeltaStruct" => (|| {
+            let tables = tables(game)?;
+            let from = state(args, 1).ok_or("NULL from")?;
+            let to = state(args, 2);
+            let force = args.i32(3) != 0;
+            let fields = table(tables, args.bytes(6))?
+                .fields()
+                .get(..count(args, 4)?)
+                .ok_or("field count past the table")?;
+            let (table_flag, change_bit) = match game {
+                Game::CallOfDuty2 => (None, args.i32(7)),
+                Game::UnitedOffensive => {
+                    let flag = match args.i32(7) {
+                        0 => None,
+                        UO_TABLE_FLAG => Some(delta::write_entity_table_flag as TableFlag),
+                        other => return Err(format!("unknown callback {other:#x}")),
+                    };
+                    (flag, args.i32(8))
+                }
+            };
+            let coding = StructCoding {
+                fields,
+                index_bits: args.i32(5) as u32,
+                change_bit: change_bit != 0,
+                table_flag,
+            };
+            with_msg(args, 0, game, |m| {
+                delta::write_delta_struct(m, &from, to.as_deref(), force, coding)
+            })
+            .map(|_| Ret::Void)
+        })(),
+        // msg, from, to, count
+        "MSG_WriteDeltaHudElems" => (|| {
+            let tables = tables(game)?;
+            let from = state(args, 1).ok_or("NULL from")?;
+            let to = state(args, 2).ok_or("NULL to")?;
+            let n = count(args, 3)?;
+            with_msg(args, 0, game, |m| {
+                delta::write_delta_hud_elems(m, tables, &from, &to, n)
             })
             .map(|_| Ret::Void)
         })(),
@@ -155,6 +224,34 @@ pub fn dispatch(game: Game, function: &str, args: &mut Args) -> Option<Answer> {
             Ok(Ret::Int(i64::from(removed)))
         })(
         ),
+        // msg, from, to (out), number, field count, table
+        "MSG_ReadDeltaStruct" => (|| {
+            let tables = tables(game)?;
+            let from = state(args, 1).ok_or("NULL from")?;
+            let number = args.i32(3);
+            let table = table(tables, args.bytes(5))?;
+            if count(args, 4)? != table.fields().len() {
+                return Err("the checks pass whole tables".to_string());
+            }
+            let removed = read_into(args, 2, |args, to| {
+                with_msg(args, 0, game, |m| {
+                    delta::read_delta_struct(m, &from, to, number, table)
+                })
+            })?;
+            Ok(Ret::Int(i64::from(removed)))
+        })(),
+        // msg, from, to (out), count
+        "MSG_ReadDeltaHudElems" => (|| {
+            let tables = tables(game)?;
+            let from = state(args, 1).ok_or("NULL from")?;
+            let n = count(args, 3)?;
+            read_into(args, 2, |args, to| {
+                with_msg(args, 0, game, |m| {
+                    delta::read_delta_hud_elems(m, tables, &from, to, 0, n)
+                })
+            })
+            .map(|_| Ret::Void)
+        })(),
         // msg, from, to (out)
         "MSG_ReadDeltaPlayerstate" => (|| {
             let tables = tables(game)?;

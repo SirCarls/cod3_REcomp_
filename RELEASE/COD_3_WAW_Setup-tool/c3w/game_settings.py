@@ -132,6 +132,12 @@ SETTINGS: List[Setting] = [
     Setting("fullscreen", "Display mode",
             "Play in a window, or fill the whole monitor without changing its resolution (borderless).",
             "choice", ((False, "Windowed"), (True, "Fullscreen (borderless)")), default=True),
+    # SDK patch 0063 (src/ui/window_sdl.cpp); only read when the game starts.
+    Setting("start_in_background", "Start behind other windows",
+            "The game's window opens behind the window you're using and doesn't take the keyboard, so you "
+            "can keep working while it starts; click it or its taskbar button to play (fullscreen begins "
+            "then). While you play, the game's own restarts (a mission's end, multiplayer) open in front.",
+            "bool", default=False),
     Setting("vsync", "V-Sync (no tearing)",
             "Shows each new picture only when the monitor starts a new refresh, so there is no tearing. "
             "It doesn't cap the frame rate.",

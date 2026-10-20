@@ -55,7 +55,9 @@ def ported_in_rust() -> dict[tuple[str, str], tuple[str, str]]:
         for line in path.read_text(encoding="utf-8").splitlines():
             m = ORIGINAL_LINE.match(line)
             if m:
-                found[(m.group(3).strip(), m.group(1))] = (path.relative_to(CRATE).as_posix(), m.group(2))
+                # (the executable's title, then optionally "; " and a note: "cmd in eax")
+                title = m.group(3).split(";")[0].strip()
+                found[(title, m.group(1))] = (path.relative_to(CRATE).as_posix(), m.group(2))
     return found
 
 
@@ -165,6 +167,14 @@ def cmd_check(args) -> int:
     chosen = [s for s in specs.values()
               if (args.image == "all" or s.image == args.image) and (not args.names or s.name in args.names)
               and (not args.against or s.cod3)]
+    if args.shard:
+        try:
+            k, n = (int(x) for x in args.shard.split("/"))
+        except ValueError:
+            raise SystemExit("--shard takes K/N (1 <= K <= N), such as 2/4")
+        if not 1 <= k <= n:
+            raise SystemExit("--shard takes K/N (1 <= K <= N), such as 2/4")
+        chosen = chosen[k - 1::n]
     if not chosen:
         print("No specs match.")
         return 1
@@ -303,6 +313,8 @@ def main() -> int:
     p.add_argument("--against", choices=["cod3"],
                    help="run another game's port (cod3_game) against these originals, to see what they share")
     p.add_argument("--no-build", action="store_true", help="don't rebuild pc_check first")
+    p.add_argument("--shard", metavar="K/N",
+                   help="only every N-th of the chosen functions, from the K-th (N runs side by side cover them all)")
     p.add_argument("--impl", choices=["rust", "cpp"], default="rust",
                    help="which ports answer: the Rust crate (pc_check) or the C++ version (engine/cpp, pc_check_cpp)")
     p = sub.add_parser("find")

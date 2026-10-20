@@ -192,10 +192,11 @@ void read_short_group(Msg& msg, ByteSpan to, std::size_t at) {
 
 // Original: MSG_WriteDeltaHudElems at 0x00445C60 (CoD2MP_s.exe 1.3)
 // Original: MSG_WriteDeltaHudElems at 0x0044B510 (CoDUOMP.exe 1.51)
-void write_hud_elems(Msg& msg, std::span<const NetField> fields, const PlayerStateLayout& layout, ByteView from, ByteView to) {
+void write_hud_elems(Msg& msg, std::span<const NetField> fields, const PlayerStateLayout& layout, ByteView from, ByteView to,
+                     std::size_t count) {
     std::size_t size = layout.hud_elem_size;
     std::size_t in_use = 0;
-    while (in_use < layout.hud_count && word_at(to, static_cast<std::uint32_t>(in_use * size)) != 0) ++in_use;
+    while (in_use < count && word_at(to, static_cast<std::uint32_t>(in_use * size)) != 0) ++in_use;
     msg.write_bits(static_cast<std::int32_t>(in_use), layout.hud_count_bits);
     for (std::size_t i = 0; i < in_use; ++i) {
         ByteView old_elem = from.subspan(i * size, size), new_elem = to.subspan(i * size, size);
@@ -228,10 +229,10 @@ void read_delta_fields(Msg& msg, std::span<const NetField> fields, ByteView from
 // Original: MSG_ReadDeltaHudElems at 0x00445DB0 (CoD2MP_s.exe 1.3)
 // Original: MSG_ReadDeltaHudElems at 0x0044B690 (CoDUOMP.exe 1.51)
 void read_hud_elems(Msg& msg, std::span<const NetField> fields, const PlayerStateLayout& layout, ByteView from, ByteSpan to,
-                    std::size_t at) {
+                    std::size_t at, std::size_t hud_count) {
     std::size_t size = layout.hud_elem_size;
     std::int32_t count = msg.read_bits(layout.hud_count_bits);
-    std::size_t sent = std::min(static_cast<std::size_t>(std::max(count, 0)), layout.hud_count);
+    std::size_t sent = std::min(static_cast<std::size_t>(std::max(count, 0)), hud_count);
     for (std::size_t i = 0; i < sent; ++i) {
         std::size_t elem = at + i * size;
         ByteView old_elem = from.subspan(elem, size);
@@ -249,9 +250,9 @@ void read_hud_elems(Msg& msg, std::span<const NetField> fields, const PlayerStat
         for (std::size_t k = read; k < fields.size(); ++k) copy_word(old_elem, new_elem, fields[k].offset);
     }
     std::int64_t start = static_cast<std::int64_t>(at) +
-                         static_cast<std::int64_t>(std::min<std::int32_t>(count, static_cast<std::int32_t>(layout.hud_count))) *
+                         static_cast<std::int64_t>(std::min<std::int32_t>(count, static_cast<std::int32_t>(hud_count))) *
                              static_cast<std::int64_t>(size);
-    std::size_t end = at + layout.hud_count * size;
+    std::size_t end = at + hud_count * size;
     std::size_t from_byte = start < 0 ? 0 : static_cast<std::size_t>(start);
     if (from_byte < end) std::fill(to.begin() + static_cast<std::ptrdiff_t>(from_byte), to.begin() + static_cast<std::ptrdiff_t>(end), std::uint8_t{0});
 }
@@ -659,6 +660,62 @@ bool read_delta_struct(Msg& msg, ByteView from, ByteSpan to, std::int32_t number
     return false;
 }
 
+void set_default_usercmd(Game game, ByteView ps, ByteSpan cmd) {
+    std::size_t size = usercmd_size(game);
+    std::fill(cmd.begin(), cmd.begin() + static_cast<std::ptrdiff_t>(size), std::uint8_t{0});
+    auto float_at = [&](std::uint32_t offset) {
+        auto bits = static_cast<std::uint32_t>(word_at(ps, offset));
+        float f;
+        std::memcpy(&f, &bits, 4);
+        return f;
+    };
+    bool cod2 = game == Game::CallOfDuty2;
+    std::uint32_t delta_angles = cod2 ? 0x54 : 0x4C, angles = cod2 ? 0xC : 8;
+    if (cod2) {
+        cmd[8] = ps[0xD4];
+        cmd[9] = ps[0xD0];
+    } else {
+        cmd[6] = ps[0xD8];
+    }
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        float view = float_at(0xE8 + 4 * i);
+        // view * -65536/360 at the game's x87 precision (msg.cpp's angle rule), truncated.
+        double product = cod2 ? static_cast<double>(view * -(65536.0f / 360.0f))
+                              : static_cast<double>(view) * static_cast<double>(-(65536.0f / 360.0f));
+        auto steps = static_cast<std::int32_t>(static_cast<std::uint64_t>(ftol2(product)));
+        auto delta = static_cast<std::uint32_t>(word_at(ps, delta_angles + 4 * i));
+        set_word(cmd, angles + 4 * i, static_cast<std::int32_t>((0u - delta - static_cast<std::uint32_t>(steps)) & 0xFFFF));
+    }
+    std::int32_t pm_flags = word_at(ps, 0xC);
+    if (cod2) {
+        if ((pm_flags & 0x800000) == 0) return;
+        std::int32_t buttons = word_at(cmd, 4);
+        std::int32_t lean = word_at(ps, 0xA0);
+        if (lean & 8) buttons |= 0x100;
+        else if (lean & 4) buttons |= 0x200;
+        float f = float_at(0x4C);
+        if (f > 0.0f) buttons |= 0x80;
+        else if (f < 0.0f) buttons |= 0x40;
+        if (float_at(0xDC) != 0.0f) buttons |= 0x1000;
+        set_word(cmd, 4, buttons);
+        return;
+    }
+    if ((pm_flags & 0x80000) == 0) return;
+    std::int32_t lean = word_at(ps, 0x84);
+    if (lean & 0x40) {
+        cmd[5] |= 0x40;
+        cmd[0x16] = 0x81;
+    } else if (lean & 0x20) {
+        cmd[5] |= 0x80;
+        cmd[0x16] = 0x81;
+    }
+    float f = float_at(0x44);
+    if (f > 0.0f) cmd[5] |= 0x20;
+    else if (f < 0.0f) cmd[5] |= 0x10;
+    if (float_at(0xE0) != 0.0f) cmd[4] |= 0x10;
+    if (pm_flags & 0x10000) cmd[4] |= 8;
+}
+
 bool read_delta_entity(Msg& msg, const FieldTables& tables, ByteView from, ByteSpan to, std::int32_t number) {
     const FieldTable* table = &tables.entity;
     if (tables.game == Game::UnitedOffensive && tables.entity_alternate && msg.read_bit() != 0) table = &*tables.entity_alternate;
@@ -677,6 +734,16 @@ bool read_delta_client(Msg& msg, const FieldTables& tables, const ByteView* from
 // --- the player's own state ------------------------------------------------------
 
 std::size_t player_state_size(Game game) { return player_state_layout(game).size; }
+std::size_t hud_elem_count(Game game) { return player_state_layout(game).hud_count; }
+std::size_t hud_elem_size(Game game) { return player_state_layout(game).hud_elem_size; }
+
+void write_delta_hud_elems(Msg& msg, const FieldTables& tables, ByteView from, ByteView to, std::size_t count) {
+    write_hud_elems(msg, tables.hud_elem.fields(), player_state_layout(tables.game), from, to, count);
+}
+
+void read_delta_hud_elems(Msg& msg, const FieldTables& tables, ByteView from, ByteSpan to, std::size_t at, std::size_t count) {
+    read_hud_elems(msg, tables.hud_elem.fields(), player_state_layout(tables.game), from, to, at, count);
+}
 
 void write_delta_playerstate(Msg& msg, const FieldTables& tables, const ByteView* from_arg, ByteView to) {
     const PlayerStateLayout& layout = player_state_layout(tables.game);
@@ -776,7 +843,8 @@ void write_delta_playerstate(Msg& msg, const FieldTables& tables, const ByteView
     } else {
         msg.write_bit1();
         const auto& hud_fields = tables.hud_elem.fields();
-        for (std::size_t at : {current, archived}) write_hud_elems(msg, hud_fields, layout, from.subspan(at, array), to.subspan(at, array));
+        for (std::size_t at : {current, archived})
+            write_hud_elems(msg, hud_fields, layout, from.subspan(at, array), to.subspan(at, array), layout.hud_count);
     }
 }
 
@@ -836,7 +904,7 @@ void read_delta_playerstate(Msg& msg, const FieldTables& tables, const ByteView*
     if (msg.read_bit() != 0) {
         std::size_t array = layout.hud_count * layout.hud_elem_size;
         const auto& hud_fields = tables.hud_elem.fields();
-        for (std::size_t at : {layout.hud + array, layout.hud}) read_hud_elems(msg, hud_fields, layout, from, to, at);
+        for (std::size_t at : {layout.hud + array, layout.hud}) read_hud_elems(msg, hud_fields, layout, from, to, at, layout.hud_count);
     }
 }
 

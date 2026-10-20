@@ -18,22 +18,36 @@ endif()
 
 add_library(iw_pc STATIC
   iw_pc/sha256.cpp
+  iw_pc/client/client.cpp
+  iw_pc/client/connect.cpp
+  iw_pc/client/download.cpp
+  iw_pc/game/moves.cpp
+  iw_pc/game/pmove.cpp
+  iw_pc/game/prone.cpp
+  iw_pc/game/slide.cpp
   iw_pc/net/delta.cpp
+  iw_pc/net/game_state.cpp
   iw_pc/net/huffman.cpp
   iw_pc/net/msg.cpp
   iw_pc/net/netchan.cpp
   iw_pc/net/oob.cpp
   iw_pc/net/protocol_data.cpp
   iw_pc/shared/filter.cpp
+  iw_pc/fs/fs.cpp
+  iw_pc/shared/checksum.cpp
   iw_pc/shared/hash.cpp
   iw_pc/shared/info.cpp
+  iw_pc/shared/math.cpp
   iw_pc/shared/strings.cpp
 )
 target_include_directories(iw_pc PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 add_executable(pc_check_cpp
+  pc_check/game_pmove.cpp
   pc_check/main.cpp
+  pc_check/net_client.cpp
   pc_check/net_delta.cpp
+  pc_check/net_game_state.cpp
   pc_check/net_msg.cpp
   pc_check/net_netchan.cpp
   pc_check/net_oob.cpp

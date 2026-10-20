@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/inflate", "crates/lzo", "crates/kapf", "crates/xenos", "crates/cod3_mesh", "crates/cod3_assets", "crates/png_write", "crates/png_read", "crates/ff_t4", "crates/cod3_game", "tools/rip", "tools/decomp_check", "crates/game_sources", "crates/iw_pc", "tools/newcopy", "tools/pc_check", "tools/iw_server", "crates/machine", "crates/jobs"]
+members = ["crates/inflate", "crates/lzo", "crates/kapf", "crates/xenos", "crates/cod3_mesh", "crates/cod3_assets", "crates/png_write", "crates/png_read", "crates/ff_t4", "crates/cod3_game", "tools/rip", "tools/decomp_check", "crates/game_sources", "crates/iw_pc", "tools/newcopy", "tools/pc_check", "tools/iw_server", "tools/iw_join", "crates/machine", "crates/jobs"]
 
 [workspace.package]
 edition = "2021"

@@ -11,8 +11,8 @@
 // history (or the matches while they are shown), PgUp / PgDn scroll the
 // output, Ctrl+L clears it, right-click on it copies it. The completion box
 // is World at War's: for one match the dvar's value, default, domain
-// (ui/dvar_domain.h) and flags; for several, each name with its value and
-// domain.
+// (ui/dvar_domain.h), flags and help line (ui/dvar_help.h); for several, each
+// name with its value and domain, and the highlighted one's help line.
 //
 // The view exists only while it is shown. It recomputes the matches only when
 // the typed text or the game's dvar list changes, never per frame.

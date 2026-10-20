@@ -66,6 +66,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/ui/console_pages.cpp
     ${COD3_SRC}/ui/console_view.cpp
     ${COD3_SRC}/ui/dvar_domain.cpp
+    ${COD3_SRC}/ui/dvar_help.cpp
     ${COD3_SRC}/ui/game_console.cpp
     ${COD3_SRC}/ui/hud_overlay.cpp
     ${COD3_SRC}/ui/problem_log.cpp

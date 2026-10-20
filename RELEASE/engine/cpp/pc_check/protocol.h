@@ -4,6 +4,7 @@
 //   request: <image>.<function> <arg>...   reply: ok <result> <buffer>...  or  err <reason>
 //   i:<decimal>  f:<f32 bits, 8 hex>  d:<f64 bits, 16 hex>  s:<hex string> | s:-  v:<hex bytes, read only>
 //   b:<hex bytes the function may change> | b:-   n: (no result)   p:<hex message> | p:- (printed or not)
+//   g:<hex sparse region: size u32 BE, then runs of offset u32 BE, length u32 BE, bytes>; sent back as b:
 #pragma once
 
 #include <cstdint>
@@ -14,6 +15,7 @@
 #include <vector>
 
 #include "iw_pc/base.h"
+#include "iw_pc/fs/fs.h"
 
 namespace pc_check {
 
@@ -28,7 +30,12 @@ struct ReadOnly {
 struct Buffer {
     std::optional<Bytes> value;  // nullopt: a NULL pointer
 };
-using Arg = std::variant<std::int64_t, float, double, Str, ReadOnly, Buffer>;
+/// A block of the game's globals (g:, sparse-coded; main.cpp), changed in
+/// place and sent back whole as b: (sparse-coded the same way).
+struct Region {
+    Bytes value;
+};
+using Arg = std::variant<std::int64_t, float, double, Str, ReadOnly, Buffer, Region>;
 
 /// A request's arguments, in the C prototype's order.
 class Args {
@@ -54,6 +61,12 @@ public:
         if (auto* r = std::get_if<ReadOnly>(&items.at(i))) return r->value;
         if (auto* b = std::get_if<Buffer>(&items.at(i)); b && b->value) return *b->value;
         throw std::runtime_error("argument " + std::to_string(i) + " is not bytes");
+    }
+    /// A block of globals (g:), changed in place.
+    Bytes& region(std::size_t i) {
+        auto* r = std::get_if<Region>(&items.at(i));
+        if (!r) throw std::runtime_error("argument " + std::to_string(i) + " is not a region");
+        return r->value;
     }
     /// A buffer the function may change; nullptr for NULL.
     Bytes* buffer(std::size_t i) {
@@ -109,8 +122,13 @@ inline iw_pc::Game game_of(const std::string& image) {
 
 // Each area's requests; nullopt when the function isn't one of its own.
 std::optional<Answer> dispatch_shared(iw_pc::Game game, const std::string& function, Args& args);
+/// A search path from its token (specs/fs_pure.py; shared.cpp).
+std::vector<iw_pc::fs::SearchPath> search_paths(iw_pc::ByteView data);
 std::optional<Answer> dispatch_msg(iw_pc::Game game, const std::string& function, Args& args);
 std::optional<Answer> dispatch_oob(iw_pc::Game game, const std::string& function, Args& args);
 std::optional<Answer> dispatch_delta(iw_pc::Game game, const std::string& function, Args& args);
+std::optional<Answer> dispatch_client(iw_pc::Game game, const std::string& function, Args& args);
+std::optional<Answer> dispatch_game_state(iw_pc::Game game, const std::string& function, Args& args);
+std::optional<Answer> dispatch_game(iw_pc::Game game, const std::string& function, Args& args);
 
 }  // namespace pc_check

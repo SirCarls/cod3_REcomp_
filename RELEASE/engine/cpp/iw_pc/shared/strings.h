@@ -6,6 +6,8 @@
 // games strip extensions differently.
 #pragma once
 
+#include <vector>
+
 #include "iw_pc/base.h"
 
 namespace iw_pc::shared::strings {
@@ -70,6 +72,13 @@ void strupr(ByteSpan buffer);
 /// Original: Q_strcat at 0x0044A850 (CoD2MP_s.exe 1.3)
 /// Original: Q_strcat at 0x0044F950 (CoDUOMP.exe 1.51)
 Status strcat(ByteSpan dest, ByteView src);
+
+/// What va leaves for an already formatted text: the text, or a dropping
+/// error when it doesn't fit the buffer (1024 bytes in Call of Duty 2, 32000
+/// in United Offensive).
+/// Original: va at 0x0044A990 (CoD2MP_s.exe 1.3)
+/// Original: va at 0x0044FAB0 (CoDUOMP.exe 1.51)
+Expected<std::vector<std::uint8_t>> va(Game game, std::vector<std::uint8_t> formatted);
 
 /// The length of a string as printed: color codes (^ and a digit) don't count.
 /// Original: Q_PrintStrlen at 0x0044A8A0 (CoD2MP_s.exe 1.3)

@@ -1,5 +1,6 @@
 #include "iw_pc/net/oob.h"
 
+#include <algorithm>
 #include <climits>
 #include <cstring>
 #include <string>
@@ -493,6 +494,23 @@ bool same_base_address(Game game, const NetAddress& a, const NetAddress& b) {
         case AddressType::Ipx: return a.ipx == b.ipx;
         default: return true;
     }
+}
+
+bool is_lan_address(const NetAddress& address, std::span<const std::array<std::uint8_t, 4>> local) {
+    switch (address.kind) {
+        case AddressType::Loopback:
+        case AddressType::Bot:
+        case AddressType::Ipx: return true;
+        case AddressType::Ip: break;
+        default: return false;
+    }
+    auto [a, b, c, d] = address.ip;
+    (void)d;
+    if (a == 10 || a == 127) return true;
+    if (a == 169 && b == 254) return true;
+    if (a == 172 && (b & 0xF0) == 0x10) return true;
+    if (a == 192 && b == 168) return true;
+    return std::any_of(local.begin(), local.end(), [&](const auto& l) { return l[0] == a && l[1] == b && l[2] == c; });
 }
 
 std::optional<ByteView> ConnectDecision::reply(Game game) const {

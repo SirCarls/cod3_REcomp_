@@ -140,3 +140,15 @@ spec(name="COM_DefaultExtension", image="cod2mp", rust="shared::strings::default
      args=[Buffer(size=160, fill=0x77, at="eax"), Int(), CStr()], ret=RetVoid(), cases=_default_extension_cases)
 spec(name="COM_DefaultExtension", image="uomp", rust="shared::strings::default_extension",
      args=[Buffer(size=160, fill=0x77, at="ecx"), Int(), CStr()], ret=RetVoid(), cases=_default_extension_cases)
+
+
+# va("%s", text): the formatter's buffer limit (1024 bytes in Call of Duty 2, 32000 in United
+# Offensive); the text is the argument, so its % signs are plain characters.
+def _va_cases(rng):
+    for _ in forever:
+        n = rng.choice([0, 1, 10, 1022, 1023, 1024, 1025, rng.randint(0, 2000), 31998, 31999, 32000, 32001])
+        yield [b"%s", bytes(rng.choice(gen.LETTERS + b" %\\") for _ in range(n))]
+
+
+for image in ("cod2mp", "uomp"):
+    spec(name="va", image=image, rust="shared::strings::va", args=[CStr(), CStr()], ret=RetCStr(), cases=_va_cases)

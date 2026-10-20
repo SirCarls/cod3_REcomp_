@@ -30,6 +30,7 @@
 #include "game/screenshot.h"
 #include "ui/console_view.h"
 #include "ui/dvar_domain.h"
+#include "ui/dvar_help.h"
 #include "ui/problem_log.h"
 #include "ui/waw_dvars.h"
 
@@ -41,7 +42,8 @@ constexpr const char* kVersionTag = "Call of Duty 3 - static recomp";
 
 const char* const kLocalCommands[] = {"clear", "cls",    "condump",   "cvarlist", "dvarlist", "dvardump",
                                       "find",  "fov",    "cheats",    "sv_cheats", "help",    "quit",
-                                      "cod3_report", "problems", "screenshot", "cod3_hd_compare"};
+                                      "cod3_report", "problems", "screenshot", "cod3_hd_compare",
+                                      "cmdlist",     "dvarexport"};
 
 // A file name for condump: the name part only (no folders, no drive, no
 // ".."), printable characters, ending in .txt. Anything else gives the default.
@@ -422,6 +424,64 @@ bool GameConsole::HandleWaw(std::string& cmd, std::vector<std::string>& args) {
   return false;
 }
 
+// help <name>: what one dvar, setting or command is; help <words>: the
+// dvars whose name or help line has every word (ui/dvar_help.h).
+void GameConsole::PrintHelp(const std::string& words) {
+  const EngineSnapshot snap = Engine::Get().Snapshot();
+  const bool one_word = words.find(' ') == std::string::npos;
+  if (one_word) {
+    const CvarInfo* live = nullptr;
+    for (const CvarInfo& c : snap.cvars)
+      if (EqualsNoCase(c.name, words)) live = &c;
+    const dvar_help::Entry* e = dvar_help::Find(words);
+    if (e || live) {
+      const std::string name = e ? e->name : live->name;
+      Print(ConsoleChannel::kGame, "^3" + name + "^7: " + (e ? e->text : "(no help line for it yet)") + "\n");
+      std::string where = e ? std::string(dvar_help::CategoryTitle(e->category)) + "; " +
+                                  dvar_help::ProgramsText(e->programs)
+                            : std::string();
+      if (live) {
+        where += std::string(where.empty() ? "" : "; ") + "value \"" + live->value + "^7\" default \"" + live->reset +
+                 "^7\"";
+        const std::string flags = ConsoleFlagString(live->flags);
+        if (flags.find_first_not_of(' ') != std::string::npos) where += " flags [" + flags + "]";
+        if (live->flags & cod3::addr::cvar_flag::kCheat) where += " (cheat protected)";
+      } else {
+        where += "; not registered right now";
+      }
+      Print(ConsoleChannel::kDeveloper, "  " + where + "\n");
+      return;
+    }
+    if (const waw::Dvar* d = waw::Find(words)) {
+      const char* kind = d->kind == waw::Kind::kGame ? "Call of Duty 3's " : "the port's setting ";
+      Print(ConsoleChannel::kGame, "^3" + std::string(d->name) + "^7: " + d->help + " (World at War name for " +
+                                       kind + d->target + ")\n");
+      return;
+    }
+    if (const auto* info = rex::cvar::GetFlagInfo(words); info && info->type != rex::cvar::FlagType::Command) {
+      Print(ConsoleChannel::kGame, "^3" + std::string(info->name) + "^7: " + info->description +
+                                       " (a port setting; F2 has most of them)\n");
+      return;
+    }
+    const bool command = std::any_of(snap.commands.begin(), snap.commands.end(),
+                                     [&](const std::string& c) { return EqualsNoCase(c, words); }) ||
+                         std::any_of(std::begin(kLocalCommands), std::end(kLocalCommands),
+                                     [&](const char* c) { return EqualsNoCase(c, words); });
+    if (command) {
+      Print(ConsoleChannel::kGame, words + " is a command; help (no word) lists the console's own.\n");
+      return;
+    }
+  }
+  const auto found = dvar_help::Search(words);
+  constexpr size_t kMax = 40;
+  for (size_t i = 0; i < found.size() && i < kMax; ++i)
+    Print(ConsoleChannel::kGame, "  ^3" + std::string(found[i]->name) + "^7  " + found[i]->text + "\n");
+  if (found.size() > kMax)
+    Print(ConsoleChannel::kDeveloper, "  ... and " + std::to_string(found.size() - kMax) + " more (more words narrow it)\n");
+  Print(ConsoleChannel::kSystem, found.empty() ? "No dvar's name or help has \"" + words + "\".\n"
+                                               : std::to_string(found.size()) + " matches\n");
+}
+
 bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::string>& args,
                               cheats::Source source) {
   auto& engine = Engine::Get();
@@ -429,16 +489,24 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
     Clear();
     return true;
   }
+  if (cmd == "help" && args.size() > 1) {
+    PrintHelp(JoinFrom(args, 1));
+    return true;
+  }
   if (cmd == "help") {
     Print(ConsoleChannel::kSystem,
           "Console commands: clear, condump <file>, cvarlist / dvarlist [filter], find <text>, "
+          "help <dvar> (what it does), help <words> (the dvars whose name or help has them), "
+          "cmdlist [filter] (the game's commands), dvarexport [file] (every dvar and command as a "
+          "table in userdata/), "
           "fov [value], sv_cheats [0|1] (cheats is the same command), cod3_report (a report file "
           "for bug reports), problems [count] (this session's warnings and errors, as in F2 > "
           "Console > Problems), screenshot (the game's picture, into "
           "userdata/logs/screenshots), cod3_hd_compare [seconds] (the same view with the HD "
           "textures and without them: stand still), quit\n"
           "A dvar or setting name on its own shows its value, default and domain, World at War "
-          "style (\"cg_fov\" is:\"65\" default:\"65\", Domain is any number from 65 to 160).\n"
+          "style (\"cg_fov\" is:\"65\" default:\"65\", Domain is any number from 65 to 160), and "
+          "what it does. The list of every dvar: docs/DVARS.md.\n"
           "Cheats: cheat commands (give, god, noclip, notarget, ufo, setviewpos, jumptonode) and "
           "cheat-protected dvars (C in cvarlist, e.g. timescale) work only while sv_cheats is 1, "
           "and every mission starts with sv_cheats 0. sv_cheats 1 puts a CHEATS USED mark on "
@@ -581,6 +649,55 @@ bool GameConsole::HandleLocal(const std::string& cmd, const std::vector<std::str
                   (waw_only > 40 ? ", ..." : "") + "\n");
     }
     Print(ConsoleChannel::kSystem, std::to_string(count) + " matches\n");
+    return true;
+  }
+  // cmdlist [filter]: the game's own cmdlist prints nothing in this build.
+  if (cmd == "cmdlist") {
+    const std::string filter = args.size() > 1 ? ToLower(args[1]) : "";
+    const EngineSnapshot snap = engine.Snapshot();
+    int count = 0;
+    for (const auto& c : snap.commands) {
+      if (!filter.empty() && ToLower(c).find(filter) == std::string::npos) continue;
+      Print(ConsoleChannel::kGame, "    " + c + "\n");
+      ++count;
+    }
+    std::string local;
+    for (const char* c : kLocalCommands)
+      if (filter.empty() || ToLower(c).find(filter) != std::string::npos) local += std::string(local.empty() ? "" : ", ") + c;
+    if (!local.empty()) Print(ConsoleChannel::kDeveloper, "The console's own: " + local + "\n");
+    Print(ConsoleChannel::kSystem, std::to_string(count) + " commands\n");
+    return true;
+  }
+  // dvarexport [file]: every dvar (name, flags, value, default) and command as
+  // a tab-separated table, a file right inside userdata/ (SafeDumpName), for
+  // the dvar reference (docs/DVARS.md).
+  if (cmd == "dvarexport") {
+    const std::string name = SafeDumpName(args.size() > 1 ? args[1] : "dvars.txt");
+    const auto path = user_dir_ / name;
+    const EngineSnapshot snap = engine.Snapshot();
+    std::error_code ec;
+    std::filesystem::create_directories(user_dir_, ec);
+    std::ofstream out(path, std::ios::trunc);
+    auto clean = [](std::string v) {
+      for (auto& c : v)
+        if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+      return v;
+    };
+    if (out) {
+      out << "# " << (cod3::kMultiplayer ? "multiplayer" : "campaign") << "\tkind\tname\tflags\tvalue\tdefault\n";
+      for (const auto& v : snap.cvars) {
+        char flags[16];
+        std::snprintf(flags, sizeof(flags), "0x%X", v.flags);
+        out << "dvar\t" << clean(v.name) << "\t" << flags << "\t" << clean(v.value) << "\t" << clean(v.reset) << "\n";
+      }
+      for (const auto& c : snap.commands) out << "cmd\t" << clean(c) << "\t\t\t\n";
+    }
+    if (out)
+      Print(ConsoleChannel::kSystem, "Wrote " + std::to_string(snap.cvars.size()) + " dvars and " +
+                                         std::to_string(snap.commands.size()) + " commands to " +
+                                         cod3::PathToUtf8(path) + "\n");
+    else
+      Print(ConsoleChannel::kError, "^1dvarexport: could not write " + cod3::PathToUtf8(path) + "\n");
     return true;
   }
   if (cmd == "fov") {

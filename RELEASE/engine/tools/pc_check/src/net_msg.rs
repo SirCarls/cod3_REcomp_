@@ -116,7 +116,7 @@ fn read_string<const N: usize>(
 }
 
 /// The message tree of `game`, built once from its executable.
-fn message_tree(game: Game) -> Result<&'static MessageTree, String> {
+pub(crate) fn message_tree(game: Game) -> Result<&'static MessageTree, String> {
     static TREES: [OnceLock<Result<MessageTree, String>>; 2] = [OnceLock::new(), OnceLock::new()];
     let slot = &TREES[usize::from(game == Game::UnitedOffensive)];
     slot.get_or_init(|| {

@@ -140,6 +140,22 @@ bool read_delta_client(Msg& msg, const FieldTables& tables, const ByteView* from
 /// The size of `game`'s player state in bytes.
 std::size_t player_state_size(Game game);
 
+/// HUD elements in each of the player state's two arrays (31, 63) and the bytes of one (0x80, 0x7C).
+std::size_t hud_elem_count(Game game);
+std::size_t hud_elem_size(Game game);
+
+/// Writes one array of HUD elements (`count` of them; the games pass hud_elem_count()) as a change
+/// from `from` (see the Rust version).
+/// Original: MSG_WriteDeltaHudElems at 0x00445C60 (CoD2MP_s.exe 1.3; count in ecx)
+/// Original: MSG_WriteDeltaHudElems at 0x0044B510 (CoDUOMP.exe 1.51; count in ecx, from in ebx)
+void write_delta_hud_elems(Msg& msg, const FieldTables& tables, ByteView from, ByteView to, std::size_t count);
+
+/// Reads one array of HUD elements (`count` of them, at `at` in `from` and `to`) as
+/// write_delta_hud_elems() wrote it (see the Rust version for broken messages).
+/// Original: MSG_ReadDeltaHudElems at 0x00445DB0 (CoD2MP_s.exe 1.3)
+/// Original: MSG_ReadDeltaHudElems at 0x0044B690 (CoDUOMP.exe 1.51)
+void read_delta_hud_elems(Msg& msg, const FieldTables& tables, ByteView from, ByteSpan to, std::size_t at, std::size_t count);
+
 /// Writes the player's own state as a change from `from` (nullptr: zeros).
 /// Original: MSG_WriteDeltaPlayerstate at 0x00445EC0 (CoD2MP_s.exe 1.3)
 /// Original: MSG_WriteDeltaPlayerstate at 0x0044B7B0 (CoDUOMP.exe 1.51)
@@ -152,6 +168,14 @@ void read_delta_playerstate(Msg& msg, const FieldTables& tables, const ByteView*
 
 /// Bytes of a player command: Call of Duty 2 28, United Offensive 24.
 inline std::size_t usercmd_size(Game game) { return game == Game::CallOfDuty2 ? 28 : 24; }
+
+/// The player command a client's packet codes its first command against:
+/// zeros, then the weapon bytes, the pitch and yaw relative to the delta
+/// angles, and (with the player state's lean/stance flag) the matching
+/// buttons, from the player state `ps` (see the Rust version).
+/// Original: MSG_SetDefaultUserCmd at 0x004449C0 (CoD2MP_s.exe 1.3; ps on the stack, cmd in ebx)
+/// Original: MSG_SetDefaultUserCmd at 0x0044A1E0 (CoDUOMP.exe 1.51; ps on the stack, cmd in edi)
+void set_default_usercmd(Game game, ByteView ps, ByteSpan cmd);
 
 /// Writes a player command as a change from `from`, keyed with `key`.
 /// Original: MSG_WriteDeltaUsercmdKey at 0x00444B10 (CoD2MP_s.exe 1.3)

@@ -238,6 +238,7 @@ impl Packet {
 ///
 /// The fields are public, as in the original, where the client and server
 /// code read the sequence numbers directly.
+#[derive(Clone)]
 pub struct Netchan {
     /// Which game's rules the channel follows.
     pub game: Game,

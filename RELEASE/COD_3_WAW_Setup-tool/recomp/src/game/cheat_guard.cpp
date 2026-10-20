@@ -17,6 +17,7 @@
 #include "game/game_api.h"
 #include "game/guest.h"
 #include "game/multiplayer.h"
+#include "game/program.h"
 #if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
 #include "game/protected_dvars.h"
 #endif
@@ -53,6 +54,17 @@ constexpr const char* kHostOnlyCommands[] = {"map",          "spmap",     "devma
                                              "fast_restart", "reboot",    "load_mp_exe",   "cheats",
                                              "sv_cheats",    "loadgame",  "quickstart",    "frontend",
                                              "cvar_restart", "writeconfig", "writedefaults"};
+
+// IsMultiplayerCheatDvar (cheat_guard.h). Kept short: each one changes what
+// a player can see of the others (or the host's debug view of the match).
+constexpr const char* kMultiplayerCheatDvars[] = {
+    "cg_tracerchance",     "cg_tracerlength",        "cg_tracerSpeed",          "cg_tracerwidth",
+    "cg_viewKickDeflectTime", "cg_viewKickReturnTime", "cg_hudCompassMaxRange",  "cg_hudCompassMinRange",
+    "cg_hudCompassMinRadius", "cg_shellshockblur",    "cg_redFlashTime",         "fx_cull",
+    "fx_cullbias",         "fx_cullscale",           "r_znear",                 "r_LightScale",
+    "r_lodbias",           "r_lodscale",             "mp_debug",                "mp_debugrender",
+    "mp_debugrenderspawnpoints", "RadarFakeFriendlies", "showvehmap",           "show_playerdist",
+    "cg_mpDebugAnimEntity"};
 
 // set-style commands: the dvar is the second word.
 constexpr const char* kSetStyle[] = {"set", "seta", "sets", "setu", "reset", "toggle", "togglep",
@@ -127,6 +139,12 @@ bool IsHostOnlyCommand(std::string_view name) {
 }
 
 bool IsSvCheatsName(std::string_view name) { return EqualsNoCase(name, "sv_cheats"); }
+
+bool IsMultiplayerCheatDvar(std::string_view name) {
+  for (const char* d : kMultiplayerCheatDvars)
+    if (EqualsNoCase(name, d)) return true;
+  return false;
+}
 
 Verdict Check(const std::vector<std::string>& args, Source source, bool cheat_dvar) {
   Verdict v;
@@ -292,6 +310,15 @@ REX_EXTERN(__imp__Cvar_Get);
 REX_HOOK_RAW(Cvar_Get) {
   namespace a = cod3::addr;
   namespace game = cod3::game;
+  // cod3mp: the dvars that would help one player against the others are
+  // registered cheat-protected (IsMultiplayerCheatDvar): the game's own flag,
+  // added to every registration of the name (Quake III's Cvar_Get ORs the
+  // flags of each call into the dvar).
+  if constexpr (cod3::kMultiplayer) {
+    if (ctx.r3.u32 >= 0x10000 &&
+        cod3::cheats::IsMultiplayerCheatDvar(cod3::guest::ReadString(base, ctx.r3.u32, 64)))
+      ctx.r5.u64 = ctx.r5.u32 | a::cvar_flag::kCheat;
+  }
   // Was the name there already, as a user-created dvar? (The name is the
   // hook's own argument, already in guest memory.)
   const uint32_t before = game::CvarFindGuest(ctx, base, ctx.r3.u32);

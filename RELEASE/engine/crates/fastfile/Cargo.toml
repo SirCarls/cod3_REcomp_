@@ -1,0 +1,10 @@
+[package]
+name = "fastfile"
+description = "Which Call of Duty game and platform a fastfile (.ff) is from, and its zone, for every game we know."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+inflate = { path = "../inflate" }

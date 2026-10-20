@@ -36,6 +36,7 @@ Bink), which have no PC counterpart, so a good part of their functions will neve
 | Tool | What it does |
 |---|---|
 | `xiso_get.py` | Copies only the program files (`*.xex`, `*.dll`) out of an Xbox 360 disc image (read-only). |
+| `ps3iso_get.py` | Lists or copies files from a plain PlayStation 3 disc image (ISO 9660; read-only, decrypts nothing): the program files (`EBOOT.BIN`, `*.self`, `*.sprx`), `PARAM.SFO` (title, title ID, versions) and `PS3_DISC.SFB`, and says what each program file is (a PS3 program is a SELF, signed and encrypted for the console, so it is only reported). |
 | `xex2pe.py` | XEX2 → plain PE image: retail AES decryption, basic and LZX compression, import list (`--imports`, named from the ReXGlue SDK's kernel export tables). |
 | `xexlzx/xexlzx.c` | Small LZX helper for `xex2pe.py`, built on libmspack's decoder. |
 | `ghidra_xenon/` | Adds the Xbox 360 CPU to Ghidra: language `PowerPC:BE:64:Xenon-32addr` with the 75 VMX128 vector instructions (128 vector registers) and Xenon's `lvlx`/`lvrx`/`stvlx`/`stvrx`. Stock Ghidra stops at the first VMX128 instruction. `install_xenon.py <ghidra>` installs it. |
@@ -49,6 +50,7 @@ Bink), which have no PC counterpart, so a good part of their functions will neve
 | `script_usage.py` | Which builtins a set of scripts calls; with `--crossref`, each handler's address in all four builds; `--column NAME=FOLDER` adds a column of calls per folder (one per map). |
 | `script_signatures.py` | What each builtin takes and returns, read from its handler's C: arguments by position and type (`Scr_GetFloat(1)`, `Scr_GetVector(&v, 2)`), the argument counts it tests, what it returns (`Scr_AddInt`...), its own usage and error messages, the other names that share its handler, and KisakCOD's handler of the same name if there is one. |
 | `field_tables.py` | The script field tables (`self.origin`, `ai.goalradius`, `hudelem.alpha`): finds the `{ "name", offset, type, ..., setter, getter }` arrays in a PC or Xbox 360 build by their field names, decodes every entry, pairs each table with the KisakCOD array that shares the most field names (read from KisakCOD's source text, entries spanning lines included), and names a setter or getter that sits in the slot where KisakCOD's entry for the same field names one. Writes an `--extra` table for the naming tools and, with `--tables`, every decoded entry. |
+| `asset_fields.py` | The text keys of the asset files (weapons, vehicles, flame tables, physics presets and constraints, destructibles, vision sets): finds every `{ "key", offset, type }` table (Call of Duty 4's `cspField_t`) in a PC or Xbox 360 build, says what each type means, and, with the build's export, the names each weapon enumeration accepts (`weaponType`, `fireType`, ...) read from the weapon parser's own switch. |
 | `zone_loader.py` | Reads the game's own fastfile loader (PC 1.7 SP) statically: names its `Load_`/`Mark_` functions and types its var globals (for `name_pc.py --extra` and `WawApplyTypes.java`), and writes each structure's load program (private). |
 | `t4sp_types.py` | The T4SP plugin's headers → one C header + typed symbols, for the private decompile; `--check` compiles the header with clang under MSVC's 32-bit layout and checks every documented offset and size, as written and as Ghidra reads it. |
 | `struct_globals.py` | Where a structure lives: each address the code references votes for "base = address − field offset" over the structure's fields (`vote`); `check` makes sure a table of typed globals doesn't overlap and agrees with the names. |
@@ -66,9 +68,22 @@ Passes run strongest first; an address or a name is taken by the first pass that
 |---|---|---|---|
 | `runtime` (Xbox 360) | The compiler's register save/restore routines (`__savegprlr_14` ... `__restfpr_31`), by their instructions. They have hundreds of callers and look alike, so no other pass may name them; the call-graph pass named six of them wrongly before. | – | 47 / 47 |
 | `public` | Published addresses for this exact build (Plutonium's T4SP plugin, t4-rtx, T4M source, and others), verified against the bytes. | 552 / 46 (+ 130 / 60 globals) | – |
-| `extra` | Private tables of names found by hand with their evidence (`name_pc.py` and `name_x360.py --extra`). PC SP: the typed game globals (see *Types*) the four functions that set them up (`G_InitGame`: `level.clients = g_clients` ... in KisakCOD's order; `G_InitSentients`, `G_InitActors`, `G_InitScrVehicles`), `Com_DPrintf` (prints only while `com_developer` is set, then calls `Com_Printf`), `strstr`, the server's and client's script loaders (both have KisakCOD's `GScr_LoadScriptsAndAnims` strings; the client one loads the client callbacks and ends the client VM's load), the functions that run the player damage, killed and last stand callbacks, and two names the `kisak` pass got wrong from a single shared string: `G_RunFrame` (it had been `DebugDumpAnims`, whose dump is inlined at its end) and `WriteSaveToDevice` (it had been `CG_DispatchServerCommand`; found by checking every `kisak` name's named callees against its KisakCOD function's calls; the same check found MP's `ClearArray`, named `Scr_GetValueString`), and `Sentient_NearestNode`; the zombies table (`zombies` pass): `DB_BuildOSPath` and a note on each function that reads `zombiemode`, plus the network wait (see *Zombies and custom maps*). PC MP and Xbox 360: names checked against Black Ops (x360-family's list of functions with the same code in World at War and Black Ops, where the names differed), each kept only with its own evidence in the strings (`GPad_InitAll` registers the `gpad_*` dvars). PC MP also gets `G_RunFrame`, its player damage and killed callback runners, and notes on the World at War-only actor and vehicle callback runners. A row of kind `note` is a comment only and stays next to whatever name the function gets. | 15 (+ 15 globals, 39 notes) / 5 (+ 4 notes) | 6 / 5 |
+| `extra` | Private tables of names found by hand with their evidence (`name_pc.py` and `name_x360.py --extra`). PC SP: the typed game globals (see *Types*) the four functions that set them up (`G_InitGame`: `level.clients = g_clients` ... in KisakCOD's order; `G_InitSentients`, `G_InitActors`, `G_InitScrVehicles`), `Com_DPrintf` (prints only while `com_developer` is set, then calls `Com_Printf`), `strstr`, the server's and client's script loaders (both have KisakCOD's `GScr_LoadScriptsAndAnims` strings; the client one loads the client callbacks and ends the client VM's load), the functions that run the player damage, killed and last stand callbacks, and two names the `kisak` pass got wrong from a single shared string: `G_RunFrame` (it had been `DebugDumpAnims`, whose dump is inlined at its end) and `WriteSaveToDevice` (it had been `CG_DispatchServerCommand`; found by checking every `kisak` name's named callees against its KisakCOD function's calls; the same check found MP's `ClearArray`, named `Scr_GetValueString`), and `Sentient_NearestNode`; the zombies table (`zombies` pass): `DB_BuildOSPath` and a note on each function that reads `zombiemode`, plus the network wait (see *Zombies and custom maps*). PC MP and Xbox 360: names checked against Black Ops (x360-family's list of functions with the same code in World at War and Black Ops, where the names differed), each kept only with its own evidence in the strings (`GPad_InitAll` registers the `gpad_*` dvars). PC MP also gets `G_RunFrame`, its player damage and killed callback runners, and notes on the World at War-only actor and vehicle callback runners. Since 2026-10-20 also the eight corrections the Black Ops cross-check found (`types/<build>_hand.tsv`, below). A row of kind `note` is a comment only and stays next to whatever name the function gets; a row of kind `inlined` keeps a KisakCOD name off every function (`BG_GetWeaponDef`: World at War reads the weapon table directly everywhere, and the call graph pass had given the name to two neighbors). | 15 (+ 15 globals, 39 notes) / 5 (+ 4 notes) | 6 / 5 |
 | `fields` | `field_tables.py` on each build: the setters and getters of the script field tables (entity, sentient, actor, player, hud element, path node, vehicle node and a few smaller ones; 10 to 12 tables per build), named from the same slot of KisakCOD's table (`ActorScr_SetGoalRadius`, `ClientScr_SetScore`, `HudElem_SetAlpha`); KisakCOD's multiplayer tables are preferred for the MP builds. | 64 / 68 | 43 / 47 |
-| `pmove` (PC SP) | The player movement functions (`Pmove`, `PmoveSingle`, `PM_GroundTrace`, `PM_StepSlideMove`, `Jump_Check`, `Mantle_Start`...), matched to KisakCOD's `bgame` functions by call graph, the dvars they read and their constants (private `zone/pmove.md`); two World at War-only ones are named after what they do (`PM_WaterMove`, `PM_GetWaterLevel`). | 62 / – (62 reach MP through `sp`) | – (39 / 35 through `pc-graph`) |
+| `pmove` (PC SP) | The player movement functions (`Pmove`, `PmoveSingle`, `PM_GroundTrace`, `PM_StepSlideMove`, `Jump_Check`, `Mantle_Start`...), matched to KisakCOD's `bgame` functions by call graph, the dvars they read and their constants (private `zone/pmove.md`); two World at War-only ones are named after what they do (`PM_WaterMove`, `PM_GetWaterLevel`). | 66 / – (65 reach MP through `sp`) | – (40 / 36 through `pc-graph`) |
+| `weapons` (PC SP, since 2026-10-20) | The weapon code: the functions of CoD4's `bg_weapons`, `cg_weapons`, `g_weapon`, `g_items`, `g_missile` and `bullet` files, matched to KisakCOD's by what each reads from the weapon definition (`asset_fields.py`'s table turns the offsets into key names such as `fireTime`, so the members can be compared across the two games' different layouts), its strings, dvars, callers and callees, and each checked by reading both. World at War's additions that Black Ops kept take KisakBlack's names (`Sprint_State_Raise`, `Deploy_State_Deploy`, `BG_SetupWeaponMountedVersions`, `BG_GetClipSize`); one has a descriptive name (`BG_SetupOverheatIndexes`). Private table `types/weapons_pc_sp.tsv`, one line of evidence per name. | 269 / 40 (218 reach MP through `sp`; since names v44 also the turrets) | (172 / 130 through `pc-graph`) |
+| `actors` (PC SP, since 2026-10-20) | The AI code that zombies and hellhounds run: the functions of CoD4's `actor*.cpp`, `pathnode.cpp` and `sentient.cpp` files, matched to KisakCOD's by their callees, constants, strings and `actor_s` offsets, each checked by reading both, and checked against the AI state tables (`AIFuncTable` at 0x008DC3C8: the human and dog tables fill the same slots as KisakCOD's `actor_function_table.cpp`; the linker folded identical functions, so some slots share one). KisakCOD's template instances get C-safe names with the template argument written in (`Path_AStarAlgorithm_FindPath`, one of nine A* copies). It also corrected two earlier names: 0x0055C210 is `Path_NearestNodeNotCrossPlanes` (was `Sentient_GetOrigin` from `kisak-graph`; both `Sentient_GetOrigin` and `Path_NearestNode` are inlined and reserved), and `G_ParsePathnodeScriptField` moved to 0x005593D0 (0x00671D50 is Black Ops' client-side `CG_SpawnNode`, which shares one string with it). Private table `types/actors_pc_sp.tsv`, one line of evidence per name. | 573 / – (341 reach MP through `sp` and `sp-graph`; since names v46 also the path node loading and linking code) | (358 / 209 through `pc-graph`) |
+| `xanim` (PC SP, since 2026-10-20) | The animation and model code (CoD4's `xanim*.cpp`, `dobj*.cpp`, `xmodel*.cpp` and the DObj pool in `dobj_management.cpp`), matched to KisakCOD's and KisakBlack's functions by their callees, strings and structure offsets and each checked by reading both. Zombies and hellhounds move by their animations (root motion: `Actor_GetAnimDeltas` -> `XAnimCalcDelta` -> `XAnimCalcRelDeltaParts`), so this is the code a port needs to reproduce their movement. Template instances get C-safe names (`XAnimCalcParts_uchar`). It also corrected three names: 0x00401010 is the C library's `floorf` (it had been `AngleNormalize360`, which World at War inlines around it), 0x0060FA10 is `DObjUpdateServerInfo` and 0x006137C0 is `XAnimCalc`. | 207 / – (184 reach MP through `sp`) | (70 / 83 through `pc-graph`) |
+| `cgame` (PC SP, since 2026-10-20) | The client game code of the campaign program, which is also the co-op and zombies client (HUD, compass, scoreboard, hud elements, view, effects, server commands), matched to KisakCOD's single player and multiplayer `cgame` functions and KisakBlack's; anchored by the HUD's ownerdraw switch (`CG_OwnerDraw`), the server command letters and the entity type switch, and each checked by reading both. It also corrected three names that had come from one or a few shared strings (`CG_DrawClientScore`, `CG_DrawScoreboard_ListBanner`, `CG_CornerDebugPrintCaption`). | 490 / – (353 reach MP through `sp`) | (291 / 211 through `pc-graph`) |
+| `game` (PC SP, since 2026-10-20) | The server game code that the earlier passes had not reached (CoD4's `g_active`, `g_client`, `g_cmds`, `g_combat`, `g_hudelem`, `g_items`, `g_main`, `g_missile`, `g_mover`, `g_save`, `g_scr_main`, `g_scr_vehicle`, `g_spawn`, `g_trigger`, `g_utils` ...), plus Black Ops' names for World at War code Black Ops kept (vehicles, destructibles), each checked by reading both bodies. The campaign program is also the co-op and zombies server, so this covers damage (`G_Damage`), last stand and revive, and spawning. World at War-only functions get a descriptive note instead of a name. It also corrected 0x00412600 to `VEH_ParseSpecificField` (it had a Black Ops pair's name that came from one string shared with the Tracy profiler in the KisakBlack tree) and 0x00559880 to `G_SpawnPathnodeDynamic`. | 473 / – (266 reach MP through `sp`) | (306 / 184 through `pc-graph`) |
+| `net` (PC SP, since 2026-10-20) | The engine's server and client code: CoD4's `server/` and `client/` files (connections, snapshots, client input, server commands, saves and restarts), the message and net channel code (`msg`, `net_chan`) and the start of `g_client`, matched to KisakCOD's SP and MP files and to Black Ops' names, each checked by reading both bodies. The campaign program is the co-op server and client, so this covers how co-op players join and what each frame sends; World at War's lobby (party) code has no source names and gets descriptive notes, a few functions are named from their own log text. It also corrected `SV_MapRestart` (was `SV_MapRestart_f`), `SV_FindClientByAddress` (was `SV_ReadPackets`, in both PC programs), `SV_IsInternalSave` (was `init`, from a string KisakCOD's bundled physics library shares) and `Netchan_TransmitFragment`. | 320 / – (231 reach MP through `sp`) | (152 / 118 through `pc-graph`) |
+| `bg` (PC SP, since 2026-10-20) | The code the server and the client share (CoD4's `bgame/` files: player animation scripts, movement helpers, bg_misc, perks), aim assist, the menu file preprocessor and the rest of the client game code in 0x00400000-0x00470000, matched to KisakCOD and to Black Ops' names (fire, wind, vehicle animation), each checked by reading both bodies. It also corrected `SetConfigString` (was `BG_StringCopy`) and `MemFile_ReadData` (was `MemFile_ReadByteInternal`). | 228 / – (202 reach MP through `sp`) | (95 / 75 through `pc-graph`) |
+| `cm` (PC SP, since 2026-10-20) | The collision code and the common code around it: CoD4's `cm_*.cpp` files (traces, sight traces, brush and mesh tests, the collision map and BSP loaders, world sectors), `cmd.cpp`, `common.cpp`, the player profile and stats code and the dvar commands, matched to KisakCOD's bodies and, where World at War already has Black Ops' version (the trace with a primitive list, water and burnable cells, rope constraints), to KisakBlack's, each checked by reading both bodies. It also corrected `CM_AreaEntities_r` (was `CM_AreaEntities`, which every caller inlines) and `ResetCreateAClassNames` (was `LiveStorage_StatsInit`, which is its caller). | 226 / – (210 reach MP through `sp`) | (41 / 38 through `pc-graph`) |
+| `db` (PC SP, since 2026-10-20) | The console, key and game pad bindings, the screen and the fastfile database: CoD4's `cl_console`, `cl_keys`, `cl_scrn`, `con_channels`, `screen_placement` and `database/` files (zone lookup and loading, the XFile reader, the asset registry, pools and handler tables, unloading) and Black Ops' `cl_gamepad`, each checked by reading both bodies. It also corrected 29 of the `zone` pass's loader names (`zone_loader.py` had shifted the XAnim trans/quat chain one level, and several `Mark_` names sat on functions that load), `DB_PostLoadXZone` (was `DB_SyncXAssets`, a public label; the real `DB_SyncXAssets` calls it), `I_strnicmp` (was `I_stricmp`, a public label: the PC builds inline `I_stricmp` and pass the count in a register; 58 call sites pass real counts), `SCR_UpdateScreen` and `Con_DrawOutputVersion`. | 211 / – (184 reach MP through `sp`) | (53 / 45 through `pc-graph`) |
+| `fx` (PC SP, since 2026-10-20) | Dynamic entities and the effects system: CoD4's `DynEntity/` and `EffectsCore/` files (effect loading and conversion, spawning, looping, bolted effects, drawing, marks, beams, trails, sorting) with Black Ops' additions that World at War already has (unique effect handles, effects bolted to dynamic entities, burning dynamic entities), each checked by reading both bodies. World at War's own effect priority list (it evicts low-priority effects when the pools are full; Call of Duty 4 drops the new effect) gets descriptive notes. | 303 / – (275 reach MP through `sp`) | (103 / 92 through `pc-graph`) |
+| `fs` (PC SP, since 2026-10-20) | The file system's search paths and iwd files (CoD4's `files.cpp`: game directories, iwd order, pure checks, mod list), dvar info strings, huffman, thread setup, ragdoll, the server's game interface (`sv_game.cpp`, `sv_world.cpp`) and localized strings, each checked by reading both bodies. It also corrected `FS_GetMapBaseName` (was `UI_GetGameTypesList_FastFile` from the `bo1` pass, on PC and Xbox 360), `SEH_DecodeLetter`, `strchr` (was `Info_Validate`) and `FS_FOpenFileReadForThread` (was `FS_FOpenFileByMode`, a public label; now `verified=no`). | 152 / – | (through `pc-graph`) |
+| `core` (PC SP, since 2026-10-20) | The rest of the common code in 0x005D0000-0x005E8000: file handles and reads, vector math, hunk and temp memory, sound alias loading and picking (`com_sndalias.cpp`), string tables, the dvar system and the end of the UI code. It also corrected `BoxOnPlaneSide` (was `R_FilterDynEntIntoCells`), `FS_FOpenTextFileWrite`, `UI_GetGameTypeName` (was `CG_TeamColor`) and found an out-of-line `AngleNormalize360` (the version 44 reservation as inlined was lifted). | 206 / – | (through `pc-graph`) |
+| `ui` (PC SP, since 2026-10-20) | The menu system: CoD4's `ui_expressions.cpp` (69 operator functions from the operator table), `ui_localvars.cpp`, `ui_main.cpp`, `ui_shared.cpp` and `ui_shared_obj.cpp`, with Black Ops' names for the playlist and mod list code, each checked by reading both bodies. It also corrected `Menu_Setup` (was `UI_Init`), `Item_Text_Paint`, `Menu_PaintAll`, `I_strcmp`, and six World at War-only script commands the `table` pass had named `ItemParse_*` (it ran past the end of the item keyword table into the script command table; now `Script_*` by hand in all four builds). | 298 / – | (through `pc-graph`) |
 | `zone` (PC SP) | `zone_loader.py`: the fastfile loader's functions, followed from the asset type switch, named after the structure each one loads (`Load_GfxWorld`, `Mark_XModelPtr`; KisakCOD's name where it has one), and its var globals with their types. | 258 (+ 172 globals) / – (195 reach MP through `sp`) | – |
 | `pc` | The PC function that is the only user of the same strings. A name several functions want goes to the one with the most of those strings (a helper inlined in one build shares a string or two with its caller: `bdConnectionStore::flushAll` on PC has `bdLinkedList::getHead` inside). | – | 897 / 794 |
 | `selfname` | The function's own name in its messages: `"BG_ParseCommands: expected animation"`. | 54 / 64 | 6 / 6 |
@@ -79,7 +94,9 @@ Passes run strongest first; an address or a name is taken by the first pass that
 | `reader` | The function that looks a name up in a table, named after KisakCOD's function reading the same array (`Player_GetMethod` loops over the player methods), when it is the only function whose loop stops at the table's size. | 6 / 7 | (through `pc-graph`) |
 | `sp` / `mp` | The other PC executable: functions with the same code (addresses masked out) or the only users of the same strings. Only the names that executable found itself: a name it took from this one would come back with no new evidence, and a wrong name kept itself alive that way from version to version (`Com_DPrintf` was `CM_AreaEntities_r` in both); version 16 dropped 28 such names in SP and 26 in MP. | 378 / 818 | – |
 | `sp-graph` / `mp-graph`, `pc-graph` | Names of the other build through matched functions (`match_builds.py`, below). The PC's x86 compiler helpers (`__SEH_epilog4`, `__allmul`) and ambiguous library matches give no names to Xbox 360 functions. | 89 / 400 | 355 / 336 |
-| `kisak-graph` | Call graph against KisakCOD: the one unnamed callee of a named function matches the one leftover callee of its KisakCOD counterpart, only when the two agree on all their other callees (and the candidate's own callees agree too). Library code (unaligned functions on PC; import thunks and register routines on Xbox 360) is skipped. Weakest pass; a looser first version gave wrong names and was tightened. | 53 / 8 | 30 / 24 |
+| `bo1` (since 2026-10-20) | Names Black Ops' Xbox 360 programs have (named by the chat "x360-family" from KisakBlack, a reconstruction of the Black Ops multiplayer program) for World at War functions that had no name, through the blind pairing of the two games (*Cross-check with Black Ops*, below); kept only when strings or data back the pair and strings back the Black Ops name (`BG_Wind_RegisterDvars`, `R_InitWaterSimulation`, `Phys_EffectsInit`, `Playlist_ParsePlaylists`, `Dog_RegisterDvars`). Private tables `types/bo1_<build>.tsv`, read with `--extra` after the hand tables. Version 48 dropped one pair (PC SP 0x005A2690 / Xbox 360 0x8223FFA0 is `FS_GetMapBaseName`, not Black Ops' `UI_GetGameTypesList_FastFile`). | 36 / 43 | 42 / 58 |
+| `carry` (Xbox 360, since 2026-10-20) | Graph names an earlier version had that a new run dropped only because the matcher's low-vote pairs moved (new PC names change which pairs win in clusters such as the script compiler): carried when the address is still unnamed, the name unused, the earlier PC partner still has that name, and the two functions still share a named callee or caller. Private tables `types/x360_<build>_carry.tsv`. | – | 15 / 21 |
+| `kisak-graph` | Call graph against KisakCOD: the one unnamed callee of a named function matches the one leftover callee of its KisakCOD counterpart, only when the two agree on all their other callees (and the candidate's own callees agree too). Library code (unaligned functions on PC; import thunks and register routines on Xbox 360) is skipped. Weakest pass; a looser first version gave wrong names and was tightened. The C library math helpers (`sqrtf`, `fabsf`, 15-byte functions on PC) count as neither named nor open: KisakCOD writes them as `sqrt`, `I_fabs` or `Vec3Length`, or inlines them. Until version 40 `sqrtf` was named `Jump_GetLandFactor` by this pass (World at War inlines that one). Where KisakCOD calls `I_stricmp`, a PC caller's `I_strnicmp` counts as the same callee (the PC builds inline the wrapper). | 53 / 8 | 30 / 24 |
 | `method` | C++ methods that name themselves: Demonware's log lines start with the method (`bdCore::init`), and assertions carry the compiler's function signature (`bool __cdecl bdUnicastConnection::handleData(...)`). A name only one function has is taken early (after `selfname` on PC, before `pc` on Xbox 360: the 360's `bdKeyArchive::handleTask` has the message PC's `bdStats::handleTask` has); a name two functions share comes last (`name`, `name_2`); a name more share is an inlined helper's (`bdLinkedList::GetHead`) and names none. Named `Class__method` (`Class__ctor`, `Class__dtor`). | 265 / 260 | 97 / 101 |
 
 Ghidra's own library signatures (Function ID) name part of the C runtime.
@@ -107,6 +124,9 @@ be compared byte for byte; their strings, call graph and data tables can.
 
 1. **Seeds:** functions with the same name in both builds, and functions that are the only users
    of the same string, the same named global (`dvar_cg_fov`), or the same combination of them.
+   A wrapper one build inlines pairs with the inner function on the other side: the PC builds call
+   `I_strnicmp` where the Xbox 360 builds call their `I_stricmp` wrapper, so the PC's `I_strnicmp`
+   seeds with the Xbox 360 `I_stricmp`, which is what the same callers call there.
 2. **Call graph:** for every matched pair, the two ordered call lists are aligned on the callees
    already matched; a gap holding unmatched callees in the same pattern on both sides pairs them.
    An unmatched function also pairs with the one function on the other side that shares the most
@@ -161,6 +181,11 @@ whose 0/1 flags are evidence enough from three: that finds the five sentient met
 (`setthreatbiasgroup`, `getthreatbiasgroup`, `getclosestenemysqdist`, `getenemysqdist`, `isnotarget`),
 which every zombies map calls. `waittillmatch`, `prof_begin`, `prof_end` and `#using_animtree` are
 statements and a directive of the script compiler, not builtins.
+Two PC tables have no KisakCOD array that names them, so the pass gave their handlers the
+script prefix `Scr_`. Since names v46 hand rows name them instead: the menu file preprocessor's
+directives (`PC_Directive_ifdef` ...; KisakCOD writes that array with casts the reader missed) and
+World at War's lobby (party) out-of-band commands, which have no source names and are labeled
+`PartyCmd_<command>` after their table key.
 
 The script language and bytecode are Call of Duty 4's: World at War's VM has the same 138 opcodes in
 the same order (`OP_End` ... `OP_manualAndAssignmentBreakpoint`; the VM's switch handles 135 of
@@ -248,12 +273,30 @@ reading only; the addresses and the per-map tables are in `dev/waw-decomp/zone/`
 - Zones (fastfiles) at startup: `code_post_gfx` (with one more zone named at run time), then `mod`
   when `fs_game` is set, then `ui`, `localized_common`, `common` and `patch`. A level adds
   `<map>_load`, `localized_<map>`, `<map>_patch` and `<map>`.
-- The zone path has three directory kinds (`DB_BuildOSPath`, kind in EAX, the plugin's `FF_DIR`):
+- The zone path has three directory kinds (`DB_BuildOSPath_FromSource`, Black Ops' name; kind in EAX, the plugin's `FF_DIR`):
   the game's `zone\<language>\`, the mod folder `<fs_localAppData>\<fs_game>\`, and the user map
   folder `<fs_localAppData>\usermaps\<map>\` (named after the map without `_load`). `mod.ff` is looked
   for only in the mod folder. Any other zone: the game's copy first when it exists, then the mod
   folder, then the user map folder. A zone missing everywhere is a fatal error unless its name
   contains `_load`, `_patch`, `default` or `localized_` (a warning).
+- A missing `<zone>_patch` is retried as `default`. A level loads `<map>_load` first, then (from
+  `Com_LoadLevelFastFiles`) adds the `usermaps\<map>` iwd files when `fs_game` is set and the map's
+  fastfile is there, then loads `localized_<map>`, `<map>_patch` and `<map>`. Only unsigned fastfiles
+  load (`IWffu100`, version 387); `IWff0100` is refused as "file not supported".
+- Asset pools (`g_poolSize`) cap what a map or mod may hold: 1,000 xmodels, 2,048 materials, 2,400
+  images, 16,000 sound aliases, 4,096 xanims, 256 weapons, 400 effects, 640 menus, 1,024 raw files,
+  50 string tables.
+- Loose files and iwd files: the folder added last is searched first, so with `fs_game` set the order is
+  `<fs_localAppData>\<fs_game>`, `<fs_localAppData>\usermaps`, `<fs_localAppData>\mods`, then the game's
+  folders; World at War never searches `<install>\<fs_game>` (Call of Duty 4 does), so a mod must live
+  under `fs_localAppData`. An iwd overrides loose files in its own folder and the last iwd in sort order
+  wins. A user map's iwd files are added at the head of the list.
+- Menus: with fastfiles (retail) the menu lists are database assets, so a mod's menus must be in its
+  fastfile; 512 menus, 256 items per menu (extra items are dropped silently), 16 open menus.
+- Sound aliases: with fastfiles they are database assets; the alias `probability` column is ignored
+  (a random pick that avoids repeating the last one), at most 64 entries per alias name.
+- `exec <name>`: any config but `config.cfg` is read from the loaded fastfiles' raw files first
+  ("execing %s from fastfile"), then from disk, so a config inside a mod's fastfile wins.
 - `fs_localAppData` is `SHGetFolderPath(CSIDL_LOCAL_APPDATA)` + `\Activision\CoDWaW`
   (`fs_personalDocuments` the same under the Documents folder); `fs_game` must be empty or under
   `mods/`. With `fs_game` set, `FS_Startup` adds `<fs_localAppData>\mods`, `\usermaps` and
@@ -417,6 +460,33 @@ padding; the zone header is `XFile` (36 bytes), then `XAssetList` (16 bytes), th
 (a pointer each, inline string when -1), then 8 bytes per asset. Format details belong to
 [formats/waw.md](formats/waw.md).
 
+## Asset file keys (weapons, vehicles, flame tables)
+
+The PC programs can still read their asset files as text: a weapon file is
+`WEAPONFILE\key\value\key\value...`, as the mod tools write them. For each kind of file the program
+has a table of `{ "key", offset, type }` entries, and the loader looks every table key up in the text
+(keys the table doesn't have are ignored) and stores its value at that offset of the structure. The
+fastfiles hold the same structures, so the tables label each field of a ripped weapon with the name
+modders use. `asset_fields.py` reads them (the output stays private, `dev/waw-decomp/zone/`).
+
+- Tables in the PC 1.7 programs: weapons (565 entries, 562 keys), vehicles (134), flame tables (119),
+  physics constraints (58), destructible pieces (45), vision sets (35), physics presets (11), plus
+  map entity keys. The weapon table is the same in both PC programs.
+- The Xbox 360 programs have no weapon table and none of its key strings (consoles load weapons
+  only from fastfiles). Their vehicle, flame table and vision set tables are the PC's, offsets
+  included, so those structures have the same layout on both.
+- Types, from the generic parser (PC campaign 0x005F75D0): 0 string, 1/2/3 a char array of 1024 / 64
+  / 256, 4 int, 5 bool (4 bytes), 6 float, 7 seconds in the file stored as int milliseconds (times
+  1000.0), 8 effect, 9 model, 10 material, 11 sound alias. Types from 12 up belong to each kind's own
+  parser; the weapon's (`BG_ParseWeaponDefSpecificFieldType`, 0x00423250) are 20 enumerations matched
+  case-blind (an unknown name is a fatal error naming the weapon file), the player anim type, the
+  bounce sound, up to 8 hide tags and up to 20 notetrack-to-sound pairs.
+- Checked against the 422 weapon files of the mod tools pack (UGX, read inside its zip): they use
+  558 of the 562 keys, every enumeration value is in the parser's lists, and 36 keys they carry are
+  not in the table, so the game never reads them (`worldClipDropEffect`, `adsTransBlendTime`,
+  `twoHanded`, `projectileDLight`, `horTurnSpeed`, `vertTurnSpeed`, the flamethrower's
+  sound keys (the flame table has four of them, without the `Player` versions), and others).
+
 ## Types and parameters
 
 - **Register parameters:** World at War PC was built with whole-program optimization, so many
@@ -491,7 +561,12 @@ padding; the zone header is `XFile` (36 bytes), then `XAssetList` (16 bytes), th
 - `zone/` (top of the output folder): zombies and custom maps: the builtins each zombies map calls
   (`zombies_builtins.tsv`), the engine's zombie-mode functions with notes (`zombies_engine.tsv`, used
   by `name_pc.py --extra`), the zone loader's load programs (`schema.txt`) and a README with the
-  addresses.
+  addresses; `asset_fields_<build>.tsv` and `weapon_enums_pc_<sp|mp>.tsv`: every asset file key with
+  its offset and type, and the names each weapon enumeration accepts (*Asset file keys*).
+- `bo1_360/` (top of the output folder): World at War's Xbox 360 builds paired with Black Ops' (every
+  pair with both games' names, whether they agree and the verdict of the check by hand), name
+  candidates for the chat "x360-family", and `zone/zombies_builtins_bo1.tsv` (the zombies builtins in
+  Black Ops); see *Cross-check with Black Ops*.
 - `functions.tsv`, `calls.tsv`, `strings.tsv`, `globals.tsv`: the tables the passes use.
 
 ## Call of Duty 3, and Call of Duty 2 on Xbox 360
@@ -550,6 +625,54 @@ internet games are found through Demonware's matchmaking (`CL_MP_FindSessions`),
 `localservers`. So the community master servers of the older games (cod.pm's, see
 [DECOMP_SHARED_NOTES.md](DECOMP_SHARED_NOTES.md)) don't list World at War, and a Rust World at War
 server reaches a stock client over LAN or Demonware's protocol.
+
+## Cross-check with Black Ops (2026-10-20)
+
+Owner (2026-10-20): "you should also cross check waw with black ops 1". Black Ops is Treyarch's next
+game on World at War's engine, and its Xbox 360 programs come from the same compiler as World at
+War's, so the two pair up better than World at War's own PC and Xbox 360 builds. Black Ops' Xbox 360
+programs were decompiled and named by the chat "x360-family" (names from KisakBlack, a
+reconstruction of the Black Ops multiplayer program; `X360_FAMILY.md`); this chat's REA worker
+imported them again on the owner's PC for their images (nothing compiled in the cloud).
+
+- **Blind pairing.** `match_builds.py` on copies of the four exports with every function name taken
+  out, so only strings, named dvar globals, the call graph and the pointer tables count, and the
+  names can be compared afterwards without having steered the pairs: campaign 9,132 pairs (13,815
+  World at War / 17,982 Black Ops functions), holdout 98.4%; multiplayer 8,271 (13,095 / 19,584),
+  98.2%. x360-family's identical-code pairs agree with 761 of 769 and 642 of 651.
+- **The names on the pairs** (version 32): campaign 938 the same, 258 the same in another style
+  (table prefixes, `Cmd_` handlers), 96 different; multiplayer 886 / 146 / 75. The different ones,
+  less the builtins Black Ops renamed (`spawn` became `codespawn`), the dvar registration placeholders,
+  Demonware's renamed classes and console command style (42 + 33), were checked by hand against
+  the strings, the PC counterpart, the call graph and both reconstructions.
+- **Eight World at War names were wrong** (both PC builds; the Xbox 360 builds follow):
+
+  | PC build | Address | Was | Now | Evidence |
+  |---|---|---|---|---|
+  | SP / MP | 0x00707A20 / 0x006D7DC0 | `CG_VisionSetUpdateTweaksFromFile_Film` | `R_RegisterDvars` | 537 renderer dvar descriptions; Black Ops' `R_RegisterDvars` shares 395 of them. The old name rested on 7 `r_filmTweak*` names that the vision file parser also uses. |
+  | SP | 0x00629EC0 | `CG_NorthDirectionChanged` (t4-rtx) | `Flame_Init_DVars` | Registers the 28 flamethrower dvars Black Ops' `Flame_Init_DVars` registers. t4-rtx's comment (`CG_Init :: CG_NorthDirectionChanged call`) names its hooked call by CoD4's `CG_Init` order; the label is marked not taken in `public_symbols.tsv`. |
+  | SP | 0x0059DC30 | `CG_Init` | `Com_Statmon` | Uses only `code_warning_file`, `_fps`, `_serverfps`: `Com_Statmon` in KisakCOD and KisakBlack (`CG_Init` registers the same three icons in CoD4). The real `CG_Init` is 0x00664570, which holds t4-rtx's hooked call and pairs with Black Ops' `CG_Init` (33 call-graph votes); on Xbox 360 it has `CG_LoadHudMenu` inlined and had taken that name. |
+  | SP / MP | 0x004558E0 / 0x00461130 | `BG_AddPredictableEventToPlayerstate` | `CG_CheckPlayerstateEvents` | Calls `CG_EntityEvent` and prints the "processed predicted/server event" lines under `showevents`, as `CG_CheckPlayerstateEvents` does in KisakBlack; the old name rested on the one string `showevents`. |
+  | MP | 0x0064FAE0 | `Scr_EvalMethod` | `VM_ExecuteInternal` | The opcode loop (15 KB, the 22 VM errors, called by `VM_Execute` and `VM_Resume`), like SP's `VM_ExecuteInternal` (T4SP). |
+  | MP | 0x005617B0 | `LiveStorage_StatsInit` | `ResetCreateAClassNames` | Only sets the class name dvars (`customclass*`, `prestigeclass*`) from localized strings, as KisakBlack's `ResetCreateAClassNames` does; CoD4's `LiveStorage_StatsInit` also resets stats. |
+
+  Most other differences are World at War right and Black Ops' name doubtful (for x360-family to
+  look at: `CMD_VEH_AddVehicleToCompass` against `CScr_GetType`, `Dvar_InfoString`, a C runtime
+  function named `Com_PrintMessage`), or Black Ops' code changed (`SV_RateMsec` became windowed,
+  `ParseWeaponDefFiles` grew into `CG_SetupWeaponConfigString`). Seven stay open.
+- **New names** from Black Ops for World at War functions without one (pass `bo1`, above): 43 + 58 on
+  Xbox 360, 37 + 43 on PC. Names version 35: PC SP 4,157, MP 3,771, Xbox 360 SP 2,516, MP 2,197
+  (version 32: 4,111 / 3,723 / 2,465 / 2,133). The call-graph pairs between the PC and Xbox 360 builds
+  shift a little with the new names (campaign 5,476 to 5,463 pairs): two names that dropped out that way
+  (`DB_SyncXAssets`, `R_ResetModelLighting`) are kept in the Xbox 360 hand table.
+- **Zombies builtins in Black Ops** (both campaign programs' builtin tables read from their images,
+  `zone/zombies_builtins_bo1.tsv`): of the 691 builtins World at War's zombies maps call, 506 keep
+  their name on the paired handler, 131 keep the name on another handler, 4 were renamed
+  (`spawnvehicle` / `spawnturret` became `codespawnvehicle` / `codespawnturret`, the client's
+  `loadedfx` became `loadfx`, the client's `syncsystemstates` points at a stub) and 22 are gone
+  (`getstat`, `setstat`, `setstatbit`, `stalingradspawn`, `dospawn`, the berserker and sound-bus
+  builtins, `musicplay`/`musicstop`, `ambientplay`, `eqon`/`eqoff`). For porting scripts between
+  the two games, not for World at War's own maps.
 
 ## Next
 

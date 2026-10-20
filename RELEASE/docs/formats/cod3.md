@@ -20,6 +20,8 @@ Shared files: `sp/global.cod`, `sp/anim.cod`, and the `bcen_*.wbk` sound banks.
 
 ## `.cod` container: KAPF (verified)
 
+Call of Duty 2: Big Red One (Xbox, 2005), the Treyarch game Call of Duty 3's engine grew from, uses an older version of the same container (version 2.02 where Call of Duty 3 has 2.06; a 0x1C-byte header and 0x1C-byte chunk entries, every chunk stored as is). `engine/crates/kapf` reads both; [fastfiles.md](fastfiles.md) has the differences, checked on all 389 archives of the owner's disc.
+
 All header integers are little-endian.
 
 | Offset | Field |

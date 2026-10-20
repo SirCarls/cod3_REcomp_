@@ -15,7 +15,8 @@ claims it):
   extra     (optional, --extra, repeatable) tables of names found by hand or by another
             tool (addr, name, kind, pass, evidence): the typed globals struct_globals.py
             helped find, the zone loader's functions and vars from zone_loader.py; a row of
-            kind "note" is a comment only (what a function does in zombie mode, say)
+            kind "note" is a comment only (what a function does in zombie mode, say); a row of
+            kind "inlined" (address 0) keeps its name off every function
   selfname  a function's own name in its error/log strings
             ("BG_ParseCommands: expected animation")
   method    C++ methods named in their own strings (Demonware's "bdCore::init" log lines,
@@ -170,6 +171,10 @@ def main():
     for extra in args.extra:
         for r in read_tsv(extra):
             addr = int(r["addr"], 16)
+            if r["kind"] == "inlined":  # a KisakCOD function this build never has on its own
+                namer.reserve(r["name"])
+                stats["extra_inlined"] += 1
+                continue
             if r["kind"] == "note":  # a comment only, for a function that keeps its name or has none
                 namer.note(addr, r.get("pass") or "extra", r.get("evidence", ""), keep=True)
                 stats["extra_notes"] += 1

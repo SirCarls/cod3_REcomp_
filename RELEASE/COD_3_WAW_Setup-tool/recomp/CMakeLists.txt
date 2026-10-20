@@ -40,6 +40,14 @@ set(COD3_SOURCES
     src/game/cheat_guard.cpp
     src/game/cheat_watch.cpp
     src/game/color_output.cpp
+    src/game/crt_native.cpp  # [native-crt] the C runtime's busiest functions as native code
+    src/game/fmod_native.cpp  # [native-fmod] FMOD's reverb kernel as native code
+    src/game/lzo_native.cpp  # [native-lzo] the game's LZO1X decompressor as native code
+    src/game/crt_math_native.cpp  # [native-math] the C runtime's math and character functions as native code
+    src/game/fmod_resampler_native.cpp  # [native-resampler] FMOD's linear resampler as native code
+    src/game/fmod_mix_native.cpp  # [native-fmod-mix] FMOD's channel mix kernels as native code
+    src/game/crt_printf_native.cpp  # [native-printf] the C runtime's formatted output, sprintf and the like, as native code
+    src/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
     src/game/render_resolution.cpp
     src/game/engine.cpp
     src/game/fov.cpp
@@ -50,6 +58,7 @@ set(COD3_SOURCES
     src/game/render_job_timing.cpp  # [hw-scaling] the guest render job's time (campaign only)
     src/game/game_api.cpp
     src/game/hd_textures.cpp
+    src/game/heap_check.cpp  # [heap-check] a check of the game's C heap (a test switch; campaign only)
     src/game/job_wake.cpp
     src/game/machine_profile.cpp
     src/game/keybinds/binds.cpp  # [keybinds] the keyboard's own actions (campaign only)
@@ -77,6 +86,7 @@ set(COD3_SOURCES
     src/game/qte_actions.cpp
     src/game/screenshot.cpp
     src/game/shadows.cpp
+    src/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp
     src/game/voice_language.cpp  # [voice]

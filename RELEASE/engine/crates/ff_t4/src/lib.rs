@@ -22,38 +22,47 @@
 //!   size plus the 36-byte `XFile` header, and the SHA-256 of the first data
 //!   chunk and of the first hash chunk are where this layout says.
 //!
+//! The containers are read by the `fastfile` crate, which knows every game's
+//! fastfiles: a file from another game (Call of Duty 4, Black Ops, ... which
+//! share the magic) is refused here as that game's, never misread as World at
+//! War's ([`Error::OtherGame`]).
+//!
 //! Zone (little-endian on PC, big-endian on Xbox 360): an `XFile` header
 //! (`size`, `externalSize`, `blockSize[7]`) followed
 //! by the streamed `XAssetList`:
 //! `{ ScriptStringList { int count; const char** strings; }, int assetCount, XAsset* assets }`.
 //! A pointer value of -1 (0xFFFFFFFF) means "the data follows inline in the
-//! stream"; -2 means "inline and registered for later reuse"; other values
-//! are references to data already loaded (block index in the top 4 bits,
-//! offset + 1 below, as in the other IW-engine zone formats).
+//! stream"; -2 means "inline, with a slot that will hold it"; other values
+//! are references to data already loaded (block index in the top 3 bits,
+//! offset + 1 below; `Load_XModelPtr` 0x00480840 in CoDWaW.exe 1.7).
 //!
-//! Structures and the asset type order follow OpenAssetTools' T4 definitions
-//! (`src/Common/Game/T4/T4.h`, `T4_Assets.h`); see docs/SOURCES.md.
+//! **Every asset of a PC zone** is read by [`Zone::read_assets`] (`zone.rs`)
+//! the way the game's own loader does (blocks, inline data, references,
+//! inserted slots; read from CoDWaW.exe 1.7), following a layout file
+//! (`layout.rs`) that says what the loader reads, structure by structure. The
+//! reader checks a zone completely: the stream ends exactly at the zone's
+//! end, every block ends at the size the header gives, every reference lands
+//! on something loaded before. World at War PC's layout is not part of this
+//! crate (it was made with a type header that is not published; see
+//! docs/formats/waw.md); with it, all 129 fastfiles of the PC game read
+//! exactly. Xbox 360 zones are read up to the asset table; their raw files
+//! are found by their inline layout ([`Zone::scan_raw_files`]).
 //!
-//! Status: container, header, script strings and the asset table are read.
-//! Raw files (GSC/CSC scripts, configs) are located by their inline layout.
-//! The full streaming loader for every asset type is the next step.
+//! The asset type order follows OpenAssetTools' T4 definitions; see
+//! docs/formats/waw.md and docs/SOURCES.md.
 
 #![forbid(unsafe_code)]
 
+pub mod layout;
+pub mod zone;
+
 use std::fmt;
 
-pub const MAGIC_UNSIGNED: &[u8; 8] = b"IWffu100";
-pub const MAGIC_SIGNED: &[u8; 8] = b"IWff0100";
-pub const MAGIC_AUTH: &[u8; 8] = b"IWffs100";
+pub use zone::{LoadedAsset, LoadedZone, ZoneError};
+
+pub use fastfile::{MAGIC_AUTH, MAGIC_SIGNED, MAGIC_UNSIGNED};
 /// Retail World at War, PC and Xbox 360.
 pub const VERSION: u32 = 387;
-/// Signed Xbox 360 fastfiles are cut into chunks counted from the end of the
-/// 12-byte container header: the authentication header takes one chunk, and
-/// each group of data chunks is preceded by one chunk of their hashes.
-const SIGNED_CHUNK_SIZE: usize = 0x2000;
-const SIGNED_CHUNKS_PER_GROUP: usize = 256;
-const SIGNED_GROUP_DATA_SIZE: usize = SIGNED_CHUNK_SIZE * SIGNED_CHUNKS_PER_GROUP;
-const CONTAINER_HEADER_SIZE: usize = 12;
 /// The Xbox 360 asset type with no PC equivalent (see `AssetType::from_raw`).
 const XBOX360_EXTRA_TYPE: u32 = 7;
 pub const BLOCK_COUNT: usize = 7;
@@ -226,24 +235,28 @@ impl Platform {
 
 #[derive(Debug)]
 pub enum Error {
-    NotAFastfile,
-    UnsupportedVersion(u32),
-    Inflate(inflate::Error),
+    /// Not a fastfile we can read (`fastfile` says why).
+    Fastfile(fastfile::Error),
+    /// Another game's fastfile, or World at War's for a platform this reader
+    /// doesn't know (Wii, PS3).
+    OtherGame(fastfile::Identity),
     Truncated(&'static str),
+    /// Reading the assets failed (the zone doesn't fit the layout).
+    Zone(ZoneError),
+    /// Only PC zones are read asset by asset so far.
+    NotPc,
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotAFastfile => write!(
-                f,
-                "not a World at War fastfile (expected IWffu100 or IWff0100)"
-            ),
-            Error::UnsupportedVersion(v) => {
-                write!(f, "unsupported fastfile version {v} (expected {VERSION})")
+            Error::Fastfile(e) => write!(f, "{e}"),
+            Error::OtherGame(identity) => {
+                write!(f, "{identity}, not a World at War PC or Xbox 360 fastfile")
             }
-            Error::Inflate(e) => write!(f, "zlib: {e}"),
             Error::Truncated(what) => write!(f, "zone truncated while reading {what}"),
+            Error::Zone(e) => write!(f, "{e}"),
+            Error::NotPc => write!(f, "only PC zones are read asset by asset so far"),
         }
     }
 }
@@ -258,64 +271,29 @@ pub struct Container {
     pub zone: Vec<u8>,
 }
 
-/// Which platform the version field's byte order says, if it is 387.
-fn platform_of(version: [u8; 4]) -> Result<Platform, Error> {
-    if u32::from_le_bytes(version) == VERSION {
-        Ok(Platform::Pc)
-    } else if u32::from_be_bytes(version) == VERSION {
-        Ok(Platform::Xbox360)
-    } else {
-        Err(Error::UnsupportedVersion(u32::from_le_bytes(version)))
-    }
-}
-
-/// The data of a signed fastfile: its data chunks joined, without the
-/// authentication header and the hash chunks.
-fn signed_data(file: &[u8]) -> Vec<u8> {
-    let mut data = Vec::with_capacity(file.len());
-    // Skip the container header and the authentication header chunk.
-    let mut hash_chunk = CONTAINER_HEADER_SIZE + SIGNED_CHUNK_SIZE;
-    loop {
-        let start = hash_chunk + SIGNED_CHUNK_SIZE;
-        if start >= file.len() {
-            break;
-        }
-        let end = (start + SIGNED_GROUP_DATA_SIZE).min(file.len());
-        data.extend_from_slice(&file[start..end]);
-        hash_chunk = end;
-    }
-    data
-}
-
-/// Decompresses a PC or Xbox 360 fastfile into its zone bytes.
+/// Decompresses a PC or Xbox 360 World at War fastfile into its zone bytes
+/// (the `fastfile` crate reads the container and says which game it is).
 pub fn read_container(file: &[u8]) -> Result<Container, Error> {
-    if file.len() < CONTAINER_HEADER_SIZE {
-        return Err(Error::NotAFastfile);
-    }
-    let magic = &file[..8];
-    let platform = platform_of(file[8..12].try_into().unwrap())?;
-    if magic == MAGIC_UNSIGNED {
-        let zone = inflate::inflate_zlib(&file[CONTAINER_HEADER_SIZE..], file.len() * 3)
-            .map_err(Error::Inflate)?;
-        return Ok(Container {
-            platform,
-            signed: false,
-            zone,
-        });
-    }
-    if magic == MAGIC_SIGNED && file.get(12..20) == Some(MAGIC_AUTH.as_slice()) {
-        let data = signed_data(file);
-        if data.is_empty() {
-            return Err(Error::Truncated("signed data"));
-        }
-        let zone = inflate::inflate_zlib(&data, file.len() * 3).map_err(Error::Inflate)?;
-        return Ok(Container {
-            platform,
-            signed: true,
-            zone,
-        });
-    }
-    Err(Error::NotAFastfile)
+    let head = &file[..file.len().min(fastfile::IDENTIFY_SIZE)];
+    let Some(identity) = fastfile::identify(head) else {
+        // Not a fastfile we know: `fastfile::read` says why (not a fastfile at
+        // all, or a version no game uses).
+        let why = fastfile::read(head).err();
+        return Err(Error::Fastfile(
+            why.unwrap_or(fastfile::Error::NotAFastfile),
+        ));
+    };
+    let platform = match (identity.game, identity.platform) {
+        (fastfile::Game::WorldAtWar, fastfile::Platform::Pc) => Platform::Pc,
+        (fastfile::Game::WorldAtWar, fastfile::Platform::Xbox360) => Platform::Xbox360,
+        _ => return Err(Error::OtherGame(identity)),
+    };
+    let zone = fastfile::read(file).map_err(Error::Fastfile)?;
+    Ok(Container {
+        platform,
+        signed: zone.identity.signed,
+        zone: zone.data,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -451,6 +429,19 @@ impl Zone {
         })
     }
 
+    /// Reads every asset of a PC zone the way the game's loader does
+    /// (`zone.rs`), following `layout` (`layout.rs`). The result's
+    /// `problems` are empty when the zone reads exactly; an error means the
+    /// reader could not go on (or the layout lacks a structure it needs).
+    pub fn read_assets(&self, layout: &layout::Layout) -> Result<LoadedZone, Error> {
+        if self.platform != Platform::Pc {
+            return Err(Error::NotPc);
+        }
+        zone::Reader::new(layout, &self.data)
+            .and_then(zone::Reader::run)
+            .map_err(Error::Zone)
+    }
+
     /// The name of a zone's asset type number ("?" if unknown).
     pub fn type_name(&self, raw_type: u32) -> &'static str {
         AssetType::from_raw(raw_type, self.platform)
@@ -513,6 +504,36 @@ impl Zone {
                 });
             }
             i = data_start + len + 1;
+        }
+        out
+    }
+}
+
+impl LoadedZone {
+    /// The raw files (scripts, configs) among the assets read, exactly as
+    /// stored: `RawFile { name, len, buffer }`.
+    pub fn raw_files(&self) -> Vec<RawFile> {
+        let mut out = Vec::new();
+        for a in &self.assets {
+            if a.type_number != AssetType::RawFile as u32 {
+                continue;
+            }
+            let (Some(len), Some(buffer)) = (self.u32(a.address + 4), self.u32(a.address + 8))
+            else {
+                continue;
+            };
+            let data = if buffer == 0 {
+                Vec::new()
+            } else {
+                match self.bytes(buffer, len as usize) {
+                    Some(b) => b.to_vec(),
+                    None => continue,
+                }
+            };
+            out.push(RawFile {
+                name: a.name.clone(),
+                data,
+            });
         }
         out
     }
@@ -591,32 +612,67 @@ mod tests {
         }
     }
 
-    #[test]
-    fn xbox_360_signed_skips_hash_chunks() {
-        // Data that spans two groups, so a hash chunk sits in the middle.
-        let payload: Vec<u8> = (0..SIGNED_GROUP_DATA_SIZE + 100)
-            .map(|i| (i % 251) as u8)
-            .collect();
-        let header = |file: &mut Vec<u8>| {
-            file.extend_from_slice(MAGIC_SIGNED);
-            file.extend_from_slice(&VERSION.to_be_bytes());
-            file.extend_from_slice(MAGIC_AUTH);
-            file.resize(CONTAINER_HEADER_SIZE + 2 * SIGNED_CHUNK_SIZE, 0xAA);
-        };
-        let mut file = Vec::new();
-        header(&mut file);
-        file.extend_from_slice(&payload[..SIGNED_GROUP_DATA_SIZE]);
-        file.extend(std::iter::repeat(0xEE).take(SIGNED_CHUNK_SIZE));
-        file.extend_from_slice(&payload[SIGNED_GROUP_DATA_SIZE..]);
-        assert_eq!(signed_data(&file), payload);
+    /// A layout with the one structure the raw file zone needs.
+    const RAWFILE_LAYOUT: &str = "\
+asset 32 rawfile RawFile
+struct RawFile 0xc
+  0x0004 len i32
+  0x0000 name string
+  0x0008 buffer ptr u8 count=len+1
+";
 
-        // A whole signed file with a small zone.
-        let mut small = Vec::new();
-        header(&mut small);
+    #[test]
+    fn a_pc_zone_is_read_asset_by_asset() {
+        let layout = layout::Layout::parse(RAWFILE_LAYOUT).unwrap();
+        let mut zone = zone_with_rawfile(false);
+        // block sizes: TEMP holds the 12-byte RawFile, VIRTUAL the asset
+        // array (8), the name (11) and the buffer (6)
+        zone[8..12].copy_from_slice(&12u32.to_le_bytes());
+        zone[24..28].copy_from_slice(&25u32.to_le_bytes());
+        let zone = Zone::from_zone(zone, Platform::Pc).unwrap();
+        let loaded = zone.read_assets(&layout).unwrap();
+        assert_eq!(loaded.problems, Vec::<String>::new());
+        let raw = loaded.raw_files();
+        assert_eq!(
+            (raw[0].name.as_str(), raw[0].data.as_slice()),
+            ("maps/x.gsc", &b"hello"[..])
+        );
+        let xbox = Zone::from_zone(zone_with_rawfile(true), Platform::Xbox360).unwrap();
+        assert!(matches!(xbox.read_assets(&layout), Err(Error::NotPc)));
+    }
+
+    /// The container header, then the 8 KB authentication chunk and one
+    /// hash chunk (the `fastfile` crate tests the chunk groups in full).
+    const SIGNED_HEADER_SIZE: usize = 12 + 2 * 0x2000;
+
+    #[test]
+    fn xbox_360_signed() {
+        let mut small = MAGIC_SIGNED.to_vec();
+        small.extend_from_slice(&VERSION.to_be_bytes());
+        small.extend_from_slice(MAGIC_AUTH);
+        small.resize(SIGNED_HEADER_SIZE, 0xAA);
         small.extend(zlib_stored(&zone_with_rawfile(true)));
         let container = read_container(&small).unwrap();
         assert!(container.signed);
         assert_eq!(container.platform, Platform::Xbox360);
         assert_eq!(container.zone, zone_with_rawfile(true));
+    }
+
+    #[test]
+    fn other_games_are_refused_as_theirs() {
+        // Call of Duty 4 on PC: the same magic, version 5.
+        let mut cod4 = MAGIC_UNSIGNED.to_vec();
+        cod4.extend_from_slice(&5u32.to_le_bytes());
+        cod4.extend(zlib_stored(&zone_with_rawfile(false)));
+        match read_container(&cod4) {
+            Err(Error::OtherGame(identity)) => {
+                assert_eq!(identity.game, fastfile::Game::CallOfDuty4)
+            }
+            other => panic!("{:?}", other.err()),
+        }
+        assert!(matches!(
+            read_container(b"not a fastfile at all"),
+            Err(Error::Fastfile(fastfile::Error::NotAFastfile))
+        ));
     }
 }

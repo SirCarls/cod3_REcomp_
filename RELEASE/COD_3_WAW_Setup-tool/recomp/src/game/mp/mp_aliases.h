@@ -30,6 +30,8 @@
 #define __imp__nglListAddQuad __imp__sub_82142988
 #define nglListAddString sub_8214CE30  // 0x82134F70 -> 0x8214CE30
 #define __imp__nglListAddString __imp__sub_8214CE30
+#define sub_821258C8 sub_82137910  // 0x821258C8 -> 0x82137910
+#define __imp__sub_821258C8 __imp__sub_82137910
 #define sub_8212A100 Jobs_WakeWorkers  // 0x8212A100 -> 0x82141E40
 #define __imp__sub_8212A100 __imp__Jobs_WakeWorkers
 #define sub_8212A110 sub_82141E50  // 0x8212A110 -> 0x82141E50
@@ -44,12 +46,88 @@
 #define __imp__sub_822EBFE8 __imp__sub_822BAD30
 #define sub_822EC168 sub_822BAEB0  // 0x822EC168 -> 0x822BAEB0
 #define __imp__sub_822EC168 __imp__sub_822BAEB0
+#define sub_822F1340 sub_822C0060  // 0x822F1340 -> 0x822C0060
+#define __imp__sub_822F1340 __imp__sub_822C0060
+#define sub_82343548 sub_82312698  // 0x82343548 -> 0x82312698
+#define __imp__sub_82343548 __imp__sub_82312698
 #define sub_82344F98 sub_82314360  // 0x82344F98 -> 0x82314360
 #define __imp__sub_82344F98 __imp__sub_82314360
 #define sub_82344FC0 sub_82314390  // 0x82344FC0 -> 0x82314390
 #define __imp__sub_82344FC0 __imp__sub_82314390
 #define sub_82345000 sub_823143D0  // 0x82345000 -> 0x823143D0
 #define __imp__sub_82345000 __imp__sub_823143D0
+#define sub_8234B740 sub_8231AC80  // 0x8234B740 -> 0x8231AC80
+#define __imp__sub_8234B740 __imp__sub_8231AC80
+#define sub_8234BBD8 sub_8231B808  // 0x8234BBD8 -> 0x8231B808
+#define __imp__sub_8234BBD8 __imp__sub_8231B808
+#define sub_8234BFF8 sub_8231BD48  // 0x8234BFF8 -> 0x8231BD48
+#define __imp__sub_8234BFF8 __imp__sub_8231BD48
+#define sub_8234C038 sub_8231BD88  // 0x8234C038 -> 0x8231BD88
+#define __imp__sub_8234C038 __imp__sub_8231BD88
+#define sub_8234C058 sub_8231BDA8  // 0x8234C058 -> 0x8231BDA8
+#define __imp__sub_8234C058 __imp__sub_8231BDA8
+#define sub_8234CF18 sub_8231CC68  // 0x8234CF18 -> 0x8231CC68
+#define __imp__sub_8234CF18 __imp__sub_8231CC68
+#define sub_8234D010 sub_8231CD60  // 0x8234D010 -> 0x8231CD60
+#define __imp__sub_8234D010 __imp__sub_8231CD60
+#define sub_8234DD18 sub_8231B278  // 0x8234DD18 -> 0x8231B278
+#define __imp__sub_8234DD18 __imp__sub_8231B278
+#define sub_8234E430 sub_8231DA90  // 0x8234E430 -> 0x8231DA90
+#define __imp__sub_8234E430 __imp__sub_8231DA90
+#define sub_8234E468 sub_8231DAC8  // 0x8234E468 -> 0x8231DAC8
+#define __imp__sub_8234E468 __imp__sub_8231DAC8
+#define sub_8234E600 sub_8231DC60  // 0x8234E600 -> 0x8231DC60
+#define __imp__sub_8234E600 __imp__sub_8231DC60
+#define sub_8234E650 sub_8231DCB0  // 0x8234E650 -> 0x8231DCB0
+#define __imp__sub_8234E650 __imp__sub_8231DCB0
+#define sub_8234E890 sub_8231DDD0  // 0x8234E890 -> 0x8231DDD0
+#define __imp__sub_8234E890 __imp__sub_8231DDD0
+#define sub_8234E8E8 sub_8231DE28  // 0x8234E8E8 -> 0x8231DE28
+#define __imp__sub_8234E8E8 __imp__sub_8231DE28
+#define sub_8234E980 sub_8231DEC0  // 0x8234E980 -> 0x8231DEC0
+#define __imp__sub_8234E980 __imp__sub_8231DEC0
+#define sub_8234EC40 sub_8231E180  // 0x8234EC40 -> 0x8231E180
+#define __imp__sub_8234EC40 __imp__sub_8231E180
+#define sub_8234ED28 sub_8231E268  // 0x8234ED28 -> 0x8231E268
+#define __imp__sub_8234ED28 __imp__sub_8231E268
+#define sub_8234F0E0 sub_8231E620  // 0x8234F0E0 -> 0x8231E620
+#define __imp__sub_8234F0E0 __imp__sub_8231E620
+#define sub_8234F180 sub_823204E8  // 0x8234F180 -> 0x823204E8
+#define __imp__sub_8234F180 __imp__sub_823204E8
+#define sub_82350BA8 sub_82320008  // 0x82350BA8 -> 0x82320008
+#define __imp__sub_82350BA8 __imp__sub_82320008
+#define sub_82353528 sub_82323130  // 0x82353528 -> 0x82323130
+#define __imp__sub_82353528 __imp__sub_82323130
+#define sub_82353618 sub_82323220  // 0x82353618 -> 0x82323220
+#define __imp__sub_82353618 __imp__sub_82323220
+#define sub_82353728 sub_82323328  // 0x82353728 -> 0x82323328
+#define __imp__sub_82353728 __imp__sub_82323328
+#define sub_82353B58 sub_82323758  // 0x82353B58 -> 0x82323758
+#define __imp__sub_82353B58 __imp__sub_82323758
+#define sub_82355AF8 sub_823256F8  // 0x82355AF8 -> 0x823256F8
+#define __imp__sub_82355AF8 __imp__sub_823256F8
+#define sub_82392B50 sub_82362220  // 0x82392B50 -> 0x82362220
+#define __imp__sub_82392B50 __imp__sub_82362220
+#define sub_823A65A8 sub_82375C30  // 0x823A65A8 -> 0x82375C30
+#define __imp__sub_823A65A8 __imp__sub_82375C30
+#define sub_823AF9E0 sub_8237F068  // 0x823AF9E0 -> 0x8237F068
+#define __imp__sub_823AF9E0 __imp__sub_8237F068
+#define sub_823AFB68 sub_8237F1F0  // 0x823AFB68 -> 0x8237F1F0
+#define __imp__sub_823AFB68 __imp__sub_8237F1F0
+#define sub_823B07C8 sub_8237FE50  // 0x823B07C8 -> 0x8237FE50
+#define __imp__sub_823B07C8 __imp__sub_8237FE50
+#define sub_823BA518 sub_82389BA0  // 0x823BA518 -> 0x82389BA0
+#define __imp__sub_823BA518 __imp__sub_82389BA0
+#define sub_823BD5D8 sub_8238CC60  // 0x823BD5D8 -> 0x8238CC60
+#define __imp__sub_823BD5D8 __imp__sub_8238CC60
+#define sub_823BD6C0 sub_8238CD48  // 0x823BD6C0 -> 0x8238CD48
+#define __imp__sub_823BD6C0 __imp__sub_8238CD48
+#define sub_823BD7C0 sub_8238CE48  // 0x823BD7C0 -> 0x8238CE48
+#define __imp__sub_823BD7C0 __imp__sub_8238CE48
+#define sub_823BD998 sub_8238D020  // 0x823BD998 -> 0x8238D020
+#define __imp__sub_823BD998 __imp__sub_8238D020
+#define sub_823F04B0 sub_8240A0C0  // 0x823F04B0 -> 0x8240A0C0
+#define __imp__sub_823F04B0 __imp__sub_8240A0C0
 #define sub_82419098 sub_82430E70  // 0x82419098 -> 0x82430E70
 #define __imp__sub_82419098 __imp__sub_82430E70
 #define sub_82425BD0 sub_8243D590  // 0x82425BD0 -> 0x8243D590
@@ -68,3 +146,7 @@
 #define __imp__sub_82522138 __imp__sub_82543340
 #define sub_82525190 sub_82545F88  // 0x82525190 -> 0x82545F88
 #define __imp__sub_82525190 __imp__sub_82545F88
+#define tolower_guest sub_8231BBF0  // 0x8234BFC0 -> 0x8231BBF0
+#define __imp__tolower_guest __imp__sub_8231BBF0
+#define toupper_guest sub_8231D160  // 0x8234D410 -> 0x8231D160
+#define __imp__toupper_guest __imp__sub_8231D160

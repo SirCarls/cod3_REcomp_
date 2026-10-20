@@ -7,4 +7,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-inflate = { path = "../inflate" }
+fastfile = { path = "../fastfile" }

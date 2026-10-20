@@ -34,10 +34,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "ff_t4"
+name = "fastfile"
 version = "0.1.0"
 dependencies = [
  "inflate",
+]
+
+[[package]]
+name = "ff_t4"
+version = "0.1.0"
+dependencies = [
+ "fastfile",
 ]
 
 [[package]]
@@ -139,6 +146,7 @@ version = "0.1.0"
 dependencies = [
  "cod3_assets",
  "cod3_mesh",
+ "fastfile",
  "ff_t4",
  "kapf",
  "png_read",

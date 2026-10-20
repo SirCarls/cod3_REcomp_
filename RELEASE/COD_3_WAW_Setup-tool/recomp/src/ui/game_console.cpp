@@ -293,6 +293,32 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
 #endif
     if (HandleLocal(ToLower(args[0]), args, source)) continue;
     if (HandleWaw(cmd, args)) continue;
+    // [native-crt] cod3_profile (the function profiler; it only reads) from
+    // this console and from cod3_autoexec too, not only from the F10 log
+    // console: "cod3_profile XThread82387D30 10". Typed or start-up script only.
+    // [native-lzo] The same for cod3_native_lzo_report (it only writes its
+    // counters to the log).
+    // [native-math] And cod3_native_math_report (the same) and
+    // cod3_native_math_test N (compares at most 2,000,000 more arguments per
+    // function with the game's code; the game pauses a few seconds at most).
+    // [native-printf] And cod3_native_printf_report and cod3_native_printf_test
+    // N (compares at most 1,000,000 more random formats with the game's code).
+    // [native-strtol] And cod3_native_strtol_report and cod3_native_strtol_test N.
+    // [native-fmod-mix] And cod3_native_resampler_report and
+    // cod3_native_fmod_mix_report (they only write their counters to the log).
+    if ((ToLower(args[0]) == "cod3_profile" || ToLower(args[0]) == "cod3_native_lzo_report" ||
+         ToLower(args[0]) == "cod3_native_math_report" ||
+         ToLower(args[0]) == "cod3_native_math_test" ||
+         ToLower(args[0]) == "cod3_native_printf_report" ||
+         ToLower(args[0]) == "cod3_native_printf_test" ||
+         ToLower(args[0]) == "cod3_native_strtol_report" ||
+         ToLower(args[0]) == "cod3_native_strtol_test" ||
+         ToLower(args[0]) == "cod3_native_resampler_report" ||
+         ToLower(args[0]) == "cod3_native_fmod_mix_report") &&
+        (source == cheats::Source::kConsole || source == cheats::Source::kAutoexec)) {
+      rex::cvar::InvokeCommand(ToLower(args[0]), args.size() > 1 ? JoinFrom(args, 1) : std::string());
+      continue;
+    }
     // native-render: the port's own settings by their own names too
     // ("cod3_render_percent 75", also from cod3_autoexec), like the F10 log
     // console; F2 shows the new value.

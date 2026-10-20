@@ -29,11 +29,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from . import fastfiles as game_files
 from .common import IS_WINDOWS, Cancelled, Log, Runner, SetupError, copy_tree, is_within, safe_rmtree
 from .xiso import XisoImage, looks_like_xiso
 
 STEAM_APPID = "10090"
 STEAM_INSTALL_DIR = "Call of Duty World at War"
+# [fastfiles] How many of a disc's fastfiles are read to tell which game it is.
+IDENTIFY_FILES = 3
 STOCK_ZOMBIE_MAPS = [
     ("Nacht der Untoten", "nazi_zombie_prototype"),
     ("Verruckt", "nazi_zombie_asylum"),
@@ -182,10 +185,16 @@ def check_xbox360_image(path: Path) -> Tuple[bool, str]:
             # The Xbox 360 disc keeps its fastfiles in the root folder (the PC
             # version uses zone/<language>/).
             fastfiles = [e for e in img.files if e.path.lower().endswith(".ff")]
+            # [fastfiles] Call of Duty 4, Modern Warfare 2 and Black Ops discs
+            # have fastfiles too: their headers say which game it is.
+            other = game_files.other_game(game_files.identify(img.read(e.path, game_files.READ_SIZE))
+                                          for e in fastfiles[:IDENTIFY_FILES])
     except (OSError, SetupError) as e:
         return False, str(e)
     if not fastfiles:
         return False, "No World at War fastfiles (*.ff) on this disc image."
+    if other:
+        return False, f"This is a {other.game_name} ({other.platform}) disc image, not World at War."
     return True, f"Xbox 360 disc image with {len(fastfiles)} fastfiles."
 
 
@@ -430,6 +439,12 @@ def install_custom_map(src: Path, output: Path, scratch: Path, unpackers: Unpack
     mods, usermaps = _map_content(staged)
     if not mods and not usermaps:
         raise SetupError(f"No World at War mod or map (mod.ff or a usermaps folder) found in {src.name}.")
+    # [fastfiles] Black Ops custom maps use mod.ff and usermaps/ too.
+    other = game_files.other_game(game_files.identify_file(p) for folder in mods + usermaps
+                                  for p in sorted(folder.rglob("*")) if p.suffix.lower() == ".ff")
+    if other:
+        raise SetupError(f"{src.name} is a mod or map for {other.game_name} ({other.platform}), "
+                         "not World at War: its fastfiles are that game's.")
     installed = {}
     for kind, folders in (("mods", mods), ("usermaps", usermaps)):
         for folder in folders:

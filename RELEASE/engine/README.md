@@ -9,13 +9,14 @@ This is the native Rust side of the project. It builds on Linux and Windows with
 |---|---|
 | `crates/inflate` | DEFLATE/zlib decoder with no dependencies. It reads WaW fastfiles and `.iwd` zip members. |
 | `crates/lzo` | LZO1X decoder with no dependencies. Call of Duty 3 packs its archives' chunks with it ("NCH" blocks). |
-| `crates/kapf` | Call of Duty 3 `.cod` archive reader. `kapf` covers the KAPF header, sections, chunk table and NCH/LZO1X unpacking. `kapf::apkf` covers the APKF directory, data areas, and pointer and import tables; `Chunk::link` follows a field to what it points at. |
+| `crates/fastfile` | Which Call of Duty game and platform a fastfile (`.ff`) comes from, from its header (Call of Duty 2 on the Xbox 360, Call of Duty 4, World at War, Modern Warfare 2 and 3, Black Ops I and II, Ghosts, Advanced Warfare, Black Ops III), and its zone, for every game and platform whose packing is decoded (`../docs/formats/fastfiles.md`). Uses `inflate`. |
+| `crates/kapf` | Call of Duty 3 `.cod` archive reader (also Call of Duty 2: Big Red One's older archives; `Archive::game` says which). `kapf` covers the KAPF header, sections, chunk table and NCH/LZO1X unpacking. `kapf::apkf` covers the APKF directory, data areas, and pointer and import tables; `Chunk::link` follows a field to what it points at. |
 | `crates/xenos` | Xbox 360 GPU texture data: fetch constants, untiling, endian swap, DDS output (also with mip chains), BC1/2/3/5 → RGBA (`bc`), RGBA → BC1/2/3/5 (`bc_encode`), and the HD texture key (XXH64, `xxh64`). |
 | `crates/png_write` | RGBA → PNG (uses `miniz_oxide` for zlib). |
 | `crates/png_read` | 8-bit PNG (gray, RGB, gray + alpha, RGBA; not interlaced) → RGBA, using `inflate`. |
 | `crates/cod3_assets` | CoD3 materials (MAT), models (MLTI) and texture sets. |
 | `crates/cod3_mesh` | CoD3 meshes: surfaces, vertex declarations, Xbox 360 buffers, LODs → glTF 2.0 with materials. |
-| `crates/ff_t4` | World at War (T4) fastfile reader for PC and Xbox 360 (unsigned and signed): container, zone header, script strings, asset table. Raw files (GSC/CSC) are found today; the full asset loader is next. Formats are in `../docs/formats/waw.md`. |
+| `crates/ff_t4` | World at War (T4) fastfile reader for PC and Xbox 360 (unsigned and signed; the container through `fastfile`, so other games' files are refused as theirs): zone header, script strings, asset table, raw files (GSC/CSC). PC zones are read asset by asset the way the game's loader does and checked (`zone.rs`), following a layout file given as input (`layout.rs` describes the format; World at War PC's is private). Formats are in `../docs/formats/waw.md`. |
 | `crates/cod3_game` | Call of Duty 3's own code decompiled into Rust, one function at a time: `shared`, `math` and `script` are the exact console behavior, checked against the original; `engine` is the layer the remake uses, with the same results and none of the Xbox 360's limits (see `../docs/DECOMP.md`). No dependencies. |
 | `tools/rip` | The command-line ripper (below). |
 | `tools/decomp_check` | Runs the `cod3_game` ports for the decomp checker (`../tools/decomp/decomp.py check`). |
@@ -43,11 +44,16 @@ rip cod3-chunks <file.cod> <out>      one archive's unpacked chunks (research)
 rip cod3-hd-pack <textures> <upscaled> <out>
                                       the HD texture pack: upscaled PNGs (any scale) as DDS in
                                       the game's formats with full mip chains, plus index.tsv
+rip identify <file | folder> [--open] which game each .ff / .cod file comes from; --open also
+                                      unpacks each one and checks its zone (or archive table)
 rip waw-ff <file.ff> <out>            a WaW fastfile's asset list and raw files
+rip waw-zone <file.ff | folder> --layout <file>
+                                      reads every asset of WaW PC fastfiles the way the game's
+                                      loader does, and checks each zone
 rip version                           version, and the output layout number the setup tool checks
 ```
 
-`cod3-check`, `cod3-all` and `cod3-hd-pack` use every CPU core; `--jobs N` limits them. The output of `cod3-all` is:
+`cod3-check`, `cod3-all` and `cod3-hd-pack` use every CPU core; `--jobs N` limits them. `--layout <file>` (or `RIP_WAW_LAYOUT`) gives World at War's zone layout; with it `waw-ff` and `identify --open` also read PC zones asset by asset. The output of `cod3-all` is:
 
 - `textures/<name>.dds` and `.png`, shared by all archives (the game finds textures by name);
 - `textures/hd_keys.tsv`: the key of every texture instance for the HD texture pack, with the PNG that holds its own picture (`cod3-tex` writes it too); other pictures saved under a name another archive already used are `textures/<name>__<key>.png`;

@@ -1,12 +1,13 @@
 [package]
 name = "rip"
-description = "Rips CoD3 and WaW assets from the user's own files into open formats."
+description = "Rips CoD3 and WaW assets from the user's own files into open formats, and tells which game a fastfile or archive comes from."
 version.workspace = true
 rust-version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+fastfile = { path = "../../crates/fastfile" }
 ff_t4 = { path = "../../crates/ff_t4" }
 kapf = { path = "../../crates/kapf" }
 xenos = { path = "../../crates/xenos" }

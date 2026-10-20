@@ -49,6 +49,11 @@ X86_HELPER = re.compile(r"^(__SEH_|__EH_|_?_chkstk|__alloca_probe|_?_ftol|__dtol
                         r"__security_|@__security|___report_gsfailure|__except_handler|__local_unwind|"
                         r"__global_unwind|__NLG_|__abnormal_termination|__fpclear|__fprem|__fpmath|__fptrap)")
 GENERIC_NAME = re.compile(r"^(FUN_|thunk_|table_|Dvar_Register_[0-9A-F]{8}$|LAB_|DAT_|switch|_?guard)")
+# Wrappers one build inlines: (inner, wrapper).  World at War's PC builds inline I_stricmp (it calls
+# I_strnicmp with count 0x7FFFFFFF) and call I_strnicmp directly; the Xbox 360 builds keep the
+# wrapper.  A build that has the inner function but not the wrapper pairs its inner function with
+# the other build's wrapper, which is what the same callers call there.
+INLINED_WRAPPERS = [("I_strnicmp", "I_stricmp")]
 
 
 class Build:
@@ -200,6 +205,11 @@ class Matcher:
         for b, n in self.B.names.items():
             nb[n].append(b)
         n_new = 0
+        for inner, wrapper in INLINED_WRAPPERS:
+            for x, y in ((na, nb), (nb, na)):
+                if len(x.get(inner, [])) == 1 and wrapper not in x and len(y.get(wrapper, [])) == 1:
+                    a, b = (x[inner][0], y[wrapper][0]) if x is na else (y[wrapper][0], x[inner][0])
+                    n_new += self.take(a, b, "name", 1)
         for n, la in na.items():
             lb = nb.get(n)
             if len(la) == 1 and lb and len(lb) == 1 and not GENERIC_NAME.match(n):

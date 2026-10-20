@@ -1,0 +1,381 @@
+Subject: [PATCH] xma: a restarted voice puts its decoder back instead of reopening it
+
+A freed or cleared XMA context reopened its FFmpeg decoder on the next decode
+(the cached format was invalidated), so every restart rebuilt the decoder's
+five MDCTs, their sine tables and seven VLC tables: on the owner's PC that was
+about 12% of the FMOD sound thread's time, twice its real decoding.
+
+The decoder's private data is kept as it was just after avcodec_open2 (its
+non-zero byte runs) and put back byte for byte at a restart, after
+avcodec_flush_buffers. Its pointers are the same allocations of the same open
+context and decoding only reads them, so the decoder starts exactly as a
+reopened one would. For the first 24 restarts of a session a reopened decoder
+decodes the same packets beside the restored one (up to 8 each) and the frames
+are compared bit for bit; a difference logs an error, gives the game the
+reopened decoder's frame and decoder, and makes every later restart reopen as
+before. xma_restart_without_reopen (Audio, on) switches it off.
+
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -13,7 +13,10 @@
+ 
+ #include <array>
+ #include <atomic>
++#include <cstddef>
+ #include <mutex>
++#include <utility>
++#include <vector>
+ 
+ #include <rex/kernel.h>
+ #include <rex/memory.h>
+@@ -256,6 +259,17 @@
+   void ClearLocked(XMA_CONTEXT_DATA* data);
+   void ResetDecoderState();
+ 
++  // [cod3 0066] A restart without reopening the decoder: its private state
++  // as it was just after avcodec_open2 (kept as its non-zero byte runs, as it
++  // is mostly zeros) is put back instead. For the first restarts of a session
++  // a reopened decoder decodes the same packets beside it and the frames are
++  // compared (xma_restart_without_reopen).
++  void SnapshotDecoder();
++  bool RestoreDecoder();
++  void StartRestartCheck();
++  void EndRestartCheck();
++  bool CheckRestartedDecode(bool decoded);
++
+   memory::RingBuffer PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data);
+   int PrepareDecoder(int sample_rate, bool is_two_channel);
+   void PreparePacket(uint32_t frame_size, uint32_t frame_padding);
+@@ -309,6 +323,20 @@
+   bool carry_valid_ = false;
+   uint8_t pending_output_limit_ = 0;
+   uint8_t pending_start_skip_ = 0;
++
++  // [cod3 0066] the decoder's state just after it was opened: (offset,
++  // length) runs into pristine_bytes_; every other byte of the codec's
++  // private data was zero. pristine_size_ 0: none kept.
++  std::vector<std::pair<uint32_t, uint32_t>> pristine_runs_;
++  std::vector<uint8_t> pristine_bytes_;
++  size_t pristine_size_ = 0;
++  // A reopened decoder run beside a restored one, and packets left to compare.
++  AVCodecContext* check_context_ = nullptr;
++  AVFrame* check_frame_ = nullptr;
++  uint32_t check_packets_left_ = 0;
++  uint32_t check_compared_ = 0;
++  // Restored since the last decode: check the next decode, if the format holds.
++  bool restart_check_pending_ = false;
+ };
+ 
+ }  // namespace rex::audio
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -10,11 +10,14 @@
+ */
+ 
+ #include <algorithm>
++#include <atomic>
+ #include <cstring>
++#include <utility>
+ 
+ #include <rex/audio/xma/context.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
++#include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+ #include <rex/memory/ring_buffer.h>
+@@ -33,6 +36,14 @@
+ #endif
+ }  // extern "C"
+ 
++// [cod3 0066] see XmaContext::ResetDecoderState.
++REXCVAR_DEFINE_BOOL(xma_restart_without_reopen, true, "Audio",
++                    "A restarted XMA voice puts its decoder back the way it was just after it was "
++                    "opened instead of opening it again: the same sound without rebuilding the "
++                    "decoder's tables at every restart. The first restarts are checked against a "
++                    "reopened decoder")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ // Credits for most of this code goes to:
+ // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+ 
+@@ -40,6 +51,36 @@
+ 
+ using stream::BitStream;
+ 
++namespace {
++// [cod3 0066] Restarts compared with a reopened decoder this session (each for
++// up to kRestartCheckPackets packets), and whether a difference was ever seen:
++// then every restart reopens the decoder again, as before.
++constexpr int kRestartChecks = 24;
++constexpr uint32_t kRestartCheckPackets = 8;
++std::atomic<int> restart_checks_left{kRestartChecks};
++std::atomic<int> restart_checks_passed{0};
++std::atomic<bool> restart_differs{false};
++
++// The decoder's frames are planar float (decode_init sets AV_SAMPLE_FMT_FLTP);
++// anything else counts as different.
++bool SameFrame(const AVFrame* a, const AVFrame* b, int channels) {
++  if (a->nb_samples != b->nb_samples || a->format != b->format || a->format != AV_SAMPLE_FMT_FLTP ||
++      channels < 1 || channels > AV_NUM_DATA_POINTERS) {
++    return false;
++  }
++  const size_t bytes = static_cast<size_t>(a->nb_samples) * sizeof(float);
++  for (int c = 0; c < channels; ++c) {
++    if (!a->data[c] || !b->data[c]) {
++      return false;
++    }
++    if (std::memcmp(a->data[c], b->data[c], bytes) != 0) {
++      return false;
++    }
++  }
++  return true;
++}
++}  // namespace
++
+ const uint32_t XmaContext::kBitsPerPacketHeader;
+ const uint32_t XmaContext::kOutputMaxSizeBytes;
+ 
+@@ -47,6 +88,7 @@
+     : work_completion_event_(rex::thread::Event::CreateAutoResetEvent(false)) {}
+ 
+ XmaContext::~XmaContext() {
++  EndRestartCheck();
+   if (av_context_) {
+     avcodec_free_context(&av_context_);
+   }
+@@ -208,11 +250,22 @@
+   // wave's MDCT overlap-add tail must not survive into frame 0 of the next one.
+   // avcodec_flush_buffers() cannot drop it: ff_xmaframes_decoder declares no
+   // flush callback, so the call never reaches the code clearing channel[].out.
+-  // Invalidating the cached format makes PrepareDecoder reopen the codec on the
+-  // next decode, which does discard the history.
++  // [cod3 0066] So the decoder's private state goes back byte for byte to how
++  // it was just after avcodec_open2 (RestoreDecoder), which drops the history
++  // like a reopen without rebuilding the MDCT and VLC tables (they were most of
++  // the sound thread's decoder time). Otherwise (switched off, a difference
++  // seen, nothing kept yet) invalidating the cached format makes PrepareDecoder
++  // reopen the codec on the next decode, which does discard the history.
++  EndRestartCheck();
++  restart_check_pending_ = false;
+   if (av_context_) {
+-    av_context_->sample_rate = 0;
+-    av_context_->channels = 0;
++    if (REXCVAR_GET(xma_restart_without_reopen) &&
++        !restart_differs.load(std::memory_order_relaxed) && RestoreDecoder()) {
++      restart_check_pending_ = true;
++    } else {
++      av_context_->sample_rate = 0;
++      av_context_->channels = 0;
++    }
+   }
+   raw_frame_.fill(0);
+   decoded_frame_.fill(0);
+@@ -493,6 +546,10 @@
+       av_context_->channels != static_cast<int>(channels)) {
+     REXAPU_NOISY_DEBUG("XmaContext {}: Codec reinit: rate {} -> {}, channels {} -> {}", id(),
+                        av_context_->sample_rate, sample_rate, av_context_->channels, channels);
++    EndRestartCheck();
++    pristine_runs_.clear();
++    pristine_bytes_.clear();
++    pristine_size_ = 0;
+     avcodec_free_context(&av_context_);
+     av_context_ = avcodec_alloc_context3(av_codec_);
+ 
+@@ -504,11 +561,168 @@
+       REXAPU_ERROR("XmaContext: Failed to reopen FFmpeg context");
+       return -1;
+     }
++    SnapshotDecoder();
+     return 1;
+   }
+   return 0;
+ }
+ 
++// [cod3 0066] The codec's private data just after avcodec_open2, as its
++// non-zero runs of 8-byte words (zero gaps under 4 words stay inside a run;
++// the tail past the last whole word is a run of its own). Only kept while
++// restarts may use it: with xma_restart_without_reopen off (or a difference
++// seen) nothing is kept, and RestoreDecoder then leaves the restart to a reopen.
++void XmaContext::SnapshotDecoder() {
++  pristine_runs_.clear();
++  pristine_bytes_.clear();
++  pristine_size_ = 0;
++  if (!REXCVAR_GET(xma_restart_without_reopen) || restart_differs.load(std::memory_order_relaxed) ||
++      !av_context_ || !av_context_->priv_data || !av_codec_ || av_codec_->priv_data_size <= 0) {
++    return;
++  }
++  const size_t size = static_cast<size_t>(av_codec_->priv_data_size);
++  const auto* priv = static_cast<const uint8_t*>(av_context_->priv_data);
++  const size_t words = size / 8;
++  const auto nonzero = [priv](size_t w) {
++    uint64_t v;
++    std::memcpy(&v, priv + w * 8, sizeof(v));
++    return v != 0;
++  };
++  const auto add_run = [&](size_t begin, size_t end) {
++    pristine_runs_.emplace_back(static_cast<uint32_t>(begin), static_cast<uint32_t>(end - begin));
++    pristine_bytes_.insert(pristine_bytes_.end(), priv + begin, priv + end);
++  };
++  constexpr size_t kJoinGapWords = 4;
++  size_t w = 0;
++  while (w < words) {
++    if (!nonzero(w)) {
++      ++w;
++      continue;
++    }
++    const size_t start = w;
++    size_t end = w + 1;  // one past the run's last non-zero word
++    size_t j = end;
++    while (j < words) {
++      if (nonzero(j)) {
++        end = ++j;
++      } else if (j - end >= kJoinGapWords) {
++        break;
++      } else {
++        ++j;
++      }
++    }
++    add_run(start * 8, end * 8);
++    w = j;
++  }
++  if (words * 8 < size) {
++    add_run(words * 8, size);
++  }
++  pristine_size_ = size;
++}
++
++// [cod3 0066] libavcodec's own buffers flushed and the codec's private data
++// put back exactly as SnapshotDecoder saw it. Its pointers (the MDCT tables,
++// the float DSP functions, the bit writer into its own frame buffer) are the
++// same allocations, still owned by this open context, and decoding only reads
++// them (the FFT's tmp_buf is scratch, written before it is read).
++bool XmaContext::RestoreDecoder() {
++  if (!pristine_size_ || !av_context_ || !av_context_->priv_data || !av_codec_ ||
++      static_cast<size_t>(av_codec_->priv_data_size) != pristine_size_ ||
++      !avcodec_is_open(av_context_)) {
++    return false;
++  }
++  avcodec_flush_buffers(av_context_);
++  auto* priv = static_cast<uint8_t*>(av_context_->priv_data);
++  std::memset(priv, 0, pristine_size_);
++  const uint8_t* src = pristine_bytes_.data();
++  for (const auto& [offset, length] : pristine_runs_) {
++    std::memcpy(priv + offset, src, length);
++    src += length;
++  }
++  return true;
++}
++
++// [cod3 0066] For the first restarts of a session: a decoder opened afresh,
++// the way PrepareDecoder opens one, decodes the same packets beside the
++// restored one (CheckRestartedDecode).
++void XmaContext::StartRestartCheck() {
++  if (check_context_ || !av_context_ || restart_differs.load(std::memory_order_relaxed) ||
++      restart_checks_left.load(std::memory_order_relaxed) <= 0) {
++    return;
++  }
++  AVCodecContext* context = avcodec_alloc_context3(av_codec_);
++  AVFrame* frame = av_frame_alloc();
++  if (context && frame) {
++    context->sample_rate = av_context_->sample_rate;
++    context->channels = av_context_->channels;
++    context->flags2 |= AV_CODEC_FLAG2_SKIP_MANUAL;
++    if (avcodec_open2(context, av_codec_, NULL) >= 0) {
++      check_context_ = context;
++      check_frame_ = frame;
++      check_packets_left_ = kRestartCheckPackets;
++      check_compared_ = 0;
++      return;
++    }
++  }
++  if (context) {
++    avcodec_free_context(&context);
++  }
++  if (frame) {
++    av_frame_free(&frame);
++  }
++}
++
++void XmaContext::EndRestartCheck() {
++  if (check_context_ && check_compared_ > 0) {
++    const int left = restart_checks_left.fetch_sub(1, std::memory_order_relaxed) - 1;
++    const int passed = restart_checks_passed.fetch_add(1, std::memory_order_relaxed) + 1;
++    if (left == 0 && !restart_differs.load(std::memory_order_relaxed)) {
++      REXAPU_INFO("XMA: {} restarted decoders gave the same frames as reopened ones ({} packets "
++                  "each at most); restarts put the decoder back instead of reopening it "
++                  "(xma_restart_without_reopen)",
++                  passed, kRestartCheckPackets);
++    }
++  }
++  if (check_context_) {
++    avcodec_free_context(&check_context_);
++  }
++  if (check_frame_) {
++    av_frame_free(&check_frame_);
++  }
++  check_packets_left_ = 0;
++  check_compared_ = 0;
++}
++
++// [cod3 0066] The packet just decoded by the restored decoder, decoded again by
++// the reopened one and compared bit for bit. A difference ends restarts
++// without reopening for the session, and the game gets the reopened decoder's
++// frame (and keeps that decoder), as before 0066.
++bool XmaContext::CheckRestartedDecode(bool decoded) {
++  const bool check_decoded = DecodePacket(check_context_, av_packet_, check_frame_);
++  const bool same = decoded == check_decoded &&
++                    (!decoded || SameFrame(av_frame_, check_frame_, av_context_->channels));
++  if (!same) {
++    restart_differs.store(true, std::memory_order_relaxed);
++    REXAPU_ERROR("XmaContext {}: a restarted decoder's frame differs from a reopened decoder's "
++                 "(packet {} after the restart); restarts reopen the decoder from now on "
++                 "(xma_restart_without_reopen)",
++                 id(), check_compared_ + 1);
++    std::swap(av_context_, check_context_);
++    std::swap(av_frame_, check_frame_);
++    pristine_runs_.clear();
++    pristine_bytes_.clear();
++    pristine_size_ = 0;
++    check_compared_ = 0;  // not counted as passed
++    EndRestartCheck();
++    return check_decoded;
++  }
++  ++check_compared_;
++  if (--check_packets_left_ == 0) {
++    EndRestartCheck();
++  }
++  return decoded;
++}
++
+ void XmaContext::PreparePacket(uint32_t frame_size, uint32_t frame_padding) {
+   av_packet_->data = xma_frame_.data();
+   av_packet_->size = static_cast<int>(1 + ((frame_padding + frame_size) / 8) +
+@@ -677,13 +891,23 @@
+ 
+   decoded_frame_.fill(0);
+ 
+-  if (PrepareDecoder(data->sample_rate, bool(data->is_stereo)) == 1) {
++  const int prepared = PrepareDecoder(data->sample_rate, bool(data->is_stereo));
++  if (prepared == 1) {
+     // Reopening the codec restarts its output; the carried tail belongs to the
+     // old stream.
+     carry_valid_ = false;
+   }
++  // [cod3 0066] A restored decoder that kept its format: for the first restarts
++  // of a session, compared with a reopened one from this packet on.
++  if (prepared == 0 && restart_check_pending_) {
++    StartRestartCheck();
++  }
++  restart_check_pending_ = false;
+   PreparePacket(packet_info.current_frame_size_, padding_start);
+-  const bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
++  bool decoded = DecodePacket(av_context_, av_packet_, av_frame_);
++  if (check_context_) {
++    decoded = CheckRestartedDecode(decoded);
++  }
+   if (decoded) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  decoded_frame_.data());

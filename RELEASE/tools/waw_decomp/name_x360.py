@@ -8,7 +8,8 @@ evidence). Passes, strongest first:
 
   runtime   the compiler's register save/restore routines (__savegprlr_14 ...), by their code
   extra     (--extra, repeatable) names found by hand, with their evidence (addr, name, kind,
-            pass, evidence; a row of kind "note" is a comment only)
+            pass, evidence; a row of kind "note" is a comment only; a row of kind "inlined"
+            keeps its name off every function)
   method    C++ methods named in their own strings (Demonware's "bdCore::init" log lines,
             compiler signatures in assertions) when exactly one function has the name; names
             two functions share come last
@@ -237,7 +238,10 @@ def main():
     for extra in args.extra:
         for r in read_tsv(extra):
             addr = int(r["addr"], 16)
-            if r["kind"] == "note":
+            if r["kind"] == "inlined":
+                namer.reserve(r["name"])
+                stats["extra_inlined"] += 1
+            elif r["kind"] == "note":
                 namer.note(addr, r.get("pass") or "extra", r.get("evidence", ""), keep=True)
                 stats["extra_notes"] += 1
             elif (r["kind"] != "function" or addr in t.funcs) and namer.add(

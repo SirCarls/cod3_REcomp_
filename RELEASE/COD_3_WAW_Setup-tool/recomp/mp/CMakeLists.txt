@@ -26,6 +26,14 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/cheat_guard.cpp
     ${COD3_SRC}/game/cheat_watch.cpp
     ${COD3_SRC}/game/color_output.cpp
+    ${COD3_SRC}/game/crt_native.cpp  # [native-crt] the C runtime's busiest functions as native code
+    ${COD3_SRC}/game/fmod_native.cpp  # [native-fmod] FMOD's reverb kernel as native code
+    ${COD3_SRC}/game/lzo_native.cpp  # [native-lzo] the game's LZO1X decompressor as native code
+    ${COD3_SRC}/game/crt_math_native.cpp  # [native-math] the C runtime's math and character functions as native code
+    ${COD3_SRC}/game/fmod_resampler_native.cpp  # [native-resampler] FMOD's linear resampler as native code
+    ${COD3_SRC}/game/fmod_mix_native.cpp  # [native-fmod-mix] FMOD's channel mix kernels as native code
+    ${COD3_SRC}/game/crt_printf_native.cpp  # [native-printf] the C runtime's formatted output, sprintf and the like, as native code
+    ${COD3_SRC}/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
     ${COD3_SRC}/game/diagnostics.cpp
     ${COD3_SRC}/game/engine.cpp
     ${COD3_SRC}/game/fov.cpp
@@ -52,6 +60,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/script_threads.cpp
     ${COD3_SRC}/game/settings_sync.cpp
     ${COD3_SRC}/game/shadows.cpp
+    ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
     ${COD3_SRC}/game/watchdog.cpp

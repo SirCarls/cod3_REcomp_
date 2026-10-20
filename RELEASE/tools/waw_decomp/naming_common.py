@@ -49,6 +49,11 @@ class Namer:
         self.by_name[name] = addr
         return True
 
+    def reserve(self, name):
+        """Keeps a name off every function: for a KisakCOD function this build always inlines
+        (BG_GetWeaponDef), which the call graph passes would otherwise hand to a neighbor."""
+        self.by_name.setdefault(name, None)
+
     def rename(self, addr, name):
         """Gives an address another name (kept when the name is taken)."""
         old = self.by_addr.get(addr)
@@ -480,6 +485,9 @@ def pass_readers(namer, tables, readers_tsv, refs, bound, stats):
                 namer.rename(tbl, f"{names[0]}_table")
 
 
+MATH_HELPERS = {"sqrtf", "fabsf"}
+
+
 def pass_kisak_graph(namer, t, kisak_tsv, stats, is_library=lambda a: False):
     """Names from the call graph against KisakCOD: a named function whose KisakCOD counterpart
     calls exactly one function not yet placed, while it calls exactly one unnamed function here;
@@ -487,8 +495,18 @@ def pass_kisak_graph(namer, t, kisak_tsv, stats, is_library=lambda a: False):
     kis_calls = collections.defaultdict(set)
     for r in read_tsv(kisak_tsv):
         kis_calls[r["name"]].update(c for c in r["calls"].split(",") if c)
+    # The PC builds inline I_stricmp (a wrapper that calls I_strnicmp with count 0x7FFFFFFF),
+    # so where KisakCOD calls I_stricmp the PC code calls I_strnicmp.
+    for calls in kis_calls.values():
+        if "I_stricmp" in calls:
+            calls.add("I_strnicmp")
     kis_defined = set(kis_calls)
-    fname = namer.func_name
+
+    def fname(a):
+        """A function's name; the C library math helpers count as unnamed-but-placed (KisakCOD writes
+        them as sqrt, sqrtf, I_fabs, Vec3Length ... or inlines them, so they say nothing either way)."""
+        n = namer.func_name(a)
+        return None if n in MATH_HELPERS else n
 
     def fits(g, m):
         """g's own named callees must all be callees of KisakCOD's m."""

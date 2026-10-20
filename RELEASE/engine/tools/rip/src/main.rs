@@ -2,7 +2,15 @@
 //! open formats for the engine (and for the Unreal 5 export).
 //!
 //! ```text
+//! rip identify <file | folder> [--open]  which game each fastfile (.ff) or archive (.cod)
+//!                                         comes from: Call of Duty 2 (Xbox 360), 4, World
+//!                                         at War, Modern Warfare 2 and 3, Black Ops I/II,
+//!                                         Ghosts, Big Red One, Call of Duty 3 ...; --open
+//!                                         also unpacks each one and checks its zone
 //! rip waw-ff <file.ff> <out_dir>          list a WaW fastfile (PC or Xbox 360), write its raw files
+//! rip waw-zone <file.ff | folder> --layout <file>
+//!                                         read every asset of World at War PC fastfiles the way
+//!                                         the game's loader does, and check each zone
 //! rip cod3-split <file.cod> <out_dir>     split a CoD3 archive into its resources
 //! rip cod3-chunks <file.cod> <out_dir>    write each unpacked chunk whole (research)
 //! rip cod3-tex <file.cod> <out_dir>       textures as DDS + PNG
@@ -30,11 +38,18 @@
 //! `cod3-all` and `cod3-hd-pack` use every CPU core; `--jobs N` limits them.
 //! Output files whose content didn't change are not rewritten.
 //! Paths can be given in Linux or Windows form; nothing is hard-coded.
+//!
+//! `--layout <file>` (or the `RIP_WAW_LAYOUT` environment variable) gives the
+//! zone layout `waw-zone` follows; with it, `waw-ff` and `identify --open`
+//! also read World at War PC zones asset by asset (`ff_t4::layout`). World at
+//! War PC's layout is not published (docs/formats/waw.md says why); without
+//! it `waw-ff` finds raw files by their inline layout, as on Xbox 360.
 
 #![forbid(unsafe_code)]
 
 mod cod3;
 mod hd;
+mod identify;
 mod jobs;
 mod output;
 mod pack_check;
@@ -48,7 +63,9 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 const USAGE: &str = "usage:
-  rip waw-ff <file.ff> <out_dir>
+  rip identify <file.ff | file.cod | folder> [--open] [--layout <file>] [--jobs N]
+  rip waw-ff <file.ff> <out_dir> [--layout <file>]
+  rip waw-zone <file.ff | folder> --layout <file> [--jobs N]
   rip cod3-split <file.cod> <out_dir>
   rip cod3-chunks <file.cod> <out_dir>
   rip cod3-tex <file.cod> <out_dir>
@@ -85,6 +102,29 @@ fn take_jobs(args: &mut Vec<String>) -> Result<Option<usize>> {
         return Ok(None);
     };
     Ok(Some(value.parse()?))
+}
+
+/// The zone layout for World at War PC zones: `--layout <file>`, else the
+/// `RIP_WAW_LAYOUT` environment variable, else none.
+fn waw_layout(option: Option<String>) -> Result<Option<ff_t4::layout::Layout>> {
+    let Some(file) = option
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("RIP_WAW_LAYOUT").map(PathBuf::from))
+    else {
+        return Ok(None);
+    };
+    let text = std::fs::read_to_string(&file)
+        .map_err(|e| format!("the zone layout {}: {e}", file.display()))?;
+    let layout = ff_t4::layout::Layout::parse(&text)
+        .map_err(|e| format!("the zone layout {}: {e}", file.display()))?;
+    Ok(Some(layout))
+}
+
+/// Takes `flag` out of the arguments; true if it was there.
+fn take_flag(args: &mut Vec<String>, flag: &str) -> bool {
+    let before = args.len();
+    args.retain(|a| a != flag);
+    args.len() != before
 }
 
 /// Splits `<option> <value>` out of the arguments.
@@ -182,6 +222,9 @@ fn cod3_all(input: &Path, out_dir: &Path, workers: usize) -> Result<bool> {
 fn run(mut args: Vec<String>) -> Result<bool> {
     let jobs = take_jobs(&mut args)?;
     let list = take_option(&mut args, "--list")?;
+    let open = take_flag(&mut args, "--open");
+    let layout = waw_layout(take_option(&mut args, "--layout")?)?;
+    let layout = layout.as_ref();
     let kinds = match take_option(&mut args, "--kinds")? {
         Some(text) => hd::Kind::parse_list(&text)?,
         None => hd::Kind::default_set(),
@@ -189,7 +232,9 @@ fn run(mut args: Vec<String>) -> Result<bool> {
     let workers = jobs::worker_count(jobs);
     let path = |i: usize| Path::new(&args[i]);
     match (args.get(1).map(String::as_str), args.len()) {
-        (Some("waw-ff"), 4) => waw::fastfile(path(2), path(3)).map(|_| true),
+        (Some("identify"), 3) => identify::identify(path(2), open, layout, workers),
+        (Some("waw-ff"), 4) => waw::fastfile(path(2), path(3), layout).map(|_| true),
+        (Some("waw-zone"), 3) => waw::zones(path(2), layout, workers),
         (Some("cod3-split"), 4) => cod3::split(path(2), path(3)).map(|_| true),
         (Some("cod3-chunks"), 4) => cod3::chunks(path(2), path(3)).map(|_| true),
         (Some("cod3-tex"), 4) => {

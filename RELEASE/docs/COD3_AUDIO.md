@@ -168,6 +168,9 @@ level scripts choose presets with the `reverb "<preset>" <time> <...>` client co
 (`Broc_Reverb`, level slot 0x9C0), and `SoundDevice_UpdateReverbBlend` (0x82465FC0) blends the 12
 values over the given time into `nslSetReverb` (0x8211B2F8). The preset follows the script's
 trigger zones (where the player is), not the camera.
+Since setup tool 2.12.3 the reverb unit runs as native code, its kernel (0x823A65A8, the delay
+network) and its read callback (`DSPSfxReverb_read`, 0x82392B50), checked byte for byte against the
+game's code ([COD3_LIBRARIES.md](COD3_LIBRARIES.md)).
 
 For the port (the owner's 2026-10-15 report "Sound occlusion doesn't account for where the camera
 is currently"): moving the listener cannot add occlusion, because the game has none. Occlusion
@@ -257,6 +260,8 @@ How sound reaches the console:
   the PCM, `XMAEnableContext`; `SoundI::readData` keeps reading until it has the bytes it asked
   for, so a decoder that makes no progress is a busy wait. FMOD calls the kernel's `XMA*`
   functions directly, only from this file.
+  The port's decoders are the SDK's (FFmpeg); since SDK patch 0066 (setup tool 2.12.3) a
+  restarted context puts its decoder back as it was just after opening instead of reopening it.
 - **Output** is FMOD's software mix, written into a looping ring buffer that one XAudio voice plays
   (filled by the output polling thread). FMOD reaches XAudio through the statically linked XAudio
   library at 0x822BF000-0x822CFFFF, which makes the render-driver calls

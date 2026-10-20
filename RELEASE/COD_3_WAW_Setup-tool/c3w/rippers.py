@@ -18,6 +18,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
+from . import fastfiles
 from .common import (APPROVAL, IS_WINDOWS, Install, Log, Runner, SetupError, exe_name, host_triple, read_json,
                      write_json)
 
@@ -232,10 +233,24 @@ def fastfile_folder_name(ff: Path) -> str:
     return stem if stem.strip(". ") else "fastfile_" + ff.name.replace(".", "_")
 
 
+def world_at_war_only(files: List[Path], log: Log) -> List[Path]:
+    """[fastfiles] The fastfiles that are World at War's (or can't be told:
+    the ripper judges those). Other games' (Call of Duty 4, Black Ops ...,
+    which share the format) are named in the log and left out."""
+    waw_files, others = fastfiles.split_by_game(files)
+    for game, skipped in sorted(others.items()):
+        names = ", ".join(p.name for p in skipped[:8]) + (" ..." if len(skipped) > 8 else "")
+        log.warn(f"Left out {len(skipped)} {game} fastfile{'' if len(skipped) == 1 else 's'} "
+                 f"(not World at War's): {names}")
+    return waw_files
+
+
 def rip_fastfiles(rip: Path, files: List[Path], out_dir: Path, runner: Runner, log: Log
                   ) -> Tuple[int, List[str]]:
-    """Rips World at War fastfiles, one output folder each. Returns how many
-    worked and the errors of those that didn't."""
+    """Rips World at War fastfiles, one output folder each (other games'
+    are left out: world_at_war_only). Returns how many worked and the errors
+    of those that didn't."""
+    files = world_at_war_only(files, log)
     ok, errors = 0, []
     for i, ff in enumerate(files):
         runner.check_cancel()   # capture() doesn't watch Cancel itself

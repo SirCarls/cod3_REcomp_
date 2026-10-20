@@ -1,4 +1,6 @@
-//! Call of Duty 3 (Xbox 360) `.cod` archive reader.
+//! Call of Duty 3 (Xbox 360) `.cod` archive reader, which also reads the
+//! archives of Call of Duty 2: Big Red One (Xbox, 2005), the Treyarch game
+//! whose engine Call of Duty 3 grew from (see "Big Red One" below).
 //!
 //! Every level folder (`sp/<level>/`) holds several of these: `<level>.cod`,
 //! `chars.cod`, `weapons.cod`, `fx.cod`, `vehicles.cod`, the streamed zones
@@ -42,6 +44,26 @@
 //! are placed at their output offsets. The two checksums are not checked yet.
 //! The unpacked data of a level archive starts with an "APKF" header (the
 //! asset banks, big-endian; see docs/formats/cod3.md).
+//!
+//! **Big Red One** (found by us in the owner's disc, 2026-10-20; 389 archives
+//! with the same level layout: `sp/<level>/<level>.cod`, `chars.cod`,
+//! `weapons.cod`, streamed zones, `sp/global.cod`, `mp/global.cod`). The
+//! version field is a float: 2.02 (0x400147AE) there, 2.06 (0x4003D70A) in
+//! Call of Duty 3. The older layout differs in three places:
+//!
+//! ```text
+//! 0x08  u32 header size        0x1C: no builder name; the section records follow
+//! chunk table entries, 0x1C bytes each:
+//!         u32  file offset of the chunk (32 KB aligned)
+//!         u32  data size, u32 slot size
+//!         u32  flags               0, or 1 on some sections' last chunk
+//!         u32  reserved[3]         0: every chunk is stored as is (no NCH blocks)
+//! ```
+//!
+//! Its chunks hold `SBII` banks (not APKF; not decoded yet), DDS textures,
+//! `XBXM` data, `WAVE` sound and `TRTS` string tables; the sections are named as
+//! in Call of Duty 3 ("", `ANIM`, `AUDIO`, `STRING`). [`Archive::game`] says
+//! which game an archive is from.
 
 #![forbid(unsafe_code)]
 
@@ -51,8 +73,51 @@ use std::fmt;
 
 pub const MAGIC: &[u8; 4] = b"KAPF";
 pub const NCH_MAGIC: &[u8; 4] = b"NCH\0";
+/// The version field is the float 2.06 in every Call of Duty 3 archive.
+pub const VERSION_COD3: u32 = 0x4003_D70A;
+/// ... and 2.02 in every Big Red One archive.
+pub const VERSION_BIG_RED_ONE: u32 = 0x4001_47AE;
 const SECTION_RECORD_SIZE: usize = 0x18;
 const CHUNK_ENTRY_SIZE: usize = 0x20;
+const BIG_RED_ONE_CHUNK_ENTRY_SIZE: usize = 0x1C;
+/// Call of Duty 3's header, up to the end of the builder name.
+const COD3_HEADER_SIZE: usize = 0x30;
+const BUILDER_NAME: std::ops::Range<usize> = 0x1C..0x30;
+
+/// The game a `.cod` archive comes from, by its version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Game {
+    /// Call of Duty 3 (Xbox 360).
+    CallOfDuty3,
+    /// Call of Duty 2: Big Red One (Xbox).
+    BigRedOne,
+}
+
+impl Game {
+    pub fn from_version(version: u32) -> Option<Self> {
+        match version {
+            VERSION_COD3 => Some(Game::CallOfDuty3),
+            VERSION_BIG_RED_ONE => Some(Game::BigRedOne),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Game::CallOfDuty3 => "Call of Duty 3",
+            Game::BigRedOne => "Call of Duty 2: Big Red One",
+        }
+    }
+
+    /// The platform of the archives we have (the other consoles' versions of
+    /// either game haven't been looked at).
+    pub fn platform(self) -> &'static str {
+        match self {
+            Game::CallOfDuty3 => "Xbox 360",
+            Game::BigRedOne => "Xbox",
+        }
+    }
+}
 const NCH_HEADER_SIZE: usize = 0x20;
 const NCH_BLOCK_ALIGN: usize = 0x80000;
 
@@ -79,7 +144,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotKapf => write!(f, "not a Call of Duty 3 .cod archive (no KAPF header)"),
+            Error::NotKapf => write!(f, "not a .cod archive (no KAPF header)"),
             Error::Truncated(what) => write!(f, "file ends inside the {what}"),
             Error::BadNchBlock { chunk_offset, at } => {
                 write!(f, "chunk at {chunk_offset:#x}: no NCH block at +{at:#x}")
@@ -156,13 +221,22 @@ fn cstr(bytes: &[u8]) -> String {
 
 impl<'a> Archive<'a> {
     pub fn parse(file: &'a [u8]) -> Result<Self, Error> {
-        if file.len() < 0x30 || &file[..4] != MAGIC {
+        if file.get(..4) != Some(MAGIC.as_slice()) {
             return Err(Error::NotKapf);
         }
         let version = le32(file, 0x04, "header")?;
+        let big_red_one = Game::from_version(version) == Some(Game::BigRedOne);
+        if !big_red_one && file.len() < COD3_HEADER_SIZE {
+            return Err(Error::NotKapf);
+        }
         let header_size = le32(file, 0x08, "header")? as usize;
         let section_count = le32(file, 0x0C, "header")? as usize;
-        let builder = cstr(&file[0x1C..0x30]);
+        // Big Red One's header ends where Call of Duty 3's builder name starts.
+        let (builder, entry_size) = if big_red_one {
+            (String::new(), BIG_RED_ONE_CHUNK_ENTRY_SIZE)
+        } else {
+            (cstr(&file[BUILDER_NAME]), CHUNK_ENTRY_SIZE)
+        };
 
         let mut sections = Vec::with_capacity(section_count);
         for i in 0..section_count {
@@ -178,7 +252,7 @@ impl<'a> Archive<'a> {
 
             let mut chunks = Vec::with_capacity(chunk_count);
             for c in 0..chunk_count {
-                let e = table + c * CHUNK_ENTRY_SIZE;
+                let e = table + c * entry_size;
                 chunks.push(Chunk {
                     file_offset: le32(file, e, "chunk table")?,
                     data_size: le32(file, e + 4, "chunk table")?,
@@ -200,6 +274,11 @@ impl<'a> Archive<'a> {
             builder,
             sections,
         })
+    }
+
+    /// The game the archive comes from (`None`: a version we don't know).
+    pub fn game(&self) -> Option<Game> {
+        Game::from_version(self.version)
     }
 
     /// The unpacked bytes of one chunk.
@@ -278,5 +357,79 @@ impl<'a> Archive<'a> {
             });
         }
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An archive with one section of one stored chunk holding `data`.
+    fn archive(version: u32, header_size: usize, entry_size: usize, data: &[u8]) -> Vec<u8> {
+        let mut file = vec![0u8; header_size];
+        file[..4].copy_from_slice(MAGIC);
+        file[4..8].copy_from_slice(&version.to_le_bytes());
+        file[8..12].copy_from_slice(&(header_size as u32).to_le_bytes());
+        file[12..16].copy_from_slice(&1u32.to_le_bytes());
+        if header_size >= COD3_HEADER_SIZE {
+            file[BUILDER_NAME][..9].copy_from_slice(b"CODAUTO32");
+        }
+        let table = header_size + SECTION_RECORD_SIZE;
+        let mut record = vec![0u8; SECTION_RECORD_SIZE];
+        record[12..14].copy_from_slice(&1u16.to_le_bytes());
+        record[16..20].copy_from_slice(&(table as u32).to_le_bytes());
+        file.extend(record);
+        let chunk_at = table + entry_size;
+        let mut entry = vec![0u8; entry_size];
+        entry[0..4].copy_from_slice(&(chunk_at as u32).to_le_bytes());
+        entry[4..8].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        entry[8..12].copy_from_slice(&(data.len() as u32).to_le_bytes());
+        file.extend(entry);
+        file.extend_from_slice(data);
+        file
+    }
+
+    #[test]
+    fn call_of_duty_3() {
+        let file = archive(
+            VERSION_COD3,
+            COD3_HEADER_SIZE,
+            CHUNK_ENTRY_SIZE,
+            b"APKF bank",
+        );
+        let parsed = Archive::parse(&file).unwrap();
+        assert_eq!(parsed.game(), Some(Game::CallOfDuty3));
+        assert_eq!(parsed.builder, "CODAUTO32");
+        let chunk = &parsed.sections[0].chunks[0];
+        assert_eq!(parsed.read_chunk(chunk).unwrap(), b"APKF bank");
+    }
+
+    #[test]
+    fn big_red_one() {
+        // A 0x1C-byte header and 0x1C-byte chunk entries; chunks stored as is.
+        let file = archive(
+            VERSION_BIG_RED_ONE,
+            0x1C,
+            BIG_RED_ONE_CHUNK_ENTRY_SIZE,
+            b"SBII bank",
+        );
+        let parsed = Archive::parse(&file).unwrap();
+        assert_eq!(parsed.game(), Some(Game::BigRedOne));
+        assert_eq!(parsed.game().unwrap().name(), "Call of Duty 2: Big Red One");
+        assert_eq!(parsed.builder, "");
+        let chunk = &parsed.sections[0].chunks[0];
+        assert!(!chunk.is_packed());
+        assert_eq!(parsed.read_chunk(chunk).unwrap(), b"SBII bank");
+    }
+
+    #[test]
+    fn not_an_archive() {
+        assert!(matches!(Archive::parse(b"KAP"), Err(Error::NotKapf)));
+        assert!(matches!(Archive::parse(b"IWffu100"), Err(Error::NotKapf)));
+        // A Call of Duty 3 version needs the whole 0x30-byte header.
+        let mut short = MAGIC.to_vec();
+        short.extend(VERSION_COD3.to_le_bytes());
+        assert!(matches!(Archive::parse(&short), Err(Error::NotKapf)));
+        assert_eq!(Game::from_version(0x1234), None);
     }
 }

@@ -1640,8 +1640,12 @@ std::string UpperText(std::string_view text) {
 // so it takes the new text, and Escape goes back to it.
 void SyncActiveBox(const char* label, const char* text) {
   const ImGuiID id = ImGui::GetID(label);
-  ImGuiInputTextState* state = ImGui::GetInputTextState(id);
-  if (!state || ImGui::GetActiveID() != id) return;
+  // [claude-9b] Through GetCurrentContext(), not imgui_internal.h's inline GetInputTextState /
+  // GetActiveID: those read the global GImGui, which a native Windows (MSVC ABI) link can't
+  // import from the runtime DLL ("undefined symbol: struct ImGuiContext *GImGui").
+  ImGuiContext* g = ImGui::GetCurrentContext();
+  if (!g || id == 0 || g->InputTextState.ID != id || g->ActiveId != id) return;
+  ImGuiInputTextState* state = &g->InputTextState;
   const std::string_view shown(state->TextA.Data ? state->TextA.Data : "",
                                state->TextA.Data ? static_cast<size_t>(state->TextLen) : 0);
   if (shown == text) return;

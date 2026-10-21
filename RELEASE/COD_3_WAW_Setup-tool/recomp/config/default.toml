@@ -198,3 +198,15 @@ address = 0x824A6480
 name = "cod3_script_resume"
 registers = ["ctx", "base"]
 jump_address_on_true = 0x824A62A8
+
+# ---------------------------------------------------------------------------
+# [keybinds] The vehicle view switch (src/game/keybinds/binds.cpp): the camera
+# select 0x82447D48 reads the right stick click's press (li r5,12; bl
+# 0x820E86A8, the pad's pressed edges) to switch a vehicle's view; right after
+# that read, r3 is the press, and the Vehicle: change view key adds its own.
+# cod3mp's site comes from mp/config/campaign_map.tsv (0x82462F48).
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x82448084
+name = "Cod3VehicleViewPressed"
+registers = ["r3", "r29", "base"]

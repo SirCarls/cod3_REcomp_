@@ -10,6 +10,21 @@
 // remembered (g_text_lines); texts whose prompts are out of date (keys <->
 // buttons, menu <-> play, a rebind, another style) are laid out again from
 // their last text before they are drawn.
+//
+// [mp-menus] Both programs. In multiplayer (cod3mp) several local players
+// share the screen: each text belongs to the player it was made for (the
+// game sets the current local client, prompts::kClientActiveIndex, while it
+// builds and draws each player's things), and only the keyboard and mouse's
+// player (binds::KeyboardClient: the one on controller 0, which they share)
+// gets keys; the others keep their controllers' buttons. A text laid out
+// again is laid out as its own player's (their binds too).
+//
+// [mp-menus] cod3_glyph_style auto (the default): each player's buttons are
+// named the way their own controller labels them, from the kind of pad the
+// SDK says that player is holding (rex::input::InputSystem::PadFamily, SDK
+// patch 0067): an Xbox or unknown pad the game's pictures, a PlayStation pad
+// [CROSS] ..., a Nintendo one [B] for the bottom button. So two players on
+// one screen with a DualSense and an Xbox pad each see their own.
 
 #include "game/button_prompts.h"
 
@@ -27,6 +42,7 @@
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/input/input_system.h>  // [mp-menus] PadFamily (SDK patch 0067)
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/ui/ui_event.h>
@@ -37,16 +53,19 @@
 #include "game/guest.h"
 #include "game/keybinds/binds.h"  // [keybinds]
 #include "game/qte_actions.h"
+#include "game/rumble.h"  // [rumble]
 #include "game/pc_menu.h"
 
 REXCVAR_DEFINE_BOOL(cod3_key_prompts, true, "cod3/Mouse",
                     "Show the bound keyboard and mouse keys (e.g. [R]) instead of controller "
                     "buttons in the game's prompts while the keyboard and mouse are in use "
                     "(game/button_prompts.h)");
-REXCVAR_DEFINE_STRING(cod3_glyph_style, "xbox", "cod3/Interface",
-                      "Controller buttons in the game's prompts: xbox (the game's own pictures), "
-                      "playstation or gamecube (button names until pictures of our own exist)")
-    .allowed({"xbox", "playstation", "gamecube"});
+REXCVAR_DEFINE_STRING(cod3_glyph_style, "auto", "cod3/Interface",
+                      "Controller buttons in the game's prompts: auto (each player's own controller: "
+                      "an Xbox pad the game's pictures, a PlayStation or Nintendo pad its button "
+                      "names), xbox (the game's own pictures), playstation, nintendo or gamecube "
+                      "(button names until pictures of our own exist)")
+    .allowed({"auto", "xbox", "playstation", "nintendo", "gamecube"});
 
 namespace {
 
@@ -74,9 +93,10 @@ bool SameText(std::string_view a, std::string_view b) {
 }
 
 // ---------------------------------------------------------------------------
-// Keyboard and mouse, or a controller: the last one pressed wins. Only player
-// 1 (pad 0) can have the keyboard and mouse (the SDK gives its keyboard to
-// guest user 0); players 2-4 always see controller buttons.
+// Keyboard and mouse, or a controller: the last one pressed wins. Only the
+// player on pad 0 can have the keyboard and mouse (the SDK gives them to guest
+// user 0 with the first controller; KeyboardPlayer); the others always see
+// controller buttons.
 // The UI thread counts key and mouse presses; the game thread watches the
 // pad state the game reads and calls it a controller when a button goes down
 // with no key or mouse press since the last read.
@@ -89,8 +109,12 @@ std::atomic<bool> g_mnk_mode{false};   // the SDK's mnk_mode setting
 std::atomic<bool> g_mouse_aim{false};  // cod3_raw_mouse or mnk_mouse
 std::atomic<uint32_t> g_bind_gen{0};   // + 1 whenever a setting the prompts show changes
 
-enum class Style : uint8_t { kXbox, kPlayStation, kGameCube };
-std::atomic<Style> g_style{Style::kXbox};
+// [mp-menus] kAuto: each player's own controller's (PadMode).
+enum class Style : uint8_t { kAuto, kXbox, kPlayStation, kNintendo, kGameCube };
+std::atomic<Style> g_style{Style::kAuto};
+// [mp-menus] The app's input system (SetInputSystem): which kind of pad each
+// player holds.
+std::atomic<rex::input::InputSystem*> g_input_system{nullptr};
 
 void SetDevice(Device d, const char* why) {
   if (g_device.exchange(d, std::memory_order_relaxed) != d)
@@ -159,9 +183,11 @@ bool CvarTrue(const char* name) {
 }
 
 Style ParseStyle(std::string_view s) {
+  if (SameText(s, "xbox")) return Style::kXbox;
   if (SameText(s, "playstation")) return Style::kPlayStation;
+  if (SameText(s, "nintendo")) return Style::kNintendo;
   if (SameText(s, "gamecube")) return Style::kGameCube;
-  return Style::kXbox;
+  return Style::kAuto;
 }
 
 // About once a second (and at start): the settings the prompts depend on
@@ -222,28 +248,80 @@ void WatchPad(uint8_t* base, uint32_t state) {
 // What the prompts show.
 // ---------------------------------------------------------------------------
 // The game's own pictures (kXbox), a controller's button names, or keys.
-enum class Mode : uint8_t { kXbox, kPlayStation, kGameCube, kMenuKeys, kPlayKeys };
+enum class Mode : uint8_t { kXbox, kPlayStation, kNintendo, kGameCube, kMenuKeys, kPlayKeys };
+constexpr uint32_t kModeCount = 6;
 
 bool IsKeys(Mode m) { return m == Mode::kMenuKeys || m == Mode::kPlayKeys; }
 // Every mode but the game's own pictures writes names in the text's font.
 bool IsText(Mode m) { return m != Mode::kXbox; }
 
-int PromptPlayer(uint8_t* base) {
+// The local client whose text is being made or drawn now.
+uint32_t PromptPlayer(uint8_t* base) {
   const uint32_t p = ReadU32(base, bp::kClientActiveIndex);
-  return p < 4 ? int(p) : 0;
+  return p < 4 ? p : 0;
 }
 
-Mode Wanted(uint8_t* base) {
+// Whether the keyboard and mouse are `player`'s: the campaign's player 1;
+// [mp-menus] in cod3mp the player on controller 0 (binds::KeyboardClient).
+bool KeyboardPlayer(uint8_t* base, uint32_t player) {
+#if defined(COD3_MP)
+  return player == cod3::binds::KeyboardClient(base);
+#else
+  (void)base;
+  return player == 0;
+#endif
+}
+
+// [mp-menus] The controller (guest user) `player` plays with: cod3mp's local
+// client's; the campaign's player is on user 0.
+uint32_t PadUser(uint8_t* base, uint32_t player) {
+#if defined(COD3_MP)
+  return cod3::binds::ClientPad(base, player);
+#else
+  (void)base, (void)player;
+  return 0;
+#endif
+}
+
+// [mp-menus] cod3_glyph_style auto: how `player`'s own controller labels its
+// buttons. A pad the SDK can't name (or none, or the keyboard alone) gets
+// the game's pictures.
+Mode PadMode(uint8_t* base, uint32_t player) {
+  using rex::input::ControllerFamily;
+  auto* input = g_input_system.load(std::memory_order_acquire);
+  const uint32_t user = PadUser(base, player);
+  const ControllerFamily family = input ? input->PadFamily(user) : ControllerFamily::kUnknown;
+  static std::atomic<uint8_t> last[4];  // ControllerFamily; static: starts at kUnknown
+  if (user < 4 && last[user].exchange(uint8_t(family), std::memory_order_relaxed) != uint8_t(family)) {
+    const char* kind = family == ControllerFamily::kPlayStation ? "a PlayStation"
+                       : family == ControllerFamily::kNintendo  ? "a Nintendo"
+                       : family == ControllerFamily::kXbox      ? "an Xbox"
+                                                                : "an unnamed";
+    REXLOG_INFO("cod3: controller {} is {} pad: its player's prompts show {} buttons", user + 1, kind,
+                family == ControllerFamily::kPlayStation ? "PlayStation"
+                : family == ControllerFamily::kNintendo  ? "Nintendo"
+                                                         : "Xbox");
+  }
+  switch (family) {
+    case ControllerFamily::kPlayStation: return Mode::kPlayStation;
+    case ControllerFamily::kNintendo: return Mode::kNintendo;
+    default: return Mode::kXbox;
+  }
+}
+
+Mode Wanted(uint8_t* base, uint32_t player) {
   if (REXCVAR_GET(cod3_key_prompts) && g_mnk_mode.load(std::memory_order_relaxed) &&
-      PromptPlayer(base) == 0 && g_device.load(std::memory_order_relaxed) == Device::kKeyboard) {
+      KeyboardPlayer(base, player) && g_device.load(std::memory_order_relaxed) == Device::kKeyboard) {
     // MenuActive() is false when cod3_pc_menus is off: then the menus take
     // the keybinds too.
     return cod3::pcmenu::MenuActive() ? Mode::kMenuKeys : Mode::kPlayKeys;
   }
   switch (g_style.load(std::memory_order_relaxed)) {
+    case Style::kXbox: return Mode::kXbox;
     case Style::kPlayStation: return Mode::kPlayStation;
+    case Style::kNintendo: return Mode::kNintendo;
     case Style::kGameCube: return Mode::kGameCube;
-    default: return Mode::kXbox;
+    default: return PadMode(base, player);
   }
 }
 
@@ -251,34 +329,38 @@ Mode Wanted(uint8_t* base) {
 // can be added here: the game's character, the keybind (play), the key the
 // PC menus take (nullptr: the keybind there too) and the names per style
 // (nullptr: that controller has no such button; the Xbox name shows).
+// [mp-menus] Nintendo: the label on the button in that place (the SDK reads
+// pads by position: the bottom button is the game's A, labeled B on a Switch
+// pad).
 struct Button {
   char glyph;
   int bind;  // index into kBindCvars, -1: made of the D-pad binds
   const char* menu_key;
   const char* xbox;
   const char* playstation;
+  const char* nintendo;
   const char* gamecube;
 };
 constexpr Button kButtons[] = {
-    {'"', 0, "ENTER", "A", "CROSS", "A"},
-    {'%', 1, "ESC", "B", "CIRCLE", "B"},
-    {'#', 2, nullptr, "X", "SQUARE", "X"},
-    {'$', 3, nullptr, "Y", "TRIANGLE", "Y"},
-    {'&', 4, nullptr, "LT", "L2", "L"},
-    {'!', 5, nullptr, "RT", "R2", "R"},
-    {'\'', 6, nullptr, "LB", "L1", nullptr},
-    {'(', 7, nullptr, "RB", "R1", "Z"},
-    {'-', 8, "ENTER", "START", "START", "START"},
-    {'1', 9, nullptr, "BACK", "SELECT", nullptr},
-    {'2', 10, nullptr, "LS", "L3", nullptr},
-    {'3', 11, nullptr, "RS", "R3", nullptr},
-    {')', 12, "UP", "UP", "UP", "UP"},
-    {',', 13, "DOWN", "DOWN", "DOWN", "DOWN"},
-    {'+', 14, "LEFT", "LEFT", "LEFT", "LEFT"},
-    {'*', 15, "RIGHT", "RIGHT", "RIGHT", "RIGHT"},
-    {'/', -1, "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN"},
-    {'.', -1, "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT"},
-    {'0', -1, "ARROWS", "D-PAD", "D-PAD", "D-PAD"},
+    {'"', 0, "ENTER", "A", "CROSS", "B", "A"},
+    {'%', 1, "ESC", "B", "CIRCLE", "A", "B"},
+    {'#', 2, nullptr, "X", "SQUARE", "Y", "X"},
+    {'$', 3, nullptr, "Y", "TRIANGLE", "X", "Y"},
+    {'&', 4, nullptr, "LT", "L2", "ZL", "L"},
+    {'!', 5, nullptr, "RT", "R2", "ZR", "R"},
+    {'\'', 6, nullptr, "LB", "L1", "L", nullptr},
+    {'(', 7, nullptr, "RB", "R1", "R", "Z"},
+    {'-', 8, "ENTER", "START", "START", "+", "START"},
+    {'1', 9, nullptr, "BACK", "SELECT", "-", nullptr},
+    {'2', 10, nullptr, "LS", "L3", nullptr, nullptr},
+    {'3', 11, nullptr, "RS", "R3", nullptr, nullptr},
+    {')', 12, "UP", "UP", "UP", "UP", "UP"},
+    {',', 13, "DOWN", "DOWN", "DOWN", "DOWN", "DOWN"},
+    {'+', 14, "LEFT", "LEFT", "LEFT", "LEFT", "LEFT"},
+    {'*', 15, "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT"},
+    {'/', -1, "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN"},
+    {'.', -1, "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT"},
+    {'0', -1, "ARROWS", "D-PAD", "D-PAD", "D-PAD", "D-PAD"},
 };
 constexpr int kButtonCount = int(sizeof(kButtons) / sizeof(kButtons[0]));
 
@@ -368,6 +450,7 @@ std::string FourKeys(int up) {
 std::string NameFor(const Button& b, Mode mode) {
   switch (mode) {
     case Mode::kPlayStation: return b.playstation ? b.playstation : b.xbox;
+    case Mode::kNintendo: return b.nintendo ? b.nintendo : b.xbox;
     case Mode::kGameCube: return b.gamecube ? b.gamecube : b.xbox;
     case Mode::kXbox: return b.xbox;
     default: break;
@@ -391,15 +474,18 @@ std::string NameFor(const Button& b, Mode mode) {
 }
 
 // Guest memory for our strings: one 32-byte slot per button (+1 for "[?]")
-// and a 256-byte text buffer.
+// per mode, and a 256-byte text buffer. [mp-menus] Per mode, because a laid
+// out line keeps pointing at its names: split-screen players with different
+// controllers (or one on the keyboard) each keep their own.
 constexpr uint32_t kSlotSize = 32;
 constexpr uint32_t kTextSize = 256;
+constexpr uint32_t kSlotsPerMode = uint32_t(kButtonCount) + 1;
 uint32_t g_guest = 0;
 
 uint32_t GuestScratch() {
   if (!g_guest) {
     auto* mem = rex::system::kernel_state()->memory();
-    g_guest = mem->SystemHeapAlloc(kSlotSize * (kButtonCount + 1) + kTextSize);
+    g_guest = mem->SystemHeapAlloc(kSlotSize * kSlotsPerMode * kModeCount + kTextSize);
   }
   return g_guest;
 }
@@ -423,7 +509,8 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
     break;
   }
   if (text.size() > kSlotSize - 1) text.resize(kSlotSize - 1);
-  const uint32_t at = scratch + kSlotSize * uint32_t(index);
+  const uint32_t mode_slot = uint32_t(mode) < kModeCount ? uint32_t(mode) : 0;
+  const uint32_t at = scratch + kSlotSize * (mode_slot * kSlotsPerMode + uint32_t(index));
   std::memcpy(base + at, text.c_str(), text.size() + 1);
   return at;
 }
@@ -432,7 +519,7 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
 uint32_t TempText(uint8_t* base, const std::string& text) {
   const uint32_t scratch = GuestScratch();
   if (!scratch || text.size() >= kTextSize) return 0;
-  const uint32_t at = scratch + kSlotSize * (kButtonCount + 1);
+  const uint32_t at = scratch + kSlotSize * kSlotsPerMode * kModeCount;
   std::memcpy(base + at, text.c_str(), text.size() + 1);
   return at;
 }
@@ -480,10 +567,11 @@ struct TextCall {
   uint32_t width = 0;
   Mode mode = Mode::kXbox;
   uint32_t gen = 0;         // g_bind_gen it was laid out with
+  uint32_t player = 0;      // the local client it was made for
 };
 std::unordered_map<uint32_t, TextCall> g_texts;
 
-Mode LayoutMode(uint8_t* base) { return t_set_depth ? t_set_mode : Wanted(base); }
+Mode LayoutMode(uint8_t* base) { return t_set_depth ? t_set_mode : Wanted(base, PromptPlayer(base)); }
 
 // font* of a font index, 0 for none or the button font.
 uint32_t TextFont(uint8_t* base, uint32_t index) {
@@ -517,7 +605,8 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t slot, bool string_arg, F&&
     call.text = ReadString(base, ctx.r4.u32, 2048);
   }
   const Mode outer_mode = t_set_mode;
-  call.mode = t_set_mode = Wanted(base);
+  call.player = PromptPlayer(base);
+  call.mode = t_set_mode = Wanted(base, call.player);
   call.gen = g_bind_gen.load(std::memory_order_relaxed);
   const uint32_t tokens = t_tokens;
   ++t_set_depth;
@@ -538,7 +627,7 @@ void Refresh(PPCContext& ctx, uint8_t* base, uint32_t obj) {
     std::lock_guard lock(g_mutex);
     auto it = g_texts.find(obj);
     if (it == g_texts.end()) return;
-    const Mode want = Wanted(base);
+    const Mode want = Wanted(base, it->second.player);
     if (it->second.mode == want &&
         (!IsText(want) || it->second.gen == g_bind_gen.load(std::memory_order_relaxed)))
       return;
@@ -555,7 +644,16 @@ void Refresh(PPCContext& ctx, uint8_t* base, uint32_t obj) {
     c.Invoke(bp::kStringFromChars, {holder, text});
     arg = holder;
   }
+#if defined(COD3_MP)
+  // [mp-menus] Laid out as its own player's: the game reads the current local
+  // client for the binds of its "[ACTION]" words, and Wanted() for keys.
+  const uint32_t current = ReadU32(base, bp::kClientActiveIndex);
+  WriteU32(base, bp::kClientActiveIndex, call.player);
   c.Invoke(VirtualSlot(base, obj, call.slot), {obj, arg, call.width});
+  WriteU32(base, bp::kClientActiveIndex, current);
+#else
+  c.Invoke(VirtualSlot(base, obj, call.slot), {obj, arg, call.width});
+#endif
 }
 
 void Forget(uint32_t obj) {
@@ -618,6 +716,7 @@ std::string KeyActionText(PPCContext& ctx, uint8_t* base, std::string_view word,
   return verb + " [" + key + "]";
 }
 
+#if !defined(COD3_MP)
 // With keys, "Pull ~r1" and "Click ~lstick" (the game's words for triggers
 // and stick buttons) read "Press ...": every language's own words.
 std::string KeyVerbs(PPCContext& ctx, uint8_t* base, std::string text) {
@@ -644,7 +743,9 @@ std::string KeyVerbs(PPCContext& ctx, uint8_t* base, std::string text) {
   }
   return text;
 }
+#endif
 
+#if !defined(COD3_MP)
 // The title page's "PRESS START": "PRESS ENTER" with the keyboard (Enter is
 // START there, game/pc_menu.h). Checked against the text shown, so a title
 // page shown again (Init sets its text anew) is caught too.
@@ -657,7 +758,7 @@ void UpdateTitle(PPCContext& ctx, uint8_t* base, uint32_t page) {
   keys_text.replace(at, 5, "ENTER");
   const uint32_t str = ReadU32(base, elem + bp::kTextString);
   const std::string shown = Valid(str) ? ReadString(base, str + bp::kStringChars, 128) : "";
-  const bool keys = IsKeys(Wanted(base));
+  const bool keys = IsKeys(Wanted(base, PromptPlayer(base)));
   if (keys == (shown == keys_text)) return;
   Call c(ctx, base);
   if (keys)
@@ -665,7 +766,35 @@ void UpdateTitle(PPCContext& ctx, uint8_t* base, uint32_t page) {
   else
     c.Invoke(VirtualSlot(base, elem, bp::kSetTextKey), {elem, bp::kTitlePressStartKey});
 }
+#endif  // !COD3_MP (cod3mp's "Press START" page, PressStartMenu, is never shown)
 
+// "[ACTION]" -> its button sentence, after the game's own (`action` the word,
+// ctx.r3 the game's result): with keys, the stick words ("Use [WASD]", "Use
+// the mouse") and the keys of the port's own actions.
+void AfterActionText(PPCContext& ctx, uint8_t* base, const std::string& action) {
+  const int stick = StickAction(action);
+  // [keybinds] A word of an action the keyboard calls directly (BINOCS).
+  std::string_view word;
+  const int form = ActionWordForm(action, &word);
+  const bool key_word = form >= 0 && cod3::binds::IsActionWord(word);
+  if (stick || key_word) ++t_tokens;  // remembered, so a device switch lays it out again
+  if (key_word && IsKeys(LayoutMode(base))) {
+    if (const std::string text = KeyActionText(ctx, base, word, form); !text.empty())
+      if (const uint32_t at = TempText(base, text)) ctx.r3.u64 = at;
+    return;
+  }
+  if (!stick || !IsKeys(LayoutMode(base)) || ReadU32(base, bp::kLanguageMode) != 0) return;
+  if (const uint32_t text = TempText(base, StickWords(stick))) {
+    if (base[text]) ctx.r3.u64 = text;
+  }
+}
+
+#if defined(COD3_MP)
+// [mp-menus] cod3mp's line draw squeezes a button picture to 0.75 of its width
+// while cg_widescreen is set (0x824EC444: the vmCvar's integer); names drawn
+// in the text's font keep the text's width.
+constexpr uint32_t kWidescreenInt = 0x82B9F0DC;  // cg_widescreen (vmCvar 0x82B9F0D0) .integer
+#endif
 }  // namespace
 
 namespace cod3::prompts {
@@ -683,6 +812,19 @@ void Attach(rex::ui::Window* window, size_t z_order) {
 void Detach(rex::ui::Window* window) {
   if (window && g_window == window) window->RemoveInputListener(&g_watch);
   g_window = nullptr;
+  g_input_system.store(nullptr, std::memory_order_release);
+}
+
+void SetInputSystem(rex::input::InputSystem* input) {
+  g_input_system.store(input, std::memory_order_release);
+}
+
+void NoteKeyboardUse() { KeyboardUsed("a test's key or mouse"); }
+
+bool KeyboardMouseInUse() {
+  return g_mnk_mode.load(std::memory_order_relaxed) &&
+         g_kbm_presses.load(std::memory_order_relaxed) != 0 &&
+         g_device.load(std::memory_order_relaxed) == Device::kKeyboard;
 }
 
 }  // namespace cod3::prompts
@@ -698,6 +840,9 @@ REX_HOOK_RAW(sub_82344F98) {
   const uint32_t state = ctx.r4.u32;
   __imp__sub_82344F98(ctx, base);
   if (user == 0 && ctx.r3.u32 == 0 && Valid(state)) WatchPad(base, state);
+  // [rumble] The first controller doesn't vibrate while the keyboard and
+  // mouse are in use (after WatchPad, which tells them apart; game/rumble.h).
+  if (user == 0) cod3::rumble::OnPadRead(ctx, base);
   // [keybinds] Keys of the port's own actions inside an interaction: the
   // controller button the game binds to the action (after WatchPad, so device
   // detection sees only the real pads; game/keybinds/binds.h).
@@ -785,30 +930,23 @@ REX_HOOK_RAW(sub_824D7D88) {
   const double baseline = double(int32_t(ReadU32(base, font + bp::kFontBaseline)));
   ctx.f4.f64 = ctx.f2.f64;                            // the text's x scale
   ctx.f5.f64 = baseline * (ctx.f2.f64 - ctx.f3.f64);  // raise: baselines meet
+#if defined(COD3_MP)
+  const uint32_t widescreen = ReadU32(base, kWidescreenInt);
+  WriteU32(base, kWidescreenInt, 0);
   WithButtonFont(base, font, [&] { __imp__sub_824D7D88(ctx, base); });
+  WriteU32(base, kWidescreenInt, widescreen);
+#else
+  WithButtonFont(base, font, [&] { __imp__sub_824D7D88(ctx, base); });
+#endif
 }
 
-// "[ACTION]" -> its button sentence: with keys, the stick words ("Use
-// [WASD]", "Use the mouse") and "Press" for "Pull" / "Click".
+#if !defined(COD3_MP)
+// "[ACTION]" -> its button sentence (the word in r3): see AfterActionText.
 REX_EXTERN(__imp__sub_824DD9A8);
 REX_HOOK_RAW(sub_824DD9A8) {
   const std::string action = Valid(ctx.r3.u32) ? ReadString(base, ctx.r3.u32, 64) : "";
   __imp__sub_824DD9A8(ctx, base);
-  const int stick = StickAction(action);
-  // [keybinds] A word of an action the keyboard calls directly (BINOCS).
-  std::string_view word;
-  const int form = ActionWordForm(action, &word);
-  const bool key_word = form >= 0 && cod3::binds::IsActionWord(word);
-  if (stick || key_word) ++t_tokens;  // remembered, so a device switch lays it out again
-  if (key_word && IsKeys(LayoutMode(base))) {
-    if (const std::string text = KeyActionText(ctx, base, word, form); !text.empty())
-      if (const uint32_t at = TempText(base, text)) ctx.r3.u64 = at;
-    return;
-  }
-  if (!stick || !IsKeys(LayoutMode(base)) || ReadU32(base, bp::kLanguageMode) != 0) return;
-  if (const uint32_t text = TempText(base, StickWords(stick))) {
-    if (base[text]) ctx.r3.u64 = text;
-  }
+  AfterActionText(ctx, base, action);
 }
 
 // The whole text after its "[ACTION]" pass (a static 512-byte buffer): with
@@ -822,6 +960,18 @@ REX_HOOK_RAW(sub_824DE290) {
   const std::string out = KeyVerbs(ctx, base, text);
   if (out != text && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
 }
+#else
+// [mp-menus] cod3mp's "[ACTION]" -> its sentence is FEMultiLineText's slot 94
+// (this, word in r4), called for each word by slot 93 (0x824D6C48). Slot 93
+// itself, the campaign's "Pull" -> "Press" pass, isn't hooked yet: its
+// generated name is the one the campaign's slot 93 alias takes.
+REX_EXTERN(__imp__FEMultiLineText__vfunc_94);
+REX_HOOK_RAW(FEMultiLineText__vfunc_94) {
+  const std::string action = Valid(ctx.r4.u32) ? ReadString(base, ctx.r4.u32, 64) : "";
+  __imp__FEMultiLineText__vfunc_94(ctx, base);
+  AfterActionText(ctx, base, action);
+}
+#endif
 
 // FEMultiLineText::Draw: stale prompts are laid out again first.
 REX_EXTERN(__imp__FEMultiLineText__vfunc_19);
@@ -865,6 +1015,7 @@ REX_HOOK_RAW(FEMultiLineText__vfunc_0) {
   __imp__FEMultiLineText__vfunc_0(ctx, base);
 }
 
+#if !defined(COD3_MP)
 // TitleMenu::Update (every frame on "Press Start").
 REX_EXTERN(__imp__sub_824EFB18);
 REX_HOOK_RAW(sub_824EFB18) {
@@ -872,3 +1023,4 @@ REX_HOOK_RAW(sub_824EFB18) {
   __imp__sub_824EFB18(ctx, base);
   if (Valid(page)) UpdateTitle(ctx, base, page);
 }
+#endif

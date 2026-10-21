@@ -34,3 +34,9 @@ registers = ["f1"]
 address = 0x82557E98
 name = "Cod3FrameLimiterHook"
 registers = ["r11", "r29"]
+
+# midasm:Cod3VehicleViewPressed@82448084: hand check [keybinds]: right after bl of the pad's pressed-edge read (campaign 0x820E86A8, MP 0x820FA6E8) with li r5,12 (the right stick click) in the camera select (campaign 0x82447D48, MP 0x82462...
+[[midasm_hook]]
+address = 0x82462F48
+name = "Cod3VehicleViewPressed"
+registers = ["r3", "r29", "base"]

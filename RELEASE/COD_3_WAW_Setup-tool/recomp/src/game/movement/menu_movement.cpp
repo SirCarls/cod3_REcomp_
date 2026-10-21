@@ -32,14 +32,12 @@ constexpr Text kTexts[] = {
     {"FEMENU_COP_MV_STYLE", "MOVEMENT STYLE"},
     {"FEMENU_COP_MV_COD4_SPRINT", "COD4 SPRINT"},
     {"FEMENU_COP_MV_COD4_SPEEDS", "COD4 SPEEDS"},
-    {"FEMENU_COP_MV_COD4_MANTLE", "COD4 MANTLING"},
     {"FEMENU_COP_MV_COD4_JUMPS", "COD4 JUMP TRICKS"},
 };
 // The row labels' keys, in settings.h's row order.
 constexpr const char* kLabelKeys[kRows] = {
     "FEMENU_COP_MV_SPRINT",      "FEMENU_COP_MV_SPRINT_BUTTON", "FEMENU_COP_MV_STYLE",
-    "FEMENU_COP_MV_COD4_SPRINT", "FEMENU_COP_MV_COD4_SPEEDS",   "FEMENU_COP_MV_COD4_MANTLE",
-    "FEMENU_COP_MV_COD4_JUMPS",
+    "FEMENU_COP_MV_COD4_SPRINT", "FEMENU_COP_MV_COD4_SPEEDS",   "FEMENU_COP_MV_COD4_JUMPS",
 };
 
 // Guest copies of the texts, made once (the game keeps the pointers).

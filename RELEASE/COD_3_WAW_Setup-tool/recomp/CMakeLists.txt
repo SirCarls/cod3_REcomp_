@@ -65,10 +65,11 @@ set(COD3_SOURCES
     src/game/keybinds/keys.cpp  # [keybinds]
     src/game/keybinds/model.cpp  # [keybinds]
     src/game/menu_fov.cpp
+    src/game/menu_aim.cpp  # [claude-9b] Pause > Options > AIM: sensitivity per weapon class, crosshair
+    src/game/menu_slider.cpp  # [claude-9b] slider rows: the number box you can type in
     src/game/menu_video.cpp
     src/game/mouse_look.cpp
     src/game/movement/hooks_sp.cpp  # [movement] sprint and the CoD4 movement style (campaign only)
-    src/game/movement/mantle.cpp  # [movement]
     src/game/movement/menu_movement.cpp  # [movement]
     src/game/movement/rules.cpp  # [movement]
     src/game/movement/settings.cpp  # [movement]
@@ -77,7 +78,9 @@ set(COD3_SOURCES
     src/game/protected_dvars.cpp  # [movement] server_sided_protected dvars
     src/game/pc_menu.cpp
     src/game/button_prompts.cpp
+    src/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     src/game/perf_stats.cpp
+    src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
     src/game/script_fiber.cpp
@@ -89,6 +92,9 @@ set(COD3_SOURCES
     src/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp
+    src/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands (campaign only for now)
+    src/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, hip and aiming, per player
+    src/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz, the match's aim assist rules
     src/game/voice_language.cpp  # [voice]
     src/game/watchdog.cpp
     src/ui/announcement_feed.cpp
@@ -100,6 +106,7 @@ set(COD3_SOURCES
     src/ui/hud_overlay.cpp
     src/ui/problem_log.cpp
     src/ui/qte_spinner.cpp
+    src/ui/server_tab.cpp  # [claude-9b] F2 > Game > Server: the match's rules, host only
     src/ui/theme.cpp
     src/ui/waw_dvars.cpp
     src/test_input.cpp

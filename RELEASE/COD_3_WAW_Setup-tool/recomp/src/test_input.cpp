@@ -65,6 +65,15 @@ ScriptedInputDriver::ScriptedInputDriver(const std::string& script)
       REXLOG_WARN("cod3: scripted test input cut at {} events", kMaxEvents);
       break;
     }
+    // [mp-menus] "pad=playstation": the kind of controller it says it is.
+    if (entry.rfind("pad=", 0) == 0) {
+      const std::string kind = entry.substr(4);
+      family_ = kind == "playstation" ? ControllerFamily::kPlayStation
+                : kind == "nintendo"  ? ControllerFamily::kNintendo
+                : kind == "xbox"      ? ControllerFamily::kXbox
+                                      : ControllerFamily::kUnknown;
+      continue;
+    }
     auto parts = Split(entry, ':');
     if (parts.size() < 2) continue;
     Event ev;
@@ -111,6 +120,7 @@ void ScriptedInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
   info.id = kScriptDevice;
   info.name = "cod3 test script";
   info.synthetic = true;
+  info.family = family_;  // [mp-menus]
   out.push_back(info);
 }
 

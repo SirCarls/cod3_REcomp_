@@ -20,21 +20,34 @@
 //    text for the cgame's commands (weapnext, weaponslot 1, +scores). Only
 //    when the pad poll takes button presses itself (no game menu over the
 //    game); a release always goes.
-//  * While an interaction runs (a mounted gun, a vehicle, a battle action) the
+//  * Vehicles read their own controls (ButtonAlias_Value, the game's button
+//    aliases: the jeep's gas, brake / reverse and handbrake, the tank's
+//    machine gun and turret align; the Polish missions' tank is no
+//    interaction). While a vehicle reads an alias, the key of its Vehicle
+//    action (model.h: rebindable like the rest, MOUSE2 the tank's machine
+//    gun, V the view) is that action's: the hook answers the alias the action
+//    holds at the vehicle's own read, and the view switch takes the key's
+//    press where it reads the right stick click. No controller button is
+//    pressed for them, in both programs (in cod3mp only the keyboard player's
+//    vehicle). On foot the same keys keep their own actions.
+//  * While an interaction runs (a mounted gun, a battle action, the jeep), the
 //    key presses the controller button the game binds to that action instead
 //    (RT for +attack in layout A), in the pad state the game reads, so the
-//    interaction decides as it does for a controller: never more than the
-//    controller can do. A key held when one starts or ends goes on as a held
-//    controller button would (it does nothing new until pressed again).
+//    game decides as it does for a controller: never more than the controller
+//    can do; never a button the vehicle being driven reads as one of its own
+//    controls (the jeep's gas). A key held when one starts or ends goes on as
+//    a held controller button would (it does nothing new until pressed
+//    again).
 // The controller is unchanged: its layout (xenon_a..d.cfg) and its buttons,
 // at the same time as the keys (two holders per game button).
 //
 // Settings (cod3.toml): cod3_binds_kbm_p1 (model.h), cod3_binds_actions (the
 // switch: false = every key presses its row's controller button, as before),
 // cod3_aim_toggle_kbm_p1 (the aim key holds or toggles), cod3_debug_binds
-// (log each delivery and, in the campaign, the binoculars / hold breath /
-// sprint state, with a screenshot of the game's picture when the binoculars
-// are up).
+// (log each delivery, the vehicles' reads and, in the campaign, the
+// binoculars / hold breath / sprint state, with a screenshot of the game's
+// picture when the binoculars are up), cod3_test_vehicle_hold (command line
+// only, testing: Vehicle actions held as if their keys were down).
 // cod3mp: the same keys for player 1 (its pad poll goes through the local
 // clients once a frame, each with its own copy of the game's buttons; keys are
 // actions only while player 1 is in a match); the console's bind command
@@ -75,14 +88,24 @@ void Detach(rex::ui::Window* window);
 void OnUiFrame();
 // The keys are the actions' now (in play, no menu over the game; any thread).
 bool InPlay();
+// The local client the keyboard and mouse play (reads guest memory; any
+// thread): the campaign's one player; in cod3mp the player on controller 0,
+// which they share (the SDK feeds them to guest user 0), else player 1.
+// Split-screen players on other controllers keep theirs (the PC menus and
+// the button prompts follow this too).
+uint32_t KeyboardClient(uint8_t* base);
+// [mp-menus] The controller (guest user index, 0-3) a local client plays
+// with: cod3mp's client's controller; the campaign's player is on 0.
+uint32_t ClientPad(uint8_t* base, uint32_t client);
 
-// --- game/button_prompts.cpp (campaign), game/keybinds/pad_state_mp.cpp (cod3mp) ---------
+// --- game/button_prompts.cpp (both programs) ------------------------------------------
 // The GetPadState hook, after device detection saw the real state: adds the
 // controller buttons keys press inside an interaction (any thread).
 void ApplyToPad(uint8_t* base, uint32_t user, uint32_t state);
 // The key a prompt shows for a controller button in play: the key of the
 // action the game binds to that button (pad key 215, the right trigger, is
-// +attack in layout A -> "MOUSE1"). "" when it isn't one of these actions
+// +attack in layout A -> "MOUSE1"; in a vehicle, the Vehicle action of a
+// button it reads as its own control: the tank's LB -> "MOUSE2"). "" when it isn't one of these actions
 // or the action has no key (the prompt keeps its old name). Game thread.
 std::string KeyNameForPadKey(uint8_t* base, int pad_key);
 // The same for a game command ("+binoculars" -> "B"; any thread).
@@ -108,8 +131,15 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
 
 // --- ui/hud_overlay.cpp ----------------------------------------------------------------
 // F2 > Controls > Key bindings: the switch, the aim toggle and one row per
-// action. True when a setting changed.
+// action. True when a setting changed. Typed keys show in capitals and apply on
+// Enter or when the box loses focus.
 bool DrawF2Rows();
+// One controller row (a keybind_* setting) the same way; the names go back to
+// the SDK's spelling (SPACE -> Space). True when the row changed.
+bool DrawPadKeyRow(const char* cvar);
+// Applies what was typed into any of these rows and not applied yet (F2's Save,
+// closing F2). True when a setting changed.
+bool CommitF2Edits();
 // The setting F2's Reset puts back ("" = the defaults).
 inline constexpr const char* kSettingName = "cod3_binds_kbm_p1";
 

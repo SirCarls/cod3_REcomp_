@@ -3,7 +3,8 @@
 //  - game/cutscene_skip.cpp: multiplayer plays no films and has no level
 //    intros (its film code has no callers);
 //  - game/qte_actions.cpp, ui/qte_spinner.cpp: multiplayer has no battle
-//    actions (the receiver classes exist, nothing starts one);
+//    actions (the receiver classes exist, nothing starts one); the button
+//    prompts' pointer and pad hooks call into it;
 //  - game/aim_assist.cpp: the setting lives in each controller profile's
 //    block in multiplayer, read by other code (later);
 //  - game/voice_language.cpp: multiplayer registers its own sound banks
@@ -31,6 +32,8 @@ float CutsceneSkip::CoverAlpha() const { return 0.0f; }
 
 namespace qte {
 void AddMouse(float, float) {}
+void AddPointerMotion(float, float) {}  // [mp-menus] game/button_prompts.cpp's pointer watch
+void ApplyToPad(uint8_t*, uint32_t, uint32_t) {}  // [mp-menus] and its pad state hook
 bool MouseOwnsView() { return false; }
 }  // namespace qte
 

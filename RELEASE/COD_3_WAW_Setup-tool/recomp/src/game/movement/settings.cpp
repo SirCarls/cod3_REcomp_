@@ -29,8 +29,6 @@ REXCVAR_DEFINE_BOOL(cod3_cod4_sprint, true, "cod3/Movement",
 REXCVAR_DEFINE_BOOL(cod3_cod4_speeds, true, "cod3/Movement",
                     "CoD4 style part: CoD4 strafe (0.8) and back (0.7) speeds, and CoD4 PC's movement at "
                     "125 fps (its air strafing and jump height) at any frame rate");
-REXCVAR_DEFINE_BOOL(cod3_cod4_mantle, true, "cod3/Movement",
-                    "CoD4 style part: climb onto ledges up to about chest height (jump at them)");
 REXCVAR_DEFINE_BOOL(cod3_cod4_jumps, true, "cod3/Movement",
                     "CoD4 style part: CoD4 PC bounces off steep slopes (CoD4's air strafing is part of "
                     "cod3_cod4_speeds)");
@@ -48,7 +46,6 @@ bool PartFlag(int row, Preference& pref, bool** out) {
   switch (row) {
     case kRowCod4Sprint: *out = &pref.parts.sprint; return true;
     case kRowCod4Speeds: *out = &pref.parts.speeds; return true;
-    case kRowCod4Mantle: *out = &pref.parts.mantle; return true;
     case kRowCod4Jumps: *out = &pref.parts.jumps; return true;
   }
   return false;
@@ -58,7 +55,6 @@ const char* PartCvar(int row) {
   switch (row) {
     case kRowCod4Sprint: return "cod3_cod4_sprint";
     case kRowCod4Speeds: return "cod3_cod4_speeds";
-    case kRowCod4Mantle: return "cod3_cod4_mantle";
     case kRowCod4Jumps: return "cod3_cod4_jumps";
   }
   return nullptr;
@@ -90,7 +86,6 @@ Preference OwnPreference() {
   p.cod4 = REXCVAR_GET(cod3_cod4_movement);
   p.parts.sprint = REXCVAR_GET(cod3_cod4_sprint);
   p.parts.speeds = REXCVAR_GET(cod3_cod4_speeds);
-  p.parts.mantle = REXCVAR_GET(cod3_cod4_mantle);
   p.parts.jumps = REXCVAR_GET(cod3_cod4_jumps);
   return p;
 }
@@ -101,7 +96,6 @@ MoveRules LocalRules() {
   Parts host;
   host.sprint = pd::Get(pd::Id::kAlternateMovementSprint) != 0;
   host.speeds = pd::Get(pd::Id::kAlternateMovementSpeeds) != 0;
-  host.mantle = pd::Get(pd::Id::kAlternateMovementMantle) != 0;
   host.jumps = pd::Get(pd::Id::kAlternateMovementJumps) != 0;
   return EffectiveRules(pd::Get(pd::Id::kAlternateMovement), host, OwnPreference(), SprintSetting());
 }
@@ -116,7 +110,6 @@ const char* RowLabel(int row) {
     case kRowStyle: return "MOVEMENT STYLE";
     case kRowCod4Sprint: return "COD4 SPRINT";
     case kRowCod4Speeds: return "COD4 SPEEDS";
-    case kRowCod4Mantle: return "COD4 MANTLING";
     case kRowCod4Jumps: return "COD4 JUMP TRICKS";
   }
   return "";
@@ -135,8 +128,6 @@ const char* RowHelp(int row) {
     case kRowCod4Speeds:
       return "With the CoD4 style: strafing at 0.8 and walking backward at 0.7 of the walk speed, and CoD4 PC's "
              "air strafing and jump height at 125 fps, whatever your frame rate.";
-    case kRowCod4Mantle:
-      return "With the CoD4 style: jump at a ledge up to chest height to climb onto it.";
     case kRowCod4Jumps:
       return "With the CoD4 style: bounce off steep slopes as on CoD4 PC (CoD4's air strafing comes with CoD4 "
              "speeds).";
@@ -220,21 +211,8 @@ bool TwoValueRow(int row, const char* label, const char* off_text, const char* o
   return changed;
 }
 
-bool ProtectedRow(pd::Id id, const char* label, const char* const* names, int count) {
-  const pd::Entry& e = pd::Info(id);
-  const bool locked = pd::IsLocked();
-  int value = pd::Get(id);
-  bool changed = false;
-  if (locked) ImGui::BeginDisabled();
-  if (ImGui::Combo(label, &value, names, count)) {
-    const pd::Verdict v = pd::RequestSet(id, std::to_string(value), cheats::Source::kSettings);
-    changed = v.changed;
-  }
-  if (locked) ImGui::EndDisabled();
-  HelpLine(e.help);
-  if (locked) ImGui::TextDisabled("%s", pd::LockedReason(id).c_str());
-  return changed;
-}
+// [claude-9b] The match rule's rows (ProtectedRow) moved to F2 > Game > Server,
+// shown only to the host (ui/server_tab.cpp).
 
 }  // namespace
 
@@ -243,12 +221,12 @@ bool ProtectedRow(pd::Id id, const char* label, const char* const* names, int co
 static bool ResetMovementSettings() {
   bool changed = false;
   for (const char* name : {"cod3_sprint", "cod3_sprint_toggle", "cod3_cod4_movement", "cod3_cod4_sprint",
-                           "cod3_cod4_speeds", "cod3_cod4_mantle", "cod3_cod4_jumps"}) {
+                           "cod3_cod4_speeds", "cod3_cod4_jumps"}) {
     const auto* info = rex::cvar::GetFlagInfo(name);
     if (!info || rex::cvar::GetFlagByName(name) == info->default_value) continue;
     changed |= rex::cvar::SetFlagByName(name, info->default_value);
   }
-  for (const pd::Entry& e : pd::All()) changed |= pd::RequestReset(e.id, cheats::Source::kSettings).changed;
+  // [claude-9b] The match rules have their own reset on F2 > Game > Server (host only).
   if (changed) REXLOG_INFO("cod3: movement settings back to their defaults (F2)");
   return changed;
 }
@@ -290,23 +268,14 @@ bool DrawF2Section() {
   const Parts shown = show_server ? effective.parts : own.parts;
   changed |= TwoValueRow(kRowCod4Sprint, "CoD4 sprint", "Off", "On", shown.sprint);
   changed |= TwoValueRow(kRowCod4Speeds, "CoD4 speeds", "Off", "On", shown.speeds);
-  changed |= TwoValueRow(kRowCod4Mantle, "CoD4 mantling", "Off", "On", shown.mantle);
   changed |= TwoValueRow(kRowCod4Jumps, "CoD4 jump tricks", "Off", "On", shown.jumps);
   ImGui::Unindent();
 
-  if (ImGui::CollapsingHeader("Match rule (advanced, server_sided_protected)")) {
-    HelpLine("Set by a match's host and sent to every player; nobody else can change them during the match, "
-             "and your own values come back when you leave. In the campaign you are the host: 2 (each "
-             "player's own style) makes the Movement style row above apply.");
-    static const char* kModes[] = {"0: Call of Duty 3 for everyone", "1: Call of Duty 4 for everyone",
-                                   "2: Each player's own style"};
-    changed |= ProtectedRow(pd::Id::kAlternateMovement, "alternate_movement", kModes, 3);
-    static const char* kOnOff[] = {"0: Off", "1: On"};
-    changed |= ProtectedRow(pd::Id::kAlternateMovementSprint, "alternate_movement_sprint", kOnOff, 2);
-    changed |= ProtectedRow(pd::Id::kAlternateMovementSpeeds, "alternate_movement_speeds", kOnOff, 2);
-    changed |= ProtectedRow(pd::Id::kAlternateMovementMantle, "alternate_movement_mantle", kOnOff, 2);
-    changed |= ProtectedRow(pd::Id::kAlternateMovementJumps, "alternate_movement_jumps", kOnOff, 2);
-  }
+  // [claude-9b] The match rule (alternate_movement and its parts) is on F2 >
+  // Game > Server, only for the host (owner 2026-10-20 20:42: "the server
+  // sided dvars should be their own tab, and only accessible if they are host").
+  HelpLine(pd::IsLocked() ? "This match's host sets the match rule (alternate_movement)."
+                          : "The match rule for a match you host (alternate_movement) is in the Server tab.");
   return changed;
 }
 

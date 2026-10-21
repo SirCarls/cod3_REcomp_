@@ -25,6 +25,10 @@
 //   HD TEXTURES       cod3_hd_textures (after a restart)
 //   BATTLE ACTIONS    cod3_qte_style: spinner or original (game/qte_actions.h);
 //                     the in-game page only (the front end's has six rows)
+//   DEPTH OF FIELD    [post-effects] cod3_depth_of_field: on (the game's own) or
+//                     off (game/post_effects.h); the in-game page only
+//   MOTION BLUR       [post-effects] cod3_motion_blur: on or off; the in-game
+//                     page only
 // All of them only change what is drawn and how often; none changes how the
 // game plays.
 
@@ -50,6 +54,10 @@ enum Row : int {
   // Only the in-game page has room for this seventh row; the front end's
   // page shows the first six.
   kBattleActions,
+  // [post-effects] The game's depth of field and motion blur on or off
+  // (game/post_effects.h); the in-game page only, like kBattleActions.
+  kDepthOfField,
+  kMotionBlur,
   kRowCount
 };
 

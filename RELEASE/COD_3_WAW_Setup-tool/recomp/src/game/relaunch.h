@@ -55,6 +55,17 @@ bool RelaunchRequested();
 void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height,
                      bool has_focus);
 
+// [claude-9b] start_in_background (SDK patch 0063) is a launch option for
+// testing only (owner 2026-10-20: "it should just be an advanced launch option
+// (trying to hide it from users and use for debugging)"): only the command
+// line (--start_in_background=true: devrun.py, the setup tool's Extra
+// arguments, a relaunch's WindowArgs) or the environment sets it. A value from
+// a settings file (saved by F2 or the setup tool before 2.12.17) or, in
+// multiplayer, from the campaign's cod3.toml is put back to off here; the
+// next settings save then drops it from the file. Call in OnPreSetup, before
+// the window opens.
+void UseStartInBackgroundAsLaunchOptionOnly();
+
 // Starts the program the game asked for (RelaunchRequested) with the game's
 // launch data, keeping the command line. Returns false (and logs why) when
 // it couldn't.

@@ -18,15 +18,20 @@
 //  * Stick actions read "Use [WASD]" / "Use the mouse" (English), and the
 //    game's "Pull" / "Click" verbs its own "Press"; the title says "PRESS
 //    ENTER".
-// A controller button press brings the game's own pictures back; a key or
+// A controller button press brings the controller's buttons back; a key or
 // mouse press shows the keys again. Texts already on screen follow at once
-// (they are laid out again). Only player 1 can show keys (the keyboard is
-// guest user 0); players 2-4 always see controller buttons.
-// cod3_glyph_style picks how controller buttons look: xbox (the game's own
-// pictures), playstation or gamecube (button names, "[CROSS]", until
-// pictures of our own exist; one data table, kButtons). cod3_key_prompts
-// turns the keys off. Nothing else changes: no timing, no input, only what
-// the prompts show.
+// (they are laid out again). Only the player on the first controller can
+// show keys (the keyboard and mouse are guest user 0); the others always see
+// their controllers' buttons.
+// cod3_glyph_style picks how controller buttons look: auto (the default;
+// [mp-menus] each player's own controller, as the SDK names it, SDK patch
+// 0067: an Xbox pad or one it can't name shows the game's own pictures, a
+// PlayStation pad "[CROSS]", a Nintendo pad the label in that place, "[B]"
+// for the bottom button), or one style for everyone: xbox (the game's own
+// pictures), playstation, nintendo or gamecube (button names until pictures
+// of our own exist; one data table, kButtons). cod3_key_prompts turns the
+// keys off. Nothing else changes: no timing, no input, only what the
+// prompts show.
 
 #pragma once
 
@@ -35,11 +40,24 @@
 namespace rex::ui {
 class Window;
 }
+namespace rex::input {
+class InputSystem;
+}
 
 namespace cod3::prompts {
 
 // UI thread: watch the window's keyboard and mouse (never takes an event).
 void Attach(rex::ui::Window* window, size_t z_order);
 void Detach(rex::ui::Window* window);
+// [mp-menus] A keyboard or mouse use another listener made up (the PC
+// menus' test script, cod3_test_menu_input): the prompts show keys.
+void NoteKeyboardUse();
+// [mp-menus] The app's input system (after setup; nullptr at shutdown): which
+// kind of controller each player holds, for cod3_glyph_style auto.
+void SetInputSystem(rex::input::InputSystem* input);
+// [rumble] Whether the keyboard and mouse are in use now: mnk_mode on, and a
+// key or mouse press since the last controller button (what the first
+// controller's prompts follow, whatever cod3_key_prompts says). Any thread.
+bool KeyboardMouseInUse();
 
 }  // namespace cod3::prompts

@@ -23,6 +23,7 @@ set(COD3_SRC ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 set(COD3MP_SOURCES
     ${COD3_SRC}/main_mp.cpp
     ${COD3_SRC}/cod3mp_app.cpp
+    ${COD3_SRC}/game/button_prompts.cpp  # [mp-menus] keys and controller buttons in the game's prompts, per player; its pad state hook calls the keybinds' too
     ${COD3_SRC}/game/cheat_guard.cpp
     ${COD3_SRC}/game/cheat_watch.cpp
     ${COD3_SRC}/game/color_output.cpp
@@ -47,13 +48,15 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/keybinds/binds.cpp  # [keybinds] keys that call the game's own actions
     ${COD3_SRC}/game/keybinds/keys.cpp  # [keybinds]
     ${COD3_SRC}/game/keybinds/model.cpp  # [keybinds]
-    ${COD3_SRC}/game/keybinds/pad_state_mp.cpp  # [keybinds] cod3mp only: the campaign's is in button_prompts.cpp
     ${COD3_SRC}/game/level_hooks.cpp
     ${COD3_SRC}/game/machine_profile.cpp
     ${COD3_SRC}/game/mouse_look.cpp
+    ${COD3_SRC}/game/pc_menu.cpp  # [mp-menus] mouse and keyboard in the game's menus, shared with the campaign
     ${COD3_SRC}/game/perf_stats.cpp
+    ${COD3_SRC}/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     ${COD3_SRC}/game/print_hooks.cpp
     ${COD3_SRC}/game/relaunch.cpp
+    ${COD3_SRC}/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     ${COD3_SRC}/game/render_resolution.cpp
     ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
@@ -63,12 +66,16 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
+    ${COD3_SRC}/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands
+    ${COD3_SRC}/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, per player
+    ${COD3_SRC}/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz
     ${COD3_SRC}/game/watchdog.cpp
     ${COD3_SRC}/game/mp/campaign_only.cpp
     ${COD3_SRC}/game/mp/campaign_stubs.cpp
     ${COD3_SRC}/game/mp/controls_mp.cpp
     ${COD3_SRC}/game/mp/hud_mp.cpp
     ${COD3_SRC}/game/mp/menus_mp.cpp
+    ${COD3_SRC}/game/mp/options_mp.cpp  # [mp-menus] FIELD OF VIEW and FOV SCALE on Options > Gameplay
     ${COD3_SRC}/game/mp/session.cpp
     ${COD3_SRC}/test_input.cpp
     ${COD3_SRC}/ui/announcement_feed.cpp

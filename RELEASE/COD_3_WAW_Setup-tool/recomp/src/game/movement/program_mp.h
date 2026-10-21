@@ -64,7 +64,7 @@ inline constexpr Program kMultiplayer = {
             .event_parms = 264,
         },
     // tracemask / box / pmove_fixed / the view-angle arguments: to find
-    // (0 keeps the mantle and CoD4's 125 fps steps off in cod3mp).
+    // (0 keeps CoD4's 125 fps steps off in cod3mp).
     .pmove = {.ps = 0,
               .cmd = 4,
               .tracemask = 0,

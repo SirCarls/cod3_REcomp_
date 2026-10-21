@@ -1,9 +1,9 @@
 // cod3 - the movement settings in the game's own Options menu.
 //
 // In game: Pause > Options gets a MOVEMENT OPTIONS row under VIDEO OPTIONS;
-// it switches the page to seven rows (game/menu_fov.cpp shows them the way it
+// it switches the page to six rows (game/menu_fov.cpp shows them the way it
 // shows the video rows): SPRINT, SPRINT BUTTON, MOVEMENT STYLE, COD4 SPRINT,
-// COD4 SPEEDS, COD4 MANTLING, COD4 JUMP TRICKS. Left and right change a row;
+// COD4 SPEEDS, COD4 JUMP TRICKS. Left and right change a row;
 // B goes back to the options.
 //
 // The rows are game/movement/settings.h's, the same as F2 > Game > Movement:
@@ -21,7 +21,7 @@ struct PPCContext;
 namespace cod3::movementmenu {
 
 // The rows, in the order the page shows them (settings.h's Row).
-inline constexpr int kRows = 7;
+inline constexpr int kRows = 6;
 int RowCount();
 
 // String keys (resolved by Localize below through the game's Localize hook).

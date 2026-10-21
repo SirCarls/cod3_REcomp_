@@ -54,6 +54,8 @@
 #include <cstdint>
 #include <functional>
 
+struct PPCContext;
+
 namespace rex::ui {
 class Window;
 }
@@ -87,5 +89,35 @@ void NoteLineDrawn(uint8_t* base, uint32_t line, double y_scale);
 // while the mouse / keyboard layer presses `code` (pm::kCode*) or holds it as
 // an arrow key, so a page can tell those from the pad's.
 bool FromPcInput(uint32_t code);
+
+// --- [mp-menus] For a program's own menu hooks (game/mp/menus_mp.cpp) -----
+// All on the game thread.
+
+// After a menu system's ProcessInput: the mouse and keyboard for its page
+// (what the ProcessInput hook in pc_menu.cpp does).
+void OnProcessInput(PPCContext& ctx, uint8_t* base, uint32_t system);
+
+// Around a menu system's draw: the footer prompts, arrows and gauges drawn
+// inside belong to it. Begin returns the system drawing before (draws nest);
+// pass it to End.
+uint32_t BeginSystemDraw(uint32_t system);
+void EndSystemDraw(uint32_t outer);
+
+// A picture a menu drew (arrows and gauges are noted for the mouse).
+void NotePictureDrawn(uint8_t* base, uint32_t quad);
+
+// QUIT TO DESKTOP confirmed: the app's quit handler (save and end).
+void QuitToDesktopNow();
+
+// Panel elements, the way the game finds and copies them: a text or a
+// picture of a panel by name (0 when it has none), a copy of an element, a
+// copy kept `dy` below its source (position, opacity, shown), an item's label
+// key, and (cod3_menu_trace) a log of a panel's elements.
+uint32_t FindPanelText(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name);
+uint32_t FindPanelPicture(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name);
+uint32_t CopyPanelElement(PPCContext& ctx, uint8_t* base, uint32_t source, bool picture);
+void FollowPanelElement(uint8_t* base, uint32_t source, uint32_t copy, bool picture, float dy);
+void SetItemLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char* key);
+void DumpMenuPanel(uint8_t* base, uint32_t panel, const char* what);
 
 }  // namespace cod3::pcmenu

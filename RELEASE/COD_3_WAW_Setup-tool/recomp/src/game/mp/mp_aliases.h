@@ -12,12 +12,30 @@
 #define __imp__CG_GetViewFov __imp__sub_82453810
 #define CL_AdjustAngles sub_82525698  // 0x8250B460 -> 0x82525698
 #define __imp__CL_AdjustAngles __imp__sub_82525698
+#define CL_MouseMove sub_8252B578  // 0x8250FF48 -> 0x8252B578
+#define __imp__CL_MouseMove __imp__sub_8252B578
 #define Com_DPrintf sub_825448A0  // 0x82523A60 -> 0x825448A0
 #define __imp__Com_DPrintf __imp__sub_825448A0
 #define Com_Frame sub_82557D60  // 0x82536DD0 -> 0x82557D60
 #define __imp__Com_Frame __imp__sub_82557D60
 #define Com_Printf sub_82544898  // 0x82523A58 -> 0x82544898
 #define __imp__Com_Printf __imp__sub_82544898
+#define DialogMenuSystem__vfunc_14 DialogMenuSystem__vfunc_19  // 0x824CE3E8 -> 0x8250BEE8
+#define __imp__DialogMenuSystem__vfunc_14 __imp__DialogMenuSystem__vfunc_19
+#define FEMenuSystem__vfunc_12 FEMenuSystem__ProcessInput  // 0x824C4DB8 -> 0x824DCE48
+#define __imp__FEMenuSystem__vfunc_12 __imp__FEMenuSystem__ProcessInput
+#define FEMenuSystem__vfunc_17 FEMenuSystem__HandleButton  // 0x824C48B8 -> 0x824D5A08
+#define __imp__FEMenuSystem__vfunc_17 __imp__FEMenuSystem__HandleButton
+#define FEMultiLineText__vfunc_91 FEMultiLineText__vfunc_97  // 0x824E8098 -> 0x824F75A8
+#define __imp__FEMultiLineText__vfunc_91 __imp__FEMultiLineText__vfunc_97
+#define FEMultiLineText__vfunc_92 FEMultiLineText__vfunc_98  // 0x824DD790 -> 0x824F7410
+#define __imp__FEMultiLineText__vfunc_92 __imp__FEMultiLineText__vfunc_98
+#define FEMultiLineText__vfunc_93 FEMultiLineText__vfunc_99  // 0x824DD630 -> 0x824F72B0
+#define __imp__FEMultiLineText__vfunc_93 __imp__FEMultiLineText__vfunc_99
+#define FrontEndMenuSystem__vfunc_14 FrontEndMenuSystem__vfunc_19  // 0x824CE4D0 -> 0x824DC718
+#define __imp__FrontEndMenuSystem__vfunc_14 __imp__FrontEndMenuSystem__vfunc_19
+#define InGameMenuSystem__vfunc_14 InGameMenuSystem__vfunc_19  // 0x824CD9E0 -> 0x824F6338
+#define __imp__InGameMenuSystem__vfunc_14 __imp__InGameMenuSystem__vfunc_19
 #define RE_BeginFrame sub_824345E0  // 0x8241A0A0 -> 0x824345E0
 #define __imp__RE_BeginFrame __imp__sub_824345E0
 #define RE_RenderScene sub_82448A18  // 0x82430710 -> 0x82448A18
@@ -40,6 +58,10 @@
 #define __imp__sub_8212A520 __imp__sub_82142248
 #define sub_82130808 sub_82143838  // 0x82130808 -> 0x82143838
 #define __imp__sub_82130808 __imp__sub_82143838
+#define sub_82149950 sub_82161758  // 0x82149950 -> 0x82161758
+#define __imp__sub_82149950 __imp__sub_82161758
+#define sub_82149C80 sub_82161B28  // 0x82149C80 -> 0x82161B28
+#define __imp__sub_82149C80 __imp__sub_82161B28
 #define sub_822EBFB8 sub_822BAD00  // 0x822EBFB8 -> 0x822BAD00
 #define __imp__sub_822EBFB8 __imp__sub_822BAD00
 #define sub_822EBFE8 sub_822BAD30  // 0x822EBFE8 -> 0x822BAD30
@@ -52,6 +74,8 @@
 #define __imp__sub_82343548 __imp__sub_82312698
 #define sub_82344F98 sub_82314360  // 0x82344F98 -> 0x82314360
 #define __imp__sub_82344F98 __imp__sub_82314360
+#define sub_82344FA8 sub_82314370  // 0x82344FA8 -> 0x82314370
+#define __imp__sub_82344FA8 __imp__sub_82314370
 #define sub_82344FC0 sub_82314390  // 0x82344FC0 -> 0x82314390
 #define __imp__sub_82344FC0 __imp__sub_82314390
 #define sub_82345000 sub_823143D0  // 0x82345000 -> 0x823143D0
@@ -132,14 +156,32 @@
 #define __imp__sub_82419098 __imp__sub_82430E70
 #define sub_82425BD0 sub_8243D590  // 0x82425BD0 -> 0x8243D590
 #define __imp__sub_82425BD0 __imp__sub_8243D590
+#define sub_82426500 sub_824311E0  // 0x82426500 -> 0x824311E0
+#define __imp__sub_82426500 __imp__sub_824311E0
+#define sub_82445118 sub_8245E3A8  // 0x82445118 -> 0x8245E3A8
+#define __imp__sub_82445118 __imp__sub_8245E3A8
 #define sub_82462FB0 sub_8247D700  // 0x82462FB0 -> 0x8247D700
 #define __imp__sub_82462FB0 __imp__sub_8247D700
+#define sub_82467710 sub_824829C0  // 0x82467710 -> 0x824829C0
+#define __imp__sub_82467710 __imp__sub_824829C0
+#define sub_8248D138 sub_824ABCC8  // 0x8248D138 -> 0x824ABCC8
+#define __imp__sub_8248D138 __imp__sub_824ABCC8
 #define sub_824AB260 sub_824CB460  // 0x824AB260 -> 0x824CB460
 #define __imp__sub_824AB260 __imp__sub_824CB460
 #define sub_824AB300 sub_824CB500  // 0x824AB300 -> 0x824CB500
 #define __imp__sub_824AB300 __imp__sub_824CB500
 #define sub_824AB398 sub_824CB598  // 0x824AB398 -> 0x824CB598
 #define __imp__sub_824AB398 __imp__sub_824CB598
+#define sub_824C4428 sub_824DBC50  // 0x824C4428 -> 0x824DBC50
+#define __imp__sub_824C4428 __imp__sub_824DBC50
+#define sub_824C68E0 sub_824DF350  // 0x824C68E0 -> 0x824DF350
+#define __imp__sub_824C68E0 __imp__sub_824DF350
+#define sub_824D7650 sub_824EBF20  // 0x824D7650 -> 0x824EBF20
+#define __imp__sub_824D7650 __imp__sub_824EBF20
+#define sub_824D7B48 sub_824EC230  // 0x824D7B48 -> 0x824EC230
+#define __imp__sub_824D7B48 __imp__sub_824EC230
+#define sub_824D7D88 sub_824EC430  // 0x824D7D88 -> 0x824EC430
+#define __imp__sub_824D7D88 __imp__sub_824EC430
 #define sub_824FDE90 sub_82519178  // 0x824FDE90 -> 0x82519178
 #define __imp__sub_824FDE90 __imp__sub_82519178
 #define sub_82522138 sub_82543340  // 0x82522138 -> 0x82543340

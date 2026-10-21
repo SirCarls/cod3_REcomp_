@@ -45,20 +45,28 @@ REXCVAR_DEFINE_INT32(alternate_movement_speeds, 1, "cod3/Movement",
                      "Under alternate_movement 1: CoD4 speeds for everyone (server_sided_protected)")
     .range(0, 1)
     .validator([](std::string_view v) { return OwnWriteAllowed("alternate_movement_speeds", v); });
-REXCVAR_DEFINE_INT32(alternate_movement_mantle, 1, "cod3/Movement",
-                     "Under alternate_movement 1: mantling for everyone (server_sided_protected)")
-    .range(0, 1)
-    .validator([](std::string_view v) { return OwnWriteAllowed("alternate_movement_mantle", v); });
 REXCVAR_DEFINE_INT32(alternate_movement_jumps, 1, "cod3/Movement",
                      "Under alternate_movement 1: PC jump tricks for everyone (server_sided_protected)")
     .range(0, 1)
     .validator([](std::string_view v) { return OwnWriteAllowed("alternate_movement_jumps", v); });
 
+// [claude-9b] Aim assist (game/sticky_aim.h), the match's like the movement rule.
+REXCVAR_DEFINE_INT32(sticky_aim, 1, "cod3/Aim",
+                     "Match aim assist rule (server_sided_protected): 0 Sticky Aim off for everyone, 1 each "
+                     "player's own Options choice. The host's in a match")
+    .range(0, 1)
+    .validator([](std::string_view v) { return OwnWriteAllowed("sticky_aim", v); });
+REXCVAR_DEFINE_INT32(aim_slowdown, 100, "cod3/Aim",
+                     "How hard Sticky Aim pulls, in percent of the game's own (server_sided_protected; 0-100, "
+                     "never more). The host's in a match")
+    .range(0, 100)
+    .validator([](std::string_view v) { return OwnWriteAllowed("aim_slowdown", v); });
+
 // TEST ONLY: play this machine as a guest in a pretend match, with these
 // server values, so every protection path can be tried in the campaign.
 // "<seconds>:<name>=<value>;...;<seconds>:end" (seconds after the first
 // movement step of a level), e.g.
-// "0:alternate_movement=1;0:alternate_movement_mantle=0;120:end". Read once
+// "0:alternate_movement=1;0:alternate_movement_jumps=0;120:end". Read once
 // at start (the command line or cod3.toml), and never used while a real
 // match runs.
 REXCVAR_DEFINE_STRING(cod3_test_fake_match, "", "cod3",
@@ -83,10 +91,15 @@ const std::vector<Entry>& Entries() {
        "With alternate_movement 1: Call of Duty 4 sprint (4 seconds, aim or fire stops it) for everyone."},
       {Id::kAlternateMovementSpeeds, "alternate_movement_speeds", 0, 1, 1, 1,
        "With alternate_movement 1: Call of Duty 4 strafe, back and sprint speeds for everyone."},
-      {Id::kAlternateMovementMantle, "alternate_movement_mantle", 0, 1, 1, 1,
-       "With alternate_movement 1: climbing onto ledges up to chest height for everyone."},
       {Id::kAlternateMovementJumps, "alternate_movement_jumps", 0, 1, 1, 1,
        "With alternate_movement 1: Call of Duty 4 PC bounces off steep slopes for everyone."},
+      // [claude-9b] aim assist (game/sticky_aim.h)
+      {Id::kStickyAim, "sticky_aim", 0, 1, 1, 1,
+       "Aim assist in a match: 0 Sticky Aim off for everyone, 1 each player's own Options > Sticky Aim choice "
+       "(it is never turned on for anyone who chose off). Set by the host; in the campaign you are the host."},
+      {Id::kAimSlowdown, "aim_slowdown", 0, 100, 100, 100,
+       "How hard Sticky Aim pulls the view toward an enemy, in percent of the game's own (0-100; it can never "
+       "be stronger). Set by the host."},
   };
   return list;
 }
@@ -96,7 +109,8 @@ int32_t& OwnStorage(Id id) {
     case Id::kAlternateMovement: return REXCVAR_GET(alternate_movement);
     case Id::kAlternateMovementSprint: return REXCVAR_GET(alternate_movement_sprint);
     case Id::kAlternateMovementSpeeds: return REXCVAR_GET(alternate_movement_speeds);
-    case Id::kAlternateMovementMantle: return REXCVAR_GET(alternate_movement_mantle);
+    case Id::kStickyAim: return REXCVAR_GET(sticky_aim);        // [claude-9b]
+    case Id::kAimSlowdown: return REXCVAR_GET(aim_slowdown);    // [claude-9b]
     default: return REXCVAR_GET(alternate_movement_jumps);
   }
 }
@@ -177,6 +191,10 @@ ui::domain::Domain DomainFor(const Entry& e) {
   if (e.id == Id::kAlternateMovement) {
     d.kind = ui::domain::Domain::Kind::kEnum;
     d.choices = {"Call of Duty 3 for everyone", "Call of Duty 4 for everyone", "each player's own style"};
+  } else if (e.max > 1) {  // [claude-9b] a percentage (aim_slowdown)
+    d.kind = ui::domain::Domain::Kind::kInt;
+    d.min = e.min;
+    d.max = e.max;
   } else {
     d.kind = ui::domain::Domain::Kind::kBool;
   }
@@ -192,7 +210,9 @@ void TellHostChange(Id id, int value) {
   const Entry& e = Info(id);
   const std::string text = id == Id::kAlternateMovement
                                ? std::string("Movement: ") + movement::DescribeMode(value) + " (set by the host)."
-                               : std::string("Movement: ") + e.name + " " + std::to_string(value) + " (set by the host).";
+                               : std::string(id == Id::kStickyAim || id == Id::kAimSlowdown ? "Aim assist: "  // [claude-9b]
+                                                                                             : "Movement: ") +
+                                     e.name + " " + std::to_string(value) + " (set by the host).";
   std::function<void(const std::string&)> send;
   {
     std::lock_guard lock(g_mutex);

@@ -302,6 +302,8 @@ void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
     REXLOG_INFO("cod3: {} from cod3.toml not used (a test switch: give it on the command line)", name);
     rex::cvar::ResetToDefault(name);
   }
+  // [claude-9b] The same for opening behind other windows (game/relaunch.h).
+  cod3::UseStartInBackgroundAsLaunchOptionOnly();
 
   // PC-style controls out of the box: keyboard + raw mouse aim with World at
   // War-like binds, and the GPU settings known to suit this title
@@ -447,6 +449,9 @@ void Cod3App::OnPostSetup() {
   if (auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system())) {
     if (!REXCVAR_GET(cod3_test_input).empty())
       input->AddDriver(std::make_unique<cod3::ScriptedInputDriver>(REXCVAR_GET(cod3_test_input)));
+    // [mp-menus] Each player's kind of controller for the prompts
+    // (cod3_glyph_style auto, game/button_prompts.h).
+    cod3::prompts::SetInputSystem(input);
     input->SetActiveCallback([this]() {
       if (cod3::ui::GameConsole::IsOpen()) return false;
       auto* drawer = imgui_drawer();

@@ -10,6 +10,9 @@
 // - Port settings: things the PC port does itself, e.g. sensitivity, m_yaw,
 //   r_fullscreen, r_mode, r_vsync, snd_volume. They change the matching F2
 //   setting and are saved with it.
+// - [claude-9b] Counter-Strike 2's weapon position commands (viewmodel_offset_x,
+//   _y, _z, viewmodel_presetpos) are port settings here too (game/viewmodel.h),
+//   so a CS2 config line works as it is.
 // - Everything else World at War has: the console says it's a World at War
 //   dvar that Call of Duty 3 has nothing for, instead of "unknown command".
 
@@ -45,6 +48,8 @@ enum class Conv {
   kShadows,     // 0/1 -> cod3_shadow_quality off / original
   kInvertPitch, // 0/1 -> the mouse as the player sees it (MouseLook::SetMouseInverted)
   kFraction100, // 0.25-1 -> a percent setting 25-100 (cod3_render_percent)
+  kViewmodelOffset,  // [claude-9b] a CS2 offset typed by hand: a chosen preset becomes custom first
+  kNotInPort,        // [claude-9b] a CS2 setting with no counterpart here: says why
 };
 
 struct Dvar {

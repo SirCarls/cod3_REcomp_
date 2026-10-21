@@ -29,6 +29,8 @@
 #include "game/guest.h"
 #include "game/hd_textures.h"
 #include "game/multiplayer.h"
+#include "game/post_effects.h"  // [post-effects]
+#include "game/program.h"       // [post-effects]
 #include "game/qte_actions.h"
 #include "game/render_resolution.h"
 #include "game/shadows.h"
@@ -176,11 +178,13 @@ constexpr const char* kLabelKeys[cod3::videomenu::kRowCount] = {
     "FEMENU_VIDEO_RESOLUTION", "FEMENU_VIDEO_MAXFPS",   "FEMENU_VIDEO_VSYNC",
     "FEMENU_VIDEO_AA",         "FEMENU_VIDEO_SHADOWS", "FEMENU_VIDEO_HDTEXTURES",
     "FEMENU_VIDEO_QTE",
+    "FEMENU_VIDEO_DOF",        "FEMENU_VIDEO_MOTIONBLUR",  // [post-effects]
 };
 constexpr const char* kInstKeys[cod3::videomenu::kRowCount] = {
     "FEMENU_VIDEO_INST_RESOLUTION", "FEMENU_VIDEO_INST_MAXFPS",  "FEMENU_VIDEO_INST_VSYNC",
     "FEMENU_VIDEO_INST_AA",         "FEMENU_VIDEO_INST_SHADOWS", "FEMENU_VIDEO_INST_HDTEXTURES",
     "FEMENU_VIDEO_INST_QTE",
+    "FEMENU_VIDEO_INST_DOF",        "FEMENU_VIDEO_INST_MOTIONBLUR",  // [post-effects]
 };
 
 constexpr Text kTexts[] = {
@@ -202,6 +206,8 @@ constexpr Text kTexts[] = {
     {kLabelKeys[4], "SHADOWS"},
     {kLabelKeys[5], "HD TEXTURES"},
     {kLabelKeys[6], "BATTLE ACTIONS"},
+    {kLabelKeys[7], "DEPTH OF FIELD"},  // [post-effects]
+    {kLabelKeys[8], "MOTION BLUR"},     // [post-effects]
 };
 
 // The end of a help text for a setting that waits for a restart.
@@ -249,6 +255,15 @@ std::string HelpText(int row) {
       break;
     case cod3::videomenu::kBattleActions:
       t = cod3::qte::MenuHelp();
+      break;
+    case cod3::videomenu::kDepthOfField:  // [post-effects]
+      t = cod3::kMultiplayer
+              ? "The background blurs where a map uses depth of field. Off: always sharp. Applies at once."
+              : "The background blurs while you aim down the sights, where a mission uses depth of field. "
+                "Off: always sharp. Applies at once.";
+      break;
+    case cod3::videomenu::kMotionBlur:  // [post-effects]
+      t = "The screen trails the game shows at some moments. Off: never. Applies at once.";
       break;
   }
   return t;
@@ -415,6 +430,10 @@ std::string Value(int row) {
       return GetBool("cod3_hd_textures") ? "ON" : "OFF";
     case kBattleActions:
       return qte::MenuValue();
+    case kDepthOfField:  // [post-effects]
+      return post_effects::DepthOfFieldOn() ? "ON" : "OFF";
+    case kMotionBlur:  // [post-effects]
+      return post_effects::MotionBlurOn() ? "ON" : "OFF";
   }
   return {};
 }
@@ -435,6 +454,10 @@ std::string Note(int row) {
       return "";
     case kBattleActions:
       return "VALVES, CRANES, CROWBARS, ROWING";
+    case kDepthOfField:  // [post-effects]
+      return kMultiplayer ? "BACKGROUND BLUR WHERE A MAP USES IT" : "BACKGROUND BLUR WHILE AIMING";
+    case kMotionBlur:  // [post-effects]
+      return "SCREEN TRAILS AT SOME MOMENTS";
   }
   return {};
 }
@@ -525,6 +548,13 @@ std::string Step(PPCContext& ctx, uint8_t* base, int row, bool right) {
       qte::MenuStep();  // two choices: either way flips
       Save();
       return Value(row);
+    case kDepthOfField:  // [post-effects] two choices: either way flips; at once
+    case kMotionBlur: {
+      const char* name = row == kDepthOfField ? post_effects::kDepthOfField : post_effects::kMotionBlur;
+      rex::cvar::SetFlagByName(name, GetBool(name) ? "false" : "true");  // post_effects.cpp logs it
+      Save();
+      return Value(row);
+    }
   }
   return {};
 }

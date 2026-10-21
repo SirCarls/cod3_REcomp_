@@ -11,6 +11,7 @@
 #include <rex/system/kernel_state.h>
 
 #include "game/addresses.h"
+#include "game/aim_sensitivity.h"  // [claude-9b] sensitivity per weapon
 #include "game/guest.h"
 
 REXCVAR_DEFINE_BOOL(cod3_raw_mouse, true, "cod3/Mouse",
@@ -126,6 +127,8 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
   float ratio = zoom_ratio_.load(std::memory_order_relaxed);
   double sens = REXCVAR_GET(cod3_sensitivity);
   if (ratio < 0.999f) sens *= ratio * REXCVAR_GET(cod3_zoom_sensitivity);
+  // [claude-9b] The weapon in hand's percentage, hip blending into aiming (game/aim_sensitivity.h).
+  sens *= aimsens::Multiplier(base, local);
 
   // The game's own Options > Controls rows apply to the mouse too:
   // horizontal / vertical sensitivity scale it the way they scale the stick

@@ -1,5 +1,5 @@
 // cod3 - the campaign's movement hooks: sprint, the CoD4 style's parts, and
-// the sprint button (game/movement/rules.h, sprint_input.h, mantle.h).
+// the sprint button (game/movement/rules.h, sprint_input.h).
 //
 // Server side (the campaign is its own server; every hook runs inside the
 // one Pmove call per usercmd, from ClientThink_real):
@@ -15,9 +15,8 @@
 //   PM_UpdateSprint 0x824655B0  no sprint while aiming, firing or not moving
 //                             forward; CoD4's sideways x0.667 while sprinting
 //   PM_UpdateStamina 0x82477F28 the stamina with tuned numbers (rules.h)
-//   PM_CheckJump 0x82478100   a jump at a ledge becomes a mantle; CoD4 sprint
-//                             keeps its stamina when jumping
-//   PM_WalkMove / PM_AirMove  the mantle's climb instead of the move
+//   PM_CheckJump 0x82478100   CoD4 sprint keeps its stamina when jumping
+//   PM_AirMove 0x82490B70     marks the air move (a bounce happens only there)
 //   PM_ClipVelocity 0x8246B138  the step move's two clips become CoD4's
 //                             projection on steep slopes (bounces)
 // With alternate rules off (sprint off, CoD3 style) every hook calls the
@@ -45,7 +44,6 @@
 #include <rex/logging.h>
 
 #include "game/guest.h"
-#include "game/movement/mantle.h"
 #include "game/movement/program_current.h"
 #include "game/movement/rules.h"
 #include "game/movement/settings.h"
@@ -73,8 +71,6 @@ struct MoveContext {
   bool air_move = false;    // inside PM_AirMove (a bounce happens only there)
 };
 thread_local MoveContext g_move;
-
-mv::Mantles g_mantles;
 
 // CoD4 sprint's "let go of the button after running out", per client (the
 // campaign moves client 0 only).
@@ -192,105 +188,6 @@ void SprintPose(uint8_t* base) {
   for (int i = 0; i < 3; ++i) stand[i] = g::ReadF32(base, move + P.weapon_stand_move_from_sprint + 4 * i);
   REXLOG_INFO("cod3: sprint pose of weapon def {:#x}: sprintMove {:.2f} {:.2f} {:.2f}{} (standMove {:.2f} {:.2f} {:.2f})",
               def, v[0], v[1], v[2], none ? " -> the port's lowered pose" : "", stand[0], stand[1], stand[2]);
-}
-
-// --- the game's player trace, for the mantle --------------------------------------
-class GameTracer final : public mv::Tracer {
- public:
-  GameTracer(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps) : ctx_(ctx), base_(base), pm_(pm), ps_(ps) {}
-
-  bool Trace(const float start[3], const float end[3], mv::TraceHit* out) override {
-    g::Call c(ctx_, base_);
-    // Our data above the call's stack pointer: the trace, two vec4s and the
-    // collision context {vtable, entity to skip, 0, 0, 0, clip mask}.
-    const uint32_t data = (c.ctx().r1.u32 - 256) & ~0xFu;
-    c.ctx().r1.u32 = data;
-    const uint32_t trace = data, vstart = data + 160, vend = data + 176, context = data + 192;
-    for (uint32_t i = 0; i < 256; i += 4) g::WriteU32(base_, data + i, 0);
-    for (int i = 0; i < 3; ++i) {
-      g::WriteF32(base_, vstart + 4 * i, start[i]);
-      g::WriteF32(base_, vend + 4 * i, end[i]);
-    }
-    g::WriteU32(base_, context, P.collision_context_vtable);
-    g::WriteU32(base_, context + 4, g::ReadU32(base_, ps_ + P.ps.pass_entity));
-    g::WriteU32(base_, context + 20, g::ReadU32(base_, pm_ + P.pmove.tracemask));
-    c.Invoke(P.player_trace, {trace, vstart, pm_ + P.pmove.mins, pm_ + P.pmove.maxs, vend, context});
-    out->fraction = g::ReadF32(base_, trace + P.trace.fraction);
-    for (int i = 0; i < 3; ++i) {
-      out->endpos[i] = g::ReadF32(base_, trace + P.trace.endpos + 4 * i);
-      out->normal[i] = g::ReadF32(base_, trace + P.trace.normal + 4 * i);
-    }
-    out->allsolid = g::ReadU8(base_, trace + P.trace.allsolid) != 0;
-    out->startsolid = g::ReadU8(base_, trace + P.trace.startsolid) != 0;
-    return std::isfinite(out->fraction);
-  }
-
- private:
-  PPCContext& ctx_;
-  uint8_t* base_;
-  uint32_t pm_, ps_;
-};
-
-mv::MantleInput MantleInputFor(uint8_t* base, uint32_t pm, uint32_t ps) {
-  mv::MantleInput in;
-  in.client = ClientIndex(base, ps);
-  in.server_time = g::ReadS32(base, Cmd(pm) + P.cmd.server_time);
-  for (int i = 0; i < 3; ++i) in.origin[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
-  // The view's direction from the movement code's own forward vector (pml).
-  const float fx = g::ReadF32(base, P.pml + P.pml_fields.forward), fy = g::ReadF32(base, P.pml + P.pml_fields.forward + 4);
-  const float len = std::sqrt(fx * fx + fy * fy);
-  in.forward[0] = len > 1e-3f ? fx / len : 1.0f;
-  in.forward[1] = len > 1e-3f ? fy / len : 0.0f;
-  in.half_width = std::fabs(g::ReadF32(base, pm + P.pmove.maxs));
-  if (!(in.half_width > 1.0f && in.half_width < 64.0f)) in.half_width = 15.0f;
-  in.pm_type = g::ReadS32(base, ps + P.ps.pm_type);
-  in.pm_flags = g::ReadU32(base, ps + P.ps.pm_flags);
-  in.flags2 = g::ReadU32(base, ps + P.ps.flags2);
-  return in;
-}
-
-// Starts a climb when the player is at a ledge; the jump isn't made then.
-// `from_ground`: the jump from the ground (PM_CheckJump), whose every miss the
-// debug log tells; a rising jump looks again every 100 ms and tells only
-// misses at a wall (the forward trace hit something).
-bool TryMantle(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, bool from_ground) {
-  GameTracer tracer(ctx, base, pm, ps);
-  const mv::MantleInput in = MantleInputFor(base, pm, ps);
-  if (!g_mantles.TryStart(in, tracer)) {
-    const std::string_view why = g_mantles.why_not();
-    const mv::TraceHit& w = g_mantles.last_wall();
-    if (mv::DebugMovement() && !why.empty() && (from_ground || w.fraction < 1.0f)) {
-      REXLOG_INFO("cod3: mantle: none at t={} ({}; wall trace {:.2f} normal ({:.2f} {:.2f} {:.2f}), facing ({:.2f} "
-                  "{:.2f}), top {:.1f} above the feet)",
-                  in.server_time, why, w.fraction, w.normal[0], w.normal[1], w.normal[2], in.forward[0],
-                  in.forward[1], g_mantles.last_height());
-    }
-    return false;
-  }
-  // No landing slowdown after it, jump held so it doesn't jump at the top.
-  uint32_t flags = g::ReadU32(base, ps + P.ps.pm_flags);
-  flags = (flags & ~(mv::pmf::kJumping | mv::pmf::kSprinting)) | mv::pmf::kJumpHeld;
-  g::WriteU32(base, ps + P.ps.pm_flags, flags);
-  g::WriteU32(base, ps + P.ps.jump_time, static_cast<uint32_t>(in.server_time));
-  if (mv::DebugMovement())
-    REXLOG_INFO("cod3: mantle starts at t={} from ({:.1f} {:.1f} {:.1f})", in.server_time, in.origin[0],
-                in.origin[1], in.origin[2]);
-  return true;
-}
-
-// While climbing: the climb's position instead of the move. True when it ran.
-bool StepMantle(uint8_t* base, uint32_t pm, uint32_t ps) {
-  const mv::MantleInput in = MantleInputFor(base, pm, ps);
-  if (!g_mantles.Active(in.client)) return false;
-  float at[3];
-  if (!g_mantles.Step(in, at)) return false;
-  for (int i = 0; i < 3; ++i) {
-    g::WriteF32(base, ps + P.ps.origin + 4 * i, at[i]);
-    g::WriteF32(base, ps + P.ps.velocity + 4 * i, 0.0f);
-  }
-  if (!g_mantles.Active(in.client) && mv::DebugMovement())
-    REXLOG_INFO("cod3: mantle done at t={} on ({:.1f} {:.1f} {:.1f})", in.server_time, at[0], at[1], at[2]);
-  return true;
 }
 
 // --- the sprint button (client side, game thread) ---------------------------------
@@ -426,7 +323,6 @@ REX_HOOK_RAW(sub_82496978) {
     // from before sprint was switched off doesn't count (the console game
     // never sets the sprint bit).
     g_move.active = false;
-    g_mantles.Cancel(ClientIndex(base, ps));
     const uint32_t buttons = g::ReadU32(base, Cmd(pm) + P.cmd.buttons);
     if (buttons & mv::button::kSprint) g::WriteU32(base, Cmd(pm) + P.cmd.buttons, buttons & ~mv::button::kSprint);
     __imp__sub_82496978(ctx, base);
@@ -443,7 +339,6 @@ REX_HOOK_RAW(sub_82496978) {
   m.ps = ps;
   for (int i = 0; i < 7; ++i) m.scales[i] = g::ReadF32(base, ps + kScaleOffsets[i]);
   m.rightmove = ReadS8(base, Cmd(pm) + P.cmd.rightmove);
-  if (!rules.Mantle()) g_mantles.Cancel(ClientIndex(base, ps));
   // CoD4's speeds, relative to whatever the game set (ClientSpawn, scripts).
   if (rules.Cod4Speeds()) {
     g::WriteF32(base, ps + P.ps.scale_strafe, m.scales[5] * mv::cod4::kStrafeSpeedScale);
@@ -566,44 +461,15 @@ REX_HOOK_RAW(sub_82478100) {
   }
   const uint32_t pm = g::ReadU32(base, P.pm);
   const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
-  const bool jump_pressed = ReadS8(base, Cmd(pm) + P.cmd.upmove) >= 10 &&
-                            !(g::ReadU32(base, ps + P.ps.pm_flags) & mv::pmf::kJumpHeld);
-  if (jump_pressed && g_move.rules.Mantle() && mv::DebugMovement())
-    REXLOG_INFO("cod3: mantle: jump pressed at t={}", g::ReadS32(base, Cmd(pm) + P.cmd.server_time));
-  if (g_move.rules.Mantle() && jump_pressed && TryMantle(ctx, base, pm, ps, /*from_ground=*/true)) {
-    ctx.r3.u64 = 0;
-    return;
-  }
   const float stamina = g::ReadF32(base, ps + P.ps.stamina);
   __imp__sub_82478100(ctx, base);
   // CoD4 sprint: jumping doesn't cost stamina (the campaign takes 0.667).
   if (ctx.r3.u32 != 0 && g_move.rules.Cod4Sprint()) g::WriteF32(base, ps + P.ps.stamina, stamina);
 }
 
-// PM_WalkMove(...): the move on the ground.
-REX_EXTERN(__imp__sub_82492038);
-REX_HOOK_RAW(sub_82492038) {
-  if (g_move.active && g_move.rules.Mantle()) {
-    const uint32_t pm = g::ReadU32(base, P.pm);
-    if (StepMantle(base, pm, g::ReadU32(base, pm + P.pmove.ps))) return;
-  }
-  __imp__sub_82492038(ctx, base);
-}
-
-// PM_AirMove(...): the move in the air. Holding jump while rising at a ledge
-// mantles too (as in CoD4: jump, then keep jump held against the ledge).
+// PM_AirMove(...): the move in the air (a bounce happens only there).
 REX_EXTERN(__imp__sub_82490B70);
 REX_HOOK_RAW(sub_82490B70) {
-  if (g_move.active && g_move.rules.Mantle()) {
-    const uint32_t pm = g::ReadU32(base, P.pm);
-    const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
-    if (StepMantle(base, pm, ps)) return;
-    const bool rising_jump = (g::ReadU32(base, ps + P.ps.pm_flags) & mv::pmf::kJumping) &&
-                             g::ReadF32(base, ps + P.ps.velocity + 8) > 0.0f;
-    if (rising_jump && ReadS8(base, Cmd(pm) + P.cmd.upmove) >= 10 && TryMantle(ctx, base, pm, ps, false) &&
-        StepMantle(base, pm, ps))
-      return;
-  }
   const bool outer = g_move.air_move;
   g_move.air_move = true;
   __imp__sub_82490B70(ctx, base);
@@ -734,7 +600,6 @@ REX_HOOK_RAW(CL_FinishMove) {
   if (view.server_time < last_time) {
     Carry(ctx, base, g_input.Reset(0));
     g_view = mv::PlayerView{};
-    g_mantles.CancelAll();
   }
   last_time = view.server_time;
   bool clear = false;

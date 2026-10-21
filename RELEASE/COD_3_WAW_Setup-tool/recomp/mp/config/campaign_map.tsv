@@ -8,6 +8,7 @@ AdvancedOptionsMenu__vfunc_19	824E6020		dead			hand check: select: the campaign'
 AdvancedOptionsMenu__vfunc_30	824F07B0		dead			hand check: back: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
 CG_GetViewFov	8243A198	82453810	mp			hand check: loads cg_fov's vmCvar value (0x82BA2BB8+8) into f1 and is called by CG_DrawSkyBoxPortal and CG_CalcFov's pair as in the campaign; the hook scales f1 after it
 CL_AdjustAngles	8250B460	82525698	mp			hand check: called at CL_CreateCmd+0x34 in both (MP CL_CreateCmd 0x8252C7A8 saves the pitch of cl 0x82C2ECF0 + client*6352 + 1668 before it and clamps the change after); MP's body only turns by keys, the hook adds the mouse after it
+CL_MouseMove	8250FF48	8252B578	mp			hand check: [claude-9b] the stick's turn; CL_CreateCmd calls it fifth in both (campaign 0x82510748: 8250B460, memset, 82509BB8, 8250B108, 8250FF48; MP 0x8252C7A8: 82525698, memset, 82522C38, 82525338, 8252B578); the same body in both: the right stick times the view's sensitivity scale (cl +5696, MP +1632) before the per-frame caps (+5700/+5704, MP +1636/+1640), turning cl's view angles (+5732/+5736, MP +1668/+1672)
 Cbuf_Execute	8247E380	824A27E8	mp			map: verified
 CheatsOk	825432C8	82565908	mp			map: verified (96% equal, 100% same instruction kinds (49 vs 49 instructions); field offsets differ: 500->484 x2; pair table:)
 Cmd_Give_f	82560988	8258BC68	mp			map: verified (93% equal, 100% same instruction kinds (128 vs 128 instructions); field offsets differ: 528->512 x5, 280->312,)
@@ -23,18 +24,18 @@ Com_Frame	82536DD0	82557D60	mp			map: verified (hand check: listed both around t
 Com_Printf	82523A58	82544898	mp			map: verified (hand check: Com_Printf (empty in retail: blr) -> 0x82544898; 17 of 18 aligned calls; the 10-15 table had the n)
 Cvar_Get	8252BBE0	8254F458	mp			map: verified (86% equal, 96% same instruction kinds (193 vs 186 instructions); pair table: name (1); aligned calls: 128 of 1)
 Cvar_Set2	8252B850	8254F0C8	mp			map: verified
-DialogMenuSystem__vfunc_14	824CE3E8	8250BEE8	later			menus in cod3mp (draw slot 14 -> MP slot 19)
+DialogMenuSystem__vfunc_14	824CE3E8	8250BEE8	mp			hand check (10-20, [mp-menus] research A): the message boxes' draw: slot 14 -> 19 (the buttons are drawn after the base draw, 0x824E85A8)
 FEMenuSystem__vfunc_12	824C4DB8	824DCE48	mp			map: verified (90% equal, 100% same instruction kinds (133 vs 133 instructions); field offsets differ: 76->120 x2, 72->116 x2)
-FEMenuSystem__vfunc_17	824C48B8	824D5A08	later			menus in cod3mp (HandleButton slot 17 -> MP slot 28)
-FEMultiLineText__ctor	824DEAD0	824EBDF0	later			button prompts in cod3mp
+FEMenuSystem__vfunc_17	824C48B8	824D5A08	mp			hand check (10-20, [mp-menus] research A): HandleButton: slot 17 -> 28 (ProcessInput calls +68 / +112 at lined-up places)
+FEMultiLineText__ctor	824DEAD0	824EBDF0	mp			hand check (10-20, [mp-menus] research C): the same code shape; stores vtable 0x8207041C and the same fields +112..+166
 FEMultiLineText__vfunc_0	820AD1B8	820BBF98	mp			map: verified
-FEMultiLineText__vfunc_19	824CFA00	824D7218	later			button prompts in cod3mp
+FEMultiLineText__vfunc_19	824CFA00	824D7218	mp			hand check (10-20, [mp-menus] research C): Draw: the visible check, then the lines via vtbl 296 / 312 (slot 74 -> 78) alike; the hook reads r3 only
 FEMultiLineText__vfunc_36	824E8180	824F76A0	mp			map: verified (96% equal, 96% same instruction kinds (87 vs 89 instructions); pair table: calls (4); vtable slot 36 of FEMult)
 FEMultiLineText__vfunc_91	824E8098	824F75A8	mp			map: verified (89% equal, 92% same instruction kinds (58 vs 62 instructions); pair table: calls (4); vtable slot 91 of FEMult)
 FEMultiLineText__vfunc_92	824DD790	824F7410	mp			map: verified
 FEMultiLineText__vfunc_93	824DD630	824F72B0	mp			map: verified
-FrontEndMenuSystem__vfunc_14	824CE4D0	824DC718	later			menus in cod3mp
-InGameMenuSystem__vfunc_14	824CD9E0	824F6338	later			menus in cod3mp
+FrontEndMenuSystem__vfunc_14	824CE4D0	824DC718	mp			hand check (10-20, [mp-menus] research A): the front end's draw: slot 14 -> 19
+InGameMenuSystem__vfunc_14	824CD9E0	824F6338	mp			hand check (10-20, [mp-menus] research A): the in-game menus' draw: slot 14 -> 19
 Localize	8252CB98	8254D180	mp			map: verified
 MainMenu__dtor	824DBFE8		dead			hand check: destructor: the campaign main menu (MainMenu): no MainMenu in MP (its main menu is MPMainMenuXBox, vtable 0x8207E95C). Campaign front end only; no p
 MainMenu__vfunc_14	824EBF78		dead			hand check: MainMenu draw (slot 14): no MainMenu in MP (MPMainMenuXBox slot 20 = 0x823BDAF8). Campaign front end only; no pair: no table pair, no aligned call,
@@ -69,16 +70,21 @@ sub_8212A100	8212A100	82141E40	mp			map: verified
 sub_8212A110	8212A110	82141E50	mp			map: verified (88% equal, 88% same instruction kinds (34 vs 30 instructions); pair table: calls (5); aligned calls: 13 of 16 )
 sub_8212A520	8212A520	82142248	mp			map: verified (99% equal, 99% same instruction kinds (152 vs 153 instructions); pair table: calls (1); aligned calls: 2 of 2 )
 sub_82130808	82130808	82143838	mp			map: verified
+sub_82149950	82149950	82161758	mp			hand check (10-20, [post-effects]): the motion blur pass (frame feedback, post effect type 4): the only callee of the MP dispatcher 0x82162F58 for type 4, as of 0x8214B0B0 in the campaign; both call GetViewport (SP 0x822E91F0 / MP 0x822B7FC0) and SetViewport (0x822E8FC8 / 0x822B7D98) alike and cut a 736-line viewport (0x2E0) to 720
+sub_82149C80	82149C80	82161B28	mp			hand check (10-20, [post-effects]): the depth of field pass: reads its on flag (SP 0x829128C4 / MP 0x82A8F7D4) and two distances (0x825B3070/74 / 0x825C3410/14) at the same places; only caller the end of the scene (SP 0x82426500 / MP 0x824311E0)
 sub_822EBFB8	822EBFB8	822BAD00	mp			map: verified
 sub_822EBFE8	822EBFE8	822BAD30	mp			checked: the same code as the campaign's (D3D_WaitEnd, game/gpu_wait.cpp), between its two mapped neighbors
 sub_822EC168	822EC168	822BAEB0	mp			map: verified
 sub_82344F98	82344F98	82314360	mp			map: verified
+sub_82344FA8	82344FA8	82314370	mp			rumble.cpp (claude-setup 2026-10-20): the game's XamInputSetState wrapper (user, vibration); hand check: the same 6 instructions as the campaign's (mr r5,r4; li r8,0; li r7,0; li r6,0; li r4,0; b XamInputSetState), right after the XamInputGetState wrapper (sub_82344F98 / cod3mp 0x82314360) in both, and the only caller of the import in both (3 callers each: start, a motor change, stop all)
 sub_82344FC0	82344FC0	82314390	mp			map: verified
 sub_82345000	82345000	823143D0	mp			map: verified
 sub_82419098	82419098	82430E70	mp			map: verified (93% equal, 91% same instruction kinds (100 vs 100 instructions); pair table: calls (1); aligned calls: 2 of 2 )
 sub_82425BD0	82425BD0	8243D590	mp			map: verified (91% equal, 96% same instruction kinds (513 vs 506 instructions); field offsets differ: 2112->21604, 1212->2160)
+sub_82426500	82426500	824311E0	mp			hand check (10-20, [post-effects]): the end of the scene's post effects: the scene setup registers it (SP 0x82430210 at 0x824306B8 / MP 0x824483C0 at 0x824489D0); calls the DOF pass and the dispatcher (SP 0x8214B0B0 / MP 0x82162F58); type 4 runs while the motion blur amount isn't 0 (SP 0x82A2ABF8 / MP 0x82BCC928 + 4 per local player)
 sub_82462FB0	82462FB0	8247D700	mp			map: verified (95% equal, 97% same instruction kinds (73 vs 71 instructions); field offsets differ: 196->268; pair table: cal)
 sub_82478B80	82478B80	824964E8	mp			map: verified (82% equal, 93% same instruction kinds (90 vs 87 instructions); pair table: calls (3); aligned calls: 1 of 1 re)
+sub_8248D138	8248D138	824ABCC8	mp			hand check: [claude-9b] Sticky Aim (ps, cmd, oldcmd), PM_UpdateViewAngles' one call in both (campaign from 0x8248DF18, MP from sub_824AC818); the same body: Sticky Aim byte +67 of the controls (campaign 0x82A8E610, MP the profile block 0x82C6B730 + profile*6984), weapon class 8 turns it off, then the aim point is pulled and the view angles (campaign ps+172, MP ps+204) and delta_angles (ps+88, MP ps+84) are moved by the change
 sub_824AB260	824AB260	824CB460	mp			map: verified
 sub_824AB300	824AB300	824CB500	mp			map: verified
 sub_824AB398	824AB398	824CB598	mp			map: verified
@@ -93,8 +99,8 @@ sub_824C4428	824C4428	824DBC50	mp			map: verified (72% equal, 100% same instruct
 sub_824C68E0	824C68E0	824DF350	mp			map: verified (91% equal, 91% same instruction kinds (234 vs 214 instructions); pair table: strings (5); aligned calls: 2 of )
 sub_824CD768	824CD768		dead			hand check: item states: the campaign's pause menu (PauseMenu, 56 slots): MP's PauseMenu is a different class (a FESplitScreenMenu, vtable 0x82083934, 64 slots:
 sub_824CDB28	824CDB28	820B4B10	later			menus in cod3mp (message box open)
-sub_824D7650	824D7650	824EBF20	later			button prompts in cod3mp
-sub_824D7B48	824D7B48	824EC230	later			button prompts in cod3mp
+sub_824D7650	824D7650	824EBF20	mp			hand check (10-20, [mp-menus] research C): the line layout: every part the hook relies on lines up (font line+0, the ~ test and token call, the button measure with FEManager+8 at f2, segments +24, width +16, count +28)
+sub_824D7B48	824D7B48	824EC230	mp			hand check (10-20, [mp-menus] research C): the word measure for the wrap: r4 font index, f1/f2 and the token call line up
 sub_824D7D88	824D7D88	824EC430	mp			map: verified (75% equal, 91% same instruction kinds (223 vs 216 instructions); pair table: calls (3); aligned calls: 1 of 1 )
 sub_824DBEE8	824DBEE8		dead			hand check: MainMenu update (slot 16): no MainMenu in MP (MPMainMenuXBox slot 23 = 0x823D2E88). Campaign front end only; no pair: no table pair, no aligned call
 sub_824DC1C0	824DC1C0		dead			hand check: left/right: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class do
@@ -164,13 +170,13 @@ fe::kGameplayRefresh	824DB960		dead			MP never constructs OptionsGameplayMenu
 fe::kGameplayMoveA	824C3FE0		dead			MP never constructs OptionsGameplayMenu
 fe::kGameplayMoveB	824C3F08		dead			MP never constructs OptionsGameplayMenu
 fe::kGameplayToggle	824BD160		dead			MP never constructs OptionsGameplayMenu
-fe::kPanelFindElement	824D07D0	0	later			game_api's menu wrappers (PanelFindElement ...): only the menu files call them, and they aren't in cod3mp yet
-fe::kPanelFindQuad	824DFC70	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kOperatorNew	820CC1D0	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; the map has MP 0x820DE6D8)
-fe::kTextCtor	820ACA38	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; MP 0x820BB820)
-fe::kQuadCtor	824C8498	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; MP 0x824E1AF0)
+fe::kPanelFindElement	824D07D0	824EE230	mp			hand check (10-20, [mp-menus] research A): the same loop (texts +12, count +20, name via vfunc +184, strcmp), the element or 0
+fe::kPanelFindQuad	824DFC70	824EE308	mp			hand check (10-20, [mp-menus] research A): identical (50 vs 50); a missing name gives a stand-in from 0x824EAEA0
+fe::kOperatorNew	820CC1D0	820DE6D8	mp			hand check (10-20, [mp-menus] research A): the clone code: SP 0x824CFFE0 li 3,112; bl 0x820CC1D0 / MP 0x824ED158 li 3,112; bl 0x820DE6D8
+fe::kTextCtor	820ACA38	820BB820	mp			hand check (10-20, [mp-menus] research A): FEText__ctor: the clone slot SP 0x824CFFF0 / MP 0x824ED168 after li 3,112; bl new
+fe::kQuadCtor	824C8498	824E1AF0	mp			hand check (10-20, [mp-menus] research A): PanelQuad__ctor: the quad copy SP 0x824E1588 / MP 0x824F3748 li 3,80; bl new; bl ctor
 fe::kGameplayDraw	824CD398		dead			MP never constructs OptionsGameplayMenu
-fe::kOperatorDelete	820CC468	0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet; the map has MP 0x820DE980)
+fe::kOperatorDelete	820CC468	820DE980	mp			hand check (10-20, [mp-menus] research A): same structure (lock, free, unlock); the elements' deleting dtors call it at the same place
 fe::adv::kVtable	82071B24		dead			hand check: vtable: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does n
 fe::adv::kInit	824E60E8		dead			hand check: init: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does not
 fe::adv::kRefresh	824E6588		dead			hand check: refresh: the campaign's Options > Advanced page (AdvancedOptionsMenu: invert, vibration, crosshair, tags, subtitles, tank controls): the class does
@@ -273,14 +279,14 @@ live_video::kEffectsJobGroup	82A11C44	82BA3424	mp			map: verified (5 of 5 aligne
 pc_menu::kProcessInput	824C4DB8	824DCE48	mp			map: verified (90% equal, 100% same instruction kinds (133 vs 133 instructions); field offsets differ: 76->120 x2, 72->116 x2)
 pc_menu::kFrameCount	825F4E08	825FEBD8	mp			map: verified (19 of 21 aligned uses)
 pc_menu::kDialogSystemVtable	820719D4	82071614	mp			map: verified (the vtable of .?AVDialogMenuSystem@@ (RTTI); slots may differ)
-pc_menu::kFEMenuOnLeft	820ADAC0	820BC960	later			menus in cod3mp
+pc_menu::kFEMenuOnLeft	820ADAC0	820BC960	mp			hand check (10-20, [mp-menus] research A): FEMenu slot 27 -> 34: both lwz 11,0(3); lwz 11,212/240(11); mtctr; bctr
 pc_menu::kNullsub	82144CA8	8215CA98	mp			map: verified
-pc_menu::kTitleMenuVtable	82071724		dead			hand check: TitleMenu vtable: the campaign's title screen (TitleMenu, "Press Start"): no TitleMenu in MP; its first page is PressStartMenu (vtable 0x82083F3C: s
+pc_menu::kTitleMenuVtable	82071724	82083F3C	mp			hand check (10-20, [mp-menus] research B): MP's title page is PressStartMenu (FE page 13; Start slot 31 0x82392178); nothing switches to it
 pc_menu::kTextVtable	82070B54	820702DC	mp			map: verified (RTTI .?AVFEText@@: 2 vtables in codmp; this one lines up with the campaign's slots best (vtables.py score 93.5)
 pc_menu::kMultiLineTextVtable	82070C84	8207041C	mp			map: verified (the vtable of .?AVFEMultiLineText@@ (RTTI); slots may differ)
-pc_menu::kFrontEndDraw	824CE4D0	824DC718	later			menus in cod3mp
-pc_menu::kInGameDraw	824CD9E0	824F6338	later			menus in cod3mp
-pc_menu::kDialogDraw	824CE3E8	8250BEE8	later			menus in cod3mp
+pc_menu::kFrontEndDraw	824CE4D0	824DC718	mp			hand check (10-20, [mp-menus] research A): FrontEndMenuSystem slot 19 (vtable 0x820713D4): background panel, then the base draw 0x824D5ED0
+pc_menu::kInGameDraw	824CD9E0	824F6338	mp			hand check (10-20, [mp-menus] research A): InGameMenuSystem slot 19 (vtable 0x8207146C)
+pc_menu::kDialogDraw	824CE3E8	8250BEE8	mp			hand check (10-20, [mp-menus] research A): DialogMenuSystem slot 19 (vtable 0x82071614): base draw, then the button list 0x824E85A8
 main_menu::kVtable	82071DDC		dead			hand check: MainMenu vtable: the campaign main menu (MainMenu): no MainMenu in MP (its main menu is MPMainMenuXBox, vtable 0x8207E95C). Campaign front end only;
 main_menu::kInit	824E56B8		dead			hand check: MainMenu init (slot 0): no MainMenu in MP (MPMainMenuXBox slot 0 = 0x823C20D8 is a different page). Campaign front end only; rejected 0x8239AF98 (pa
 main_menu::kUpdate	824DBEE8		dead			hand check: MainMenu update (slot 16): no MainMenu in MP (MPMainMenuXBox slot 23 = 0x823D2E88). Campaign front end only; no pair: no table pair, no aligned call
@@ -407,17 +413,17 @@ controls::kVerticalSens			same			hand check: MP's stick turning reads lwzx +72 o
 controls::kSensScale			same			hand check: MP's stick turning multiplies by 0x820852B0 = 0.04
 controls::kSensZero			same			the same 0.1 in MP (0x820019C8, map); used the same way for a 0 setting
 controls::kCrosshair			same			the profile block's crosshair byte +57 (map hand check: the same field offsets); written only when cg_drawCrosshair exists (MP has no such dvar)
-fe::kQuadName		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kQuadSize		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kTextSize		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kElemAssign		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kElemSetVisible		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kElemSetAlpha		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kElemSetTextRaw		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kElemSetTextKey		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kItemSetVisible		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kItemSetDisabled		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
-fe::kItemSetLabelKey		0	later			game_api's menu wrappers: only the menu files call them (not in cod3mp yet)
+fe::kQuadName			same			hand check (10-20, [mp-menus] research A): FindQuad SP 0x824DFC70 / MP 0x824EE308 identical (lwz 11,72(11)); MP PanelQuad ctor addi 3,31,72
+fe::kQuadSize			same			hand check (10-20, [mp-menus] research A): 80 bytes in both (li 3,80 before the PanelQuad ctor)
+fe::kTextSize			same			hand check (10-20, [mp-menus] research A): 112 bytes in both (li 3,112 before the FEText ctor)
+fe::kElemAssign			same			hand check (10-20, [mp-menus] research A): FEText Assign SP 0x824C7038 / MP 0x824E0280 identical; PanelQuad SP 0x824C8348 / MP 0x824E18C8 identical; the clone calls +72 in both
+fe::kElemSetVisible		60	mp			hand check (10-20, [mp-menus] research A): PanelAnimObject slot 15 identical (SP 0x820AC9C0 / MP 0x820BB7A8), the same slot in FEText and PanelQuad
+fe::kElemSetAlpha		136	mp			hand check (10-20, [mp-menus] research A): PanelQuad slot 34 SP 0x824D3BE0 / MP 0x824F84A0 identical
+fe::kElemSetTextRaw		144	mp			hand check (10-20, [mp-menus] research A): FEText slot 36 SP 0x820ACDD0 / MP 0x820BBB90 identical
+fe::kElemSetTextKey		132	mp			hand check (10-20, [mp-menus] research A): FEText slot 33 SP 0x824DEBA8 / MP 0x825021C0 identical (Localize then +144)
+fe::kItemSetVisible		56	mp			hand check (10-20, [mp-menus] research A): = pc_menu::kEntrySetVisible (FEMenuEntry slot 14)
+fe::kItemSetDisabled		64	mp			hand check (10-20, [mp-menus] research A): = pc_menu::kEntrySetDisabled (FEMenuEntry slot 16)
+fe::kItemSetLabelKey		48	mp			hand check (10-20, [mp-menus] research A): = pc_menu::kEntrySetLabelKey (FEMenuEntry slot 12)
 pc_menu::kStringChars			same			the game's refcounted String: chars at +12 (MP's FEText draw reads +12 of its String* as the campaign's)
 live_video::kRecordTexture			same			ngl texture records: the same nglCreateTexture / release code (+20 the D3D texture)
 live_video::kEffectsColorFlags			same			hand check: MP's effects targets (0x8243BD38): li r3,81; 0x18280186
@@ -558,3 +564,108 @@ sub_8234BBD8	8234BBD8	8231B808	mp			crt_math_native.cpp (claude-setup 2026-10-20
 lit:game/crt_math_native.cpp:8205B150	8205B150	82059D38	mp			hand check: tan's constant table (lis r11,-32250; addi r31,r11,-25288 in cod3mp's sub_8231B808, -20144 in the campaign's; its polynomial at +88..+112 read as lfd -25200..-25176, -20056..-20032 in the campaign's)
 lit:game/crt_math_native.cpp:825C6860	825C6860	825CBD88	mp			hand check: pi/2 in two parts, tan's reduction (lis r11,-32163; addi r11,r11,-17016 in cod3mp's sub_8231B808, lis -32164 and 26720 in the campaign's)
 lit:game/crt_math_native.cpp:8205BF50	8205BF50	8205A9E0	mp			hand check: the two constants of tan's rounding helper (lis r12,-32250; lfd f4,-22048(r12) and lfd f5,-22040(r12) in cod3mp's sub_82326330, -16560 and -16552 in the campaign's sub_82356730)
+lit:game/post_effects.cpp:829128C4	829128C4	82A8F7D4	mp			hand check (10-20, [post-effects]): depth of field on: read by the DOF pass (SP 0x82149C80 / MP 0x82161B28), written by its setter (SP 0x82147098 / MP 0x8215EEA0) with the distances
+lit:game/post_effects.cpp:825B3070	825B3070	825C3410	mp			hand check (10-20, [post-effects]): depth of field near distance: read by the DOF pass and written by its setter at the same places in both
+lit:game/post_effects.cpp:825B3074	825B3074	825C3414	mp			hand check (10-20, [post-effects]): depth of field far distance: read by the DOF pass and written by its setter at the same places in both
+lit:game/post_effects.cpp:82A2ABF8	82A2ABF8	82BCC928	mp			hand check (10-20, [post-effects]): motion blur amount: the end of the scene sends type 4 while it isn't 0 (SP 0x82426500 / MP 0x824311E0); MP keeps one float per local player (+ 4 x client, 4 of them; 0x82BCC938 follows)
+lit:game/post_effects.cpp:822E91F0	822E91F0	822B7FC0	mp			hand check (10-20, [post-effects]): Direct3D GetViewport: called by the DOF pass and twice by the motion blur pass in both
+lit:game/post_effects.cpp:822E8FC8	822E8FC8	822B7D98	mp			hand check (10-20, [post-effects]): Direct3D SetViewport: called three times by the motion blur pass in both
+lit:game/post_effects.cpp:82149C80	82149C80	82161B28	mp			hand check (10-20, [post-effects]): the depth of field pass (as sub_82149C80's row); the test switch calls it in the campaign only
+lit:game/post_effects.cpp:82A2AB40	82A2AB40	82BCC7FC	mp			hand check (10-20, [post-effects]): the entity list, as lit:game/aim_sensitivity.cpp:82A2AB40 (0x8253D290 reads it for the aiming test); the test switch reads it in the campaign only
+pc_menu::kSysPages			same			hand check (10-20, [mp-menus] research A): HandleButton SP 0x824C48F8 / MP 0x824D5A44 both lwz 10,4(31): the pages at +4
+pc_menu::kSysButton		112	mp			hand check (10-20, [mp-menus] research A): HandleButton slot 28: ProcessInput SP 0x824C4F38 lwz 11,68(11) / MP 0x824DCFC8 lwz 11,112(11)
+pc_menu::kSysRelease		116	mp			hand check (10-20, [mp-menus] research A): Release slot 29: ProcessInput SP 0x824C4E8C / MP 0x824DCF1C
+pc_menu::kSysPlayer		108	mp			hand check (10-20, [mp-menus] research A): slot 27: ProcessInput's first call SP 0x824C4DD4 lwz 11,88(11) / MP 0x824DCE64 lwz 11,108(11)
+pc_menu::kCodeBack			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeStart			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeUp			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeDown			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeLeft			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeRight			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeA			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeB			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeX			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kCodeY			same			hand check (10-20, [mp-menus] research A): the code -> pad button maps SP 0x824BE118 / MP 0x824D5468 have the same compare chains and jump targets
+pc_menu::kPageItems			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageScrollTop			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageSelected			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageCount			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageScrollShown			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageFlags			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageLocked			same			hand check (10-20, [mp-menus] research A): FEMenu ctor SP 0x824CE638 / MP 0x824E9640 store the same fields +0..+52 (DrawItems, MoveUp read them alike)
+pc_menu::kPageMoveUp		128	mp			hand check (10-20, [mp-menus] research A): HandleButton code 4: SP 0x824C4AB4 lwz 11,100(11) / MP 0x824D5C00 lwz 11,128(11)
+pc_menu::kPageMoveDown		132	mp			hand check (10-20, [mp-menus] research A): HandleButton code 8: SP 0x824C4ADC / MP 0x824D5C28
+pc_menu::kPageOnLeft		136	mp			hand check (10-20, [mp-menus] research A): HandleButton code 16: SP 0x824C4B04 / MP 0x824D5C50
+pc_menu::kPageBack		148	mp			hand check (10-20, [mp-menus] research A): HandleButton code 128 (second call): SP 0x824C4B98 / MP 0x824D5CE4
+pc_menu::kPageSetSelection		192	mp			hand check (10-20, [mp-menus] research A): the end of MoveUp: SP 0x824C60B8 li 5,1; lwz 11,164(11) / MP 0x824DE1C0 li 5,1; lwz 11,192(11)
+pc_menu::kPageSelectionChanged			same			hand check (10-20, [mp-menus] research A): the end of MoveUp: SP 0x824C609C / MP 0x824DE1A4 lwz 11,28(11)
+pc_menu::kEntryLabel			same			hand check (10-20, [mp-menus] research A): FEMenuEntry: 24 bytes in both (AddItem new(24)); label +16, selected +21, disabled +22 read alike
+pc_menu::kEntryDisabled			same			hand check (10-20, [mp-menus] research A): FEMenuEntry: 24 bytes in both (AddItem new(24)); label +16, selected +21, disabled +22 read alike
+pc_menu::kEntryDrawnSelected			same			hand check (10-20, [mp-menus] research A): FEMenuEntry: 24 bytes in both (AddItem new(24)); label +16, selected +21, disabled +22 read alike
+pc_menu::kEntrySetLabelKey			same			hand check (10-20, [mp-menus] research A): AddButton SP 0x824C4454 / MP 0x824DBC7C lwz 11,48(11) (key in r4)
+pc_menu::kEntrySetVisible		56	mp			hand check (10-20, [mp-menus] research A): SP slot 6 0x820AD650 / MP slot 14 0x820BC4A8: the same body label(+16)->vfunc(+60)(r4)
+pc_menu::kEntrySetDisabled		64	mp			hand check (10-20, [mp-menus] research A): AddButton SP 0x824C4488 lwz 11,32(11) / MP 0x824DBCB0 lwz 11,64(11), both li 4,0
+pc_menu::kTextVisibility			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextX			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextY			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextFont			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextString			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextScaleSelected			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextScaleNormal			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextName			same			hand check (10-20, [mp-menus] research A): FEText ctors SP 0x820ACA38 / MP 0x820BB820 store the same fields; Draw SP 0x824CFD58 / MP 0x824ECCA0 read them alike
+pc_menu::kTextAlign			same			hand check (10-20, [mp-menus] research A): the alignment SP 0x824BF4A8 / MP 0x824D7440 is the same code (96%, relocations): +108 and its bits
+pc_menu::kAlignLeft			same			hand check (10-20, [mp-menus] research A): the flag test SP 0x820ACF88 / MP 0x820BBD30 is the same code (lhz 11,108(3); and r4)
+pc_menu::kAlignRight			same			hand check (10-20, [mp-menus] research A): the flag test SP 0x820ACF88 / MP 0x820BBD30 is the same code (lhz 11,108(3); and r4)
+pc_menu::kAlignTop			same			hand check (10-20, [mp-menus] research A): the flag test SP 0x820ACF88 / MP 0x820BBD30 is the same code (lhz 11,108(3); and r4)
+pc_menu::kAlignBottom			same			hand check (10-20, [mp-menus] research A): the flag test SP 0x820ACF88 / MP 0x820BBD30 is the same code (lhz 11,108(3); and r4)
+pc_menu::kTextWidth			same			hand check (10-20, [mp-menus] research A): called by the alignment at the same places (SP 0x824BF4D8 / MP 0x824D7470); MP's width also counts ~X button tokens
+pc_menu::kTextHeight			same			hand check (10-20, [mp-menus] research A): called by the alignment at the same places (SP 0x824BF4F4 / MP 0x824D748C); bodies identical
+pc_menu::kFontTexture			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kFontGlyphs			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kFontLineHeight			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kFontFirstChar			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kFontGlyphCount			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kGlyphSize			same			hand check (10-20, [mp-menus] research A): the text measure SP 0x82134B90 / MP 0x8214CA50 is the same code (248 vs 248 instructions)
+pc_menu::kTextLines			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kTextLineCount			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineSize			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineX			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineY			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineWidth			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineString			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineSegments			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+pc_menu::kLineSegmentCount			same			hand check (10-20, [mp-menus] research A): FEMultiLineText draw-lines SP 0x824DE710 / MP 0x824F7930 and DrawLine SP 0x824D7D88 / MP 0x824EC430 read them at lined-up places
+fe::kElemOpacity			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kQuadParts			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kQuadPartCount			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kQuadPartVerts			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kQuadVertStride			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kTextTransform			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kTextTransformEnd			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kTextX			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kTextY			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kQuadY			same			hand check (10-20, [mp-menus] research A): FEText / PanelQuad ctors and draws read them alike (SP 0x824CFE98 / MP 0x824ECDA0; PanelQuad draw identical)
+fe::kElemDraw			same			hand check (10-20, [mp-menus] research A): FEText slot 1 SP 0x820ACB28 / MP 0x820BB8E0 identical; the panel draw calls +4 in both
+fe::kPageAddItem			same			hand check (10-20, [mp-menus] research A): FEMenu slot 4 SP 0x824C6360 / MP 0x824E95C8: new(24), entry ctor, flags +23, items[index]; MP then links neighbors (0x824DE410)
+fe::kPageSystem			same			hand check (10-20, [mp-menus] research A): FEMenu ctor stw 4,8(31) in both
+prompts::kFonts		0x82C6B200	mp			hand check (10-20, [mp-menus] research C): the line font SP 0x824D7E24 / MP 0x824EC4F8 (FEManager + 4); the font register stores at +4+4i in both
+prompts::kFontCount			same			hand check (10-20, [mp-menus] research C): the font lookup scans 4 names in both (SP 0x824C6554 / MP 0x824DEEDC)
+PanelQuad__vfunc_1	824C80D0	824E1698	mp			hand check (10-20, [mp-menus] research A): PanelQuad draw identical (70 vs 70)
+prompts::kButtonFont			same			hand check (10-20, [mp-menus] research C): button segments use FEManager+8 (font 1) in both: draw SP 0x824D7EF4 / MP 0x824EC5C4 lwz r3,8(r26)
+prompts::kFontBaseline			same			hand check (10-20, [mp-menus] research C): the fonts' +0x20 baseline (MP global.cod fonts byte-identical to the campaign's apart from pointers)
+prompts::kLineFont			same			hand check (10-20, [mp-menus] research C): SP 0x824D7E04 / MP 0x824EC4D8 lwz r11,0(r31): the line's font index at +0
+prompts::kSetText			same			hand check (10-20, [mp-menus] research C): FEMultiLineText slot 36 in both (MP 0x824F76A0, 96% equal to SP 0x824E8180)
+prompts::kSetWrapped		388	mp			hand check (10-20, [mp-menus] research C): slot 91 -> 97 (MP 0x824F75A8): byte 364 -> 388
+prompts::kSetLines		392	mp			hand check (10-20, [mp-menus] research C): slot 92 -> 98 (MP 0x824F7410, identical): byte 368 -> 392
+prompts::kSetWrappedRaw		396	mp			hand check (10-20, [mp-menus] research C): slot 93 -> 99 (MP 0x824F72B0, identical): byte 372 -> 396 (MP's byte 372 is its [ACTION] pass)
+prompts::kStringChars			same			hand check (10-20, [mp-menus] research C): layout SP 0x824D76E8 / MP 0x824EBFB4 addi r3,r11,12
+sub_82445118	82445118	8245E3A8	mp			hand check ([claude-9b] weapon offsets): the view weapon's place (refEntity r3: origin +60/+64/+68 from the view, AngleVectors, the gclient +44 bit test, then origin += cg_gunX/Y/Z along the camera axes); same shape, 222 vs 202 instructions; its one caller sub_82468D58 (campaign sub_8244F1D8)
+lit:game/viewmodel.cpp:82A0E5A0	82A0E5A0	82B9F830	mp			hand check ([claude-9b]): cg_gunX's vmCvar (value +8) times the camera's forward axis at the end of sub_8245E3A8: lis r11,-32070; addi r11,r11,-2000; lfs f0,8(r11)
+lit:game/viewmodel.cpp:82A0CBB0	82A0CBB0	82B9DDB0	mp			hand check ([claude-9b]): cg_gunY's vmCvar times the left axis in sub_8245E3A8: addi r11,r11,-8784; lfs f13,8(r11)
+lit:game/viewmodel.cpp:82A0D8A0	82A0D8A0	82B9EA10	mp			hand check ([claude-9b]): cg_gunZ's vmCvar times the up axis in sub_8245E3A8: addi r10,r10,-5616; lfs f12,8(r10)
+lit:game/viewmodel.cpp:82A2AB40	82A2AB40	82BCC7FC	mp			hand check ([claude-9b]): the entity list read at [client + 1] in sub_8245E3A8 and CG_DrawCrosshair sub_8245D9F8 (lis -32067; lwz -14340); the client at +512 (campaign +528), the aim fraction +172 (campaign +140)
+sub_82467710	82467710	824829C0	mp			hand check [keybinds]: ButtonAlias_Value: the same 96 bytes (r3 table + pad*68, 16 entries compared with the alias id r5; MP calls 0x820F9CA8 / 0x820F9E50 for the campaign's 0x820E7C68 / 0x820E7E10); the tank's machine-gun read passes the table pointer + 0x148 (VehicleTank) and 4 (FireCoax) in both (campaign 0x8256A2A8, MP 0x82591450)
+keybinds::kAliasContexts	82A2AB44	82BCC800	mp			hand check [keybinds]: ButtonAlias_Value's table pointer: the tank's machine-gun read adds 0x148 (VehicleTank) to it in both (campaign 0x8256A2A8 DAT_82a2ab44, MP 0x82591450 DAT_82bcc800 in the decompiled C); 12 of 13 global votes in dev/waw-decomp/cod3/mp/globals_sp_to_mp.tsv
+midasm:Cod3VehicleViewPressed@82448084	82448084	82462F48	mp			hand check [keybinds]: right after bl of the pad's pressed-edge read (campaign 0x820E86A8, MP 0x820FA6E8) with li r5,12 (the right stick click) in the camera select (campaign 0x82447D48, MP 0x82462C68), before clrlwi r11,r3,24 in both; MP's r29+480 is the local client (lwz r10,480(r29); mulli 3208; +180)
+lit:game/aim_sensitivity.cpp:82A2AB40	82A2AB40	82BCC7FC	mp			hand check ([claude-9b] sensitivity per weapon): the same entity list as lit:game/viewmodel.cpp:82A2AB40 (sub_8245E3A8, CG_DrawCrosshair sub_8245D9F8)
+lit:game/aim_sensitivity.cpp:82A2A2E0	82A2A2E0	82BCBF9C	mp			hand check ([claude-9b]): the weapon definitions table, read as defs[held weapon] -> +176 weaponClass in sub_8245E3A8 (lis r11,-32067; lwz r11,-16484(r11); campaign sub_82445118 lis -32093, lwz -23840)

@@ -1,4 +1,14 @@
 // cod3 - PC controls for the game's own menus (see pc_menu.h).
+//
+// Both programs: the campaign (default.xex) and, since the [mp-menus] pass,
+// multiplayer (cod3mp, codmp_xenonf.xex). The multiplayer program has the
+// same menu framework with other fields and virtual slots: addresses.h gives
+// the numbers for each program, and the few things that are built
+// differently there are in `#if defined(COD3_MP)` blocks below (which menu
+// system takes the input, where a system keeps its page, message box
+// buttons, pages whose rows are a list box). The campaign's own pages (its
+// pause menu, main menu, brightness page, storage buttons) are in
+// `#if !defined(COD3_MP)` blocks; multiplayer's are in game/mp/menus_mp.cpp.
 
 #include "game/pc_menu.h"
 
@@ -7,6 +17,7 @@
 #include <chrono>
 #include <cctype>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -30,7 +41,12 @@
 
 #include "game/addresses.h"
 #include "game/guest.h"
+#include "game/button_prompts.h"
+#include "game/keybinds/binds.h"
+#if !defined(COD3_MP)
+#include "game/menu_slider.h"  // [claude-9b] the slider rows' number boxes
 #include "game/menu_video.h"
+#endif
 #include "game/ultrawide.h"
 
 REXCVAR_DEFINE_BOOL(cod3_pc_menus, true, "cod3/Mouse",
@@ -40,6 +56,15 @@ REXCVAR_DEFINE_BOOL(cod3_pc_menus, true, "cod3/Mouse",
 
 REXCVAR_DEFINE_BOOL(cod3_menu_trace, false, "cod3/Mouse",
                     "Log every change of a game menu's highlight and what made it (for bug reports)");
+
+// [mp-menus] Automated tests only (like cod3_test_input): mouse and keyboard
+// events for the game's menus at given times, "<seconds>:<what>;...", where
+// <what> is key=<Up|Down|Left|Right|Enter|Escape|Backspace> (pressed and let
+// go), move=<x>,<y> or click=<x>,<y> (the pointer in the menus' 640x480
+// space), rclick, or wheel=<detents> (+ up). Seconds count from the start.
+REXCVAR_DEFINE_STRING(cod3_test_menu_input, "", "cod3/Debug",
+                      "Tests only: scripted mouse and keyboard events for the game's menus "
+                      "(game/pc_menu.cpp)");
 
 REXCVAR_DECLARE(bool, cod3_ultrawide_hud);
 
@@ -55,6 +80,90 @@ using cod3::guest::ReadU8;
 using cod3::guest::VirtualSlot;
 using cod3::guest::WriteU32;
 using Clock = std::chrono::steady_clock;
+
+#if defined(COD3_MP)
+// ---------------------------------------------------------------------------
+// [mp-menus] cod3mp's menu framework (codmp_xenonf.xex), read at lined-up
+// instructions of both programs (docs/MULTIPLAYER.md, "Menus"):
+//  * A menu system's page that takes the input is one s32 at +28 (-1 none;
+//    +20 is a page under an overlay: drawn first, no input), its pages at
+//    +4, their count at +16 (HandleButton 0x824D5A08, the page switch
+//    0x8250A148). The campaign keeps an array indexed by a slot instead.
+//  * One system object per local player for the pause menus
+//    (InGameMenuSystem, its local client at +48) and the message boxes
+//    (DialogMenuSystem, client at +52), one front end, one after-action
+//    report: FEManager +28, +192 + 4i, +208 + 4i, +224.
+//  * Every system's update runs ProcessInput while it has a page, also a
+//    system not on screen; vfunc +92 says whether it is up (FEManager draws
+//    only those: 0x820BC990 reads byte +42; the message boxes' 0x820BD410
+//    is "+28 >= 0"). On the split-screen sign-in page the front end runs
+//    ProcessInput four times a frame (0x824D5FC0): the PC input acts once.
+//  * Message box buttons: a DialogMenuDisplay at system +44 draws two FEText
+//    slots, +20 / +24, or +36 / +40 in the split-screen layout (+60 set),
+//    the highlighted slot at +56; button i is in slot i (0x824E85A8).
+//  * Many front-end pages have no FEMenu items: their rows are a UIListBox
+//    inside the page (below), selected = top (+96) + cursor (+100).
+//  * Option rows are entries that hold their value (FEComboBox, FESlider):
+//    FEMenu's own left / right step the selected entry.
+// ---------------------------------------------------------------------------
+namespace mpui {
+inline constexpr uint32_t kFEManager = 0x82C6B1FC;      // = msgbox::kFrontEnd
+inline constexpr uint32_t kFrontEndSystem = 28;         // FEManager +28
+inline constexpr uint32_t kSysCurrentPage = 28;         // s32
+inline constexpr uint32_t kSysPageCount = 16;           // u32
+inline constexpr uint32_t kSysUp = 92;                  // vtbl: () -> u8, the system is on screen
+inline constexpr uint32_t kInGameSystemVtable = 0x8207146C;
+inline constexpr uint32_t kInGameClient = 48;           // u32: the local client
+inline constexpr uint32_t kDialogClient = 52;           // u32 (DialogMenuSystem)
+inline constexpr uint32_t kDialogDisplay = 44;          // DialogMenuDisplay*
+inline constexpr uint32_t kDisplayButtonsA = 20;        // FEText*[2]
+inline constexpr uint32_t kDisplayButtonsB = 36;        // FEText*[2], the split-screen layout
+inline constexpr uint32_t kDisplayLayoutB = 60;         // u32: != 0 draws layout B
+inline constexpr uint32_t kDisplaySelected = 56;        // s32: highlighted slot, -1 none
+inline constexpr int kDisplayMaxButtons = 2;
+// UIListBox (vtable 0x820711E4; SetRow 0x824E6520, Up 0x82509B18): rows
+// (entries) of 20 bytes at *(+16), +16 u8 = selectable; the highest row set
+// at +80, rows shown +84, the first shown +96, the cursor in them +100 (-1
+// none). Shown row k: cells = *(*(+4) + 16k), column c at cells + 24c: +0 = 1
+// when in use, *(+12) = its elements, the first is the row's text.
+inline constexpr uint32_t kListVtable = 0x820711E4;
+inline constexpr uint32_t kListShown = 4;
+inline constexpr uint32_t kListRows = 16;
+inline constexpr uint32_t kListLast = 80;
+inline constexpr uint32_t kListVisible = 84;
+inline constexpr uint32_t kListTop = 96;
+inline constexpr uint32_t kListCursor = 100;
+inline constexpr uint32_t kListRowSize = 20;
+inline constexpr uint32_t kListRowSelectable = 16;
+inline constexpr uint32_t kListShownSize = 16;
+inline constexpr uint32_t kListCellSize = 24;
+inline constexpr uint32_t kListCellElements = 12;
+// The pages built on a list box, and where it is in them (their Up / Down
+// and A read it there).
+struct ListPage {
+  uint32_t vtable, list;
+};
+inline constexpr ListPage kListPages[] = {
+    {0x8207E95C, 148},  // MPMainMenuXBox (Up 0x823B7CE0)
+    {0x8207B874, 100},  // MPProfileEditMenu, Options (Up 0x823EE220)
+    {0x82083D3C, 144},  // PlayLanMenu, SYSTEM LINK
+    {0x8208423C, 76},   // SessionLanListMenu, the game browser
+    {0x8208413C, 88},   // SessionListMenu
+    {0x82082CFC, 136},  // OverlayMenu
+    {0x82082E04, 96},   // InGameOverlay
+};
+// Entries holding a value (left / right change it).
+inline constexpr uint32_t kComboVtable = 0x820709EC;    // FEComboBox
+inline constexpr uint32_t kSliderVtable = 0x82070AC4;   // FESlider
+// The 85 page classes (RTTI: derived from FEMenu) lie in these runs of
+// vtables, which hold no other class's.
+inline constexpr uint32_t kPageVtables[][2] = {
+    {0x82070774, 0x82070870}, {0x82070D4C, 0x82070E48}, {0x820712D4, 0x820713D0},
+    {0x82071504, 0x82071600}, {0x820716DC, 0x820723FC}, {0x8207B374, 0x8207F958},
+    {0x82082A5C, 0x82082B58}, {0x82082BF4, 0x82085270},
+};
+}  // namespace mpui
+#endif
 
 int64_t Now() { return Clock::now().time_since_epoch().count(); }
 constexpr int64_t Ms(int64_t ms) { return ms * 1'000'000; }
@@ -238,6 +347,14 @@ MenuInput g_listener;
 void MenuInput::OnKeyDown(rex::ui::KeyEvent& e) {
   using rex::ui::VirtualKey;
   if (e.is_alt_pressed() || e.is_ctrl_pressed() || !Usable()) return;
+#if !defined(COD3_MP)
+  // [claude-9b] A slider row's number box (game/menu_slider.h) takes digits on
+  // its row, and Enter, Esc and Backspace while a number is typed.
+  if (cod3::menuslider::OnKey(static_cast<uint16_t>(e.virtual_key()), e.is_shift_pressed())) {
+    e.set_handled(true);
+    return;
+  }
+#endif
   Request r;
   bool repeats = false;
   switch (e.virtual_key()) {
@@ -348,6 +465,7 @@ uint64_t VCall(PPCContext& ctx, uint8_t* base, uint32_t obj, uint32_t slot, uint
 
 // Every menu class's vtable lies in this range (FEMenu 0x82070EDC ...
 // ChapterSelectMenu 0x82072A8C); anything else isn't a page.
+#if !defined(COD3_MP)
 bool IsPage(uint8_t* base, uint32_t page) {
   if (!Valid(page)) return false;
   const uint32_t vt = ReadU32(base, page);
@@ -365,6 +483,36 @@ uint32_t CurrentPage(PPCContext& ctx, uint8_t* base, uint32_t system) {
   const uint32_t page = ReadU32(base, pages + 4 * uint32_t(index));
   return IsPage(base, page) ? page : 0;
 }
+#else
+// [mp-menus] cod3mp: the page classes' vtables (see mpui).
+bool IsPage(uint8_t* base, uint32_t page) {
+  if (!Valid(page)) return false;
+  const uint32_t vt = ReadU32(base, page);
+  for (const auto& r : mpui::kPageVtables)
+    if (vt >= r[0] && vt < r[1]) return true;
+  return false;
+}
+
+// The page taking the system's input (+28), or 0.
+uint32_t CurrentPage(PPCContext&, uint8_t* base, uint32_t system) {
+  const int32_t index = static_cast<int32_t>(ReadU32(base, system + mpui::kSysCurrentPage));
+  const int32_t count = static_cast<int32_t>(ReadU32(base, system + mpui::kSysPageCount));
+  if (index < 0 || index >= count || count > 64) return 0;
+  const uint32_t pages = ReadU32(base, system + pm::kSysPages);
+  if (!Valid(pages)) return 0;
+  const uint32_t page = ReadU32(base, pages + 4 * uint32_t(index));
+  return IsPage(base, page) ? page : 0;
+}
+
+// The page's list box (the rows of MPMainMenuXBox, Options, SYSTEM LINK, the
+// game browser ...), or 0 for a page of FEMenu items.
+uint32_t PageList(uint8_t* base, uint32_t page) {
+  const uint32_t vt = ReadU32(base, page);
+  for (const auto& p : mpui::kListPages)
+    if (p.vtable == vt) return ReadU32(base, page + p.list) == mpui::kListVtable ? page + p.list : 0;
+  return 0;
+}
+#endif
 
 struct Box {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
@@ -579,6 +727,11 @@ bool MeasureText(uint8_t* base, uint32_t font, const std::string& text, float sx
   for (char ch : text) {
     const uint8_t c = uint8_t(ch);
     if (c < 32) return false;
+#if defined(COD3_MP)
+    // [mp-menus] cod3mp's text draw shows "~X" as a button picture (X of the
+    // button font): the game's own measure counts it.
+    if (c == '~') return false;
+#endif
     // A space moves on like an 'a' and draws nothing.
     const uint32_t g = Glyph(base, font, c == ' ' ? uint8_t('a') : c);
     if (!g) return false;
@@ -643,16 +796,77 @@ bool DrawnText(PPCContext& ctx, uint8_t* base, uint32_t text, bool selected, Box
 // and the slot item `i` of `count` is drawn in (see addresses.h).
 uint32_t DialogButtons(uint8_t* base, uint32_t system) {
   if (!Valid(system) || ReadU32(base, system) != pm::kDialogSystemVtable) return 0;
+#if defined(COD3_MP)
+  const uint32_t buttons = ReadU32(base, system + mpui::kDialogDisplay);  // [mp-menus] its display
+#else
   const uint32_t buttons = ReadU32(base, system + cod3::addr::msgbox::kSysButtons);
+#endif
   return Valid(buttons) ? buttons : 0;
 }
 
+#if !defined(COD3_MP)
 int DialogSlot(uint8_t* base, uint32_t buttons, int i) {
   const uint32_t count = ReadU32(base, buttons + pm::kButtonCount);
   if (count == 1) return 2;
   if (count == 4) return i;
   const bool middle = ReadU32(base, buttons + pm::kButtonSlots + 4) && ReadU32(base, buttons + pm::kButtonSlots + 8);
   return middle ? i + 1 : i;
+}
+#endif
+
+// The text a message box draws for its button `i` and whether it is drawn
+// highlighted; 0 when it has no such button.
+uint32_t DialogButton(uint8_t* base, uint32_t buttons, int i, bool* selected) {
+#if defined(COD3_MP)
+  // [mp-menus] Two slots, button i in slot i, in the layout the box draws.
+  if (i < 0 || i >= mpui::kDisplayMaxButtons) return 0;
+  const uint32_t slots =
+      buttons + (ReadU32(base, buttons + mpui::kDisplayLayoutB) ? mpui::kDisplayButtonsB : mpui::kDisplayButtonsA);
+  *selected = static_cast<int32_t>(ReadU32(base, buttons + mpui::kDisplaySelected)) == i;
+  return ReadU32(base, slots + 4 * uint32_t(i));
+#else
+  const int slot = DialogSlot(base, buttons, i);
+  if (slot < 0 || slot > 3) return 0;
+  *selected = ReadU32(base, buttons + pm::kButtonSelectedSlot) == uint32_t(slot);
+  return ReadU32(base, buttons + pm::kButtonSlots + 4 * uint32_t(slot));
+#endif
+}
+
+#if defined(COD3_MP)
+// [mp-menus] A list box's rows: how many, which is selected (-1 none), and
+// the text a shown row draws (0 if none).
+int ListCount(uint8_t* base, uint32_t list) {
+  const int32_t last = static_cast<int32_t>(ReadU32(base, list + mpui::kListLast));
+  return last < 0 || last > 255 ? 0 : last + 1;
+}
+
+int ListSelected(uint8_t* base, uint32_t list) {
+  const int32_t cursor = static_cast<int32_t>(ReadU32(base, list + mpui::kListCursor));
+  if (cursor < 0) return -1;
+  return static_cast<int32_t>(ReadU32(base, list + mpui::kListTop)) + cursor;
+}
+
+bool ListRowSelectable(uint8_t* base, uint32_t list, int row) {
+  const uint32_t rows = ReadU32(base, list + mpui::kListRows);
+  return Valid(rows) && ReadU8(base, rows + mpui::kListRowSize * uint32_t(row) + mpui::kListRowSelectable) != 0;
+}
+
+uint32_t ListRowText(uint8_t* base, uint32_t list, int shown) {
+  const uint32_t records = ReadU32(base, list + mpui::kListShown);
+  if (!Valid(records)) return 0;
+  const uint32_t cells = ReadU32(base, records + mpui::kListShownSize * uint32_t(shown));
+  if (!Valid(cells) || ReadU32(base, cells) != 1) return 0;  // column 0
+  const uint32_t elements = ReadU32(base, cells + mpui::kListCellElements);
+  return Valid(elements) ? ReadU32(base, elements) : 0;
+}
+#endif
+
+// The page's items: its FEMenu items, or (cod3mp) its list box's rows.
+int ItemCount(uint8_t* base, uint32_t page) {
+#if defined(COD3_MP)
+  if (const uint32_t list = PageList(base, page)) return ListCount(base, list);
+#endif
+  return ReadS16(base, page + pm::kPageCount);
 }
 
 // Hit areas from the drawn letters. Items on one line (a message box's
@@ -707,6 +921,18 @@ void LayOutHitAreas(std::vector<Item>& items, bool has_values) {
 
 // A page of settings: it takes left / right (its rows have values).
 bool HasValues(uint8_t* base, uint32_t page) {
+#if defined(COD3_MP)
+  // [mp-menus] cod3mp's option rows are entries holding their value
+  // (FEMenu's own left / right step them); a list box page has none.
+  if (PageList(base, page)) return false;
+  const int count = ReadS16(base, page + pm::kPageCount);
+  const uint32_t list = ReadU32(base, page + pm::kPageItems);
+  for (int i = 0; Valid(list) && i < count && i < 64; ++i) {
+    const uint32_t entry = ReadU32(base, list + 4 * uint32_t(i));
+    const uint32_t vt = Valid(entry) ? ReadU32(base, entry) : 0;
+    if (vt == mpui::kComboVtable || vt == mpui::kSliderVtable) return true;
+  }
+#endif
   const uint32_t on_left = VirtualSlot(base, page, pm::kPageOnLeft);
   return on_left != pm::kFEMenuOnLeft && on_left != pm::kNullsub;
 }
@@ -719,6 +945,27 @@ bool HasValues(uint8_t* base, uint32_t page) {
 std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint32_t system,
                             RowControls* loose = nullptr) {
   std::vector<Item> items;
+#if defined(COD3_MP)
+  // [mp-menus] A list box page: its shown rows' texts (the panel draws them,
+  // not the page; the highlight is the panel's band).
+  if (const uint32_t rows = PageList(base, page)) {
+    const int count = ListCount(base, rows);
+    const int top = static_cast<int32_t>(ReadU32(base, rows + mpui::kListTop));
+    const int shown = static_cast<int32_t>(ReadU32(base, rows + mpui::kListVisible));
+    for (int k = 0; top >= 0 && k < shown && k < 32; ++k) {
+      const int i = top + k;
+      if (i >= count || !ListRowSelectable(base, rows, i)) continue;
+      Item it;
+      const uint32_t label = ListRowText(base, rows, k);
+      if (!DrawnText(ctx, base, label, false, &it.ink)) continue;
+      it.index = i;
+      it.left_aligned = (ReadU16(base, label + pm::kTextAlign) & pm::kAlignLeft) != 0;
+      items.push_back(it);
+    }
+    LayOutHitAreas(items, false);
+    return items;
+  }
+#endif
   const int count = ReadS16(base, page + pm::kPageCount);
   const uint32_t list = ReadU32(base, page + pm::kPageItems);
   if (count <= 0 || count > 64 || !Valid(list)) {
@@ -742,10 +989,8 @@ std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint3
     uint32_t label = ReadU32(base, entry + pm::kEntryLabel);
     bool selected = ReadU8(base, entry + pm::kEntryDrawnSelected) != 0;
     if (buttons) {
-      const int slot = DialogSlot(base, buttons, i);
-      if (slot < 0 || slot > 3) continue;
-      label = ReadU32(base, buttons + pm::kButtonSlots + 4 * uint32_t(slot));
-      selected = ReadU32(base, buttons + pm::kButtonSelectedSlot) == uint32_t(slot);
+      label = DialogButton(base, buttons, i, &selected);
+      if (!label) continue;
     }
     Item it;
     if (!DrawnText(ctx, base, label, selected, &it.ink)) continue;
@@ -777,7 +1022,12 @@ const Item* FindItem(const std::vector<Item>& items, int index) {
   return nullptr;
 }
 
-int Selected(uint8_t* base, uint32_t page) { return ReadS16(base, page + pm::kPageSelected); }
+int Selected(uint8_t* base, uint32_t page) {
+#if defined(COD3_MP)
+  if (const uint32_t list = PageList(base, page)) return ListSelected(base, list);  // [mp-menus]
+#endif
+  return ReadS16(base, page + pm::kPageSelected);
+}
 
 // Moves the highlight to `target` with the page's own MoveUp / MoveDown, the
 // way the D-pad does (so the page updates its titles, help text and sound),
@@ -786,7 +1036,7 @@ void SelectItem(PPCContext& ctx, uint8_t* base, uint32_t page, const std::vector
                 int target) {
   const Item* to = FindItem(items, target);
   if (!to) return;
-  const int count = ReadS16(base, page + pm::kPageCount);
+  const int count = ItemCount(base, page);
   for (int n = 0; n < count; ++n) {
     const int sel = Selected(base, page);
     if (sel == target) return;
@@ -943,7 +1193,12 @@ void UpdateDrag(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, 
   const float width = rc->g.x1 - rc->g.x0;
   if (!rc->gauge || width < 4.0f) return EndDrag("no gauge");
   const float target = std::clamp((d.x - rc->g.x0) / width, 0.0f, 1.0f);
-  if (cod3::videomenu::SetSlider(base, page, d.item, target)) {
+#if defined(COD3_MP)
+  const bool set = false;  // [mp-menus] every cod3mp gauge moves by its row's steps
+#else
+  const bool set = cod3::videomenu::SetSlider(base, page, d.item, target);
+#endif
+  if (set) {
     if (!d.direct || d.released) REXLOG_INFO("cod3: menu slider set to {:.2f} of its range{}", target, d.released ? "" : " (held)");
     d.direct = true;
     if (d.released) EndDrag("set");
@@ -1109,6 +1364,17 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
   EndDrag("new click");  // [menus-brightness]
   RowControls loose;
   const std::vector<Item> items = ItemRects(ctx, base, page, system, &loose);
+#if !defined(COD3_MP)
+  // [claude-9b] A click on a slider row's number box: typing starts there
+  // (game/menu_slider.h) and the row is highlighted.
+  if (const int box = cod3::menuslider::ClickAt(page, x, y); box >= 0) {
+    if (REXCVAR_GET(cod3_menu_trace)) REXLOG_INFO("cod3: menu trace: number box of item {} clicked", box);
+    if (Selected(base, page) != box) SelectItem(ctx, base, page, items, box);
+    g_hover.target = Selected(base, page) == box ? -1 : box;
+    g_hover.tries = 0;
+    return;
+  }
+#endif
   // [menus-brightness] An arrow steps its row's value its way; a gauge goes
   // to the place clicked (and follows the pointer while the button is held).
   // The page's own (Options > SCREEN) likewise, without a row.
@@ -1198,13 +1464,14 @@ void LogPage(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page) {
   last_vtable = vt;
   last_rects = rects;
   REXLOG_INFO("cod3: menu page {:08X} (vtable {:08X}, system {:08X}): {} items, selected {}{}", page,
-              vt, ReadU32(base, system), ReadS16(base, page + pm::kPageCount), Selected(base, page),
-              rects);
+              vt, ReadU32(base, system), ItemCount(base, page), Selected(base, page), rects);
   if (!trace) return;
+#if !defined(COD3_MP)
   // [menus-brightness] The pause menu's Options and Options > SCREEN keep
   // their panel at +56: dump it once (layout of the added row, help bar).
   if (vt == cod3::addr::fe::adv::kVtable || vt == cod3::addr::brightness::kPageVtable)
     DumpPanel(base, ReadU32(base, page + cod3::addr::fe::adv::kPanel), "page");
+#endif
   std::string prompts;
   {
     const uint32_t frame = FrameNow();
@@ -1217,8 +1484,57 @@ void LogPage(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page) {
   if (!prompts.empty()) REXLOG_INFO("cod3: menu trace: footer prompts{}", prompts);
 }
 
+#if defined(COD3_MP)
+// [mp-menus] Whether the mouse and keyboard drive this menu system: it is on
+// screen, and a pause menu or message box belongs to the keyboard's player
+// (binds::KeyboardClient: in split screen the local client on controller 0,
+// which the keyboard and mouse share; the others keep their controllers).
+// The front end's message boxes are everyone's.
+bool TakesPcInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
+  if (!(VCall(ctx, base, system, mpui::kSysUp) & 0xFF)) return false;
+  const uint32_t vt = ReadU32(base, system);
+  uint32_t client = 0;
+  if (vt == mpui::kInGameSystemVtable) {
+    client = ReadU32(base, system + mpui::kInGameClient);
+  } else if (vt == pm::kDialogSystemVtable) {
+    const uint32_t front_end = ReadU32(base, mpui::kFEManager + mpui::kFrontEndSystem);
+    if (Valid(front_end) && (VCall(ctx, base, front_end, mpui::kSysUp) & 0xFF)) return true;
+    client = ReadU32(base, system + mpui::kDialogClient);
+  } else {
+    return true;  // the front end, the after-action report
+  }
+  return client == cod3::binds::KeyboardClient(base);
+}
+
+// ProcessInput may run more than once a frame for a system (see mpui).
+bool FirstInputThisFrame(uint32_t system, uint32_t frame) {
+  struct Seen {
+    uint32_t system = 0, frame = 0;
+  };
+  static Seen seen[16];  // game thread only
+  for (auto& s : seen) {
+    if (s.system != system) continue;
+    if (s.frame == frame) return false;
+    s.frame = frame;
+    return true;
+  }
+  for (auto& s : seen) {
+    if (s.system) continue;
+    s = Seen{system, frame};
+    return true;
+  }
+  // More systems than slots (never: 10 in all): forget the oldest.
+  std::move(seen + 1, seen + 16, seen);
+  seen[15] = Seen{system, frame};
+  return true;
+}
+#endif
+
 void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
   if (!REXCVAR_GET(cod3_pc_menus) || !Valid(system)) return;
+#if defined(COD3_MP)
+  if (!FirstInputThisFrame(system, ReadU32(base, pm::kFrameCount)) || !TakesPcInput(ctx, base, system)) return;
+#endif
   const uint32_t page = CurrentPage(ctx, base, system);
   if (!page) return;
   g_base.store(base, std::memory_order_relaxed);
@@ -1294,6 +1610,13 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
       h.click_item = -1;
     } else if (request->ask != Ask::kRelease) {
       KeysTakeOver(h, x, y);
+      // [mp-menus] What the pointer rests on now (a new page forgot it):
+      // nudging it a pixel there is no move onto another item.
+      if (over && h.pointed < 0) {
+        const auto items = ItemRects(ctx, base, page, system);
+        const Item* it = ItemAt(items, x, y);
+        h.pointed = it ? it->index : -1;
+      }
       EndDrag("keys");  // [menus-brightness]
     }
   } else if (g_drag.active) {
@@ -1320,7 +1643,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
 
   // Walk the highlight to the pointer's item: one try per frame, bounded.
   if (!request && !h.keys && h.target >= 0) {
-    const int count = ReadS16(base, page + pm::kPageCount);
+    const int count = ItemCount(base, page);
     if (Selected(base, page) == h.target || ++h.tries > count + kClickWaitFrames) {
       if (Selected(base, page) != h.target) h.click_item = -1;
       h.target = -1;
@@ -1378,6 +1701,90 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
 }
 
 // ---------------------------------------------------------------------------
+// Panel elements: an item's label key, a panel's elements by name, and copies
+// of elements made the way the game makes them (both programs; the pages that
+// get rows added use them: the campaign's main menu below, cod3mp's in
+// game/mp/menus_mp.cpp).
+// ---------------------------------------------------------------------------
+void SetEntryLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char* key) {
+  Call c(ctx, base);
+  const uint32_t s = c.PushString(key);
+  c.Invoke(VirtualSlot(base, entry, pm::kEntrySetLabelKey), {entry, s});
+}
+
+uint32_t FindText(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
+  Call c(ctx, base);
+  const uint32_t s = c.PushString(name);
+  const uint32_t e = static_cast<uint32_t>(c.Invoke(cod3::addr::fe::kPanelFindElement, {panel, s}));
+  return Valid(e) && IsText(base, e) ? e : 0;
+}
+
+// A picture of the panel by name, or 0 (the lookup's stand-in for a missing
+// name is not that name).
+uint32_t FindQuad(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
+  Call c(ctx, base);
+  const uint32_t s = c.PushString(name);
+  const uint32_t quad = static_cast<uint32_t>(c.Invoke(cod3::addr::fe::kPanelFindQuad, {panel, s}));
+  if (!Valid(quad)) return 0;
+  return GuestString(base, ReadU32(base, quad + cod3::addr::fe::kQuadName), 64) == name ? quad : 0;
+}
+
+// A copy of a panel element, made the way the game copies elements
+// (0x824E1588): operator new, the class's constructor, Assign(source).
+uint32_t CopyElement(PPCContext& ctx, uint8_t* base, uint32_t src, bool quad) {
+  namespace fe = cod3::addr::fe;
+  if (!Valid(src)) return 0;
+  Call c(ctx, base);
+  const uint32_t mem = static_cast<uint32_t>(c.Invoke(fe::kOperatorNew, {quad ? fe::kQuadSize : fe::kTextSize}));
+  if (!Valid(mem)) return 0;
+  c.Invoke(quad ? fe::kQuadCtor : fe::kTextCtor, {mem});
+  c.Invoke(VirtualSlot(base, mem, fe::kElemAssign), {mem, src});
+  return mem;
+}
+
+// Copies follow their source `dy` lower: a text its transform, a picture
+// its vertices; both its opacity and whether it is shown.
+void FollowElement(uint8_t* base, uint32_t src, uint32_t dst, bool quad, float dy) {
+  namespace fe = cod3::addr::fe;
+  using cod3::guest::WriteF32;
+  if (!Valid(src) || !Valid(dst)) return;
+  if (quad) {
+    const uint32_t a = ReadU32(base, src + fe::kQuadParts), b = ReadU32(base, dst + fe::kQuadParts);
+    const uint32_t n = ReadU32(base, src + fe::kQuadPartCount);
+    if (!Valid(a) || !Valid(b) || n != ReadU32(base, dst + fe::kQuadPartCount) || n > 8) return;
+    for (uint32_t part = 0; part < n; ++part) {
+      const uint32_t qa = ReadU32(base, a + 4 * part), qb = ReadU32(base, b + 4 * part);
+      if (!Valid(qa) || !Valid(qb)) continue;
+      for (uint32_t v = 0; v < 4; ++v) {
+        const uint32_t at = fe::kQuadPartVerts + v * fe::kQuadVertStride;
+        WriteF32(base, qb + at, ReadF32(base, qa + at));
+        WriteF32(base, qb + at + 4, ReadF32(base, qa + at + 4) + dy);
+      }
+    }
+  } else {
+    for (uint32_t at = fe::kTextTransform; at < fe::kTextTransformEnd; at += 4)
+      WriteF32(base, dst + at, ReadF32(base, src + at));
+    WriteF32(base, dst + fe::kTextY, ReadF32(base, src + fe::kTextY) + dy);
+  }
+  WriteF32(base, dst + fe::kElemOpacity, ReadF32(base, src + fe::kElemOpacity));
+  const uint8_t shown = ReadU8(base, src + pm::kTextVisibility) & 0x4;
+  base[dst + pm::kTextVisibility] = uint8_t((ReadU8(base, dst + pm::kTextVisibility) & ~0x4) | shown);
+}
+
+std::mutex g_pause_mutex;
+std::function<void()> g_quit_handler;  // the app: save and end (g_pause_mutex)
+
+void RunQuitHandler() {
+  std::function<void()> quit;
+  {
+    std::lock_guard lock(g_pause_mutex);
+    quit = g_quit_handler;
+  }
+  if (quit) quit();
+}
+
+#if !defined(COD3_MP)
+// ---------------------------------------------------------------------------
 // No storage device: the pause menu's item and the message boxes' buttons.
 // ---------------------------------------------------------------------------
 // Quit (QUIT TO MENU now) moves up into the storage item's row (the labels
@@ -1385,16 +1792,8 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
 // row: the game's own "quit without saving?" message box, whose Yes then
 // saves the settings and ends the program like the window's close button.
 // The page's up / down follow the rows on screen.
-void SetEntryLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char* key) {
-  Call c(ctx, base);
-  const uint32_t s = c.PushString(key);
-  c.Invoke(VirtualSlot(base, entry, pm::kEntrySetLabelKey), {entry, s});
-}
-
-std::mutex g_pause_mutex;
-std::vector<uint32_t> g_pause_pages;  // pause menus with the two quit rows
+std::vector<uint32_t> g_pause_pages;  // pause menus with the two quit rows (g_pause_mutex)
 std::atomic<bool> g_quit_to_desktop{false};  // the quit box was opened by QUIT TO DESKTOP
-std::function<void()> g_quit_handler;        // Cod3App: save and end (g_pause_mutex)
 
 bool HasQuitRows(uint32_t page) {
   std::lock_guard lock(g_pause_mutex);
@@ -1550,65 +1949,6 @@ bool GetMainMenu(uint32_t page, MainMenuRows* out) {
   return true;
 }
 
-uint32_t FindText(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
-  Call c(ctx, base);
-  const uint32_t s = c.PushString(name);
-  const uint32_t e = static_cast<uint32_t>(c.Invoke(cod3::addr::fe::kPanelFindElement, {panel, s}));
-  return Valid(e) && IsText(base, e) ? e : 0;
-}
-
-// A picture of the panel by name, or 0 (the lookup's stand-in for a missing
-// name is not that name).
-uint32_t FindQuad(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
-  Call c(ctx, base);
-  const uint32_t s = c.PushString(name);
-  const uint32_t quad = static_cast<uint32_t>(c.Invoke(cod3::addr::fe::kPanelFindQuad, {panel, s}));
-  if (!Valid(quad)) return 0;
-  return GuestString(base, ReadU32(base, quad + cod3::addr::fe::kQuadName), 64) == name ? quad : 0;
-}
-
-// A copy of a panel element, made the way the game copies elements
-// (0x824E1588): operator new, the class's constructor, Assign(source).
-uint32_t CopyElement(PPCContext& ctx, uint8_t* base, uint32_t src, bool quad) {
-  namespace fe = cod3::addr::fe;
-  if (!Valid(src)) return 0;
-  Call c(ctx, base);
-  const uint32_t mem = static_cast<uint32_t>(c.Invoke(fe::kOperatorNew, {quad ? fe::kQuadSize : fe::kTextSize}));
-  if (!Valid(mem)) return 0;
-  c.Invoke(quad ? fe::kQuadCtor : fe::kTextCtor, {mem});
-  c.Invoke(VirtualSlot(base, mem, fe::kElemAssign), {mem, src});
-  return mem;
-}
-
-// Copies follow their source `dy` lower: a text its transform, a picture
-// its vertices; both its opacity and whether it is shown.
-void FollowElement(uint8_t* base, uint32_t src, uint32_t dst, bool quad, float dy) {
-  namespace fe = cod3::addr::fe;
-  using cod3::guest::WriteF32;
-  if (!Valid(src) || !Valid(dst)) return;
-  if (quad) {
-    const uint32_t a = ReadU32(base, src + fe::kQuadParts), b = ReadU32(base, dst + fe::kQuadParts);
-    const uint32_t n = ReadU32(base, src + fe::kQuadPartCount);
-    if (!Valid(a) || !Valid(b) || n != ReadU32(base, dst + fe::kQuadPartCount) || n > 8) return;
-    for (uint32_t part = 0; part < n; ++part) {
-      const uint32_t qa = ReadU32(base, a + 4 * part), qb = ReadU32(base, b + 4 * part);
-      if (!Valid(qa) || !Valid(qb)) continue;
-      for (uint32_t v = 0; v < 4; ++v) {
-        const uint32_t at = fe::kQuadPartVerts + v * fe::kQuadVertStride;
-        WriteF32(base, qb + at, ReadF32(base, qa + at));
-        WriteF32(base, qb + at + 4, ReadF32(base, qa + at + 4) + dy);
-      }
-    }
-  } else {
-    for (uint32_t at = fe::kTextTransform; at < fe::kTextTransformEnd; at += 4)
-      WriteF32(base, dst + at, ReadF32(base, src + at));
-    WriteF32(base, dst + fe::kTextY, ReadF32(base, src + fe::kTextY) + dy);
-  }
-  WriteF32(base, dst + fe::kElemOpacity, ReadF32(base, src + fe::kElemOpacity));
-  const uint8_t shown = ReadU8(base, src + pm::kTextVisibility) & 0x4;
-  base[dst + pm::kTextVisibility] = uint8_t((ReadU8(base, dst + pm::kTextVisibility) & ~0x4) | shown);
-}
-
 void SetUpMainMenu(PPCContext& ctx, uint8_t* base, uint32_t page) {
   namespace fe = cod3::addr::fe;
   if (!Valid(page) || ReadU32(base, page) != mm::kVtable) return;
@@ -1686,6 +2026,8 @@ void ShiftUnderRows(uint8_t* base, uint32_t page, const MainMenuRows& rows, floa
   }
 }
 
+#endif  // !COD3_MP: the campaign's pause menu, quit boxes and main menu
+
 // ---------------------------------------------------------------------------
 // Panel dump (cod3_menu_trace): every picture and text of a page's panel,
 // once, with where it is (for laying out added rows and for bug reports).
@@ -1728,6 +2070,116 @@ void DumpPanel(uint8_t* base, uint32_t panel, const char* what) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// [mp-menus] cod3_test_menu_input (tests only): the script's events go to the
+// listener above as the window's would, pointer positions straight into the
+// menus' space. Ticked on the UI thread (UpdateCursor).
+// ---------------------------------------------------------------------------
+struct TestEvent {
+  double at = 0;
+  std::string what, arg;
+  bool done = false;
+};
+struct TestScript {
+  std::vector<TestEvent> events;
+  Clock::time_point start;
+  rex::ui::VirtualKey held = rex::ui::VirtualKey::kNone;  // let go on the next tick
+  bool left_held = false;
+};
+TestScript g_test;  // UI thread
+
+void LoadTestScript() {
+  const std::string script = REXCVAR_GET(cod3_test_menu_input);
+  g_test = TestScript{};
+  g_test.start = Clock::now();
+  size_t at = 0;
+  while (at < script.size()) {
+    size_t end = script.find(';', at);
+    if (end == std::string::npos) end = script.size();
+    const std::string entry = script.substr(at, end - at);
+    at = end + 1;
+    const size_t colon = entry.find(':');
+    if (colon == std::string::npos) continue;
+    TestEvent e;
+    e.at = std::atof(entry.substr(0, colon).c_str());
+    std::string what = entry.substr(colon + 1);
+    const size_t eq = what.find('=');
+    if (eq != std::string::npos) e.arg = what.substr(eq + 1), what.resize(eq);
+    for (char& c : what) c = char(std::tolower(static_cast<unsigned char>(c)));
+    e.what = what;
+    if (g_test.events.size() < 256) g_test.events.push_back(e);
+  }
+  if (!g_test.events.empty())
+    REXLOG_INFO("cod3: menu test input: {} events (cod3_test_menu_input)", g_test.events.size());
+}
+
+void TestKey(rex::ui::Window* window, rex::ui::VirtualKey key, bool down) {
+  rex::ui::KeyEvent e(window, key, 1, !down, false, false, false, false);
+  if (down) {
+    g_listener.OnKeyDown(e);
+    cod3::prompts::NoteKeyboardUse();
+  } else {
+    g_listener.OnKeyUp(e);
+  }
+}
+
+void TickTestScript(rex::ui::Window* window) {
+  using rex::ui::VirtualKey;
+  if (g_test.events.empty()) return;
+  if (g_test.held != VirtualKey::kNone) TestKey(window, g_test.held, false), g_test.held = VirtualKey::kNone;
+  if (g_test.left_held) {
+    std::lock_guard lock(g_input.mutex);
+    g_input.left_down = false;
+    g_test.left_held = false;
+  }
+  const double now = std::chrono::duration<double>(Clock::now() - g_test.start).count();
+  for (TestEvent& e : g_test.events) {
+    if (e.done || e.at > now) continue;
+    e.done = true;
+    float x = 0.0f, y = 0.0f;
+    const bool point = std::sscanf(e.arg.c_str(), "%f,%f", &x, &y) == 2;
+    REXLOG_INFO("cod3: menu test input at {:.1f} s: {}{}{}", now, e.what, e.arg.empty() ? "" : " ", e.arg);
+    if (e.what == "key") {
+      std::string k = e.arg;
+      for (char& c : k) c = char(std::tolower(static_cast<unsigned char>(c)));
+      VirtualKey key = k == "up" ? VirtualKey::kUp : k == "down" ? VirtualKey::kDown
+                       : k == "left" ? VirtualKey::kLeft : k == "right" ? VirtualKey::kRight
+                       : k == "enter" ? VirtualKey::kReturn : k == "escape" ? VirtualKey::kEscape
+                       : k == "backspace" ? VirtualKey::kBack : VirtualKey::kNone;
+      // [claude-9b] Number boxes: key=0 .. key=9, key=period, key=minus.
+      if (k.size() == 1 && std::isdigit(static_cast<unsigned char>(k[0])))
+        key = static_cast<VirtualKey>(uint16_t(VirtualKey::k0) + uint16_t(k[0] - '0'));
+      else if (k == "period") key = VirtualKey::kOemPeriod;
+      else if (k == "minus") key = VirtualKey::kOemMinus;
+      if (key == VirtualKey::kNone) continue;
+      TestKey(window, key, true);
+      g_test.held = key;
+    } else if ((e.what == "move" || e.what == "click") && point) {
+      std::lock_guard lock(g_input.mutex);
+      g_input.over = true;
+      g_input.x = x, g_input.y = y;
+      ++g_input.moves;
+      if (e.what == "click" && cod3::pcmenu::MenuActive()) {
+        Request r;
+        r.ask = Ask::kClick;
+        r.x = x, r.y = y;
+        g_input.left_down = true;
+        g_test.left_held = true;
+        PushLocked(r);
+      }
+      cod3::prompts::NoteKeyboardUse();
+    } else if (e.what == "rclick") {
+      if (cod3::pcmenu::MenuActive()) Push({Ask::kButton, pm::kCodeB});
+      cod3::prompts::NoteKeyboardUse();
+    } else if (e.what == "wheel") {
+      const int n = std::atoi(e.arg.c_str());
+      for (int i = 0; i < std::abs(n) && i < 16 && cod3::pcmenu::MenuActive(); ++i)
+        Push({Ask::kButton, n > 0 ? pm::kCodeUp : pm::kCodeDown});
+      cod3::prompts::NoteKeyboardUse();
+    }
+  }
+}
+
 }  // namespace
 
 namespace cod3::pcmenu {
@@ -1738,6 +2190,7 @@ void Attach(rex::ui::Window* window, size_t z_order, std::function<bool()> overl
   g_listener.window = window;
   g_listener.overlay_open = std::move(overlay_open);
   window->AddInputListener(&g_listener, z_order);
+  LoadTestScript();  // [mp-menus] tests only
 }
 
 void Detach(rex::ui::Window* window) {
@@ -1768,6 +2221,7 @@ bool FromPcInput(uint32_t code) {  // [menus-brightness]
 
 void UpdateCursor(rex::ui::Window* window) {
   if (!window || !REXCVAR_GET(cod3_pc_menus)) return;
+  TickTestScript(window);  // [mp-menus] tests only (cod3_test_menu_input)
   RefreshPictureAspect();
   using V = rex::ui::Window::CursorVisibility;
   const bool overlay = g_listener.overlay_open && g_listener.overlay_open();
@@ -1775,10 +2229,49 @@ void UpdateCursor(rex::ui::Window* window) {
   if (window->GetCursorVisibility() != want) window->SetCursorVisibility(want);
 }
 
+void OnProcessInput(PPCContext& ctx, uint8_t* base, uint32_t system) { OnMenuInput(ctx, base, system); }
+
+uint32_t BeginSystemDraw(uint32_t system) {
+  const uint32_t outer = t_drawing_system;
+  t_drawing_system = system;
+  return outer;
+}
+
+void EndSystemDraw(uint32_t outer) { t_drawing_system = outer; }
+
+void NotePictureDrawn(uint8_t* base, uint32_t quad) {
+  if (t_drawing_system && REXCVAR_GET(cod3_pc_menus)) NoteControl(base, quad);
+}
+
+void QuitToDesktopNow() { RunQuitHandler(); }
+
+uint32_t FindPanelText(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
+  return Valid(panel) ? FindText(ctx, base, panel, name) : 0;
+}
+
+uint32_t FindPanelPicture(PPCContext& ctx, uint8_t* base, uint32_t panel, const char* name) {
+  return Valid(panel) ? FindQuad(ctx, base, panel, name) : 0;
+}
+
+uint32_t CopyPanelElement(PPCContext& ctx, uint8_t* base, uint32_t source, bool picture) {
+  return CopyElement(ctx, base, source, picture);
+}
+
+void FollowPanelElement(uint8_t* base, uint32_t source, uint32_t copy, bool picture, float dy) {
+  FollowElement(base, source, copy, picture, dy);
+}
+
+void SetItemLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char* key) {
+  if (Valid(entry)) SetEntryLabelKey(ctx, base, entry, key);
+}
+
+void DumpMenuPanel(uint8_t* base, uint32_t panel, const char* what) { DumpPanel(base, panel, what); }
+
 }  // namespace cod3::pcmenu
 
-// FEMenuSystem::ProcessInput (vfunc_12): the game reads the pad first, then
-// the mouse and keyboard are applied to the page now on screen.
+// FEMenuSystem::ProcessInput (vfunc_12; cod3mp: FEMenuSystem__ProcessInput,
+// slot 17, the same code): the game reads the pad first, then the mouse and
+// keyboard are applied to the page now on screen.
 REX_EXTERN(__imp__FEMenuSystem__vfunc_12);
 REX_HOOK_RAW(FEMenuSystem__vfunc_12) {
   const uint32_t system = ctx.r3.u32;
@@ -1795,6 +2288,9 @@ REX_HOOK_RAW(FEMenuSystem__vfunc_17) {
                 ReadU32(base, ctx.r3.u32));
   __imp__FEMenuSystem__vfunc_17(ctx, base);
 }
+
+#if !defined(COD3_MP)
+// The campaign's own pages (multiplayer's: game/mp/menus_mp.cpp).
 
 // PauseMenu::Init (this, panel): builds the seven items.
 REX_EXTERN(__imp__sub_824E6640);
@@ -1951,7 +2447,11 @@ REX_HOOK_RAW(sub_824BFA70) {
     if (Valid(e) && (ReadU8(base, e + pm::kTextVisibility) & 0x4)) VCall(ctx, base, e, cod3::addr::fe::kElemDraw);
 }
 
+#endif  // !COD3_MP
+
 // The menu systems' draws: footer lines drawn inside belong to that system.
+// (cod3mp: slot 19 of each; its after-action report system's draw is hooked
+// in game/mp/menus_mp.cpp.)
 REX_EXTERN(__imp__FrontEndMenuSystem__vfunc_14);
 REX_HOOK_RAW(FrontEndMenuSystem__vfunc_14) {
   const uint32_t outer = t_drawing_system;
@@ -1985,6 +2485,7 @@ REX_HOOK_RAW(PanelQuad__vfunc_1) {
   if (t_drawing_system && REXCVAR_GET(cod3_pc_menus)) NoteControl(base, quad);
 }
 
+#if !defined(COD3_MP)
 // [menus-brightness] Options > SCREEN's OnLeft / OnRight (this): the page
 // only flashes its arrows here and moves the brightness in its draw from the
 // pad's D-pad and stick, which the mouse and keys don't reach. A press from
@@ -2004,6 +2505,8 @@ REX_HOOK_RAW(sub_824BC248) {
   __imp__sub_824BC248(ctx, base);
 }
 
+#endif  // !COD3_MP
+
 // Dialog AddButton(page, key, callback): no "Select Storage Device" button.
 REX_EXTERN(__imp__sub_824C4428);
 REX_HOOK_RAW(sub_824C4428) {
@@ -2016,6 +2519,8 @@ REX_HOOK_RAW(sub_824C4428) {
   __imp__sub_824C4428(ctx, base);
 }
 
+#if !defined(COD3_MP)
+// (cod3mp's Open takes the system: game/mp/menus_mp.cpp.)
 // Dialog Open(page, 1, 0): a box that preselected its storage button (gone
 // now) highlights its last button instead (the drawn highlight too). A box
 // that isn't a QUIT TO DESKTOP box clears that mark.
@@ -2036,4 +2541,4 @@ REX_HOOK_RAW(sub_824CDB28) {
   }
   __imp__sub_824CDB28(ctx, base);
 }
-
+#endif  // !COD3_MP

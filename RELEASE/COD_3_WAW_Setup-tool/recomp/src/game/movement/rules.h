@@ -1,5 +1,5 @@
 // cod3 - the movement rules: CoD3 movement, sprint, and the CoD4 style with
-// its four parts (docs/MOVEMENT.md explains each, with every value's source).
+// its three parts (docs/MOVEMENT.md explains each, with every value's source).
 //
 // This file is plain logic: no game address, no port setting, no guest
 // memory. The hooks (hooks_sp.cpp, and cod3mp's own) read the game through
@@ -30,8 +30,6 @@ inline constexpr float kSprintStrafeSpeedScale = 0.667f; // player_sprintStrafeS
 inline constexpr int kSprintForwardMinimum = 105;        // player_sprintForwardMinimum (of 127)
 inline constexpr float kStrafeSpeedScale = 0.8f;         // player_strafeSpeedScale
 inline constexpr float kBackSpeedScale = 0.7f;           // player_backSpeedScale
-inline constexpr float kMantleCheckRange = 20.0f;        // mantle_check_range
-inline constexpr float kMantleCheckAngle = 60.0f;        // mantle_check_angle (degrees)
 inline constexpr float kBounceMinNormalZ = 0.3f;         // steeper than this: a wall (no bounce)
 // CoD4 PC moves the player once per client frame, in whole milliseconds, and
 // rounds the velocity to whole units after every step (Quake III's
@@ -61,11 +59,10 @@ inline constexpr float kWalkableNormalZ = 0.7f;      // the game's MIN_WALK_NORM
 inline constexpr float kJumpHeight = 39.0f;          // the game's jump step stops 39 above the jump's start
 
 // --- the rules for one player ------------------------------------------------
-// The four parts of the CoD4 style.
+// The three parts of the CoD4 style.
 struct Parts {
   bool sprint = true;  // Sprint like CoD4: 4 s, aim/fire ends it, only forward
   bool speeds = true;  // Speeds and feel: strafe 0.8, back 0.7, sprint 1.5, 125 fps steps
-  bool mantle = true;  // Mantling: climb onto ledges up to about chest height
   bool jumps = true;   // PC jump tricks: bounces off slopes (the air strafing is in `speeds`)
   bool operator==(const Parts&) const = default;
 };
@@ -94,7 +91,6 @@ struct MoveRules {
   // CoD4 PC's movement steps: 8 ms steps, the velocity rounded after each
   // (part of Speeds and feel: it is CoD4's air strafing and jump height).
   bool Cod4Steps() const { return cod4 && parts.speeds; }
-  bool Mantle() const { return cod4 && parts.mantle; }
   bool Cod4Jumps() const { return cod4 && parts.jumps; }
   // Nothing differs from the console's movement: the hooks call the game's
   // own code unchanged.
@@ -170,7 +166,9 @@ class SprintRestart {
 };
 
 // --- the mode-2 preference on the wire (userinfo key "cod3mv") --------------------
-// "3" = CoD3, "4" + four 0/1 digits (sprint, speeds, mantle, jumps) = CoD4.
+// "3" = CoD3, "4" + four 0/1 digits (sprint, speeds, unused, jumps) = CoD4. The
+// third digit belonged to a part that was taken out (2026-10-20): it is sent
+// as 0 and ignored, so ports before and after read each other's preference.
 std::string EncodePreference(const Preference& pref);
 // Strict: exactly those forms; anything else is refused (false).
 bool DecodePreference(std::string_view text, Preference* out);
@@ -246,24 +244,6 @@ struct BounceCase {
   float normal_z = 0.0f;       // the slope's normal
 };
 bool BounceApplies(const BounceCase& c);
-
-// --- mantling ------------------------------------------------------------------------
-namespace mantle {
-inline constexpr float kMinHeight = 36.0f;  // port: below this CoD3's jump step already climbs
-inline constexpr float kMaxHeight = 60.0f;  // port: "about chest height" (the standing box is 70)
-inline constexpr float kReach = 16.0f;      // port: how far past the wall's face the top must be
-inline constexpr int kRiseMs = 350;         // port: up to the top
-inline constexpr int kForwardMs = 200;      // port: onto it
-inline constexpr float kWallMaxNormalZ = 0.3f;  // a wall, not a slope
-// The wall hit by the forward check is one to climb: nearly vertical and
-// facing the player within mantle_check_angle. `forward` is the view's
-// horizontal direction (unit), `normal` the wall's.
-bool FacingWall(const float forward[2], const float normal[3]);
-bool HeightOk(float height);
-// Where the climb is at `elapsed_ms` from `start` to `top` (the same x, y as
-// start, raised) and then to `end`: fills `out`, returns false once done.
-bool Position(const float start[3], const float top_z, const float end[3], int elapsed_ms, float out[3]);
-}  // namespace mantle
 
 // ------------------------------------------------------------------------------------
 template <typename Fn>

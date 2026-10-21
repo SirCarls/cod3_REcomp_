@@ -52,11 +52,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
+#include <set>
 #include <string>
 #include <string_view>
 
 #include <imgui.h>
+#include <imgui_internal.h>  // ImGuiInputTextState: a box's text changed while it is active
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -71,6 +74,7 @@
 #include "game/decomp_trace.h"
 #include "game/guest.h"
 #include "game/keybinds/model.h"
+#include "game/keybinds/sdk_spelling.h"
 #include "game/program.h"
 #include "game/screenshot.h"
 #include "ui/theme.h"
@@ -89,6 +93,9 @@ REXCVAR_DEFINE_BOOL(cod3_aim_toggle_kbm_p1, false, "cod3/Binds",
 REXCVAR_DEFINE_BOOL(cod3_debug_binds, false, "cod3",
                     "Log each key bind action as it reaches the game, and the binoculars, hold breath and "
                     "sprint state (with a screenshot of the game's picture when the binoculars are up)");
+REXCVAR_DEFINE_STRING(cod3_test_vehicle_hold, "", "cod3",
+                      "Test switch, from the command line only: Vehicle actions (tank_gun, veh_gas ...) held as if "
+                      "their keys were down while you drive; empty = none");
 REXCVAR_DEFINE_INT32(cod3_binds_version, 0, "cod3",
                      "Which one-time changes of the key binds have run (set by the game)");
 REXCVAR_DEFINE_INT32(cod3mp_binds_version, 0, "cod3",
@@ -111,7 +118,7 @@ namespace kb = addr::keybinds;
 
 constexpr int kKeyAux1 = 239;          // AUX1, AUX2: key ids no controller sends
 constexpr int kPadX = 211;             // the controller's X (the frag throw-back quirk)
-constexpr int32_t kBindsVersion = 2;   // cod3_binds_version after the moves from keybind_*
+constexpr int32_t kBindsVersion = 3;   // cod3_binds_version after the moves from keybind_*
 constexpr uint32_t kTypePlain = 1;     // cmd_function_t +8
 constexpr uint32_t kTypeButton = 2;
 
@@ -150,9 +157,22 @@ uint32_t LocalClient(uint8_t* base) {
   return cl < 4 ? cl : 0;
 }
 
-// The local client the keyboard and mouse play: the campaign's one player;
-// player 1 in cod3mp (its pad poll runs once per local client).
-uint32_t KbmClient(uint8_t* base) { return cod3::kMultiplayer ? 0 : LocalClient(base); }
+// The local client the keyboard and mouse play: the campaign's one player.
+// [mp-menus] cod3mp (its pad poll runs once per local client): the player on
+// controller 0, which the keyboard and mouse share (the SDK feeds them to
+// guest user 0 with the first controller), found the way the game finds a
+// controller's player (0x82521BD0: the first local client in use, state
+// != 0, with that controller); the others keep their own controllers.
+// Player 1 when none (the front end; one player on another controller).
+uint32_t KbmClient(uint8_t* base) {
+  if (!cod3::kMultiplayer || !kb::kLocalClientState) return cod3::kMultiplayer ? 0 : LocalClient(base);
+  for (uint32_t cl = 0; cl < 4; ++cl) {
+    const uint32_t client = kb::kLocalClients + cl * kb::kLocalClientStride;
+    if (ReadU32(base, client + kb::kLocalClientState) != 0 && ReadU32(base, client + kb::kLocalClientPad) == 0)
+      return cl;
+  }
+  return 0;
+}
 
 // The game's binding of a controller key ("+binoculars"), "" when none.
 std::string Binding(uint8_t* base, uint32_t cl, int pad_key) {
@@ -177,6 +197,10 @@ constexpr GameWord kGameWords[] = {
     {"SPRINT", "+sprint"},         {"STANCE_UP", "+gostand"},
     {"STANCE_DOWN", "+stance"},    {"WEAPON_SWAP", "weapnext"},
     {"LEAN_LEFT", "+leanleftswitchnext"}, {"LEAN_RIGHT", "+leanrightswitchnext"},
+    // The vehicles' alias words: the Vehicle actions (their command is their id).
+    {"COAXIAL", "tank_gun"},       {"ALIGNTURRET", "tank_turret"},
+    {"GAS", "veh_gas"},            {"REVERSE", "veh_reverse"},
+    {"HANDBRAKE", "veh_handbrake"},
 };
 
 // --- the keys (any thread) ---------------------------------------------------------------
@@ -184,8 +208,10 @@ std::mutex g_mutex;          // g_set, g_last_text
 KbmSet g_set = Defaults();
 std::string g_last_text = "\x01";  // the cvar text g_set was read from
 std::atomic<uint32_t> g_generation{1};
-// KeyCode -> (action + 1) | slot << 8, 0 = no action. Read by the listener.
+// KeyCode -> (action + 1) | slot << 8, 0 = no action. Read by the listener:
+// the on-foot actions' keys, and the Vehicle actions' (model.h).
 std::array<std::atomic<uint16_t>, kKeyCodeCount> g_lookup{};
+std::array<std::atomic<uint16_t>, kKeyCodeCount> g_vehicle_lookup{};
 std::once_flag g_started;
 // The game has the action's command (set by the game thread's lookup): a key
 // of an action it hasn't stays the keyboard row's.
@@ -198,6 +224,126 @@ std::atomic<bool> g_in_play{false};
 // held are pressed again when play goes on (Listener::Update).
 std::atomic<uint32_t> g_release_gen{0};
 
+// --- vehicles (any thread) -----------------------------------------------------------------
+// The jeep and the tank read their controls themselves, every server frame
+// while the player drives: their button aliases (ButtonAlias_Value 0x82467710,
+// hooked at the end of this file: the tank's machine gun FireCoax and its
+// AlignTurret, the jeep's Gas, Reverse and HandBrake, which the controller
+// layouts' "buttonalias" lines put on controller buttons) and the view switch
+// (the right stick click's press, read in the camera select 0x82447D48). A key
+// that calls a command never reaches those reads (reported 2026-10-20: the
+// tank's machine gun in the Polish missions didn't fire with the keyboard), so
+// the Vehicle actions (model.h) answer them where the game reads them; no
+// controller button is pressed.
+//
+// While a vehicle reads an alias, the key of the Vehicle action for that alias
+// is that action's (KeyAction), and Vehicle: change view's key while it reads
+// any; otherwise the same keys keep their on-foot actions. Each alias of each
+// context counts on its own (a tank that reads only AlignTurret and FireCoax
+// leaves W and S to the movement rows). A read counts for kVehiclePolls pad
+// polls in play and kVehicleMs, whichever is longer: menus and the pause stop
+// the poll count, so a key pressed right after them still counts for the
+// vehicle, and the time covers high frame rates. Play coming back after more
+// than 3 s (a level load, a mission's end) clears the poll count.
+constexpr int kVehicleContexts = 2;  // the game's alias contexts: 0 Vehicle (the jeep), 1 VehicleTank
+constexpr int kAliasIds = 8;         // alias ids answered (0 Gas ... 4 FireCoax; cod3mp reads a 5 too)
+constexpr int kVehiclePolls = 15;
+constexpr int64_t kVehicleMs = 250;
+// Per context * kAliasIds + alias: the last read's countdown and time.
+std::array<std::atomic<int>, kVehicleContexts * kAliasIds> g_alias_polls{};
+std::array<std::atomic<int64_t>, kVehicleContexts * kAliasIds> g_alias_until_ms{};
+// The controller the last read of each context asked for (its alias table row).
+std::array<std::atomic<uint32_t>, kVehicleContexts> g_vehicle_pad{};
+// The aliases the Vehicle actions hold now, bit = alias id (the game thread
+// sets it at every pad poll; ButtonAlias_Value's hook reads it).
+std::atomic<uint32_t> g_alias_held{0};
+// cod3_test_vehicle_hold's aliases (testing: held as if their keys were down).
+std::atomic<uint32_t> g_test_hold{0};
+// Vehicle: change view was pressed at this pad poll (0 = no press waiting).
+std::atomic<uint32_t> g_view_press_poll{0};
+std::array<uint32_t, kVehicleContexts> g_vehicle_was{};  // game thread: ReadingMask at the last pad poll
+int64_t g_play_stopped_ms = 0;                            // game thread: when the game last stopped taking presses
+
+const char* VehicleName(int context) { return context == 1 ? "tank" : "vehicle"; }
+
+int64_t SteadyMs() {
+  using namespace std::chrono;
+  return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
+
+// A vehicle of `context` read `alias` lately.
+bool AliasReading(int context, int alias) {
+  if (context < 0 || context >= kVehicleContexts || alias < 0 || alias >= kAliasIds) return false;
+  const size_t i = size_t(context * kAliasIds + alias);
+  return g_alias_polls[i].load(std::memory_order_relaxed) > 0 ||
+         SteadyMs() < g_alias_until_ms[i].load(std::memory_order_relaxed);
+}
+
+// The aliases a vehicle of `context` read lately (bit = alias id).
+uint32_t ReadingMask(int context) {
+  uint32_t mask = 0;
+  for (int a = 0; a < kAliasIds; ++a)
+    if (AliasReading(context, a)) mask |= 1u << a;
+  return mask;
+}
+
+// A Vehicle action counts now: a vehicle reads its alias (Vehicle: change
+// view: a vehicle reads any).
+bool VehicleActionApplies(Action action) {
+  const ActionDef& def = Def(action);
+  if (def.group != Group::kVehicle) return false;
+  for (int c = 0; c < kVehicleContexts; ++c)
+    if (def.alias >= 0 ? AliasReading(c, def.alias) : ReadingMask(c) != 0) return true;
+  return false;
+}
+
+// The action a key down goes to, as (action + 1) | slot << 8 (0 = none): its
+// Vehicle action while that counts, else its on-foot action.
+uint16_t KeyAction(KeyCode code) {
+  if (code >= kKeyCodeCount) return 0;
+  const uint16_t vehicle = g_vehicle_lookup[code].load(std::memory_order_relaxed);
+  if (vehicle && VehicleActionApplies(static_cast<Action>((vehicle & 0xFF) - 1))) return vehicle;
+  return g_lookup[code].load(std::memory_order_relaxed);
+}
+
+// The Vehicle action that answers `alias`; Action::kCount when none.
+Action VehicleActionForAlias(int alias) {
+  for (int a = 0; a < kActionCount; ++a)
+    if (Def(static_cast<Action>(a)).delivery == Delivery::kAlias && Def(static_cast<Action>(a)).alias == alias)
+      return static_cast<Action>(a);
+  return Action::kCount;
+}
+
+// The alias bits of the actions named in `text` ("tank_gun,veh_gas").
+uint32_t AliasBits(std::string_view text) {
+  uint32_t bits = 0;
+  size_t start = 0;
+  while (start <= text.size()) {
+    size_t end = text.find(',', start);
+    if (end == std::string_view::npos) end = text.size();
+    const Action a = ActionById(text.substr(start, end - start));
+    if (a != Action::kCount && Def(a).delivery == Delivery::kAlias && Def(a).alias >= 0 && Def(a).alias < kAliasIds)
+      bits |= 1u << Def(a).alias;
+    start = end + 1;
+  }
+  return bits;
+}
+
+// cod3_test_vehicle_hold, from the command line only (left in cod3.toml it
+// would hold a vehicle's button in every game).
+uint32_t TestHoldBits() {
+  const std::string text = rex::cvar::GetFlagByName("cod3_test_vehicle_hold");
+  if (text.empty()) return 0;
+  if (rex::cvar::GetFlagSource("cod3_test_vehicle_hold") != rex::cvar::Source::kCommandLine) {
+    REXLOG_WARN("cod3: cod3_test_vehicle_hold is a command-line test switch; not used");
+    return 0;
+  }
+  const uint32_t bits = AliasBits(text);
+  REXLOG_WARN("cod3: cod3_test_vehicle_hold: {} held in vehicles as if their keys were down (a test){}", text,
+              bits ? "" : "; none of them is a vehicle's alias action (tank_gun, tank_turret, veh_gas ...)");
+  return bits;
+}
+
 void Load(std::string_view text) {
   std::vector<std::string> notes;
   const KbmSet set = Parse(text, &notes);
@@ -207,10 +353,12 @@ void Load(std::string_view text) {
     g_last_text = std::string(text);
     g_set = set;
     for (auto& v : g_lookup) v.store(0, std::memory_order_relaxed);
+    for (auto& v : g_vehicle_lookup) v.store(0, std::memory_order_relaxed);
     for (int a = 0; a < kActionCount; ++a)
       for (int s = 0; s < kSlots; ++s)
         if (const KeyCode k = set.key[a][s]; k != kNoKey && k < kKeyCodeCount)
-          g_lookup[k].store(static_cast<uint16_t>((a + 1) | (s << 8)), std::memory_order_relaxed);
+          (IsVehicleAction(static_cast<Action>(a)) ? g_vehicle_lookup : g_lookup)[k].store(
+              static_cast<uint16_t>((a + 1) | (s << 8)), std::memory_order_relaxed);
   }
   for (const auto& n : notes) REXLOG_WARN("cod3: key binds: {}", n);
   g_generation.fetch_add(1, std::memory_order_release);
@@ -229,6 +377,7 @@ void EnsureStarted() {
     rex::cvar::RegisterChangeCallback(kSettingName,
                                       [](std::string_view, std::string_view value) { Load(value); });
     Load(rex::cvar::GetFlagByName(kSettingName));
+    g_test_hold.store(TestHoldBits(), std::memory_order_relaxed);
   });
 }
 
@@ -365,6 +514,11 @@ bool Continuous(Action action) {
     case Action::kProneHold:
     case Action::kBinoculars:
     case Action::kScores:
+    case Action::kTankGun:
+    case Action::kTankTurret:
+    case Action::kVehGas:
+    case Action::kVehReverse:
+    case Action::kVehHandbrake:
       return true;
     case Action::kAim:
       return !REXCVAR_GET(cod3_aim_toggle_kbm_p1);
@@ -397,7 +551,7 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   void OnMouseWheel(rex::ui::MouseEvent& e) override {
     if (e.scroll_y() == 0 || !Acting()) return;
     const KeyCode code = e.scroll_y() > 0 ? kWheelUp : kWheelDown;
-    const uint16_t v = g_lookup[code].load(std::memory_order_relaxed);
+    const uint16_t v = KeyAction(code);
     if (!v || !g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return;
     // One tap per wheel event (a slot takes one press per poll, as a key does).
     Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kTap, code});
@@ -463,7 +617,7 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
 
   // True when the key is an action's (it is taken: nothing below sees it).
   bool Down(KeyCode code, bool repeat) {
-    const uint16_t v = g_lookup[code].load(std::memory_order_relaxed);
+    const uint16_t v = KeyAction(code);
     if (pressed_[code]) return true;  // held since play: still the action's (repeats too)
     if (!v || !Acting()) return false;
     if (!g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return false;
@@ -550,6 +704,10 @@ bool LookUp(uint8_t* base, int a, std::string* why) {
     case Delivery::kText:
       g_handlers[a] = {};
       return true;  // cgame commands: console text, nothing to look up
+    case Delivery::kAlias:
+    case Delivery::kView:
+      g_handlers[a] = {};
+      return true;  // the vehicle's own reads (the hooks at the end)
     case Delivery::kOnce:
       h.down = FindCommand(base, def.command, &type);
       if (!InImage(h.down) || type != kTypePlain)
@@ -664,16 +822,162 @@ bool InteractionRunning(uint8_t* base, uint32_t cl) {
   return Valid(it) && ReadU32(base, it + addr::interact::kState) != 0;
 }
 
+// Why keys press controller buttons now instead of calling the game's
+// commands (an interaction runs: a mounted gun, a battle action); nullptr
+// when they call the commands. Vehicles never make them do that: the Vehicle
+// actions answer their reads.
+const char* PadModeReason(uint8_t* base, uint32_t cl) {
+  if (InteractionRunning(base, cl)) return "an interaction runs";
+  return nullptr;
+}
+
+// ButtonAlias_Value's tables (*kb::kAliasContexts): per context int
+// button[4 pads][17] (alias id or -1) at +pad*68, then the sticks.
+constexpr uint32_t kAliasContextSize = 328;
+constexpr uint32_t kAliasPadStride = 68;
+constexpr const char* kAliasNames[] = {"Gas", "Reverse", "HandBrake", "AlignTurret", "FireCoax"};
+// The controller input of each alias table entry (the order of 0x820E7E10,
+// which reads an entry's value from the game's pad cache).
+constexpr int kAliasEntryKeys[16] = {156, 155, 157, 154, 211, 212, 213, 214,
+                                     215, 216, 217, 218, 219, 220, 27,  9};
+
+std::string AliasName(int alias) {
+  return alias >= 0 && alias < 5 ? kAliasNames[alias] : "alias " + std::to_string(alias);
+}
+
+// ButtonAlias_Value's hook (game thread): `table` is the alias context it
+// reads (*kb::kAliasContexts + context * 328), `pad` the controller (the
+// campaign: the local client's controller or the input's active pad; cod3mp:
+// the input's active pad, input + 24), `alias` the alias id. Notes the read
+// and returns its context; -1 for one that isn't a vehicle's (2 is OnFoot)
+// or, in cod3mp, not the keyboard player's controller.
+int NoteVehicleRead(uint8_t* base, uint32_t table, uint32_t pad, int32_t alias) {
+  const uint32_t contexts = ReadU32(base, kb::kAliasContexts);
+  if (!Valid(contexts) || table < contexts || (table - contexts) % kAliasContextSize) return -1;
+  const uint32_t context = (table - contexts) / kAliasContextSize;
+  if (context >= uint32_t(kVehicleContexts)) return -1;
+  if constexpr (cod3::kMultiplayer) {
+    // Only the keyboard player's vehicle (split-screen players have controllers of their own).
+    const uint32_t client = kb::kLocalClients + KbmClient(base) * kb::kLocalClientStride;
+    if (pad != ReadU32(base, client + kb::kLocalClientPad)) return -1;
+  }
+  g_vehicle_pad[context].store(pad, std::memory_order_relaxed);
+  // Only the aliases a Vehicle action answers count as "the vehicle reads its
+  // controls" (cod3mp reads a 5 too, which nothing answers).
+  if (alias >= 0 && alias < kAliasIds && VehicleActionForAlias(alias) != Action::kCount) {
+    const size_t i = size_t(context) * kAliasIds + size_t(alias);
+    g_alias_polls[i].store(kVehiclePolls, std::memory_order_relaxed);
+    g_alias_until_ms[i].store(SteadyMs() + kVehicleMs, std::memory_order_relaxed);
+  }
+  return int(context);
+}
+
+// After ButtonAlias_Value: `value` is what the controller gave; the Vehicle
+// action held for the alias makes it 255 (every threshold the vehicles use:
+// Gas > 150 is full, Reverse != 0, HandBrake, AlignTurret and FireCoax > 50).
+void AnswerAlias(int context, int32_t alias, uint64_t* value) {
+  if (context < 0 || context >= kVehicleContexts || alias < 0 || alias >= kAliasIds) return;
+  const uint32_t bit = 1u << alias;
+  const bool held = (g_alias_held.load(std::memory_order_relaxed) & bit) != 0;
+  const uint64_t controller = *value;
+  if (held) *value = 255;
+  static uint32_t s_logged = 0;  // game thread; bit context * kAliasIds + alias
+  const uint32_t log_bit = 1u << (context * kAliasIds + alias);
+  if (Debug() && held != ((s_logged & log_bit) != 0)) {
+    s_logged ^= log_bit;
+    REXLOG_INFO("cod3: binds: the {}'s {} read: {} (the controller's {})", VehicleName(context), AliasName(alias),
+                held ? "held by its key" : "let go", controller);
+  }
+}
+
+// The Vehicle action whose alias a vehicle reading now maps the controller
+// input `pad_key` to (its alias table row for the controller it reads), or
+// Action::kCount. Game thread.
+Action VehicleActionForPadKey(uint8_t* base, int pad_key) {
+  int entry = -1;
+  for (int e = 0; e < 16; ++e)
+    if (kAliasEntryKeys[e] == pad_key) entry = e;
+  if (entry < 0) return Action::kCount;
+  const uint32_t contexts = ReadU32(base, kb::kAliasContexts);
+  if (!Valid(contexts)) return Action::kCount;
+  for (int c = 0; c < kVehicleContexts; ++c) {
+    const uint32_t pad = g_vehicle_pad[c].load(std::memory_order_relaxed);
+    if (pad >= 4) continue;
+    const int32_t alias = ReadS32(base, contexts + uint32_t(c) * kAliasContextSize + pad * kAliasPadStride +
+                                            4 * uint32_t(entry));
+    if (!AliasReading(c, alias)) continue;  // a mapping the vehicle doesn't read (now)
+    if (const Action a = VehicleActionForAlias(alias); a != Action::kCount) return a;
+  }
+  return Action::kCount;
+}
+
+// At every pad poll: a vehicle starts or stops reading its controls (the log
+// says which keys count then).
+void NoteVehicleChanges() {
+  for (int c = 0; c < kVehicleContexts; ++c) {
+    const uint32_t mask = ReadingMask(c);
+    const uint32_t was = g_vehicle_was[c];
+    g_vehicle_was[c] = mask;
+    if (mask == was) continue;
+    if (!mask) {
+      REXLOG_INFO("cod3: binds: the {} doesn't read its controls anymore: its keys have their on-foot actions again",
+                  VehicleName(c));
+      continue;
+    }
+    if (was && (mask & ~was) == 0) continue;  // one alias less for now: nothing to say
+    std::string read, keys;
+    const KbmSet set = CurrentSet();
+    for (int a = 0; a < kAliasIds; ++a)
+      if (mask & (1u << a)) read += (read.empty() ? "" : ", ") + AliasName(a);
+    for (int a = 0; a < kActionCount; ++a) {
+      const ActionDef& def = Def(static_cast<Action>(a));
+      if (def.group != Group::kVehicle || (def.alias >= 0 && !(mask & (1u << def.alias)))) continue;
+      const std::string k = KeysText(set, static_cast<Action>(a));
+      keys += std::string(keys.empty() ? "" : ", ") + def.label + " " + (k.empty() ? std::string("-") : k);
+    }
+    if (was) {
+      if (Debug()) REXLOG_INFO("cod3: binds: the {} reads {} too: its keys now {}", VehicleName(c), read, keys);
+      continue;
+    }
+    REXLOG_INFO("cod3: binds: the {} reads its controls ({}): its keys count now ({}); on foot the same keys keep "
+                "their own actions{}",
+                VehicleName(c), read, keys,
+                REXCVAR_GET(cod3_binds_actions) ? "" : " (keys call no actions now: cod3_binds_actions is off)");
+  }
+}
+
+// Cod3VehicleViewPressed (the hooks at the end): one Vehicle: change view press
+// at the game's read of the right stick click's press. `r29` is cod3mp's
+// camera select's player (its local client at +480).
+bool TakeVehicleViewPress(uint8_t* base, uint32_t r29) {
+  const uint32_t at = g_view_press_poll.load(std::memory_order_relaxed);
+  if (!at) return false;
+  if (g_poll - at > 2) {  // nothing read it (the view can't switch now)
+    g_view_press_poll.store(0, std::memory_order_relaxed);
+    return false;
+  }
+  if constexpr (cod3::kMultiplayer)
+    if (!Valid(r29) || ReadU32(base, r29 + 480) != KbmClient(base)) return false;
+  g_view_press_poll.store(0, std::memory_order_relaxed);
+  if (Debug()) REXLOG_INFO("cod3: binds: veh_view: the vehicle's view switch read the press");
+  return true;
+}
+
 // The controller input the game binds to the action (its command first,
-// then an equivalent), or nullptr.
-const PadInput* PadInputFor(uint8_t* base, uint32_t cl, Action action) {
+// then an equivalent), or nullptr. `skip_vehicle`: never a button the vehicle
+// being driven reads as one of its own controls (VehicleActionForPadKey).
+const PadInput* PadInputFor(uint8_t* base, uint32_t cl, Action action, bool skip_vehicle = false) {
   const ActionDef& def = Def(action);
+  auto usable = [&](const PadInput& p, const char* command) {
+    return SameText(Binding(base, cl, p.key), command) &&
+           (!skip_vehicle || VehicleActionForPadKey(base, p.key) == Action::kCount);
+  };
   for (const PadInput& p : kPadInputs)
-    if (SameText(Binding(base, cl, p.key), def.command)) return &p;
+    if (usable(p, def.command)) return &p;
   for (const char* eq : def.equivalents) {
     if (!eq) break;
     for (const PadInput& p : kPadInputs)
-      if (SameText(Binding(base, cl, p.key), eq)) return &p;
+      if (usable(p, eq)) return &p;
   }
   return nullptr;
 }
@@ -715,14 +1019,25 @@ void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) 
   if (slot.mode != Mode::kNone) return;
   const Action action = static_cast<Action>(a);
   if (g_missing[a]) return;  // the game doesn't have it (RetryMissing)
-  if (InteractionRunning(base, cl)) {
+  // A Vehicle action is answered at the vehicle's own read, inside an
+  // interaction too (never a controller button).
+  if (const char* pad_mode = IsVehicleAction(action) ? nullptr : PadModeReason(base, cl)) {
     // The interaction decides, as for a controller: press the button the
     // game binds to this action.
-    if (const PadInput* p = PadInputFor(base, cl, action)) {
+    // A button the vehicle being driven reads as one of its own controls (the
+    // jeep's RT is its gas in layout A) is the Vehicle action's key's only:
+    // never pressed for an on-foot action.
+    if (const PadInput* p = PadInputFor(base, cl, action, /*skip_vehicle=*/true)) {
       slot = {Mode::kPad, p->button, p->trigger, g_poll, tap, false};
-      if (Debug()) REXLOG_INFO("cod3: binds: {} down -> the controller's {} (an interaction runs)", Def(action).id, p->name);
+      if (Debug()) REXLOG_INFO("cod3: binds: {} down -> the controller's {} ({})", Def(action).id, p->name, pad_mode);
     } else if (Debug()) {
-      REXLOG_INFO("cod3: binds: {} not delivered (an interaction runs, no controller button has it)", Def(action).id);
+      const PadInput* own = PadInputFor(base, cl, action);
+      const Action owner = own ? VehicleActionForPadKey(base, own->key) : Action::kCount;
+      if (owner != Action::kCount)
+        REXLOG_INFO("cod3: binds: {} not delivered (the controller's {} is the vehicle's {}: {})", Def(action).id,
+                    own->name, Def(owner).label, KeysText(CurrentSet(), owner));
+      else
+        REXLOG_INFO("cod3: binds: {} not delivered ({}, no controller button has it)", Def(action).id, pad_mode);
     }
     return;
   }
@@ -787,7 +1102,16 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
   if (in_play != g_was_in_play && Debug())
     REXLOG_INFO("cod3: binds: keys {} ({})", in_play ? "call the game's actions" : "press the controller rows",
                 in_play ? "in play" : why);
+  if (!in_play && g_was_in_play) g_play_stopped_ms = SteadyMs();
+  const bool long_stop = in_play && !g_was_in_play && SteadyMs() - g_play_stopped_ms > 3000;
   g_was_in_play = in_play;
+  // A vehicle's last read counts down in play only (NoteVehicleRead); a level
+  // load or a long pause clears it (the vehicle reads again first).
+  for (auto& polls : g_alias_polls) {
+    if (long_stop) polls.store(0, std::memory_order_relaxed);
+    if (in_play && polls.load(std::memory_order_relaxed) > 0) polls.fetch_sub(1, std::memory_order_relaxed);
+  }
+  NoteVehicleChanges();
   // Taps from the last poll, and controller buttons that were seen once.
   for (int a = 0; a < kActionCount; ++a)
     for (int s = 0; s < kSlots; ++s) {
@@ -795,7 +1119,7 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
       if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll) ReleaseDirect(a, s);
       if (slot.mode == Mode::kPad && slot.release_pending && slot.since_poll < g_poll) slot = {};
     }
-  // A key held when an interaction starts or ends goes on as a held
+  // A key held when an interaction (or a vehicle's reading) starts or ends goes on as a held
   // controller button would: it stays what it was (fire held onto a turret
   // keeps firing; X held off a mounted gun does nothing new) until let go.
   Event e;
@@ -821,6 +1145,15 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
   g_inject_user.store(ActivePad(base, cl), std::memory_order_relaxed);
   g_inject_triggers.store(triggers, std::memory_order_relaxed);
   g_inject_buttons.store(buttons, std::memory_order_release);
+  // The aliases the Vehicle actions hold, for ButtonAlias_Value's hook.
+  uint32_t held = in_play ? g_test_hold.load(std::memory_order_relaxed) : 0;
+  for (int a = 0; a < kActionCount; ++a) {
+    const ActionDef& def = Def(static_cast<Action>(a));
+    if (def.delivery != Delivery::kAlias || def.alias < 0 || def.alias >= kAliasIds) continue;
+    for (const Slot& slot : g_slots[a])
+      if (slot.mode == Mode::kDirect) held |= 1u << def.alias;
+  }
+  g_alias_held.store(held, std::memory_order_relaxed);
 }
 
 // cod3mp keeps the buttons of each local client apart and copies the client's
@@ -899,6 +1232,13 @@ void Deliver(PPCContext& ctx, uint8_t* base, uint32_t now, const Pending& d) {
       break;
     case Delivery::kOnce:
       if (d.down) Call(ctx, base).Invoke(h.down);
+      break;
+    case Delivery::kAlias:
+      how = ", the vehicle reads it";
+      break;
+    case Delivery::kView:
+      if (d.down) g_view_press_poll.store(g_poll ? g_poll : 1, std::memory_order_relaxed);
+      how = ", the vehicle reads it";
       break;
     case Delivery::kText: {
       std::string text;
@@ -1030,6 +1370,14 @@ void AfterPadPoll(PPCContext& ctx, uint8_t* base) {
 // The public side (binds.h)
 // ---------------------------------------------------------------------------
 
+uint32_t KeyboardClient(uint8_t* base) { return base ? KbmClient(base) : 0; }
+
+uint32_t ClientPad(uint8_t* base, uint32_t client) {
+  if (!base || !cod3::kMultiplayer || !kb::kLocalClientState || client >= 4) return 0;
+  const uint32_t pad = ReadU32(base, kb::kLocalClients + client * kb::kLocalClientStride + kb::kLocalClientPad);
+  return pad < 4 ? pad : 0;
+}
+
 void MigrateSettings(const std::filesystem::path& config_path) {
   EnsureStarted();
   const int32_t version = cod3::kMultiplayer ? REXCVAR_GET(cod3mp_binds_version) : REXCVAR_GET(cod3_binds_version);
@@ -1068,12 +1416,13 @@ void MigrateSettings(const std::filesystem::path& config_path) {
   // Version 2: every action has a key of its own; the player's own changes to
   // the controller rows are kept (model.h MigrateRows). Multiplayer's layouts
   // aren't the campaign's layout A, so there every changed row keeps its keys.
-  {
-    std::vector<OldBind> rows;
-    for (const OldBindName& b : kOldBinds)
-      if (rex::cvar::GetFlagInfo(b.name)) rows.push_back(old_bind(b));
-    apply(MigrateRows(CurrentSet(), rows, !cod3::kMultiplayer));
-  }
+  std::vector<OldBind> rows;
+  for (const OldBindName& b : kOldBinds)
+    if (rex::cvar::GetFlagInfo(b.name)) rows.push_back(old_bind(b));
+  if (version < 2) apply(MigrateRows(CurrentSet(), rows, !cod3::kMultiplayer));
+  // Version 3: the Vehicle actions follow the player's own movement rows
+  // (model.h MigrateVehicleRows).
+  if (version < 3) apply(MigrateVehicleRows(CurrentSet(), rows, !cod3::kMultiplayer));
   const KbmSet now = CurrentSet();
   std::string keys;
   for (const Action a : {Action::kFire, Action::kAim, Action::kUse, Action::kReload, Action::kJump, Action::kCrouch,
@@ -1132,6 +1481,14 @@ void ApplyToPad(uint8_t* base, uint32_t user, uint32_t state) {
 }
 
 std::string KeyNameForPadKey(uint8_t* base, int pad_key) {
+  // In a vehicle, a button it reads as one of its controls is that Vehicle
+  // action's key (the tank's LB: its machine gun, MOUSE2).
+  if (const Action a = VehicleActionForPadKey(base, pad_key); a != Action::kCount) {
+    if (!REXCVAR_GET(cod3_binds_actions)) return "";
+    const KbmSet set = CurrentSet();
+    const KeyCode key = set.key[static_cast<int>(a)][0];
+    return key != kNoKey ? PromptName(key) : "";
+  }
   return KeyNameForCommand(Binding(base, LocalClient(base), pad_key));
 }
 
@@ -1188,13 +1545,19 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
   const KeyCode key = ParseKey(name);
   if (key == kNoKey) return false;
   KbmSet set = CurrentSet();
-  int had_slot = 0;
-  const Action had = Find(set, key, &had_slot);
+  int had_slot = 0, vehicle_slot = 0;
+  const Action had = Find(set, key, &had_slot);                         // on foot
+  const Action had_vehicle = Find(set, key, &vehicle_slot, /*vehicle=*/true);  // while driving
   const std::string key_name = KeyName(key);
 
   if (bind && args.size() == 2) {  // "bind B": what it does
-    if (had == Action::kCount) return false;
-    print(false, "\"" + key_name + "\" = \"" + Def(had).command + "\" (keyboard and mouse: " + Def(had).label + ")\n");
+    if (had == Action::kCount && had_vehicle == Action::kCount) return false;
+    std::string text = "\"" + key_name + "\"";
+    if (had != Action::kCount)
+      text += " = \"" + std::string(Def(had).command) + "\" (keyboard and mouse: " + Def(had).label + ")";
+    if (had_vehicle != Action::kCount)
+      text += std::string(had != Action::kCount ? "; " : " ") + "while driving: " + Def(had_vehicle).label;
+    print(false, text + "\n");
     return true;
   }
   if (source == cheats::Source::kNetwork) return false;
@@ -1208,7 +1571,7 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
       print(true, "^1bind: " + key_name + " can't be bound (" + why + ")\n");
       return true;
     }
-    if (had == action) {
+    if ((IsVehicleAction(action) ? had_vehicle : had) == action) {
       print(false, key_name + " is already " + Def(action).label + "\n");
       return true;
     }
@@ -1225,14 +1588,22 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
     REXLOG_INFO("cod3: key binds: {} from the console", text);
     return true;
   }
-  if (had == Action::kCount) return false;
+  if (had == Action::kCount && had_vehicle == Action::kCount) return false;
   // unbind B, or B bound to a command that isn't one of the actions: B leaves
-  // its action (the game's own bind of the key does nothing: its keyboard
-  // keys never reach the game).
-  Assign(set, had, had_slot, kNoKey);
+  // its actions, on foot and while driving (the game's own bind of the key
+  // does nothing: its keyboard keys never reach the game).
+  std::string left;
+  if (had != Action::kCount) {
+    Assign(set, had, had_slot, kNoKey);
+    left = Def(had).label;
+  }
+  if (had_vehicle != Action::kCount) {
+    Assign(set, had_vehicle, vehicle_slot, kNoKey);
+    left += std::string(left.empty() ? "" : " or ") + Def(had_vehicle).label;
+  }
   Store(set);
   *changed = true;
-  std::string text = key_name + " is no longer " + std::string(Def(had).label) + " (saved)";
+  std::string text = key_name + " is no longer " + left + " (saved)";
   if (bind)
     text += "; keyboard keys call only the actions in F2 > Controls > Key bindings (bind <key> <action>, "
             "e.g. bind K +reload or bind K reload)";
@@ -1241,18 +1612,145 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
   return !bind;
 }
 
+namespace {
+
+// F2's key rows keep what is typed in them until Enter, leaving the box (a
+// click anywhere else, Save included) or Save / closing F2 applies it
+// (owner 2026-10-20 20:24: "It should interperet the value when the user says
+// save or enter"). Typed letters come out as capitals, as the names are shown.
+char g_f2_text[kActionCount][64];
+std::string g_f2_notes[kActionCount];
+bool g_f2_edited[kActionCount] = {};
+uint32_t g_f2_text_gen = 0;
+// Controller rows (keybind_*): cvar -> the text typed and not applied yet;
+// and the rows F2 has shown.
+std::map<std::string, std::string, std::less<>> g_pad_edits;
+std::set<std::string, std::less<>> g_pad_rows;
+
+std::string UpperText(std::string_view text) {
+  std::string out(text);
+  for (char& c : out) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+  return out;
+}
+
+// Call right before the box's InputText. A box that is active and that nobody
+// typed in, whose text changed here meanwhile (a key just moved away from its
+// row while the click on it was made, a reset): ImGui keeps its own copy of
+// what the box showed when it was clicked and would put that back as an edit,
+// so it takes the new text, and Escape goes back to it.
+void SyncActiveBox(const char* label, const char* text) {
+  const ImGuiID id = ImGui::GetID(label);
+  ImGuiInputTextState* state = ImGui::GetInputTextState(id);
+  if (!state || ImGui::GetActiveID() != id) return;
+  const std::string_view shown(state->TextA.Data ? state->TextA.Data : "",
+                               state->TextA.Data ? static_cast<size_t>(state->TextLen) : 0);
+  if (shown == text) return;
+  state->ReloadUserBufAndSelectAll();  // the old text is gone: typing replaces the new one
+  const size_t n = std::strlen(text);
+  state->TextToRevertTo.resize(static_cast<int>(n + 1));
+  std::memcpy(state->TextToRevertTo.Data, text, n + 1);
+}
+
+// The stored keys into every action row nobody is typing in.
+void RefreshF2Texts() {
+  g_f2_text_gen = Generation();
+  const KbmSet set = CurrentSet();
+  for (int a = 0; a < kActionCount; ++a)
+    if (!g_f2_edited[a])  // typed and not applied yet: kept
+      std::snprintf(g_f2_text[a], sizeof(g_f2_text[a]), "%s", KeysText(set, static_cast<Action>(a)).c_str());
+}
+
+// Applies action row `a`'s typed keys; true when the keys changed.
+bool ApplyF2Text(int a) {
+  g_f2_edited[a] = false;
+  const Action action = static_cast<Action>(a);
+  const KbmSet set = CurrentSet();
+  KbmSet next = set;
+  std::string note;
+  bool ok = AssignText(next, action, g_f2_text[a], &note);
+  for (int s = 0; ok && s < kSlots; ++s)
+    if (const std::string why = ReservedReason(next.key[a][s]); next.key[a][s] && !why.empty()) {
+      note = KeyName(next.key[a][s]) + " can't be bound (" + why + ").";
+      ok = false;
+    }
+  g_f2_notes[a] = note;
+  const bool changed = ok && next != set;
+  if (changed) {
+    Store(next);
+    REXLOG_INFO("cod3: key binds: {} = {} (F2){}", Def(action).id, KeysText(next, action),
+                note.empty() ? "" : " " + note);
+  }
+  // At once, not at the next frame: a row clicked further down this frame
+  // starts from what is stored now (a key that moved away from it is gone).
+  RefreshF2Texts();
+  return changed;
+}
+
+// Applies a controller row's typed keys in the SDK's spelling; true when the
+// row changed.
+bool ApplyPadText(const std::string& cvar, std::string_view typed) {
+  const std::string current = rex::cvar::GetFlagByName(cvar);
+  std::string value = sdk::Spelled(typed);
+  if (sdk::SameName(typed, current)) {
+    // The keys that are stored (Escape, or typed again): kept as written,
+    // unless a name in them is one the SDK can't read in that spelling.
+    value = sdk::Spelled(current);
+  }
+  if (value == current) return false;
+  rex::cvar::SetFlagByName(cvar, value);
+  REXLOG_INFO("cod3: key binds: {} = {} (F2)", cvar, value);
+  return true;
+}
+
+}  // namespace
+
+bool CommitF2Edits() {
+  bool changed = false;
+  for (int a = 0; a < kActionCount; ++a)
+    if (g_f2_edited[a]) changed |= ApplyF2Text(a);
+  for (const auto& [cvar, text] : g_pad_edits) changed |= ApplyPadText(cvar, text);
+  g_pad_edits.clear();
+  // A stored name the SDK can't read as written (space, UPARROW) but can in
+  // its own spelling: F2 shows it in capitals like the rest, so it looks
+  // right; it is written in that spelling now.
+  for (const std::string& cvar : g_pad_rows) {
+    const std::string stored = rex::cvar::GetFlagByName(cvar);
+    const std::string spelled = sdk::Spelled(stored);
+    if (spelled == stored) continue;
+    rex::cvar::SetFlagByName(cvar, spelled);
+    REXLOG_INFO("cod3: key binds: {} = {} (F2, was {})", cvar, spelled, stored);
+    changed = true;
+  }
+  return changed;
+}
+
+bool DrawPadKeyRow(const char* cvar) {
+  if (g_pad_rows.find(std::string_view(cvar)) == g_pad_rows.end()) g_pad_rows.emplace(cvar);
+  auto edit = g_pad_edits.find(std::string_view(cvar));
+  char buf[128];
+  std::snprintf(buf, sizeof(buf), "%s",
+                edit != g_pad_edits.end() ? edit->second.c_str() : UpperText(rex::cvar::GetFlagByName(cvar)).c_str());
+  ImGui::PushID(cvar);
+  ImGui::SetNextItemWidth(-1);
+  if (edit == g_pad_edits.end()) SyncActiveBox("##v", buf);
+  const bool entered = ImGui::InputText("##v", buf, sizeof(buf),
+                                        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase);
+  if (ImGui::IsItemEdited()) g_pad_edits[cvar] = buf;
+  bool changed = false;
+  if (entered || ImGui::IsItemDeactivated()) {
+    if (auto it = g_pad_edits.find(std::string_view(cvar)); it != g_pad_edits.end()) {
+      changed = ApplyPadText(it->first, it->second);
+      g_pad_edits.erase(it);
+    }
+  }
+  ImGui::PopID();
+  return changed;
+}
+
 bool DrawF2Rows() {
   EnsureStarted();
   bool changed = false;
-  const KbmSet set = CurrentSet();
-  static char text[kActionCount][64];
-  static std::string notes[kActionCount];
-  static uint32_t text_gen = 0;
-  if (text_gen != Generation()) {
-    text_gen = Generation();
-    for (int a = 0; a < kActionCount; ++a)
-      std::snprintf(text[a], sizeof(text[a]), "%s", KeysText(set, static_cast<Action>(a)).c_str());
-  }
+  if (g_f2_text_gen != Generation()) RefreshF2Texts();
   auto help = [](const char* line) {
     ImGui::PushTextWrapPos(0.0f);
     ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
@@ -1267,9 +1765,10 @@ bool DrawF2Rows() {
     changed = true;
   }
   help("On: while you play, these keys call the game's own actions directly (not a controller button), "
-       "so every action can have a key of its own and a controller keeps working at the same time. In the "
-       "game's menus, and for keys no action has, keys press the controller buttons of the rows further "
-       "down. Off: every key presses its row's controller button, as before.");
+       "so every action can have a key of its own and a controller keeps working at the same time; the "
+       "movement keys are further down. The game's menus take the keys as they always have. Off: the "
+       "keyboard plays as a controller (every key presses a controller button), and the controller "
+       "button rows show further down to change them.");
   bool toggle = REXCVAR_GET(cod3_aim_toggle_kbm_p1);
   if (ImGui::Checkbox("Aim toggle (keyboard and mouse)", &toggle)) {
     rex::cvar::SetFlagByName("cod3_aim_toggle_kbm_p1", toggle ? "true" : "false");
@@ -1277,7 +1776,10 @@ bool DrawF2Rows() {
   }
   help("Off: the aim key aims while held. On: each press aims or stops aiming. The controller has its own "
        "TOGGLE ADS in the game's Options > Controls.");
-  help("Up to two keys each, separated by a comma (B, MOUSE4); empty = none; press Enter to apply. Key names: "
+  help("Vehicle: keys that count only while you drive (the tank, a jeep); the vehicle reads them itself. On foot "
+       "the same keys keep their own actions (MOUSE2 aims, W walks).");
+  help("Up to two keys each, separated by a comma (B, MOUSE4); empty = none. What you type applies on Enter, "
+       "when you click anywhere else (Save too) or close F2. Key names: "
        "A-Z, 0-9, SHIFT, CTRL, ALT, SPACE, TAB, ENTER, UPARROW ..., MOUSE1-MOUSE5, MWHEELUP, MWHEELDOWN. "
        "No key combinations (Shift+key). The console's bind K +reload (or bind K reload) works too.");
   if (ImGui::BeginTable("##bind_actions", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -1303,35 +1805,23 @@ bool DrawF2Rows() {
       ImGui::TableNextColumn();
       ImGui::PushID(def.id);
       ImGui::SetNextItemWidth(-1);
-      if (ImGui::InputText("##keys", text[a], sizeof(text[a]), ImGuiInputTextFlags_EnterReturnsTrue)) {
-        KbmSet next = set;
-        std::string note;
-        bool ok = AssignText(next, action, text[a], &note);
-        for (int s = 0; ok && s < kSlots; ++s)
-          if (const std::string why = ReservedReason(next.key[a][s]); next.key[a][s] && !why.empty()) {
-            note = KeyName(next.key[a][s]) + " can't be bound (" + why + ").";
-            ok = false;
-          }
-        if (ok) {
-          Store(next);
-          changed = true;
-          REXLOG_INFO("cod3: key binds: {} = {} (F2){}", def.id, KeysText(next, action),
-                      note.empty() ? "" : " " + note);
-        }
-        notes[a] = note;
-        text_gen = 0;  // show what was stored
-      }
+      if (!g_f2_edited[a]) SyncActiveBox("##keys", g_f2_text[a]);
+      const bool entered = ImGui::InputText("##keys", g_f2_text[a], sizeof(g_f2_text[a]),
+                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase);
+      if (ImGui::IsItemEdited()) g_f2_edited[a] = true;
+      if ((entered || ImGui::IsItemDeactivated()) && g_f2_edited[a]) changed |= ApplyF2Text(a);
       ImGui::PopID();
-      if (!notes[a].empty()) {
+      if (!g_f2_notes[a].empty()) {
         ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextColored(ui::CurrentPalette().warn, "%s", notes[a].c_str());
+        ImGui::TextColored(ui::CurrentPalette().warn, "%s", g_f2_notes[a].c_str());
         ImGui::PopTextWrapPos();
       }
     }
     ImGui::EndTable();
   }
   ImGui::Spacing();
-  ImGui::TextUnformatted("Controller buttons");
+  // hud_overlay.cpp shows only the movement rows while the keys call the actions.
+  ImGui::TextUnformatted(REXCVAR_GET(cod3_binds_actions) ? "Movement" : "Controller buttons");
   return changed;
 }
 
@@ -1350,4 +1840,26 @@ REX_HOOK_RAW(sub_82522138) {
   cod3::binds::BeforePadPoll(ctx, base);
   __imp__sub_82522138(ctx, base);
   cod3::binds::AfterPadPoll(ctx, base);
+}
+
+// ButtonAlias_Value (r3 the alias context: *keybinds::kAliasContexts +
+// context * 328, r4 the controller, r5 the alias id -> r3 0..255; cod3mp's
+// copy 0x824829C0 through mp/config/campaign_map.tsv): the jeep and the tank
+// read their controls through it every frame while the player drives. A
+// Vehicle action held for the alias answers it (AnswerAlias).
+REX_EXTERN(__imp__sub_82467710);
+REX_HOOK_RAW(sub_82467710) {
+  const int32_t alias = ctx.r5.s32;
+  const int context = cod3::binds::NoteVehicleRead(base, ctx.r3.u32, ctx.r4.u32, alias);
+  __imp__sub_82467710(ctx, base);
+  if (context >= 0) cod3::binds::AnswerAlias(context, alias, &ctx.r3.u64);
+}
+
+// The vehicle view switch (config/default.toml's [[midasm_hook]]; cod3mp's
+// through mp/config/campaign_map.tsv): right after the camera select's read of
+// the right stick click's press (campaign 0x82448084 after bl 0x820E86A8 in
+// 0x82447D48; cod3mp 0x82462F48 in 0x82462C68), r3 is that press; a
+// Vehicle: change view key press adds one.
+void Cod3VehicleViewPressed(PPCRegister& r3, PPCRegister& r29, uint8_t* base) {
+  if (cod3::binds::TakeVehicleViewPress(base, r29.u32)) r3.u64 = 1;
 }

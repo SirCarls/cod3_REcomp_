@@ -49,6 +49,8 @@
 #include "game/guest.h"
 #include "game/menu_video.h"
 #include "game/movement/menu_movement.h"  // [movement]
+#include "game/menu_aim.h"  // [claude-9b] the AIM page
+#include "game/menu_slider.h"  // [claude-9b] slider rows: the number box
 #include "game/qte_actions.h"
 
 namespace {
@@ -735,12 +737,14 @@ REX_HOOK_RAW(OptionsGameplayMenu__Update) {
 namespace {
 namespace adv = fe::adv;
 namespace mm = cod3::movementmenu;  // [movement]
+namespace am = cod3::aimmenu;  // [claude-9b]
 constexpr int kAdvFovItem = adv::kItemCount;           // 11
 constexpr int kAdvScaleItem = adv::kItemCount + 1;     // 12
 constexpr int kAdvVideoItem = adv::kItemCount + 2;     // 13: VIDEO OPTIONS
 constexpr int kAdvVideoFirst = adv::kItemCount + 3;    // 14..20: the rows of the sub page shown
 // [movement] The video and the movement rows share these copied rows.
-constexpr int kAdvSubRows = int(vm::kRowCount) > mm::kRows ? int(vm::kRowCount) : mm::kRows;
+// [claude-9b] and the aim rows
+constexpr int kAdvSubRows = std::max({int(vm::kRowCount), mm::kRows, am::kRows});
 constexpr int kAdvItemsMax = kAdvVideoFirst + kAdvSubRows;
 // [menus-brightness] BRIGHTNESS (the game's brightness, menu_video.h): the
 // last row of OPTIONS / VIDEO, under the video rows, with a gauge like
@@ -751,7 +755,13 @@ constexpr int kAdvBrightItem = kAdvItemsMax;
 // after BRIGHTNESS's (the page's item array has no holes, so it is only added
 // when BRIGHTNESS was).
 constexpr int kAdvMovementItem = kAdvBrightItem + 1;
-constexpr int kAdvItemsAll = kAdvMovementItem + 1;
+// [claude-9b] AIM (23): the third page button, after MOVEMENT OPTIONS's item
+// (only added when MOVEMENT OPTIONS was). With it, VIDEO, MOVEMENT and AIM
+// share one line under FOV SCALE, Reset under them (owner 2026-10-20: "you
+// can scale the menu down a little or completely re-organize them per
+// function"): left and right move along the line.
+constexpr int kAdvAimItem = kAdvMovementItem + 1;
+constexpr int kAdvItemsAll = kAdvAimItem + 1;
 namespace br = cod3::addr::brightness;
 
 bool IsSubRow(int item) { return item >= kAdvVideoFirst && item < kAdvVideoFirst + kAdvSubRows; }
@@ -764,11 +774,70 @@ struct SubPage {
   std::string (*note)(int);
   std::string (*step)(PPCContext&, uint8_t*, int, bool);
   const char* (*title_key)();
+  // [claude-9b] Its slider rows (game/menu_slider.h): true for a row with a
+  // number, with its range and value now; and a typed number set (returns
+  // the value's text).
+  bool (*number)(int, cod3::menuslider::Number*, double*) = nullptr;
+  std::string (*set_number)(int, double) = nullptr;
 };
 const SubPage kVideoPage = {int(vm::kRowCount), vm::LabelKey, vm::Value, vm::Note, vm::Step, vm::TitleKey};
 const SubPage kMovementPage = {mm::kRows, mm::LabelKey, mm::Value, mm::Note, mm::Step, mm::TitleKey};
+const SubPage kAimPage = {am::kRows,  am::LabelKey, am::Value,    am::Note,
+                          am::Step,   am::TitleKey, am::NumberOf, am::SetNumber};  // [claude-9b]
 constexpr int kPageVideo = 0;
 constexpr int kPageMovement = 1;
+constexpr int kPageAim = 2;  // [claude-9b]
+
+// [claude-9b] Slider rows (game/menu_slider.h; owner 2026-10-20 21:09: "the
+// arrows should be next to the sliders and the sliders need to reflect the
+// text value (this needs to be a textbox too)", then "Every slider in the
+// game menus"; 21:15: "please also make sure the menu scales"). Where the
+// other rows have an arrow, a value and an arrow, a slider row has its left
+// arrow, a gauge filled to the value between the arrows, its right arrow, and
+// right of it a box with the value as a number that can be typed in. All of it
+// is laid out from the row's arrows every frame, in the menu's own 640x480
+// space, so it moves, fades and scales with the page at any window size. The
+// slider rows: Horizontal and Vertical Sensitivity and Volume (the game's own
+// gauges are hidden for them; they also showed through the sub pages),
+// FIELD OF VIEW, FOV SCALE, BRIGHTNESS and the sub pages' rows with numbers
+// (SubPage::number: the AIM page's five).
+namespace ms = cod3::menuslider;
+enum SliderSlot : int { kSlotHSens, kSlotVSens, kSlotVolume, kSlotFov, kSlotScale, kSlotBright, kSlotSub };
+constexpr int kSliderSlots = kSlotSub + kAdvSubRows;  // a slot for each copied sub page row
+struct Slider {
+  uint32_t left = 0, right = 0;  // the arrows: the row's own, or copies of Invert Aim's
+  uint32_t frame = 0, fill = 0;  // the gauge: copies of Volume's (BRIGHTNESS: its own copies)
+  uint32_t box = 0;              // the number box: another copy of Volume's frame
+  uint32_t text = 0;             // the number: a copy of Invert Aim's value
+  bool own_arrows = false;       // left / right were made here (freed with the page)
+  bool own_gauge = false;        // frame / fill were made here
+  std::string shown;             // what the box shows now
+};
+// The game's three gauge rows and the page's own copy of their values (s32;
+// OnLeft / OnRight 0x824DC1C0 step one by 1, clamp it and refill its gauge
+// with 0x824DC108; ControlsPage_Apply swaps them with the profile's).
+struct NativeGauge {
+  int item;
+  uint32_t value;  // offset in the page
+  int max;
+  const char* frame;
+  const char* fill;
+};
+constexpr NativeGauge kNativeGauges[3] = {
+    {2, 152, 37, "HSensProgbar1", "HSensProgbar2"},         // Horizontal Sensitivity
+    {3, 156, 50, "VSensProgBar1", "VSensProgbar2"},         // Vertical Sensitivity
+    {6, 160, 50, "MusicVolProgbar", "MusicVolumeProgbar2"},  // Volume (the music's)
+};
+constexpr const char* kGaugeBand = "bkg_detail_07";  // the grey band behind the three gauges
+// Menu units: an arrow to the gauge, the right arrow to the number box, the box.
+constexpr float kGaugeGap = 3.0f;
+constexpr float kBoxGap = 8.0f;
+constexpr float kBoxWidth = 46.0f;
+constexpr float kBoxHeight = 18.0f;
+// PanelQuad::Draw (0x824C80D0) draws each part with this: (part, the quad's
+// u64 at +64, its u32 at +60). Called straight, the picture draw hook (the
+// mouse layer notes arrows and gauges there) doesn't see it.
+constexpr uint32_t kQuadPartDraw = 0x824BFDD8;
 
 struct AdvRows {
   FovRow row[2];        // [0] the ADS row as FIELD OF VIEW, [1] our copy as FOV SCALE
@@ -783,6 +852,9 @@ struct AdvRows {
   uint32_t video_label = 0;          // VIDEO OPTIONS (a copy of Reset's label)
   bool has_movement = false;         // [movement]
   uint32_t movement_label = 0;       // [movement] MOVEMENT OPTIONS (a copy of Reset's label)
+  bool has_aim = false;              // [claude-9b] AIM, and the page buttons share a line
+  uint32_t aim_label = 0;            // [claude-9b] AIM (a copy of Reset's label)
+  int button = 0;                    // [claude-9b] the page button last on (kAdvVideoItem when 0)
   FovRow vrow[kAdvSubRows];          // the sub page's rows (copies of the ADS row)
   uint32_t note = 0;                 // the line under them (a copy of Reset's label)
   uint32_t invert[4] = {};           // Invert Aim's label, value and arrows: the first row's place
@@ -799,6 +871,11 @@ struct AdvRows {
   uint32_t bright_label = 0, bright_back = 0, bright_fill = 0;
   uint32_t volume_label = 0, volume_back = 0, volume_fill = 0;  // Volume's own
   float bright_page = 1.0f;  // the page's brightness while it is swapped (ControlsPage_Apply)
+  // [claude-9b] Slider rows (see Slider).
+  bool has_sliders = false;
+  std::array<Slider, kSliderSlots> slider;
+  uint32_t gauge_frame = 0, gauge_fill = 0;  // Volume's: what the gauges and boxes are copies of
+  std::vector<uint32_t> gauges;              // the game's own gauges and their band, not drawn now
 };
 std::unordered_map<uint32_t, AdvRows> g_adv;  // keyed by page; guarded by g_mutex
 
@@ -817,7 +894,16 @@ void PutAdv(uint32_t self, const AdvRows& r) {
 }
 
 // [movement] The sub page shown (or last shown).
-const SubPage& PageOf(const AdvRows& r) { return r.page == kPageMovement ? kMovementPage : kVideoPage; }
+const SubPage& PageOf(const AdvRows& r) {
+  if (r.page == kPageAim) return kAimPage;  // [claude-9b]
+  return r.page == kPageMovement ? kMovementPage : kVideoPage;
+}
+// [claude-9b] The page buttons on one line (with AIM): which item, which page.
+bool IsButton(int item) { return item == kAdvVideoItem || item == kAdvMovementItem || item == kAdvAimItem; }
+int ButtonItem(const AdvRows& r) { return IsButton(r.button) ? r.button : kAdvVideoItem; }
+int PageItem(int page) {
+  return page == kPageAim ? kAdvAimItem : page == kPageMovement ? kAdvMovementItem : kAdvVideoItem;
+}
 // [menus-brightness] BRIGHTNESS is a row of the video page only.
 bool BrightShown(const AdvRows& r) { return r.has_bright && r.video && r.page == kPageVideo; }
 // The last row of the sub page shown: BRIGHTNESS on the video page, else
@@ -891,6 +977,332 @@ void ShowBrightFill(PPCContext& ctx, uint8_t* base, const AdvRows& r) {
 
 // Our rows sit under Tank Controls and move with it (the panel animates);
 // the video rows take the places of the first six options.
+// [claude-9b] The AIM page (owner 2026-10-20 21:00: "the menu selections
+// should hug the left side and the display for it on the top right"): each
+// value and its arrows sit just right of the labels, and the crosshair
+// preview (ui/hud_overlay.h) takes the top right.
+// Moves a text or a picture by dx, dy (menu units).
+void ShiftXY(uint8_t* base, uint32_t e, bool quad, float dx, float dy) {
+  using cod3::guest::WriteF32;
+  if (!e) return;
+  if (!quad) {
+    WriteF32(base, e + fe::kTextX, ReadF32(base, e + fe::kTextX) + dx);
+    WriteF32(base, e + fe::kTextY, ReadF32(base, e + fe::kTextY) + dy);
+    return;
+  }
+  const uint32_t parts = ReadU32(base, e + fe::kQuadParts);
+  const uint32_t n = ReadU32(base, e + fe::kQuadPartCount);
+  if (parts < 0x10000 || n > 8) return;
+  for (uint32_t part = 0; part < n; ++part) {
+    const uint32_t q = ReadU32(base, parts + 4 * part);
+    if (q < 0x10000) continue;
+    for (uint32_t v = 0; v < 4; ++v) {
+      const uint32_t at = q + fe::kQuadPartVerts + v * fe::kQuadVertStride;
+      WriteF32(base, at, ReadF32(base, at) + dx);
+      WriteF32(base, at + 4, ReadF32(base, at + 4) + dy);
+    }
+  }
+}
+// The gap between the AIM page's two groups (crosshair; sensitivity), in rows.
+constexpr float kAimGroupGap = 0.5f;
+// How far left of the options' value column the AIM page's values sit.
+float AimValueShift(uint8_t* base, const AdvRows& r) {
+  const float label_x = ReadF32(base, r.invert[0] + fe::kTextX);
+  const float value_x = ReadF32(base, r.invert[1] + fe::kTextX);
+  return std::max(0.0f, 0.45f * (value_x - label_x));
+}
+// The preview's box: seven rows high, from the first row down, its right
+// side right of the values' column (the overlay draws it square on the
+// screen, from its right edge).
+void AimPreviewBox(uint8_t* base, const AdvRows& r) {
+  const float value_x = ReadF32(base, r.invert[1] + fe::kTextX);
+  const float side = 7.0f * r.pitch;
+  const float top = ReadF32(base, r.invert[0] + fe::kTextY) - 0.25f * r.pitch;
+  const float right = value_x + 5.4f * r.pitch;
+  am::ShowPreview(right - side, top, right, top + side);
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("cod3: Options > Aim: crosshair preview at {:.1f},{:.1f}-{:.1f},{:.1f} (labels x {:.1f}, values x {:.1f}, row {:.1f})",
+                right - side, top, right, top + side, ReadF32(base, r.invert[0] + fe::kTextX), value_x, r.pitch);
+  }
+}
+
+// [claude-9b] --- slider rows (see Slider) -----------------------------------
+// The item of a slider slot, and the slot of an item (-1: none).
+int SlotItem(int slot) {
+  if (slot < kSlotFov) return kNativeGauges[slot].item;
+  if (slot == kSlotFov) return kAdvFovItem;
+  if (slot == kSlotScale) return kAdvScaleItem;
+  if (slot == kSlotBright) return kAdvBrightItem;
+  return kAdvVideoFirst + (slot - kSlotSub);
+}
+int SlotOfItem(int item) {
+  for (int slot = 0; slot < kSliderSlots; ++slot)
+    if (SlotItem(slot) == item) return slot;
+  return -1;
+}
+
+// Whether a slot's row is on screen now as a slider row, with its number and
+// value.
+bool SlotNumber(uint8_t* base, uint32_t self, const AdvRows& r, int slot, ms::Number* n, double* v) {
+  if (!r.has_sliders) return false;
+  if (slot < kSlotFov) {
+    if (r.video) return false;
+    const NativeGauge& g = kNativeGauges[slot];
+    // Volume shows 0..100%, the sensitivities the game's own steps.
+    *n = slot == kSlotVolume ? ms::Number{0.0, double(g.max), 1.0, 100.0 / g.max, 0, "%"}
+                             : ms::Number{0.0, double(g.max), 1.0, 1.0, 0, ""};
+    *v = std::clamp(cod3::guest::ReadS32(base, self + g.value), 0, g.max);
+    return true;
+  }
+  if (slot == kSlotFov || slot == kSlotScale) {
+    if (r.video || !r.row[slot - kSlotFov].enabled) return false;
+    if (slot == kSlotFov) {
+      const cod3::fov::Range range = cod3::fov::FovRange(CurrentScale());
+      *n = ms::Number{range.min, range.max, 1.0, 1.0, 0, ""};
+      *v = CurrentFov();
+    } else {
+      const cod3::fov::Range range = cod3::fov::ScaleRange(CurrentFov());
+      *n = ms::Number{range.min, range.max, 0.01, 1.0, 2, ""};
+      *v = CurrentScale();
+    }
+    return true;
+  }
+  if (slot == kSlotBright) {
+    if (!BrightShown(r)) return false;
+    const float hi = ReadF32(base, br::kMax);
+    *n = ms::Number{br::kMin, hi > br::kMin ? hi : 2.0, 0.01, 100.0, 0, "%"};  // 1.0 shows 100%
+    *v = vm::Brightness(base);
+    return true;
+  }
+  if (!r.video) return false;
+  const SubPage& page = PageOf(r);
+  const int i = slot - kSlotSub;
+  return i < page.rows && page.number && page.number(i, n, v);
+}
+
+// A number typed into a slot's row (within its range, on a step).
+void ApplyTyped(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, int slot, double v,
+                const ms::Number& n) {
+  const int item = SlotItem(slot);
+  if (slot < kSlotFov) {
+    // The page's own step, once, from one short of the number: its sound,
+    // its gauge and (Volume) the music's volume, as from the pad.
+    const NativeGauge& g = kNativeGauges[slot];
+    const int target = std::clamp(int(std::lround(v)), 0, g.max);
+    const int now = cod3::guest::ReadS32(base, self + g.value);
+    if (target == now || Selected(base, self) != item) return;
+    const bool right = target > now;
+    cod3::guest::WriteU32(base, self + g.value, uint32_t(target + (right ? -1 : 1)));
+    Call c(ctx, base);
+    c.Invoke(adv::kToggle, {self, right ? 1u : 0u});
+  } else if (slot == kSlotFov) {
+    cod3::Engine::Get().ApplyFovFromGuest(ctx, base, float(v));
+    SetTextRaw(ctx, base, r.row[0].text_b, FovText(CurrentFov()));
+  } else if (slot == kSlotScale) {
+    cod3::Engine::Get().SetFovScale(float(v));  // applied on the next frame, saved like F2
+    SetTextRaw(ctx, base, r.row[1].text_b, ScaleText(float(v)));
+  } else if (slot == kSlotBright) {
+    vm::SetBrightnessFraction(base, float(ms::Fraction(v, n)));
+  } else {
+    const SubPage& page = PageOf(r);
+    const int i = slot - kSlotSub;
+    if (!page.set_number) return;
+    const std::string text = page.set_number(i, v);
+    if (text.empty()) return;
+    r.seen[i] = text;
+    SetTextRaw(ctx, base, r.vrow[i].text_b, text);
+  }
+  REXLOG_INFO("cod3: pause menu: item {} set to {} (typed in its number box)", item, ms::Format(v, n));
+}
+
+// Every Update: the highlighted row for the number box (menu_slider.h), and
+// a number typed into it. True when the rows changed (put them back).
+bool UpdateSliders(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  if (!r.has_sliders) return false;
+  const int sel = Selected(base, self);
+  const int slot = SlotOfItem(sel);
+  ms::Number n;
+  double v = 0.0;
+  if (slot < 0 || !SlotNumber(base, self, r, slot, &n, &v)) {
+    ms::Offer(self, -1, ms::Number{});
+    return false;
+  }
+  ms::Offer(self, sel, n);
+  double typed = 0.0;
+  if (!ms::TakeTyped(self, sel, &typed)) return false;
+  ApplyTyped(ctx, base, self, r, slot, typed, n);
+  return true;
+}
+
+// The rectangle a picture covers now (its parts' corners).
+struct QRect {
+  float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+};
+bool QuadRect(uint8_t* base, uint32_t quad, QRect* out) {
+  if (!quad) return false;
+  const uint32_t parts = ReadU32(base, quad + fe::kQuadParts);
+  const uint32_t n = ReadU32(base, quad + fe::kQuadPartCount);
+  if (parts < 0x10000 || n == 0 || n > 8) return false;
+  QRect q{1e9f, 1e9f, -1e9f, -1e9f};
+  for (uint32_t p = 0; p < n; ++p) {
+    const uint32_t part = ReadU32(base, parts + 4 * p);
+    for (uint32_t v = 0; part >= 0x10000 && v < 4; ++v) {
+      const uint32_t at = part + fe::kQuadPartVerts + v * fe::kQuadVertStride;
+      const float x = ReadF32(base, at), y = ReadF32(base, at + 4);
+      if (!std::isfinite(x) || !std::isfinite(y)) return false;
+      q.x0 = std::min(q.x0, x), q.x1 = std::max(q.x1, x);
+      q.y0 = std::min(q.y0, y), q.y1 = std::max(q.y1, y);
+    }
+  }
+  if (q.x0 > q.x1 || q.y0 > q.y1) return false;
+  *out = q;
+  return true;
+}
+
+// Puts a copy's corners where its source's would be if the source covered
+// `to` (both drawn from the same parts), and gives it `opacity`.
+void MapQuad(uint8_t* base, uint32_t src, uint32_t dst, const QRect& to, float opacity) {
+  using cod3::guest::WriteF32;
+  QRect from;
+  if (!dst || !QuadRect(base, src, &from)) return;
+  const float sx = from.x1 > from.x0 ? (to.x1 - to.x0) / (from.x1 - from.x0) : 1.0f;
+  const float sy = from.y1 > from.y0 ? (to.y1 - to.y0) / (from.y1 - from.y0) : 1.0f;
+  const uint32_t a = ReadU32(base, src + fe::kQuadParts), b = ReadU32(base, dst + fe::kQuadParts);
+  const uint32_t n = ReadU32(base, src + fe::kQuadPartCount);
+  if (a < 0x10000 || b < 0x10000 || n != ReadU32(base, dst + fe::kQuadPartCount) || n > 8) return;
+  for (uint32_t part = 0; part < n; ++part) {
+    const uint32_t qa = ReadU32(base, a + 4 * part), qb = ReadU32(base, b + 4 * part);
+    if (qa < 0x10000 || qb < 0x10000) continue;
+    for (uint32_t v = 0; v < 4; ++v) {
+      const uint32_t at = fe::kQuadPartVerts + v * fe::kQuadVertStride;
+      WriteF32(base, qb + at, to.x0 + (ReadF32(base, qa + at) - from.x0) * sx);
+      WriteF32(base, qb + at + 4, to.y0 + (ReadF32(base, qa + at + 4) - from.y0) * sy);
+    }
+  }
+  WriteF32(base, dst + fe::kElemOpacity, opacity);
+}
+
+// A gauge's fill: its corners at `left` from y0 to y1 (no width yet), then
+// filled to `fraction` of `full` the way the game fills its gauges.
+void PlaceFill(PPCContext& ctx, uint8_t* base, uint32_t fill, float left, float y0, float y1, float full,
+               double fraction, float opacity) {
+  using cod3::guest::WriteF32;
+  const uint32_t part = FirstPart(base, fill);
+  if (!part) return;
+  float top = 1e9f, bottom = -1e9f;
+  for (uint32_t v = 0; v < 4; ++v) {
+    const float y = ReadF32(base, part + fe::kQuadPartVerts + v * fe::kQuadVertStride + 4);
+    top = std::min(top, y), bottom = std::max(bottom, y);
+  }
+  for (uint32_t v = 0; v < 4; ++v) {
+    const uint32_t at = part + fe::kQuadPartVerts + v * fe::kQuadVertStride;
+    WriteF32(base, at, left);
+    WriteF32(base, at + 4, ReadF32(base, at + 4) <= (top + bottom) * 0.5f ? y0 : y1);
+  }
+  WriteF32(base, fill + fe::kElemOpacity, opacity);
+  const int texels = int(int16_t(ReadU16(base, part + 6))) - int(int16_t(ReadU16(base, part + 0)));
+  if (texels <= 0 || !(full > 0.0f)) return;
+  Call c(ctx, base);
+  c.Invoke(br::kSetFill, {part}, {std::clamp(fraction, 0.0, 1.0), 1.0, double(full / float(texels))});
+}
+
+// A picture drawn straight, part by part, as PanelQuad::Draw does (not seen
+// by the picture draw hook: the number box isn't a gauge for the mouse).
+void DrawQuadStraight(PPCContext& ctx, uint8_t* base, uint32_t quad) {
+  if (!quad || !(ReadU8(base, quad + 16) & 0x4) || !(ReadF32(base, quad + fe::kElemOpacity) > 0.01f)) return;
+  const uint32_t parts = ReadU32(base, quad + fe::kQuadParts);
+  const uint32_t n = ReadU32(base, quad + fe::kQuadPartCount);
+  if (parts < 0x10000 || n > 8) return;
+  const uint64_t arg64 = (uint64_t(ReadU32(base, quad + 64)) << 32) | ReadU32(base, quad + 68);
+  const uint32_t arg32 = ReadU32(base, quad + 60);
+  for (uint32_t p = 0; p < n; ++p) {
+    const uint32_t part = ReadU32(base, parts + 4 * p);
+    if (part < 0x10000) continue;
+    Call c(ctx, base);
+    c.Invoke(kQuadPartDraw, {part, arg64, arg32});
+  }
+}
+
+// The slider rows' own arrows: where Invert Aim's are, on their rows.
+void FollowSliderArrows(uint8_t* base, const AdvRows& r) {
+  if (!r.has_sliders) return;
+  for (int slot = 0; slot < kSliderSlots; ++slot) {
+    const Slider& s = r.slider[slot];
+    if (!s.own_arrows) continue;
+    const int row = slot == kSlotBright ? int(vm::kRowCount) : kNativeGauges[slot].item;
+    FollowQuad(base, r.invert[2], s.left, r.pitch * float(row));
+    FollowQuad(base, r.invert[3], s.right, r.pitch * float(row));
+  }
+}
+
+// Lays a slider row out from its arrows: the gauge between them, filled to
+// `fraction`, the number box right of the right arrow, the number in it.
+bool PlaceSlider(PPCContext& ctx, uint8_t* base, uint32_t self, const AdvRows& r, int slot, const Slider& s,
+                 double fraction) {
+  QRect l, rt, frame_src, fill_src, inv_l, inv_r;
+  if (!QuadRect(base, s.left, &l) || !QuadRect(base, s.right, &rt) || !QuadRect(base, r.gauge_frame, &frame_src) ||
+      !QuadRect(base, r.gauge_fill, &fill_src) || !QuadRect(base, r.invert[2], &inv_l) ||
+      !QuadRect(base, r.invert[3], &inv_r))
+    return false;
+  const float cy = (l.y0 + l.y1) * 0.5f;
+  const float opacity = ReadF32(base, s.left + fe::kElemOpacity);
+  const float half = (frame_src.y1 - frame_src.y0) * 0.5f;
+  const QRect frame{l.x1 + kGaugeGap, cy - half, rt.x0 - kGaugeGap, cy + half};
+  if (frame.x1 - frame.x0 < 8.0f) return false;
+  MapQuad(base, r.gauge_frame, s.frame, frame, opacity);
+  // The fill starts inside the frame by as much as Volume's does, as tall as
+  // Volume's, and ends inside the frame's right edge by the same.
+  const float inset = std::clamp(fill_src.x0 - frame_src.x0, 0.0f, 4.0f);
+  const float fill_half = (fill_src.y1 - fill_src.y0) * 0.5f;
+  PlaceFill(ctx, base, s.fill, frame.x0 + inset, cy - fill_half, cy + fill_half, frame.x1 - frame.x0 - 2.0f * inset,
+            fraction, opacity);
+  const QRect box{rt.x1 + kBoxGap, cy - kBoxHeight * 0.5f, rt.x1 + kBoxGap + kBoxWidth, cy + kBoxHeight * 0.5f};
+  MapQuad(base, r.gauge_frame, s.box, box, opacity);
+  // The number: placed from Invert Aim's value the way the box lies from
+  // Invert Aim's arrows (the value sits half way between its arrows).
+  const float inv_cx = (inv_l.x0 + inv_r.x1) * 0.5f, inv_cy = (inv_l.y0 + inv_l.y1) * 0.5f;
+  FollowText(base, r.invert[1], s.text, cy - inv_cy);
+  cod3::guest::WriteF32(base, s.text + fe::kTextX,
+                        ReadF32(base, r.invert[1] + fe::kTextX) + (box.x0 + box.x1) * 0.5f - inv_cx);
+  ms::NoteBox(self, SlotItem(slot), box.x0, box.y0, box.x1, box.y1);
+  return true;
+}
+
+// Draws the slider rows on screen now (after the page). True when a number
+// changed (put the rows back).
+bool DrawSliders(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  if (!r.has_sliders) return false;
+  bool changed = false;
+  for (int slot = 0; slot < kSliderSlots; ++slot) {
+    Slider& s = r.slider[slot];
+    ms::Number n;
+    double v = 0.0;
+    if (!SlotNumber(base, self, r, slot, &n, &v) || !PlaceSlider(ctx, base, self, r, slot, s, ms::Fraction(v, n)))
+      continue;
+    const std::string text = ms::BoxText(self, SlotItem(slot), v, n);
+    if (text != s.shown) {
+      SetTextRaw(ctx, base, s.text, text);
+      s.shown = text;
+      changed = true;
+    }
+    if (s.own_arrows)
+      for (uint32_t e : {s.left, s.right}) VCall(ctx, base, e, fe::kElemDraw);
+    for (uint32_t e : {s.frame, s.fill}) VCall(ctx, base, e, fe::kElemDraw);
+    DrawQuadStraight(ctx, base, s.box);
+    VCall(ctx, base, s.text, fe::kElemDraw);
+  }
+  return changed;
+}
+
+// Whether a slot's row is a slider row on screen now.
+bool SliderShown(uint8_t* base, uint32_t self, const AdvRows& r, int slot) {
+  ms::Number n;
+  double v = 0.0;
+  return SlotNumber(base, self, r, slot, &n, &v);
+}
+
 void FollowTank(uint8_t* base, const AdvRows& r) {
   for (int i = 0; i < 2; ++i) {
     const float dy = r.pitch * float(i + 1);
@@ -908,15 +1320,32 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   // is with VIDEO OPTIONS alone: a row lower would put it on the help bar's
   // line (menus-brightness run lvl1).
   float label_step = r.pitch;
-  if (r.has_movement) {
+  // [claude-9b] With AIM the three page buttons take one line, a row and
+  // a quarter under FOV SCALE, and Reset the line under them.
+  const bool button_line = r.has_aim && r.has_movement;
+  if (button_line) {
+    const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
+    label_step = std::max((reset_y - scale_y) / 2.0f, r.pitch);
+    reset_y = scale_y + 2.0f * label_step;
+  } else if (r.has_movement) {
     const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
     label_step = std::max((reset_y - scale_y) / 3.0f, 0.75f * r.pitch);
     reset_y = scale_y + 3.0f * label_step;
   }
   cod3::guest::WriteF32(base, r.reset + fe::kTextY, reset_y);
   if (!r.has_video) return;
-  FollowText(base, r.reset, r.video_label, -label_step * (r.has_movement ? 2.0f : 1.0f));
-  if (r.has_movement) FollowText(base, r.reset, r.movement_label, -label_step);  // [movement]
+  if (button_line) {  // [claude-9b] VIDEO, MOVEMENT, AIM: centered on Reset, a quarter of the row apart
+    const float cx = ReadF32(base, r.reset + fe::kTextX);
+    const float dx = 0.55f * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+    const uint32_t labels[3] = {r.video_label, r.movement_label, r.aim_label};
+    for (int i = 0; i < 3; ++i) {
+      FollowText(base, r.reset, labels[i], -label_step);
+      if (labels[i]) cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * float(i - 1));
+    }
+  } else {
+    FollowText(base, r.reset, r.video_label, -label_step * (r.has_movement ? 2.0f : 1.0f));
+    if (r.has_movement) FollowText(base, r.reset, r.movement_label, -label_step);  // [movement]
+  }
   for (int i = 0; i < kAdvSubRows; ++i) {
     const float dy = r.pitch * float(i);
     FollowText(base, r.invert[0], r.vrow[i].text_a, dy);
@@ -924,12 +1353,24 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
     FollowQuad(base, r.invert[2], r.vrow[i].arrow_left, dy);
     FollowQuad(base, r.invert[3], r.vrow[i].arrow_right, dy);
   }
+  if (r.video && r.page == kPageAim) {  // [claude-9b] values next to the labels, a gap between the groups
+    const float dx = -AimValueShift(base, r);
+    for (int i = 0; i < kAdvSubRows; ++i) {
+      const float dy = i >= am::kSecondGroup ? kAimGroupGap * r.pitch : 0.0f;
+      ShiftXY(base, r.vrow[i].text_a, false, 0.0f, dy);
+      ShiftXY(base, r.vrow[i].text_b, false, dx, dy);
+      ShiftXY(base, r.vrow[i].arrow_left, true, dx, dy);
+      ShiftXY(base, r.vrow[i].arrow_right, true, dx, dy);
+    }
+  }
   FollowBright(base, r);  // [menus-brightness]
   // The note: one blank row under the sub page's rows (and BRIGHTNESS on the
   // video page), centered like Reset.
   const int rows = PageOf(r).rows + (r.has_bright && r.page == kPageVideo ? 1 : 0);
   const float note_y = ReadF32(base, r.invert[0] + fe::kTextY) + r.pitch * float(rows + 1);
   FollowText(base, r.reset, r.note, note_y - ReadF32(base, r.reset + fe::kTextY));
+  if (r.video && r.page == kPageAim) ShiftXY(base, r.note, false, 0.0f, kAimGroupGap * r.pitch);  // [claude-9b]
+  FollowSliderArrows(base, r);  // [claude-9b] the slider rows' own arrows
 }
 
 // Highlights `index` the way the page's own moves do (FEMenu::SetSelection,
@@ -987,6 +1428,7 @@ void ShowAdvVideoValues(PPCContext& ctx, uint8_t* base, AdvRows& r) {
 void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, int page) {
   if (!r.has_video || r.video) return;
   if (page == kPageMovement && !r.has_movement) return;  // [movement]
+  if (page == kPageAim && !r.has_aim) return;  // [claude-9b]
   r.page = page;
   const int count = static_cast<int16_t>(ReadU16(base, self + fe::kItemCount));
   for (int i = 0; i < count && i < kAdvItemsAll; ++i) {
@@ -1012,7 +1454,8 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   FollowTank(base, r);
   AdvSelect(ctx, base, self, kAdvVideoFirst);
   ShowAdvNote(ctx, base, self, r);
-  REXLOG_INFO("cod3: pause menu: {} options", page == kPageMovement ? "movement" : "video");
+  REXLOG_INFO("cod3: pause menu: {} options",
+              page == kPageAim ? "aim" : page == kPageMovement ? "movement" : "video");  // [claude-9b] aim
 }
 
 void LeaveAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, bool select_row) {
@@ -1030,7 +1473,7 @@ void LeaveAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, bo
   SetTextKey(ctx, base, r.title, cod3::guest::ReadString(base, adv::kTitleKey, 64).c_str());
   r.video = false;
   r.reopened = false;
-  if (select_row) AdvSelect(ctx, base, self, r.page == kPageMovement ? kAdvMovementItem : kAdvVideoItem);
+  if (select_row) AdvSelect(ctx, base, self, PageItem(r.page));  // [claude-9b] PageItem: and AIM
 }
 
 // Adds VIDEO OPTIONS and the video rows (Init, after the FOV rows). Returns
@@ -1158,7 +1601,87 @@ int AddAdvMovementRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r)
   r.has_movement = true;
   FollowTank(base, r);
   REXLOG_INFO("cod3: in-game options: MOVEMENT OPTIONS added");
+  return kAdvAimItem;  // [claude-9b] was kAdvItemsAll (AIM comes after)
+}
+
+// [claude-9b] Adds AIM (Init, after MOVEMENT OPTIONS): one more copy of
+// Reset's label. With it the three page buttons share one line (FollowTank)
+// and take short labels: VIDEO, MOVEMENT, AIM. Returns the page's item count.
+int AddAdvAimRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  auto valid = [](uint32_t p) { return p >= 0x10000 && (p & 3) == 0; };
+  if (!r.has_movement) return kAdvAimItem;
+  r.aim_label = CopyElement(ctx, base, r.reset, false, 0.0f);  // owned by the page (dtor hook)
+  if (!valid(r.aim_label) || !AddLabelItem(ctx, base, self, kAdvAimItem, r.aim_label, am::PauseItemKey())) {
+    REXLOG_WARN("cod3: in-game options: AIM not added");
+    if (valid(r.aim_label)) SetVisible(ctx, base, r.aim_label, false);
+    return kAdvAimItem;
+  }
+  r.has_aim = true;
+  r.button = kAdvVideoItem;
+  SetItemLabelKey(ctx, base, self, kAdvVideoItem, am::VideoButtonKey());
+  SetItemLabelKey(ctx, base, self, kAdvMovementItem, am::MovementButtonKey());
+  FollowTank(base, r);
+  REXLOG_INFO("cod3: in-game options: AIM added; VIDEO, MOVEMENT and AIM on one line (Reset x {:.1f}, rows x {:.1f})",
+              ReadF32(base, r.reset + fe::kTextX), ReadF32(base, r.tank[0] + fe::kTextX));
   return kAdvItemsAll;
+}
+
+// [claude-9b] Makes the slider rows' pictures and numbers (Init, after AIM):
+// copies of Volume's gauge and of Invert Aim's arrows and value, owned by the
+// page (freed with it); the rows with arrows of their own keep them.
+void AddSliders(PPCContext& ctx, uint8_t* base, uint32_t panel, AdvRows& r) {
+  auto valid = [](uint32_t p) { return p >= 0x10000 && (p & 3) == 0; };
+  r.gauge_frame = FindQuad(ctx, base, panel, "MusicVolProgbar");
+  r.gauge_fill = FindQuad(ctx, base, panel, "MusicVolumeProgbar2");
+  if (!r.gauge_frame || !r.gauge_fill || !valid(r.invert[1]) || !r.invert[2] || !r.invert[3]) {
+    REXLOG_WARN("cod3: in-game options panel has no Volume gauge; no slider rows");
+    return;
+  }
+  bool ok = true;
+  for (int slot = 0; slot < kSliderSlots; ++slot) {
+    Slider& s = r.slider[slot];
+    if (slot < kSlotFov || slot == kSlotBright) {
+      s.left = CopyElement(ctx, base, r.invert[2], true, 0.0f);
+      s.right = CopyElement(ctx, base, r.invert[3], true, 0.0f);
+      s.own_arrows = true;
+    } else {
+      const FovRow& row = slot < kSlotBright ? r.row[slot - kSlotFov] : r.vrow[slot - kSlotSub];
+      s.left = row.arrow_left;
+      s.right = row.arrow_right;
+    }
+    if (slot == kSlotBright && r.has_bright) {
+      s.frame = r.bright_back;
+      s.fill = r.bright_fill;
+    } else {
+      s.frame = CopyElement(ctx, base, r.gauge_frame, true, 0.0f);
+      s.fill = CopyElement(ctx, base, r.gauge_fill, true, 0.0f);
+      s.own_gauge = true;
+    }
+    s.box = CopyElement(ctx, base, r.gauge_frame, true, 0.0f);
+    s.text = CopyElement(ctx, base, r.invert[1], false, 0.0f);
+    for (uint32_t e : {s.left, s.right, s.frame, s.fill, s.box, s.text}) ok = ok && valid(e);
+    for (uint32_t e : {s.frame, s.fill, s.box, s.text}) SetVisible(ctx, base, e, true);
+    if (s.own_arrows) {  // shown, at the other rows' arrows' resting brightness
+      const float normal = ReadF32(base, fe::kArrowAlphaNormal);
+      for (uint32_t e : {s.left, s.right}) {
+        SetVisible(ctx, base, e, true);
+        SetAlpha(ctx, base, e, normal);
+      }
+    }
+  }
+  if (!ok) {
+    REXLOG_WARN("cod3: in-game options: slider rows not added");
+    return;  // the copies made are freed with the page
+  }
+  // The game's own gauges and the band behind them: the slider rows draw theirs.
+  for (const NativeGauge& g : kNativeGauges)
+    for (const char* name : {g.frame, g.fill})
+      if (const uint32_t e = FindQuad(ctx, base, panel, name)) r.gauges.push_back(e);
+  if (const uint32_t e = FindQuad(ctx, base, panel, kGaugeBand)) r.gauges.push_back(e);
+  r.has_sliders = true;
+  FollowTank(base, r);
+  REXLOG_INFO("cod3: in-game options: slider rows with number boxes ready (the game's {} gauge pictures hidden)",
+              r.gauges.size());
 }
 }  // namespace
 
@@ -1244,6 +1767,8 @@ REX_HOOK_RAW(sub_824E60E8) {
       if (r.reset) used = AddAdvVideoRows(ctx, base, self, panel, r);
       if (used == kAdvItemsMax) used = AddAdvBrightRow(ctx, base, self, panel, r);  // [menus-brightness]
       if (used == kAdvMovementItem) used = AddAdvMovementRow(ctx, base, self, r);  // [movement]
+      if (used == kAdvAimItem) used = AddAdvAimRow(ctx, base, self, r);  // [claude-9b]
+      if (used == kAdvItemsAll) AddSliders(ctx, base, panel, r);  // [claude-9b] slider rows
     }
   }
   SetItemCount(base, self, used);
@@ -1271,10 +1796,15 @@ REX_HOOK_RAW(AdvancedOptionsMenu__dtor) {
   std::vector<uint32_t> copies;
   const FovRow& sc = r.row[1];
   copies.insert(copies.end(), {sc.text_a, sc.text_b, sc.arrow_left, sc.arrow_right, r.video_label, r.note,
-                               r.movement_label});  // [movement]
+                               r.movement_label, r.aim_label});  // [movement] [claude-9b] aim_label
   for (const FovRow& v : r.vrow)
     copies.insert(copies.end(), {v.text_a, v.text_b, v.arrow_left, v.arrow_right});
   copies.insert(copies.end(), {r.bright_label, r.bright_back, r.bright_fill});  // [menus-brightness]
+  for (const Slider& s : r.slider) {  // [claude-9b] the slider rows' own pictures and numbers
+    copies.insert(copies.end(), {s.box, s.text});
+    if (s.own_arrows) copies.insert(copies.end(), {s.left, s.right});
+    if (s.own_gauge) copies.insert(copies.end(), {s.frame, s.fill});
+  }
   for (uint32_t e : copies)
     if (e) VCall(ctx, base, e, fe::kElemDelete, 1);
 }
@@ -1311,6 +1841,7 @@ REX_HOOK_RAW(sub_824EE128) {
   if (!GetAdv(base, self, r)) return;
   FollowTank(base, r);
   ShowBrightFill(ctx, base, r);  // [menus-brightness]
+  if (UpdateSliders(ctx, base, self, r)) PutAdv(self, r);  // [claude-9b] the number boxes
   if (!r.video) return;
   if (r.reopened) {  // opened again from the pause menu
     LeaveAdvVideo(ctx, base, self, r, /*select_row=*/false);
@@ -1334,6 +1865,9 @@ REX_HOOK_RAW(sub_824EE128) {
 // Draw: panel, items (our labels too), values; then our copied values and
 // arrows. With the video rows up, the options' values, arrows and gauges are
 // skipped while the page draws (their visible flag cleared and put back).
+// [claude-9b] With slider rows, the game's own gauges are skipped too (and
+// FIELD OF VIEW's value, which is in its number box), and the slider rows are
+// drawn last.
 REX_EXTERN(__imp__AdvancedOptionsMenu__vfunc_14);
 REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_14) {
   const uint32_t self = ctx.r3.u32;
@@ -1341,15 +1875,16 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_14) {
   const bool ours = GetAdv(base, self, r);
   if (ours) FollowTank(base, r);
   if (ours) ShowBrightFill(ctx, base, r);  // [menus-brightness]
-  if (!ours || !r.video) {
+  if (!ours) {
     __imp__AdvancedOptionsMenu__vfunc_14(ctx, base);
-    if (!ours) return;
-    for (uint32_t e : {r.row[1].arrow_left, r.row[1].arrow_right, r.row[1].text_b})
-      if (e) VCall(ctx, base, e, fe::kElemDraw);
     return;
   }
+  std::vector<uint32_t> skip = r.gauges;  // [claude-9b]
+  if (r.video) skip.insert(skip.end(), r.hide.begin(), r.hide.end());
+  else if (SliderShown(base, self, r, kSlotFov)) skip.push_back(r.row[0].text_b);  // [claude-9b]
   std::vector<std::pair<uint32_t, uint8_t>> shown;
-  for (uint32_t e : r.hide) {
+  for (uint32_t e : skip) {
+    if (!e) continue;
     const uint8_t flags = ReadU8(base, e + 16);
     if (!(flags & 0x4)) continue;
     shown.emplace_back(e, flags);
@@ -1357,13 +1892,25 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_14) {
   }
   __imp__AdvancedOptionsMenu__vfunc_14(ctx, base);
   for (const auto& [e, flags] : shown) cod3::guest::WriteU8(base, e + 16, flags);
-  for (int i = 0; i < PageOf(r).rows; ++i)
-    for (uint32_t e : {r.vrow[i].arrow_left, r.vrow[i].arrow_right, r.vrow[i].text_b})
+  if (!r.video) {
+    for (uint32_t e : {r.row[1].arrow_left, r.row[1].arrow_right})
       if (e) VCall(ctx, base, e, fe::kElemDraw);
-  if (BrightShown(r))  // [menus-brightness] BRIGHTNESS's gauge: frame, then fill
-    for (uint32_t e : {r.bright_back, r.bright_fill})
-      if (e) VCall(ctx, base, e, fe::kElemDraw);
-  if (r.note) VCall(ctx, base, r.note, fe::kElemDraw);
+    if (r.row[1].text_b && !SliderShown(base, self, r, kSlotScale))  // [claude-9b] else in its box
+      VCall(ctx, base, r.row[1].text_b, fe::kElemDraw);
+  } else {
+    for (int i = 0; i < PageOf(r).rows; ++i) {
+      for (uint32_t e : {r.vrow[i].arrow_left, r.vrow[i].arrow_right})
+        if (e) VCall(ctx, base, e, fe::kElemDraw);
+      if (r.vrow[i].text_b && !SliderShown(base, self, r, kSlotSub + i))  // [claude-9b] else in its box
+        VCall(ctx, base, r.vrow[i].text_b, fe::kElemDraw);
+    }
+    if (r.page == kPageAim) AimPreviewBox(base, r);  // [claude-9b] the crosshair preview, top right
+    if (BrightShown(r) && !r.has_sliders)  // [menus-brightness] BRIGHTNESS's gauge: frame, then fill
+      for (uint32_t e : {r.bright_back, r.bright_fill})
+        if (e) VCall(ctx, base, e, fe::kElemDraw);
+    if (r.note) VCall(ctx, base, r.note, fe::kElemDraw);
+  }
+  if (DrawSliders(ctx, base, self, r)) PutAdv(self, r);  // [claude-9b] the slider rows
 }
 
 // MoveDown / MoveUp: Tank Controls (8) -> FIELD OF VIEW (11) -> FOV SCALE
@@ -1383,6 +1930,8 @@ REX_HOOK_RAW(sub_824C41B8) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.has_aim && sel == kAdvScaleItem) return AdvSelect(ctx, base, self, ButtonItem(r));  // [claude-9b]
+    if (r.has_aim && IsButton(sel)) return AdvSelect(ctx, base, self, adv::kResetItem);  // [claude-9b]
     if (sel == adv::kTankItem) return AdvSelect(ctx, base, self, kAdvFovItem);
     if (sel == kAdvFovItem) return AdvSelect(ctx, base, self, scale ? kAdvScaleItem : adv::kResetItem);
     if (sel == kAdvScaleItem) return AdvSelect(ctx, base, self, r.has_video ? kAdvVideoItem : adv::kResetItem);
@@ -1407,6 +1956,8 @@ REX_HOOK_RAW(sub_824C4218) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.has_aim && sel == adv::kResetItem) return AdvSelect(ctx, base, self, ButtonItem(r));  // [claude-9b]
+    if (r.has_aim && IsButton(sel)) return AdvSelect(ctx, base, self, kAdvScaleItem);  // [claude-9b]
     if (sel == adv::kResetItem)
       return AdvSelect(ctx, base, self,
                        r.has_movement ? kAdvMovementItem  // [movement]
@@ -1448,6 +1999,18 @@ REX_HOOK_RAW(sub_824DC1C0) {
     ShowBrightFill(ctx, base, r);
     return;
   }
+  // [claude-9b] The page buttons' line: left and right move along it.
+  if (IsButton(sel) && GetAdv(base, self, r) && r.has_aim && !r.video) {
+    static constexpr int kLine[3] = {kAdvVideoItem, kAdvMovementItem, kAdvAimItem};
+    const int at = sel == kAdvAimItem ? 2 : sel == kAdvMovementItem ? 1 : 0;
+    const int next = kLine[std::clamp(at + (right ? 1 : -1), 0, 2)];
+    if (next != sel) {
+      r.button = next;
+      PutAdv(self, r);
+      AdvSelect(ctx, base, self, next);
+    }
+    return;
+  }
   if (sel >= kAdvVideoItem) return;  // VIDEO / MOVEMENT OPTIONS: no value
   __imp__sub_824DC1C0(ctx, base);
 }
@@ -1465,6 +2028,14 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_19) {
       PutAdv(self, r);
     } else if (item == kAdvMovementItem && r.has_movement && !r.video) {  // [movement]
       EnterAdvVideo(ctx, base, self, r, kPageMovement);
+      PutAdv(self, r);
+    } else if (item == kAdvAimItem && r.has_aim && !r.video) {  // [claude-9b]
+      am::OnOpen(base);
+      EnterAdvVideo(ctx, base, self, r, kPageAim);
+      PutAdv(self, r);
+    }
+    if (IsButton(item) && r.has_aim) {  // [claude-9b] B comes back to this button
+      r.button = item;
       PutAdv(self, r);
     }
     return;  // A on a sub page's row: nothing, like the game's option rows
@@ -1552,6 +2123,11 @@ REX_HOOK_RAW(Localize) {
     }
     // [movement] The movement settings' texts (game/movement/menu_movement.h).
     if (const uint32_t text = cod3::movementmenu::Localize(base, k)) {
+      ctx.r3.u64 = text;
+      return;
+    }
+    // [claude-9b] The AIM page's texts (game/menu_aim.h).
+    if (const uint32_t text = cod3::aimmenu::Localize(base, k)) {
       ctx.r3.u64 = text;
       return;
     }

@@ -28,8 +28,9 @@
 //   config files, exec, guest scripts and the game's menus: they reach the
 //     game's Cvar_Set2, where RefuseGuestWrite refuses the name always (a
 //     protected dvar is never a guest dvar) (game/cheat_watch.cpp);
-//   F2 and the game's Options menus: the rows ask IsLocked and show the
-//     server's value, locked;
+//   F2: the rows are on F2 > Game > Server, which is only shown to the host
+//     (ui/server_tab.h) [claude-9b]; the game's Options menus: the rows ask
+//     IsLocked and show the server's value, locked;
 //   any port code, the command line and cod3.toml: the port settings refuse
 //     a change while locked (their validator), and the command line and the
 //     file are read only at start, before any match;
@@ -54,8 +55,9 @@ enum class Id : int {
   kAlternateMovement,        // 0 CoD3 for everyone, 1 CoD4 for everyone, 2 each player's choice
   kAlternateMovementSprint,  // under 1: the CoD4 parts for everyone
   kAlternateMovementSpeeds,
-  kAlternateMovementMantle,
   kAlternateMovementJumps,
+  kStickyAim,    // [claude-9b] 0 Sticky Aim off for everyone, 1 each player's own choice (game/sticky_aim.h)
+  kAimSlowdown,  // [claude-9b] 0-100: the share of Sticky Aim's pull kept (never above the game's)
   kCount
 };
 inline constexpr int kCount = static_cast<int>(Id::kCount);

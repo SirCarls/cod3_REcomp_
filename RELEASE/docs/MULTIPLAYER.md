@@ -611,17 +611,19 @@ spawned and moved):
   (4.8); `cod3_hd_compare` is campaign only.
 - Screenshots (`screenshot`, the debug log's shots): the game's own picture
   only.
-- The main menu: DOWNLOAD CONTENT becomes QUIT TO DESKTOP (press A twice
-  within 20 s), and XBOX LIVE says it isn't part of the PC version.
+- The main menu: DOWNLOAD CONTENT becomes QUIT TO DESKTOP (asks first in the
+  game's Yes/No box), and XBOX LIVE says it isn't part of the PC version.
+- Mouse and keyboard in every menu and the button prompts per player (4.15).
+- FIELD OF VIEW and FOV SCALE on MULTIPLAYER OPTIONS > GAMEPLAY and on Pause >
+  OPTIONS in a match (4.15).
 - Keyboard movement. Raw mouse aim is compiled in but untested: in the cloud
   a match frame takes 5-14 s, longer than the 1.5 s the mouse code allows
   between frames, so the cloud can't show it.
 
 **Not in `cod3mp` yet (why):** the film skip (no films in multiplayer),
-battle actions and the QTE spinner (none in multiplayer), the option rows in
-the game's own menus (FOV, VIDEO, BRIGHTNESS), menu mouse control and button
-prompts (multiplayer's menu classes have other fields and virtual functions,
-and its option pages are its own `MP*` classes), Sticky Aim (kept per
+battle actions and the QTE spinner (none in multiplayer), the VIDEO and
+BRIGHTNESS rows in the game's own menus (its option pages are its own `MP*`
+classes; next, 4.15), Sticky Aim (kept per
 controller profile in multiplayer), the voice language (multiplayer's own
 sound banks), the decomp trace build, the level DLL hooks (multiplayer has no
 level DLLs). F2 has the same settings meanwhile.
@@ -632,8 +634,12 @@ level DLLs). F2 has the same settings meanwhile.
   The game's voice and session object (0x82A9ACB8) is made by the sound
   system's start-up and stays empty without a device. `cod3mp` says so (log
   and a HUD line) 15 s after the main menu appears.
-- QUIT TO DESKTOP isn't on the pause pages yet; in a match, the console's
-  `quit` and the window's close button work.
+- In a match started from the console (`map verdun`), the pause menu's own
+  QUIT stops the game: its leave runs in a script thread (0x823FBA08 ->
+  0x823FB698) that reads the session object at `*0x82BCCAC0`, which such a
+  match doesn't have (checked with the pad and the PC menus off, run
+  `claude-setup-mpm4`). Matches made from the menus have it. QUIT TO DESKTOP
+  doesn't go through that leave (4.15).
 - The garbage bytes in the log line when multiplayer hands back to the
   campaign came from the SDK (`XamLoaderLaunchTitle` kept a view of a freed
   string): SDK patch 0043; `relaunch.cpp` also prints only the file name now,
@@ -725,7 +731,9 @@ addresses through `campaign_map.tsv`. Multiplayer's own parts:
   (0x82B3EDB8 + pad), the client's front-end object (`*(g_FEManager+208+cl*4)`, its vfunc at
   +92), and the client in a match (`0x82C7A270 + 184 + cl*3208` == 2: otherwise the game
   gives every press to the menu keys, so the keys press the controller rows there too);
-- the pad state hook for interactions: `game/keybinds/pad_state_mp.cpp` (0x82314360).
+- the pad state hook for interactions: the campaign's (`game/button_prompts.cpp`, `sub_82344F98`
+  through `mp_aliases.h`, cod3mp's 0x82314360), which calls the keybinds' too since 2026-10-20;
+  `game/keybinds/pad_state_mp.cpp` is no longer built.
 
 Keys changed in the campaign carry over (multiplayer reads `cod3.toml`); a controller row the
 player changed keeps its keys in play too (once, `cod3mp_binds_version`); the console's `bind`
@@ -733,6 +741,72 @@ for actions is the campaign's only so far. To check on the PC: in a
 match, R reloads, F uses, G / 4 throw the frag / special grenade, C / CTRL / SPACE change stance,
 the wheel and 1 / 2 switch weapons; the menus still take SPACE, ENTER and the arrows;
 `cod3mp.log` has `cod3: key binds: 33 of 33 actions call the game's own commands (multiplayer)`.
+
+### 4.15 Menus: mouse, keyboard, quitting and prompts per player (2026-10-20)
+
+Owner 2026-10-20: "The mp menus still need work. They need to be similar in style to the main
+menu in their navigation. (Please also consider in-gameplay menus and main menus)"; answers:
+navigation plus the option rows, QUIT TO DESKTOP like the campaign, and the problems "Mouse does
+nothing", "Keys behave differently", "Cursor shows/hides wrong", "not respecting dynamically
+changing controls (MNK or controller)"; then "please also account for multiple players on the
+same system using different inputs (glyphs should match each one)".
+
+- **One menu layer for both programs.** `game/pc_menu.cpp` (the campaign's mouse and keyboard
+  layer) is compiled into `cod3mp`: its hooks bind to multiplayer's menu functions through
+  `mp_aliases.h`, and the parts that differ (the menu systems at `g_FEManager` 0x82C6B1FC: front
+  end +28, message boxes +192, in-match +208, after-match +224; the list menus' `UIListBox`
+  rows; the message box's buttons) are `#if defined(COD3_MP)` blocks. Every menu takes the mouse
+  (point, click, right click back, wheel, the value side of option rows) and the keys (arrows,
+  Enter, Escape/Backspace): the main menu, system link and split screen pages, side and kit
+  selection, the pause pages in and after a match, the options pages and the message boxes.
+  The cursor shows over menus and hides in play (`menus_mp::MenuActive`: a menu drew this frame
+  or the last).
+- **Split screen.** The keyboard and mouse belong to the player on the first controller (the
+  SDK gives them to guest user 0 with that pad; `binds::KeyboardClient`): only that player's
+  menus and message boxes take them; the others keep their controllers. The front end's boxes
+  are everyone's.
+- **QUIT TO DESKTOP** (`game/mp/menus_mp.cpp`): DOWNLOAD CONTENT on the main menu, and a seventh
+  row under QUIT on the pause pages (full screen and split screen, in a match and after it). It
+  asks in the game's own Yes/No box (No first); No, B or Escape close the box, the way the
+  game's own QUIT box does (in a match that is back to play); Yes saves the settings and ends
+  the program like the window's close button. In a match the others see this player drop: the
+  game's own leave isn't used (Known problems, 4.12).
+- **Prompts per player** (`game/button_prompts.cpp`): each text belongs to the player it was
+  made for, and only the keyboard player's prompts show keys, switching with the last device
+  that player used. `cod3_glyph_style` auto (the new default) shows every player the buttons of
+  the controller in their hands: SDK patch 0067 says which kind of pad each guest user holds
+  (`InputSystem::PadFamily`: Xbox pads the game's pictures, PlayStation pads `[CROSS]`, Switch
+  pads `[B]` for the bottom button, an unknown pad the game's pictures). The log says
+  `controller N is a PlayStation pad` when a player's kind changes.
+- **Checked on the owner's PC** (REA runs `claude-setup-mpm2` to `-mpm7`, keys and a scripted
+  controller): the main menu, OPTIONS and its pages, side and kit selection, the pause menu
+  (wrapping from the first row to QUIT TO DESKTOP), both quit boxes (No first, Escape closes,
+  Up to Yes, Yes quits with exit code 0), the prompts switching from keys to `[CROSS]` buttons
+  and back. For tests: `--cod3_test_menu_input="40:key=down;44:key=enter;50:click=120,190"` (keys,
+  mouse and wheel at given seconds) and `--cod3_test_input="pad=playstation;60:START"` (the
+  scripted controller says which kind it is).
+- **FIELD OF VIEW and FOV SCALE in the game's own menus** (`game/mp/options_mp.cpp`, 2026-10-20
+  evening), like the campaign's rows: on MULTIPLAYER OPTIONS > GAMEPLAY under STICKY AIM and
+  CROSSHAIR (the panel's hidden rows three and four, with their own title and help text), and in
+  a match on Pause > OPTIONS under VIBRATION, with RESTORE DEFAULTS two rows lower (copies of the
+  VIBRATION row: that panel has no spare rows; the after-match page's OPTIONS gets them too, not
+  run yet). Left / right, the arrows or a click on them step `cg_fov` by 5 and `cg_fovScale` by
+  0.05, within what the other allows (65 to 165 together), applied at once and saved like F2; a
+  change made in F2 or the console shows on the rows. The split-screen layout of Pause > OPTIONS
+  (four rows that scroll) keeps its own ten rows; F2 has both settings there. Checked on the
+  owner's PC: REA runs `claude-setup-mpo2` (front end: keys, title and help text), `-mpo3` (in a
+  match: the rows, the highlight VIBRATION > FIELD OF VIEW > FOV SCALE > RESTORE DEFAULTS and
+  back, the values) and `-mpo4` (in a match: mouse clicks on the arrows).
+- **No vibration for the keyboard player's controller** (`game/rumble.{h,cpp}`, shared with the
+  campaign, 2026-10-20): the keyboard and mouse share guest user 0 with the first controller, so
+  while they are in use that controller gets no vibration (the game's speeds are kept and sent
+  when it is used again). Only user 0 is ever held back: split-screen players 2-4 on their own
+  controllers always get the game's vibration. Checked on the owner's PC in Verdun (REA run
+  `claude-setup-rb-mp1`); [KEYBINDS.md](KEYBINDS.md#controller-vibration).
+- **Next:** the Options menus become category pages (waw-decomp's plan,
+  `dev/agents/waw-decomp/MENU_REDESIGN.md`): cod3mp's VIDEO page, with BRIGHTNESS and the
+  depth-of-field and motion-blur rows, comes with it; a key bindings page for both programs
+  (CONTROLS).
 
 ## 5. Unknowns
 
@@ -763,11 +837,12 @@ the wheel and 1 / 2 switch weapons; the menus still take SPACE, ENTER and the ar
 - `recomp/mp/`: the `cod3mp` target (manifest, `config/codmp.toml`,
   `config/names_mp.toml`, `CMakeLists.txt`, `generated/rexglue.cmake`).
 - `recomp/src/cod3mp_app.{h,cpp}`, `recomp/src/main_mp.cpp`,
-  `recomp/src/game/mp/` (`session`, `menus_mp`, `hud_mp`, `controls_mp`,
+  `recomp/src/game/mp/` (`session`, `menus_mp`, `options_mp`, `hud_mp`, `controls_mp`,
   `controls_rules.h`, `campaign_stubs` and the three generated files): the
   multiplayer program's own code;
-  `recomp/src/game/keybinds/` (shared with the campaign; `pad_state_mp.cpp` is `cod3mp`'s only,
-  4.14);
+  `recomp/src/game/keybinds/` (shared with the campaign, 4.14);
+  `recomp/src/game/pc_menu.{h,cpp}`, `recomp/src/game/button_prompts.{h,cpp}` and
+  `recomp/src/game/rumble.{h,cpp}` (shared with the campaign, 4.15);
   `recomp/src/game/program.h`: `COD3_ADDR`, `COD3_TEXT`, `kMultiplayer`;
   `recomp/src/game/relaunch.{h,cpp}`: switching between the two programs.
 - `c3w/pipeline.py` (`MP_XEX`, `KNOWN_MP_XEX`, `_copy_mp_xex`), and

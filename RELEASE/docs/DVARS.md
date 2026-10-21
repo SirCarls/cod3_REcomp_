@@ -106,6 +106,72 @@ A name goes through the game under Call of Duty 3's name, so the cheat
 protection above applies to it the same way. The table is in
 `recomp/src/ui/waw_dvars.cpp`.
 
+## Counter-Strike 2's weapon position
+
+The console also takes Counter-Strike 2's weapon position commands, so a CS2
+config line can be pasted as it is (campaign and multiplayer):
+
+| Command | Range | What it does |
+|---|---|---|
+| `viewmodel_offset_x` | -2.5 to 2.5 | weapon to the right (negative: to the left) |
+| `viewmodel_offset_y` | -2 to 2 | weapon away from you (negative: closer) |
+| `viewmodel_offset_z` | -2 to 2 | weapon up (negative: lower) |
+| `viewmodel_presetpos` | 0 to 3 | CS2's positions: 1 Desktop (1, 1, -1), 2 Couch (0, 0, -1.5), 3 Classic (2.5, 0, -1.5); 0 your own offsets |
+
+They are the port's settings `cod3_viewmodel_offset_x`, `_y`, `_z` and
+`cod3_viewmodel_presetpos` (F2 > Game > Weapon: a preset list and Right,
+Forward and Up sliders; saved with the other settings, and multiplayer uses
+the campaign's), in game units, all 0 by default (the game's own place). Typing an
+offset while a preset is chosen starts from that preset and makes the
+position your own (0), as moving F2's sliders does. They aren't cheat
+protected: the game's own `cg_gunX`, `cg_gunY` and `cg_gunZ` are, and are left
+alone; the port adds the offsets where the game places the weapon. They fade
+out as the weapon comes up to the sights, so aiming down the sights stays as
+it was: only FOV scale changes the aimed view. `viewmodel_fov` has no counterpart: Call of Duty 3 draws the weapon
+with the view's field of view (`cg_fov`), and the console says so.
+
+## Aim: sensitivity per weapon and aim assist
+
+<!-- [claude-9b] 2026-10-20 -->
+
+**Sensitivity per weapon class** (F2 > Controls > Sensitivity per weapon;
+campaign and multiplayer). The port settings are `cod3_weapon_sensitivity`
+(player 1) and `cod3_weapon_sensitivity_p2` to `_p4` (multiplayer's
+split-screen players 2 to 4). Each is a list of `group=hip/aiming`
+percentages from 0 to 200, for example `smg=80/60 sniper=100/40`. A group
+that isn't listed stays at 100/100, the game's own feel; `group=N` sets both
+numbers. The groups follow the game's weapon classes: `rifle`, `shotgun`,
+`sniper` (scoped rifles), `smg`, `lmg`, `mg`, `pistol`, `launcher`,
+`mounted`, `other`. The percentage blends from hip to aiming as the weapon
+comes up to the sights. It applies to the mouse and to the stick (after the
+game's own turn limits, so it holds at full stick). The FOV, the zoom and
+aiming itself don't change, and aim assist is never touched.
+
+**Aim assist (Sticky Aim)** is Call of Duty 3's only aim assist. Each
+player's own switch is Options > Gameplay > Sticky Aim (also F2 > Game >
+Aim). Near an enemy it pulls the view a little toward them each time it
+runs, which is what slows a sweep past an enemy. The game ran it once a
+frame, so it got stronger as the frame rate went up (2.4 times at 144 fps)
+and weaker below 60. The port runs it 60 times a second at any frame rate,
+the console's rate, counted from the game's own input times so the host and
+every player's prediction agree. Two `server_sided_protected` dvars
+(docs/MOVEMENT.md, section 5) are the match's rule:
+
+| dvar | values (default) | what it does |
+|---|---|---|
+| `sticky_aim` | 0 / 1 (1) | 0: Sticky Aim off for everyone. 1: each player's own Options choice (never turned on for someone who chose off). |
+| `aim_slowdown` | 0 to 100 (100) | How hard Sticky Aim pulls, in percent of the game's own. It can't go above 100. |
+
+In a match the host's values apply to every player, and nothing on a
+guest's machine can change them (the console says why); a player's own
+values come back when they leave. In the campaign you are the host. The
+host sets them on F2 > Game > Server, a tab only the host sees (with the
+movement rule); F2 > Game > Aim shows what applies now.
+cod3mp doesn't build this category yet (it waits for the multiplayer
+transport), so multiplayer keeps the game's own rule, each player's choice
+at the full pull, at the same fixed 60 a second. `cod3_debug_sticky_aim`
+logs once a second how many inputs the game made and how many pulls ran.
+
 ## Hidden switches
 
 Some dvars aren't made by the game at start:

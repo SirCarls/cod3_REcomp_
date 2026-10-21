@@ -52,7 +52,6 @@ std::string Describe(const MoveRules& rules) {
     };
     add(rules.parts.sprint, "sprint");
     add(rules.parts.speeds, "speeds");
-    add(rules.parts.mantle, "mantling");
     add(rules.parts.jumps, "jump tricks");
     out += " (" + (parts.empty() ? std::string("no parts") : parts) + ")";
   }
@@ -121,7 +120,7 @@ void SprintRestart::RanOut(bool button_held) {
 std::string EncodePreference(const Preference& pref) {
   if (!pref.cod4) return "3";
   std::string s = "4";
-  for (bool on : {pref.parts.sprint, pref.parts.speeds, pref.parts.mantle, pref.parts.jumps}) s += on ? '1' : '0';
+  for (bool on : {pref.parts.sprint, pref.parts.speeds, false, pref.parts.jumps}) s += on ? '1' : '0';  // third: unused
   return s;
 }
 
@@ -138,7 +137,7 @@ bool DecodePreference(std::string_view text, Preference* out) {
     bits[i] = text[i + 1] == '1';
   }
   p.cod4 = true;
-  p.parts = {bits[0], bits[1], bits[2], bits[3]};
+  p.parts = {bits[0], bits[1], bits[3]};  // bits[2]: unused (rules.h)
   *out = p;
   return true;
 }
@@ -183,46 +182,6 @@ bool ProjectKeepSpeed(const float in[3], const float n[3], float out[3]) {
   for (int i = 0; i < 3; ++i) out[i] = along[i] / len * speed;
   return true;
 }
-
-namespace mantle {
-
-bool FacingWall(const float forward[2], const float normal[3]) {
-  if (std::fabs(normal[2]) >= kWallMaxNormalZ) return false;
-  const float nx = -normal[0], ny = -normal[1];  // into the wall
-  const float len = std::sqrt(nx * nx + ny * ny);
-  if (!(len > 1e-3f)) return false;
-  const float facing = (forward[0] * nx + forward[1] * ny) / len;
-  return facing >= std::cos(cod4::kMantleCheckAngle * 3.14159265f / 180.0f);
-}
-
-bool HeightOk(float height) { return height > kMinHeight && height <= kMaxHeight; }
-
-bool Position(const float start[3], const float top_z, const float end[3], int elapsed_ms, float out[3]) {
-  if (elapsed_ms < 0) elapsed_ms = 0;
-  if (elapsed_ms < kRiseMs) {
-    // Up first, easing out (fast at the start, slow at the top).
-    const float t = static_cast<float>(elapsed_ms) / kRiseMs;
-    const float ease = 1.0f - (1.0f - t) * (1.0f - t);
-    out[0] = start[0];
-    out[1] = start[1];
-    out[2] = start[2] + (top_z - start[2]) * ease;
-    return true;
-  }
-  const int forward_ms = elapsed_ms - kRiseMs;
-  if (forward_ms < kForwardMs) {
-    const float t = static_cast<float>(forward_ms) / kForwardMs;
-    out[0] = start[0] + (end[0] - start[0]) * t;
-    out[1] = start[1] + (end[1] - start[1]) * t;
-    out[2] = top_z + (end[2] - top_z) * t;
-    return true;
-  }
-  out[0] = end[0];
-  out[1] = end[1];
-  out[2] = end[2];
-  return false;
-}
-
-}  // namespace mantle
 
 // --- CoD4 PC's movement steps ------------------------------------------------------------
 float SnapToUnit(float v) {

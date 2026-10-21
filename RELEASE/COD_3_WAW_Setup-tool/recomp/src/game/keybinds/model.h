@@ -21,9 +21,18 @@
 //            (weaponslot, 1 / 2), the weapon's other mode
 //   General  objectives / scores (+scores; no key by default: TAB stays the
 //            controller's BACK, which shows them in both programs)
-// Up to two keys per action; a key belongs to one action. Movement (WASD),
-// the pause menu (ESCAPE) and the controller's BACK stay the keyboard's
-// controller rows (keybind_*), and so does everything in the game's menus.
+//   Vehicle  the tank's machine gun (MOUSE2) and turret alignment (R), the
+//            gas (W), brake / reverse (S) and handbrake (SPACE) of the jeep and
+//            the other vehicles that aren't tanks, the vehicle's
+//            view (V). The vehicles read these themselves (their "button
+//            aliases" and the view switch), so they are answered where the game
+//            reads them, never by pressing a controller button. A vehicle key
+//            counts only while a vehicle reads its alias (while you drive); on
+//            foot the same key keeps its own action (MOUSE2 aims, W walks).
+// Up to two keys per action; a key belongs to one on-foot action and to at
+// most one vehicle action. Movement (WASD), the pause menu (ESCAPE) and the
+// controller's BACK stay the keyboard's controller rows (keybind_*) on foot,
+// and so does everything in the game's menus.
 //
 // Stored in cod3.toml as cod3_binds_kbm_p1: "" = these defaults, otherwise
 // every action: "fire=MOUSE1;aim=MOUSE2;use=F;...;sprint=" (an empty list =
@@ -81,6 +90,13 @@ enum class Action : uint8_t {
   kSlot2,
   // General
   kScores,
+  // Vehicle
+  kTankGun,
+  kTankTurret,
+  kVehGas,
+  kVehReverse,
+  kVehHandbrake,
+  kVehView,
   kCount
 };
 inline constexpr int kActionCount = static_cast<int>(Action::kCount);
@@ -98,9 +114,14 @@ enum class Delivery : uint8_t {
             // it); text starting with '+' sends its '-' twin on the release
   kAim,     // +speed / -speed while held, or the game's own aim toggle
             // ("toggle cl_run") once per press (cod3_aim_toggle_kbm_p1)
+  kAlias,   // a vehicle's button alias (ActionDef::alias, in whichever vehicle
+            // reads it): the vehicle's own read of it (ButtonAlias_Value) gets
+            // "held" while the key is down; no game command
+  kView,    // the vehicle view switch: the game's own read of it (the right
+            // stick click's press) gets one press per key press
 };
 
-enum class Group : uint8_t { kCombat, kStance, kWeapons, kGeneral, kCount };
+enum class Group : uint8_t { kCombat, kStance, kWeapons, kGeneral, kVehicle, kCount };
 const char* GroupName(Group group);
 
 struct ActionDef {
@@ -114,9 +135,14 @@ struct ActionDef {
                                // (prompts; the controller button used inside an
                                // interaction), nullptr-terminated
   KeyCode defaults[kSlots];    // World at War style
+  int8_t alias = -1;           // kAlias: the game's alias id (0 Gas, 1 Reverse,
+                               // 2 HandBrake, 3 AlignTurret, 4 FireCoax), answered
+                               // in whichever vehicle reads it
 };
 
 const ActionDef& Def(Action action);
+// The Vehicle group: keys of their own, apart from the on-foot actions' keys.
+bool IsVehicleAction(Action action);
 // By id or by the game's command (case-insensitive); Action::kCount when none.
 Action ActionById(std::string_view id);
 Action ActionByCommand(std::string_view command);
@@ -135,12 +161,14 @@ KbmSet Parse(std::string_view text, std::vector<std::string>* notes);
 // The keys -> cod3_binds_kbm_p1: "" when they are the defaults.
 std::string Serialize(const KbmSet& set);
 
-// The action and slot that have `key`; Action::kCount when none.
-Action Find(const KbmSet& set, KeyCode key, int* slot = nullptr);
+// The action and slot that have `key` among the on-foot actions (or, with
+// `vehicle`, among the vehicle actions); Action::kCount when none.
+Action Find(const KbmSet& set, KeyCode key, int* slot = nullptr, bool vehicle = false);
 
 // Puts `key` in `slot` of `action` (kNoKey clears the slot). A key another
-// action had is taken from it; the note says so ("B was Binoculars; moved
-// here"). Returns "" when nothing else changed.
+// action of the same kind (on foot or vehicle) had is taken from it; the note
+// says so ("B was Binoculars; moved here"). Returns "" when nothing else
+// changed.
 std::string Assign(KbmSet& set, Action action, int slot, KeyCode key);
 
 // Both keys of an action as text ("B", "B, MOUSE4", "" when unbound) and back
@@ -192,5 +220,15 @@ Migration Migrate(const KbmSet& current, const std::vector<OldBind>& binds,
 // `to_actions` false (cod3mp, whose layouts differ from the campaign's
 // layout A): every changed row keeps its keys.
 Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, bool to_actions = true);
+
+// Version 3 (2026-10-20): the Vehicle actions follow the player's own
+// controller rows (the same changed rows as version 2):
+//  * keybind_lstick_up's keys become Vehicle: gas's, keybind_lstick_down's
+//    Vehicle: brake / reverse's (an ESDF player's E and D);
+//  * the keys of every other row that keeps its keys in play (version 2's
+//    second kind; every changed row when `to_actions` is false) leave the
+//    Vehicle actions (an ESDF player's S steers left in a jeep too).
+// The rows are left as they are (new_values stays empty).
+Migration MigrateVehicleRows(const KbmSet& current, const std::vector<OldBind>& rows, bool to_actions = true);
 
 }  // namespace cod3::binds

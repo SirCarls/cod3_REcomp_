@@ -285,6 +285,18 @@ bool Spawn(Program program_id, const std::filesystem::path& data_file) {
 
 }  // namespace
 
+
+void UseStartInBackgroundAsLaunchOptionOnly() {
+  if (!rex::cvar::GetFlagInfo("start_in_background")) return;  // an SDK without patch 0063
+  const auto source = rex::cvar::GetFlagSource("start_in_background");
+  if (source == rex::cvar::Source::kDefault || source == rex::cvar::Source::kCommandLine ||
+      source == rex::cvar::Source::kEnvironment)
+    return;
+  REXLOG_INFO("cod3: start_in_background from the settings not used (a launch option: "
+              "--start_in_background=true)");
+  rex::cvar::ResetToDefault("start_in_background");
+}
+
 void NoteWindowState(bool fullscreen, uint32_t logical_width, uint32_t logical_height,
                      bool has_focus) {
   g_fullscreen.store(fullscreen, std::memory_order_relaxed);

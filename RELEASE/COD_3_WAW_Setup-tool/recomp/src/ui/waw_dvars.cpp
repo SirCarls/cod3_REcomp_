@@ -13,6 +13,7 @@
 #include "game/aim_assist.h"
 #include "game/mouse_look.h"
 #include "game/render_resolution.h"
+#include "game/viewmodel.h"  // [claude-9b] CS2 weapon position
 
 namespace cod3::ui::waw {
 
@@ -181,6 +182,19 @@ const Dvar kDvars[] = {
     {"scr_sd_scorelimit", Kind::kGame, "mp_scorelimit", Conv::kSame, "Score that ends the match (one limit for every mode)"},
     {"scr_sd_roundlimit", Kind::kGame, "mp_roundlimit", Conv::kSame, "Rounds in a match (one limit for every mode)"},
 
+    // --- [claude-9b] Counter-Strike 2's weapon position (game/viewmodel.h) -------
+    {"viewmodel_offset_x", Kind::kPort, "cod3_viewmodel_offset_x", Conv::kViewmodelOffset,
+     "Counter-Strike 2: weapon to the right (-2.5 to 2.5; F2 > Game > Weapon)"},
+    {"viewmodel_offset_y", Kind::kPort, "cod3_viewmodel_offset_y", Conv::kViewmodelOffset,
+     "Counter-Strike 2: weapon away from you (-2 to 2)"},
+    {"viewmodel_offset_z", Kind::kPort, "cod3_viewmodel_offset_z", Conv::kViewmodelOffset,
+     "Counter-Strike 2: weapon up (-2 to 2)"},
+    {"viewmodel_presetpos", Kind::kPort, "cod3_viewmodel_presetpos", Conv::kSame,
+     "Counter-Strike 2: 1 Desktop, 2 Couch, 3 Classic, 0 your own offsets"},
+    {"viewmodel_fov", Kind::kPort, "cod3_viewmodel_fov", Conv::kNotInPort,
+     "Counter-Strike 2: the weapon's own field of view (none here: Call of Duty 3 draws the weapon "
+     "with the view's, cg_fov)"},
+
     // --- Port settings (F2) ----------------------------------------------------
     {"sensitivity", Kind::kPort, "cod3_sensitivity", Conv::kSame, "Mouse sensitivity (default 5)"},
     {"m_yaw", Kind::kPort, "cod3_m_yaw", Conv::kSame, "Degrees turned per mouse count, sideways"},
@@ -330,7 +344,7 @@ SetResult Set(const Dvar& d, const std::string& value) {
       return r;
     case Conv::kAimAssist:
       SetAimAssist(Truthy(value));
-      r.message = std::string(d.name) + " " + (Truthy(value) ? "1" : "0") + " (F2 > Game > Aim assist)\n";
+      r.message = std::string(d.name) + " " + (Truthy(value) ? "1" : "0") + " (F2 > Game > Aim)\n";
       r.changed_port_setting = true;  // saved in cod3.toml, like the F2 row
       return r;
     case Conv::kAniso: {
@@ -366,6 +380,25 @@ SetResult Set(const Dvar& d, const std::string& value) {
     }
     case Conv::kGameMsaa: v = ToNum(value) >= 2.0 ? "1" : "0"; break;
     case Conv::kShadows: v = Truthy(value) ? "original" : "off"; break;
+    case Conv::kViewmodelOffset: {
+      // [claude-9b] Typed by hand, the position is a custom one, as in F2: a
+      // chosen preset's offsets become the three settings first, then this one
+      // changes (game/viewmodel.h).
+      namespace vm = cod3::viewmodel;
+      vm::Offsets o;
+      if (rex::cvar::GetFlagInfo(vm::kPreset) &&
+          vm::PresetOffsets(std::atoi(rex::cvar::GetFlagByName(vm::kPreset).c_str()), &o)) {
+        rex::cvar::SetFlagByName(vm::kOffsetX, Num(o.x));
+        rex::cvar::SetFlagByName(vm::kOffsetY, Num(o.y));
+        rex::cvar::SetFlagByName(vm::kOffsetZ, Num(o.z));
+        rex::cvar::SetFlagByName(vm::kPreset, "0");
+      }
+      break;
+    }
+    case Conv::kNotInPort:
+      r.ok = false;
+      r.message = "^3" + std::string(d.name) + "^7: " + d.help + "\n";
+      return r;
     case Conv::kFraction100:
       v = std::to_string(static_cast<int>(std::lround(std::clamp(ToNum(value), 0.25, 1.0) * 100.0)));
       break;

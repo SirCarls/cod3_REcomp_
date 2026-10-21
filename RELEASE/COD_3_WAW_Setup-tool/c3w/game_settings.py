@@ -132,12 +132,8 @@ SETTINGS: List[Setting] = [
     Setting("fullscreen", "Display mode",
             "Play in a window, or fill the whole monitor without changing its resolution (borderless).",
             "choice", ((False, "Windowed"), (True, "Fullscreen (borderless)")), default=True),
-    # SDK patch 0063 (src/ui/window_sdl.cpp); only read when the game starts.
-    Setting("start_in_background", "Start behind other windows",
-            "The game's window opens behind the window you're using and doesn't take the keyboard, so you "
-            "can keep working while it starts; click it or its taskbar button to play (fullscreen begins "
-            "then). While you play, the game's own restarts (a mission's end, multiplayer) open in front.",
-            "bool", default=False),
+    # [claude-9b] start_in_background (SDK patch 0063) isn't listed: a launch option for testing only
+    # (owner 2026-10-20), --start_in_background=true in Extra arguments (game/relaunch.h).
     Setting("vsync", "V-Sync (no tearing)",
             "Shows each new picture only when the monitor starts a new refresh, so there is no tearing. "
             "It doesn't cap the frame rate.",
@@ -166,6 +162,13 @@ SETTINGS: List[Setting] = [
             "Shadows of soldiers, vehicles and other moving things. Off removes them and keeps the "
             "sunlight.",
             "choice", (("original", "Original"), ("off", "Off")), default="original"),
+    # [post-effects] The game's own depth of field and motion blur
+    # (recomp/src/game/post_effects.h); campaign and multiplayer.
+    Setting("cod3_depth_of_field", "Depth of field",
+            "The blurred background the game draws while you aim, where a mission or map uses it. "
+            "Off keeps the whole picture sharp.", "bool", default=True),
+    Setting("cod3_motion_blur", "Motion blur",
+            "The screen trails the game shows at some moments. Off never draws them.", "bool", default=True),
     Setting("cod3_hd_textures", "HD textures (waifu2x)",
             "Use the HD texture pack this tool made, when it is there.", "bool", default=True),
     Setting("cod3_user_textures", "Your own textures",

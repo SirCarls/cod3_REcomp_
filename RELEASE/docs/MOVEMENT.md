@@ -3,10 +3,9 @@
 **Status (2026-10-16): built and tested in the campaign (Saint-Lô, section 9);
 the CoD4 style moves in CoD4 PC's 125 fps steps (4.2).**
 Sprint (hold and toggle, keyboard and controller) and the CoD4 sprint and
-speeds were measured in game. Mantling looks for ledges in game (its traces
-work), but no climb has been seen yet; bounces are untested (section 10).
+speeds were measured in game; bounces are untested (section 10).
 2.10.13: bounces happen only for a jump falling onto a steep slope (a walk or
-strafe up an uneven incline used to lift the player; 4.4).
+strafe up an uneven incline used to lift the player; 4.3).
 The multiplayer side (cod3mp, built from the same sources) is designed here, with its
 addresses, but CoD3's multiplayer is peer to peer, so its transport
 (section 6) is to be redone; none of this is compiled into cod3mp yet.
@@ -17,8 +16,8 @@ What the owner asked for:
   **toggle** as the player's choice. A toggle ends when you stop moving
   forward, aim, fire or press sprint again. No repeated fake presses.
 - A **Call of Duty 4 movement style**, off by default (the game moves exactly
-  as on the console), made of four parts, each on/off: *Sprint like CoD4*,
-  *Speeds and feel*, *Mantling*, *PC jump tricks*.
+  as on the console), made of three parts, each on/off: *Sprint like CoD4*,
+  *Speeds and feel*, *PC jump tricks*.
 - Every setting has a row in **F2** and in **the game's own Options menu**,
   with the same values in both.
 - A new, general dvar category, **`server_sided_protected`** (not sv_cheats):
@@ -58,8 +57,7 @@ the ~ console by name (`cod3_sprint_toggle 1`).
 | `cod3_cod4_movement` | off / on (**off**) | Movement style / MOVEMENT STYLE: COD3 / COD4 | Your movement style. Off (COD3) is the console game, number for number. |
 | `cod3_cod4_sprint` | on / off (on) | CoD4 sprint / COD4 SPRINT | Part 1, only with the CoD4 style. |
 | `cod3_cod4_speeds` | on / off (on) | CoD4 speeds / COD4 SPEEDS | Part 2, only with the CoD4 style: CoD4's strafe and back speeds and CoD4 PC's movement at 125 fps (its air strafing and jump height) at any frame rate (4.2). |
-| `cod3_cod4_mantle` | on / off (on) | CoD4 mantling / COD4 MANTLING | Part 3, only with the CoD4 style. |
-| `cod3_cod4_jumps` | on / off (on) | CoD4 jump tricks / COD4 JUMP TRICKS | Part 4, only with the CoD4 style. |
+| `cod3_cod4_jumps` | on / off (on) | CoD4 jump tricks / COD4 JUMP TRICKS | Part 3, only with the CoD4 style. |
 | `cod3_debug_movement` | off / on (off) | (none) | Logs the player's movement four times a second, for tests. |
 
 The parts default to on, so choosing the CoD4 style gives all of CoD4 at once;
@@ -73,21 +71,22 @@ whichever of F2, the game's Options page or the console made it.
 
 ### 1.2 The match's settings (server_sided_protected, section 5)
 
-Shown in **F2 > Game > Movement > Match rule (advanced)** and in the console.
+Shown in **F2 > Game > Server**, a tab only the host sees (in the campaign,
+or while hosting a match; owner 2026-10-20: "the server sided dvars should be
+their own tab, and only accessible if they are host"), and in the console.
 
 | Setting | Values (default) | What it does |
 |---|---|---|
 | `alternate_movement` | 0 / 1 / 2 (**2** in the campaign, **0** in multiplayer) | 0: everyone moves as in CoD3 (the console). 1: everyone moves CoD4 style, with the parts below. 2: each player's own Movement style and parts. |
 | `alternate_movement_sprint` | 0 / 1 (1) | Under 1: CoD4 sprint for everyone. |
 | `alternate_movement_speeds` | 0 / 1 (1) | Under 1: CoD4 speeds for everyone. |
-| `alternate_movement_mantle` | 0 / 1 (1) | Under 1: mantling for everyone. |
 | `alternate_movement_jumps` | 0 / 1 (1) | Under 1: PC jump tricks for everyone. |
 
-**Decision: the four parts are server_sided_protected too.** Under mode 1 the
+**Decision: the three parts are server_sided_protected too.** Under mode 1 the
 host's `alternate_movement_*` apply to everyone; under mode 2 each player's
 own `cod3_cod4_*` apply; under mode 0 none apply. A server that wants CoD4
-movement without mantling (for example on maps that weren't built for
-climbing) sets `alternate_movement 1` and `alternate_movement_mantle 0`.
+movement without the bounces sets `alternate_movement 1` and
+`alternate_movement_jumps 0`.
 
 **In the campaign you are the host**: there is no match, so these behave as
 normal settings, and the default 2 means your own Movement style applies.
@@ -254,7 +253,7 @@ CoD3 and CoD4 movement both come from Call of Duty 2's, and the public CoD4
 1.0 defaults match CoD3 on most numbers: `g_speed` 190, `friction` 5.5,
 `stopspeed` 100, `jump_height` 39, `jump_stepSize` 18, `jump_ladderPushVel`
 128, `jump_spreadAdd` 64 and the landing slowdown (`jump_slowdownEnable` 1).
-So the four parts change little code. Every value below names its source
+So the three parts change little code. Every value below names its source
 (section 11); no CoD4 code was used.
 
 ### 4.1 Part 1: Sprint like CoD4
@@ -344,33 +343,7 @@ CoD2 code. One difference to know: CoD3's air move scales the wish speed by
 the ADS and run scales only, so CoD4's strafe 0.8 and back 0.7 apply on the
 ground (CoD4's own air scaling isn't public).
 
-### 4.3 Part 3: Mantling
-
-CoD4 mantles onto surfaces its maps mark mantle-on or mantle-over
-(`mantle_enable` 1, `mantle_check_range` 20, `mantle_check_radius` 0.1,
-`mantle_check_angle` 60, `mantle_view_yawcap` 60). CoD3 has **no mantle**: its
-"vault" is CoD2's jump step in `PM_StepSlideMove` 0x8248F740 (while jumping,
-a step may reach the jump's height), which lifts a jumping player onto
-anything up to about 39 units. CoD3's maps have no mantle surfaces, so the
-port finds ledges with **the player's own traces** (`PM_PlayerTrace`
-0x8248BE90, the player's box and clip mask, so `playerclip` is respected):
-
-1. a wall within 20 units ahead (`mantle_check_range`), nearly vertical and
-   facing you within 60 degrees (`mantle_check_angle`);
-2. a walkable top behind it **more than 36 and at most 60 units** above your
-   feet ("about chest height"; below 36 the jump step already climbs), with
-   room for the standing box on it;
-3. a clear path: straight up to that height, then forward onto the top.
-
-Press jump facing such a ledge (standing, or rising in a jump with jump
-held) and you climb it: 0.35 s up, 0.2 s forward, timed by the usercmds'
-serverTime (the same at any frame rate), velocity zero, no landing slowdown
-after it. Not while prone, crouched, on a ladder, on a mounted gun, in a
-vehicle, dead, or in noclip or ufo. It works on top of CoD3's jump step and
-doesn't replace it. Only mantle-on (there are no thin mantle-over surfaces
-to tell apart in CoD3's maps).
-
-### 4.4 Part 4: PC jump tricks
+### 4.3 Part 3: PC jump tricks
 
 - **Strafe jumping**: both styles gain speed by strafing with the mouse
   (Quake III's air acceleration, 1.0 at the full wish speed); the CoD4
@@ -426,6 +399,13 @@ value in this program, the value a match uses when its server didn't send one
 entry there plus its port setting (`REXCVAR_DEFINE_INT32` with the validator,
 in the same file); the policy, the console, F2 and the transport need
 nothing else.
+
+Aim assist's match rule is in the list too (claude-9b, 2026-10-20):
+`sticky_aim` (0 off for everyone, 1 each player's own choice) and
+`aim_slowdown` (0 to 100% of the game's pull, never more). docs/DVARS.md
+(Aim) explains them. Every entry is on F2 > Game > Server, shown only to the
+host, with its own "Reset match rules to defaults"; "Reset movement
+settings to defaults" on the Movement tab no longer touches them.
 
 ### 5.2 Two values
 
@@ -517,9 +497,9 @@ shared code ready; not wired, and nothing of it is compiled into cod3mp yet.
 ### 6.3 Mode 2: the player's choice
 
 - The client sends its choice as the userinfo key **`cod3mv`**: `"3"` (CoD3)
-  or `"4"` followed by four 0/1 digits for sprint, speeds, mantling and jumps
-  (for example `"41101"`). `EncodePreference` / `DecodePreference` in
-  `rules.h`.
+  or `"4"` followed by four 0/1 digits: sprint, speeds, an unused digit
+  (sent as 0, ignored when read) and jumps (for example `"41001"`).
+  `EncodePreference` / `DecodePreference` in `rules.h`.
 - The server's `ClientUserinfoChanged` hook passes it to
   `movement::PlayerPreferences::Update()`: exactly those forms, anything else
   is refused (the player keeps CoD3 or their last valid choice), at most one
@@ -564,9 +544,8 @@ The text is plain, never run as a command.
 | File | What |
 |---|---|
 | `src/game/protected_dvars.{h,cpp}` | the server_sided_protected category: the list, own and server values, the console forms, the guest-write refusal, the multiplayer glue, the test match |
-| `src/game/movement/rules.{h,cpp}` | the rules (no game addresses): effective rules, stamina, sprint conditions, the preference codec and table, info strings, the bounce projection, the mantle geometry |
+| `src/game/movement/rules.{h,cpp}` | the rules (no game addresses): effective rules, stamina, sprint conditions, the preference codec and table, info strings, the bounce projection |
 | `src/game/movement/sprint_input.{h,cpp}` | the sprint button: hold and toggle |
-| `src/game/movement/mantle.{h,cpp}` | the mantle state machine (traces through an interface) |
 | `src/game/movement/settings.{h,cpp}` | the player's settings, the rows (shared by F2 and the menu), F2's Movement section |
 | `src/game/movement/menu_movement.{h,cpp}` | the rows' texts and steps for the game's Options menu |
 | `src/game/movement/program.h`, `program_sp.h`, `program_mp.h`, `program_current.h` | the per-program address tables |
@@ -586,18 +565,16 @@ The text is plain, never run as a command.
   `cod3: move t=<serverTime> pos=(x y z) hspeed=<u/s> vz stamina flags type fwd right up buttons latch rules`,
   plus a line for every sprint button press and release (with the key: -1
   typed, 220 the pad's L3, 239/240 the keyboard actions, 241 the toggle), every
-  mantle, every jump from the ground with the mantle part on (why it didn't
-  climb: the wall trace and the ledge's height), every bounce, and each
-  weapon's sprint offset the first time it sprints.
-- **A pretend match** (test only): `--cod3_test_fake_match="0:alternate_movement=1;0:alternate_movement_mantle=0;120:end"`
+  bounce, and each weapon's sprint offset the first time it sprints.
+- **A pretend match** (test only): `--cod3_test_fake_match="0:alternate_movement=1;0:alternate_movement_jumps=0;120:end"`
   makes this machine a guest in a pretend match whose server sends those
   values (seconds after the level's first movement step), through the same
   parser a real server's string goes through. Read only at start, and never
   used while a real match runs.
 - **The logic on its own**: `dev/agents/movement/tests/test_rules.cpp` (build line in
   its header) checks the rules, the stamina times, the sprint conditions, the
-  preference codec and table, the info strings, the bounce projection, the
-  mantle in a box world and the toggle latch.
+  preference codec and table, the info strings, the bounce projection and the
+  toggle latch.
 
 ---
 
@@ -626,9 +603,8 @@ from the game's own player state, four samples a second of game time;
 | Strafe / back, CoD3 | 190 / 190 | 190 / 190 |
 | Jump while sprinting, CoD4 | no stamina cost, keeps sprinting | the same |
 | The gun while sprinting | the weapon's sprint offset at speed | the Thompson goes down out of view at 200-300 u/s and comes back when blocked (speed 0) |
-| A pretend match (server: mode 1, no mantling) | the server's rules; every console form, `exec`, and the menus refused | rules "Call of Duty 4 (sprint, speeds, jump tricks)" while the own style was CoD3; all refused and logged; own value back afterwards; `cod3.toml` never held the server's value |
-| Pause > Options > MOVEMENT OPTIONS | the seven rows, live and saved, by keys and by mouse | COD3 / COD4 fit; each change (keys, or clicks on the arrows) applies at once and is saved to `cod3.toml`; a CoD4 part's row is locked while the style is COD3 and says why |
-| Mantling | a climb onto a 36-60 unit ledge | the search runs on each jump at a wall; no such ledge where the runs jumped (section 10) |
+| A pretend match (server: mode 1) | the server's rules; every console form, `exec`, and the menus refused | rules "Call of Duty 4 (sprint, speeds, jump tricks)" while the own style was CoD3; all refused and logged; own value back afterwards; `cod3.toml` never held the server's value |
+| Pause > Options > MOVEMENT OPTIONS | the rows, live and saved, by keys and by mouse | COD3 / COD4 fit; each change (keys, or clicks on the arrows) applies at once and is saved to `cod3.toml`; a CoD4 part's row is locked while the style is COD3 and says why |
 | Jump height, CoD3 (runs j1, j2) | 39 | 38.87-39.00 (6 jumps) |
 | Jump height, CoD4 125 fps steps | 41.27 (model; CoD4 PC at 125 fps clears 41, not 42) | 41.269 in all 6 jumps (the cloud's 25 fps: 5 steps per usercmd) |
 | Straight jump at walk speed | CoD3: no gain; CoD4 at 125 fps: a little forward gain | CoD3 190.0 to 190.0; CoD4 189.9 to 191.2 |
@@ -645,16 +621,6 @@ from the game's own player state, four samples a second of game time;
   kept.
 - **Fall damage** stays CoD3's (CoD4's 128 / 300 would change the campaign's
   balance).
-- **Mantling** finds ledges by traces (CoD3's maps have no mantle surfaces):
-  mantle-on only, 36-60 units, no view yaw cap while climbing. CoD3's levels
-  weren't built for climbing, so a ledge the designers never expected you on
-  may be reachable; `alternate_movement_mantle 0` turns it off for a match.
-  **No climb seen yet**: in the cloud runs the ledge search ran on every
-  jump at a wall in Saint-Lô's first area and found walls higher than chest
-  height, obstacles the jump step already clears, thin fences (a mantle-over,
-  not built) and walls at an angle, but no 36-60 unit ledge to climb. The
-  debug log tells why each jump didn't climb, so the owner can try a crate
-  or a low wall.
 - **Bounces** (PC jump tricks): a real bounce (a jump falling onto a steep
   slope) hasn't been seen yet. The 2.10.13 fix (only such a jump bounces)
   was checked on the owner's PC in Forest on 2026-10-18 (REA sandbox, run
@@ -665,9 +631,8 @@ from the game's own player state, four samples a second of game time;
   speed upward while walking stayed at most 80 units/s (walking uphill; a
   jump leaves at 237), no lift; nine jumps reached 41.27 units (two landed
   higher, 55-57).
-- **The front end's Options** (main menu) has no MOVEMENT page yet: its
-  gameplay page has room for six rows; the seven rows are in game (Pause >
-  Options > MOVEMENT OPTIONS) and in F2.
+- **The front end's Options** (main menu) has no MOVEMENT page yet; the
+  rows are in game (Pause > Options > MOVEMENT OPTIONS) and in F2.
 - **Layout C** binds L3 to `+stance`, so it has no controller sprint yet;
   the keyboard's Shift and `bind <key> +sprint` work in every layout.
 - No sprint meter of the port's own and no extra camera bob while sprinting
@@ -677,7 +642,7 @@ from the game's own player state, four samples a second of game time;
 - Sprinting into a wall still uses stamina (the game's own rule: it looks at
   the stick, not at the speed).
 - CoD4 PC's frame-rate tricks: only its 125 fps behavior, at any frame rate
-  (4.2, 4.4). CoD4's own air scaling of the strafe and back speeds isn't
+  (4.2, 4.3). CoD4's own air scaling of the strafe and back speeds isn't
   public: CoD3's air move is kept (ADS and run scales only).
 
 ---
@@ -698,7 +663,7 @@ Call of Duty 4, public information only (no CoD4 code was used):
   `player_sprintMinTime` 1, `player_sprintRechargePause` 0,
   `player_sprintStrafeSpeedScale` 0.667, `player_sprintForwardMinimum` 105,
   `player_sprintCameraBob` 0.5, `player_strafeSpeedScale` 0.8,
-  `player_backSpeedScale` 0.7, `mantle_*`, `jump_height` 39, `jump_stepSize`
+  `player_backSpeedScale` 0.7, `jump_height` 39, `jump_stepSize`
   18, `jump_ladderPushVel` 128, `jump_spreadAdd` 64, `stopspeed` 100,
   `friction` 5.5, `g_speed` 190):
   https://nextgenupdate.com/forums/call-duty-4-modern-warfare/65279-all-cod4-commands-dvars.html
@@ -706,8 +671,6 @@ Call of Duty 4, public information only (no CoD4 code was used):
   `jump_height` 39, `jump_stepSize` 18, `bg_fallDamageMinHeight` 128 /
   `MaxHeight` 300, `hud_fade_sprint` 1.7, `cg_sprintMeter*`):
   https://www.gamerconfig.eu/commands/call-of-duty-4-modern-warfare
-- Mantle on / mantle over in CoD4 maps:
-  https://wiki.zeroy.com/index.php?title=Call_of_Duty_4:_Mantles
 - Bounces, the mechanism in prose (the step move projects instead of
   clipping; the 0.3 normal limit; the jumping flag not checked in CoD4). These
   pages also show decompiled code, which was **not** used:

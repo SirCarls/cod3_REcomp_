@@ -4,6 +4,7 @@
 #include "ui/hud_overlay.h"
 
 #include <algorithm>
+#include <array>  // [claude-9b] the crosshair preview's box
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -29,6 +30,7 @@
 #include "game/engine.h"
 #include "game/fov.h"
 #include "game/hd_textures.h"
+#include "game/post_effects.h"  // [post-effects]
 #include "game/program.h"
 #include "game/mouse_look.h"
 #include "game/keybinds/binds.h"     // [keybinds] both programs
@@ -38,6 +40,11 @@
 #include "game/render_resolution.h"
 #include "game/screenshot.h"
 #include "game/shadows.h"
+#include "game/viewmodel.h"  // [claude-9b] CS2 weapon position
+#include "game/aim_sensitivity.h"  // [claude-9b] sensitivity per weapon (F2 > Controls)
+#include "game/sticky_aim.h"  // [claude-9b] what applies now (F2 > Aim)
+#include "ui/server_tab.h"  // [claude-9b] F2 > Game > Server, the match's rules, host only
+#include "ui/slider_box.h"  // [claude-9b] sliders with a number box (owner: "sliders + textbox")
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
 #include "game/frame_rate.h"
@@ -157,6 +164,18 @@ bool GameCrosshairVisible() {
   return NowNs() - g_last_game_crosshair_ns.load(std::memory_order_relaxed) <= 150'000'000;
 }
 
+// [claude-9b] The crosshair preview's box (hud_overlay.h), in menu space.
+namespace {
+std::atomic<int64_t> g_preview_ns{0};
+std::array<std::atomic<float>, 4> g_preview_box{};
+}  // namespace
+
+void ShowCrosshairPreview(float x0, float y0, float x1, float y1) {
+  const float box[4] = {x0, y0, x1, y1};
+  for (int i = 0; i < 4; ++i) g_preview_box[i].store(std::isfinite(box[i]) ? box[i] : 0.0f, std::memory_order_relaxed);
+  g_preview_ns.store(NowNs(), std::memory_order_relaxed);
+}
+
 CrosshairStyle CurrentCrosshair() {
   CrosshairStyle s{};
   s.enabled = REXCVAR_GET(cod3_crosshair);
@@ -201,6 +220,19 @@ static void DrawCrosshairShape(ImDrawList* dl, ImVec2 c, const CrosshairStyle& s
     float d = std::max(1.0f, t);
     bar(c.x - d / 2, c.y - d / 2, c.x + d / 2, c.y + d / 2);
   }
+}
+
+// [claude-9b] The custom crosshair as a preview: its shape, outline and color
+// (white for the game's own colors: what it shows over nothing), at the HUD's
+// scale; dimmed while the custom crosshair is off.
+static void DrawCrosshairPreviewShape(ImDrawList* dl, ImVec2 c, float scale) {
+  CrosshairStyle s = CurrentCrosshair();
+  if (!s.constant_color) s.color[0] = s.color[1] = s.color[2] = s.color[3] = 1.0f;
+  const float alpha = s.color[3] * (s.enabled ? 1.0f : 0.35f);
+  if (s.outline)
+    DrawCrosshairShape(dl, c, s, scale, IM_COL32(0, 0, 0, static_cast<int>(alpha * 255)), s.outline_thickness * scale);
+  DrawCrosshairShape(dl, c, s, scale,
+                     ImGui::ColorConvertFloat4ToU32(ImVec4(s.color[0], s.color[1], s.color[2], alpha)), 0.0f);
 }
 
 // cg_drawFPS: top-right corner, like World at War.
@@ -346,6 +378,41 @@ HudArea CurrentHudArea(const ImGuiIO& io) {
   return a;
 }
 
+// [claude-9b] The crosshair preview a menu asked for (ShowCrosshairPreview):
+// its box from the game's menu space to the window, a dark panel with a thin
+// line like the menu's, and the crosshair in the middle at its in-game size.
+// The game draws its 640x480 menus over the whole HUD area (stretched across
+// a 16:9 picture: a menu unit is wider than it is tall), so the box keeps its
+// right edge, top and height from the menu and is as wide as it is tall on
+// the screen (owner 2026-10-20 21:15: "please also make sure the menu scales").
+static void DrawMenuCrosshairPreview(ImGuiIO& io) {
+  if (NowNs() - g_preview_ns.load(std::memory_order_relaxed) > 150'000'000) return;
+  const HudArea a = CurrentHudArea(io);
+  if (a.width < 1.0f || a.height < 1.0f) return;
+  const float unit = a.height / 480.0f;  // the menu's units up and down
+  float box[4];
+  for (int i = 0; i < 4; ++i) box[i] = g_preview_box[i].load(std::memory_order_relaxed);
+  const float right = std::floor(a.x + box[2] * a.width / 640.0f);
+  const float top = std::floor(a.y + box[1] * unit);
+  const float side = std::floor((box[3] - box[1]) * unit);
+  const ImVec2 p0(right - side, top);
+  const ImVec2 p1(right, top + side);
+  if (p1.x - p0.x < 4.0f || p1.y - p0.y < 4.0f) return;
+  static ImVec2 logged_size{};
+  if (logged_size.x != io.DisplaySize.x || logged_size.y != io.DisplaySize.y) {
+    logged_size = io.DisplaySize;
+    REXLOG_INFO("cod3: crosshair preview drawn at {:.0f},{:.0f}-{:.0f},{:.0f} in a {:.0f}x{:.0f} window", p0.x, p0.y,
+                p1.x, p1.y, io.DisplaySize.x, io.DisplaySize.y);
+  }
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddRectFilled(p0, p1, IM_COL32(12, 10, 8, 215));
+  dl->AddRect(p0, p1, IM_COL32(160, 130, 70, 200), 0.0f, 0, std::max(1.0f, unit * 0.75f));
+  dl->PushClipRect(p0, p1, true);
+  DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
+                            std::max(0.5f, io.DisplaySize.y / 1080.0f));
+  dl->PopClipRect();
+}
+
 // "CHEATS USED" watermark (game/cheat_watch.h): top-left corner of the HUD
 // (owner), small and see-through, on every screen (menus too) until the
 // cheats are all reset.
@@ -384,6 +451,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   if (const float a = cod3::CutsceneSkip::Get().PromptAlpha(); a > 0.0f) DrawSkipPrompt(io, a);
   if (const int mode = cod3::Engine::Get().draw_fps(); mode > 0) DrawFpsCounter(io, mode);
   if (REXCVAR_GET(cod3_perf_overlay)) DrawPerfOverlay(io);
+  DrawMenuCrosshairPreview(io);  // [claude-9b] the AIM page's preview (menus only)
   auto s = CurrentCrosshair();
   if (!s.enabled) return;
   // Only while the game itself would draw its crosshair (not in menus or
@@ -418,6 +486,7 @@ SettingsWindow::SettingsWindow(rex::ui::ImGuiDrawer* drawer, std::filesystem::pa
     : ImGuiDialog(drawer), config_path_(std::move(config_path)), on_close_(std::move(on_close)) {}
 
 void SettingsWindow::Save() {
+  cod3::binds::CommitF2Edits();  // [keybinds] text typed into a key row and not applied yet
   try {
     rex::cvar::SaveConfig(config_path_);
     status_ = "Saved to " + cod3::PathToUtf8(config_path_);
@@ -425,6 +494,11 @@ void SettingsWindow::Save() {
   } catch (const std::exception& e) {
     status_ = std::string("Save failed: ") + e.what();
   }
+}
+
+void SettingsWindow::SaveIfDirty() {
+  dirty_ |= cod3::binds::CommitF2Edits();  // [keybinds] F2 closed while a key row had typed text
+  if (dirty_) Save();
 }
 
 // Combo bound to a cvar; returns true when the value changed.
@@ -541,7 +615,9 @@ void SettingsWindow::DrawVideo() {
                                       "anisotropic_override", "cod3_hd_textures", "readback_resolve",
                                       "cod3_max_fps", "cod3_shadow_quality", "cod3_color_space",
                                       "display_hdr", "display_hdr_paper_white", "display_hdr_peak",
-                                      "cod3_refresh_rate", "cod3_live_resolution", "cod3_graphics_api"});
+                                      "cod3_refresh_rate", "cod3_live_resolution", "cod3_graphics_api",
+                                      cod3::post_effects::kDepthOfField,     // [post-effects]
+                                      cod3::post_effects::kMotionBlur});     // [post-effects]
     if (engine.GameReady()) {
       engine.SetMaxFps(REXCVAR_GET(cod3_max_fps));
       engine.SetDrawFps(0);
@@ -571,17 +647,9 @@ void SettingsWindow::DrawVideo() {
     Help("Play in a window, or fill the whole monitor without changing its resolution "
          "(borderless). Applies at once and is kept for the next start.");
   }
-  {
-    // SDK patch 0063 (start_in_background). Only read when the game starts,
-    // so changing it needs no restart now.
-    bool start_only = false;
-    dirty_ |= CvarCheckbox("Start behind other windows", "start_in_background", &start_only);
-    Help("The game's window opens behind the window you're using and doesn't take the keyboard, "
-         "so you can keep working while it starts; click it or its taskbar button to play "
-         "(fullscreen begins then). While you're playing, the game's own restarts (the end of "
-         "a mission, quitting to the menu, multiplayer) still open in front. Used from the next "
-         "start.");
-  }
+  // [claude-9b] No "Start behind other windows" row: start_in_background (SDK
+  // patch 0063) is a launch option for testing only (owner 2026-10-20), see
+  // UseStartInBackgroundAsLaunchOptionOnly in game/relaunch.h.
   {
     // The refresh rates the monitor offers at its current resolution
     // (SDK patch 0013). Picking one makes fullscreen an exclusive display mode
@@ -1046,6 +1114,20 @@ void SettingsWindow::DrawVideo() {
          "doesn't change.");
   }
 
+  // [post-effects] The game's own depth of field and motion blur on or off
+  // (game/post_effects.h); both apply at once, in the campaign and in
+  // multiplayer.
+  Section("Effects");
+  dirty_ |= CvarCheckbox("Depth of field", cod3::post_effects::kDepthOfField, &restart_needed_);
+  Help(cod3::kMultiplayer
+           ? "The blurred background the game draws where a map switches depth of field on. Off keeps "
+             "the whole picture sharp. Only your screen changes. Applies at once."
+           : "The blurred background the game draws while you aim down the sights, where a mission "
+             "switches depth of field on. Off keeps the whole picture sharp. Applies at once.");
+  dirty_ |= CvarCheckbox("Motion blur", cod3::post_effects::kMotionBlur, &restart_needed_);
+  Help("The screen trails the game shows at some moments (each frame keeps part of the last one). "
+       "Off never draws them; the moments themselves play the same. Applies at once.");
+
   Section("Textures");
   // The setup tool's waifu2x pack, handed to the SDK's texture replacement
   // when the GPU starts (game/hd_textures.h), so a change waits for a restart.
@@ -1074,11 +1156,15 @@ void SettingsWindow::DrawGame() {
   if (ResetButton("reset_game", "game settings")) {
     engine.SetFovSettings(cod3::fov::kDefaultFov, cod3::fov::kDefaultScale);
     // Aim assist follows the game's Sticky Aim again.
-    ResetSettings({"cod3_aim_assist", "cod3_volume", "audio_device", "cod3_skip_movies", "cod3_skip_prompt"});
+    ResetSettings({"cod3_aim_assist", "cod3_volume", "audio_device", "cod3_skip_movies", "cod3_skip_prompt",
+                   cod3::viewmodel::kOffsetX, cod3::viewmodel::kOffsetY, cod3::viewmodel::kOffsetZ,
+                   cod3::viewmodel::kPreset});  // [claude-9b]
     dirty_ = true;
   }
-  Section("View");
-  {
+  // [claude-9b] Subtabs (owner 2026-10-20: "please add subtabs for whats under game in F2"),
+  // as the Console tab has them; the reset button above covers all of them.
+  if (!ImGui::BeginTabBar("##game_views")) return;
+  if (ImGui::BeginTabItem("View")) {
     // Each slider's range follows the other value, so the effective FOV
     // (cg_fov x cg_fovScale) stays within 65-165 (game/fov.h).
     namespace fov = cod3::fov;
@@ -1108,47 +1194,114 @@ void SettingsWindow::DrawGame() {
          "and at every level start, and only your own changes are saved.");
     if (fov::ScriptedViewActive())
       ImGui::TextDisabled("A scripted view has the FOV right now; yours comes back after it.");
+    ImGui::EndTabItem();
+  }
+  // [claude-9b] Weapon position with Counter-Strike 2's commands (game/viewmodel.h),
+  // laid out like the Crosshair tab (owner 19:32: "slider bars similar to the
+  // crosshair"): a preset list, then a slider per axis. By name, so a program
+  // without that module has no Weapon subtab.
+  if (Has(cod3::viewmodel::kPreset) && ImGui::BeginTabItem("Weapon")) {
+    namespace vm = cod3::viewmodel;
+    const int preset = std::clamp(GetInt(vm::kPreset), 0, 3);
+    vm::Offsets shown{GetDouble(vm::kOffsetX), GetDouble(vm::kOffsetY), GetDouble(vm::kOffsetZ)};
+    vm::PresetOffsets(preset, &shown);  // a preset shows its own position
+    // Custom takes the position that is shown (a preset's own, until a slider moves).
+    auto make_custom = [&] {
+      rex::cvar::SetFlagByName(vm::kOffsetX, std::to_string(shown.x));
+      rex::cvar::SetFlagByName(vm::kOffsetY, std::to_string(shown.y));
+      rex::cvar::SetFlagByName(vm::kOffsetZ, std::to_string(shown.z));
+      rex::cvar::SetFlagByName(vm::kPreset, "0");
+    };
+    const char* presets[] = {"Custom", "Desktop", "Couch", "Classic"};
+    int picked = preset;
+    if (ImGui::Combo("Preset", &picked, presets, 4)) {
+      if (picked == 0) {
+        make_custom();
+      } else {
+        rex::cvar::SetFlagByName(vm::kPreset, std::to_string(picked));
+      }
+      dirty_ = true;
+    }
+    Help("Where the weapon sits on screen, as in Counter-Strike 2. Aiming down the sights never moves: "
+         "only FOV scale changes the aimed view.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Desktop, Couch and Classic are CS2's own positions (viewmodel_presetpos 1, 2, 3);\n"
+                        "Custom is the sliders below. The offset fades out as the weapon comes up.");
+    auto slider = [&](const char* label, const char* name, double value, float lo, float hi) {
+      float f = static_cast<float>(value);
+      if (SliderFloatBox(label, &f, lo, hi, "%.1f")) {  // slider + number box
+        if (GetInt(vm::kPreset) != 0) make_custom();  // moving a slider makes the position Custom
+        rex::cvar::SetFlagByName(name, std::to_string(f));
+        dirty_ = true;
+      }
+    };
+    slider("Right", vm::kOffsetX, shown.x, -2.5f, 2.5f);
+    slider("Forward", vm::kOffsetY, shown.y, -2.0f, 2.0f);
+    slider("Up", vm::kOffsetZ, shown.z, -2.0f, 2.0f);
+    Help("Game units, Counter-Strike 2's ranges; 0 is the game's own place.");
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("In the ~ console: viewmodel_offset_x (right), viewmodel_offset_y (forward),\n"
+                        "viewmodel_offset_z (up) and viewmodel_presetpos: a CS2 config line pastes as it is.\n"
+                        "CS2's viewmodel_fov has no counterpart: the weapon uses the view's field of view.");
+    ImGui::EndTabItem();
   }
 #if !defined(COD3_MP)  // [mp] multiplayer plays no films; aim assist is per profile there (later)
-  Section("Cutscenes");
-  dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
-  Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
-       "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
-       "level has loaded). Without it, press Space, Enter or Escape, or click, to skip one.");
-  dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
-  Help("Shows \"SPACE Skip\" at the bottom of the screen while a cutscene can be skipped.");
-  Section("Aim");
-  if (auto on = cod3::AimAssistEnabled()) {
-    bool v = *on;
-    if (ImGui::Checkbox("Aim assist (Sticky Aim)", &v)) {
-      cod3::SetAimAssist(v);
-      dirty_ = true;
-    }
-  } else {
-    ImGui::BeginDisabled();
-    bool v = false;
-    ImGui::Checkbox("Aim assist (Sticky Aim)", &v);
-    ImGui::EndDisabled();
+  if (ImGui::BeginTabItem("Cutscenes")) {
+    dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
+    Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
+         "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
+         "level has loaded). Without it, press Space, Enter or Escape, or click, to skip one.");
+    dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
+    Help("Shows \"SPACE Skip\" at the bottom of the screen while a cutscene can be skipped.");
+    ImGui::EndTabItem();
   }
-  Help("Slows your aim down while it passes over an enemy, as on the console. Mostly helps with a "
-       "controller. It's the same switch as Options > Gameplay > Sticky Aim in the game's menu "
-       "(available once a profile is loaded).");
+  if (ImGui::BeginTabItem("Aim")) {
+    if (auto on = cod3::AimAssistEnabled()) {
+      bool v = *on;
+      if (ImGui::Checkbox("Aim assist (Sticky Aim)", &v)) {
+        cod3::SetAimAssist(v);
+        dirty_ = true;
+      }
+    } else {
+      ImGui::BeginDisabled();
+      bool v = false;
+      ImGui::Checkbox("Aim assist (Sticky Aim)", &v);
+      ImGui::EndDisabled();
+    }
+    Help("Slows your aim down while it passes over an enemy, as on the console. Mostly helps with a "
+         "controller. It's the same switch as Options > Gameplay > Sticky Aim in the game's menu "
+         "(available once a profile is loaded).");
+    cod3::sticky_aim::DrawF2Section();  // [claude-9b] what applies now (game/sticky_aim.h)
+    ImGui::EndTabItem();
+  }
   // [movement] Sprint and the movement style (game/movement/settings.h): the
   // same rows as the game's Pause > Options > MOVEMENT OPTIONS.
-  dirty_ |= cod3::movement::DrawF2Section();
-#endif
-  Section("Sound");
-  if (Has("cod3_volume")) {
-    float vol = float(GetDouble("cod3_volume", 1.0)) * 100.0f;
-    if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 100.0f, "%.0f%%")) {
-      rex::cvar::SetFlagByName("cod3_volume", std::to_string(vol / 100.0f));
-      dirty_ = true;
-    }
-    Help("Everything the game plays. Music, effects and voices have their own sliders in the "
-         "game's Options > Sound. Console: snd_volume 0-1.");
+  if (ImGui::BeginTabItem("Movement")) {
+    dirty_ |= cod3::movement::DrawF2Section();
+    ImGui::EndTabItem();
   }
-  DrawSoundOutput();
-  if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
+  // [claude-9b] Every server_sided_protected dvar on its own tab, only while
+  // this machine is the host (owner 2026-10-20 20:42): ui/server_tab.h.
+  if (server_tab::Shown() && ImGui::BeginTabItem("Server")) {
+    dirty_ |= server_tab::Draw();
+    ImGui::EndTabItem();
+  }
+#endif
+  if (ImGui::BeginTabItem("Sound")) {
+    if (Has("cod3_volume")) {
+      float vol = float(GetDouble("cod3_volume", 1.0)) * 100.0f;
+      if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 100.0f, "%.0f%%")) {
+        rex::cvar::SetFlagByName("cod3_volume", std::to_string(vol / 100.0f));
+        dirty_ = true;
+      }
+      Help("Everything the game plays. Music, effects and voices have their own sliders in the "
+           "game's Options > Sound. Console: snd_volume 0-1.");
+    }
+    DrawSoundOutput();
+    if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -1208,6 +1361,22 @@ void SettingsWindow::DrawCrosshair() {
   Help("Draws the crosshair below instead of the game's. It appears only when the game would show "
        "its own: not in menus or cutscenes, and it fades out as you aim down the sights. The game's "
        "Options > Gameplay > Crosshair switch still hides it.");
+  {
+    // [claude-9b] Preview at its in-game size (owner 2026-10-20: "the crosshair menu needs a preview").
+    const float side = std::floor(ImGui::GetFrameHeight() * 5.0f);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + side, p0.y + side);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(40, 40, 40, 255));
+    dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
+    dl->PushClipRect(p0, p1, true);
+    DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
+                              std::max(0.5f, ImGui::GetIO().DisplaySize.y / 1080.0f));
+    dl->PopClipRect();
+    ImGui::Dummy(ImVec2(side, side));
+    ImGui::SameLine();
+    ImGui::TextDisabled("Preview, at its size in the game%s.", REXCVAR_GET(cod3_crosshair) ? "" : " (off now)");
+  }
   const char* styles[] = {"Classic cross", "Cross + dot", "Dot", "Circle", "T"};
   int st = REXCVAR_GET(cod3_crosshair_style);
   if (ImGui::Combo("Style", &st, styles, 5)) {
@@ -1216,7 +1385,7 @@ void SettingsWindow::DrawCrosshair() {
   }
   auto slider = [&](const char* label, double& value, float lo, float hi) {
     float f = static_cast<float>(value);
-    if (ImGui::SliderFloat(label, &f, lo, hi, "%.1f")) {
+    if (SliderFloatBox(label, &f, lo, hi, "%.1f")) {  // [claude-9b] slider + number box (owner: "sliders + textbox")
       value = f;
       changed = true;
     }
@@ -1289,11 +1458,16 @@ void SettingsWindow::DrawControls() {
        "([R], [ENTER]) instead of a controller button. Pressing a controller button brings the "
        "buttons back.");
   {
-    const char* v[] = {"xbox", "playstation", "gamecube"};
-    const char* n[] = {"Xbox 360 (the game's own)", "PlayStation", "GameCube"};
-    dirty_ |= CvarCombo("Controller button style", "cod3_glyph_style", v, n, 3, &restart_needed_);
-    Help("How the prompts show controller buttons. PlayStation and GameCube show the button "
-         "names ([CROSS], [Z]) for now.");
+    // [mp-menus] auto: each player's own controller (split screen too).
+    const char* v[] = {"auto", "xbox", "playstation", "nintendo", "gamecube"};
+    const char* n[] = {"Each controller's own", "Xbox 360 (the game's own)", "PlayStation",
+                       "Nintendo Switch", "GameCube"};
+    dirty_ |= CvarCombo("Controller button style", "cod3_glyph_style", v, n, 5, &restart_needed_);
+    Help("How the prompts show controller buttons. Each controller's own: every player sees the "
+         "buttons of the controller in their hands (an Xbox pad the game's pictures, a "
+         "PlayStation pad [CROSS], a Switch pad [B] for the bottom button). The other choices "
+         "show one style to everyone. PlayStation, Nintendo and GameCube show the button names "
+         "for now.");
   }
 
   // One choice for the two underlying switches: raw aim (ours) or the SDK's
@@ -1368,6 +1542,7 @@ void SettingsWindow::DrawControls() {
     }
   }
   dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h)
+  dirty_ |= cod3::aimsens::DrawF2Section();  // [claude-9b] sensitivity per weapon, hip and aiming (game/aim_sensitivity.h)
   Section("Key bindings");
   if (ResetButton("reset_binds", "key bindings")) {
     restart_needed_ |= ResetSettings(
@@ -1382,20 +1557,38 @@ void SettingsWindow::DrawControls() {
   // [keybinds] The game's own actions with keys of their own (fire, aim, use,
   // reload ...; game/keybinds/binds.h), above the controller rows.
   dirty_ |= cod3::binds::DrawF2Rows();
+  // [keybinds] "Keys call the game's actions" on: the keyboard doesn't play as a
+  // controller, so its controller button rows are hidden (owner 2026-10-20 21:18:
+  // "if the user isn't using emulate controller for MNK remove access to the bind
+  // controller buttons"); the movement rows stay (the left stick's rows underneath:
+  // movement isn't an action of its own). Off: every row, as before.
+  const bool pad_rows = !GetBool("cod3_binds_actions");
+  auto movement_row = [](std::string_view name) {
+    return name == "keybind_lstick_up" || name == "keybind_lstick_down" || name == "keybind_lstick_left" ||
+           name == "keybind_lstick_right";
+  };
+  if (!pad_rows) {
+    Help("The keys that walk and strafe (in a vehicle: steer). Separate keys with commas; what you type "
+         "applies on Enter, when you click anywhere else (Save too) or close F2. Key names: A-Z, 0-9, "
+         "SPACE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT, mouse buttons LMB, RMB, MMB, MB4, MB5.");
+  } else {
 #if !defined(COD3_MP)
-  Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
-       "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
-       "with commas; press Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, "
-       "Up/Down/Left/Right; mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 "
-       "(forward), also written MOUSE4 / MOUSE5. The left stick click and the D-pad are empty by default.");
+    Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
+         "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
+         "with commas; what you type applies on Enter, when you click anywhere else (Save too) or close F2. "
+         "Key names: A-Z, 0-9, SPACE, TAB, ESCAPE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT; mouse buttons "
+         "LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written MOUSE4 / MOUSE5. "
+         "The left stick click and the D-pad are empty by default.");
 #else
-  Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
-       "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
-       "with commas; press Enter to apply. Key names: A-Z, 0-9, Space, Tab, Escape, Shift, Control, Alt, "
-       "Up/Down/Left/Right; mouse buttons LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 "
-       "(forward), also written MOUSE4 / MOUSE5. Shift+Up means both together. The two grenade rows "
-       "throw the frag and the special grenade also when the controller layout swaps the shoulder buttons.");
+    Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
+         "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
+         "with commas; what you type applies on Enter, when you click anywhere else (Save too) or close F2. "
+         "Key names: A-Z, 0-9, SPACE, TAB, ESCAPE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT; mouse buttons "
+         "LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written MOUSE4 / MOUSE5. "
+         "SHIFT+UP means both together. The two grenade rows throw the frag and the special grenade also "
+         "when the controller layout swaps the shoulder buttons.");
 #endif
+  }
   static const char* kBinds[][2] = {
       {"keybind_right_trigger", "Fire (RT)"},   {"keybind_left_trigger", "Aim (LT)"},
 #if !defined(COD3_MP)
@@ -1419,19 +1612,13 @@ void SettingsWindow::DrawControls() {
   if (ImGui::BeginTable("##binds", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
     for (auto& b : kBinds) {
       if (!Has(b[0])) continue;
+      if (!pad_rows && !movement_row(b[0])) continue;  // [keybinds]
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(b[1]);
       ImGui::TableNextColumn();
-      char buf[128];
-      std::snprintf(buf, sizeof(buf), "%s", Get(b[0]).c_str());
-      ImGui::PushID(b[0]);
-      ImGui::SetNextItemWidth(-1);
-      if (ImGui::InputText("##v", buf, sizeof(buf), ImGuiInputTextFlags_EnterReturnsTrue)) {
-        rex::cvar::SetFlagByName(b[0], buf);
-        dirty_ = true;
-      }
-      ImGui::PopID();
+      // [keybinds] capitals; applies on Enter, leaving the box or Save (game/keybinds/binds.h)
+      dirty_ |= cod3::binds::DrawPadKeyRow(b[0]);
     }
     ImGui::EndTable();
   }

@@ -7,6 +7,9 @@
 // RIGHT LS RS, or a stick axis LX= LY= RX= RY= in [-1, 1], joined with '+'.
 // The device shows up as a synthetic pad on player 1, alongside any real pad
 // or the keyboard. Unused (and absent) unless the cvar is set.
+// [mp-menus] An entry "pad=playstation" (or xbox, nintendo) says which kind
+// of controller the scripted pad is, for the button prompts' per-controller
+// style (SDK patch 0067's ControllerFamily); without it the SDK can't name it.
 
 #pragma once
 
@@ -53,6 +56,7 @@ class ScriptedInputDriver final : public rex::input::InputDriver {
   uint16_t last_buttons_ = 0;
   rex::input::X_INPUT_GAMEPAD pad_{};
   std::queue<rex::input::X_INPUT_KEYSTROKE> keys_;
+  rex::input::ControllerFamily family_ = rex::input::ControllerFamily::kUnknown;  // [mp-menus]
 };
 
 }  // namespace cod3

@@ -1,0 +1,189 @@
+diff --git a/include/rex/input/device.h b/include/rex/input/device.h
+index 7b67ceb..0b84378 100644
+--- a/include/rex/input/device.h
++++ b/include/rex/input/device.h
+@@ -22,12 +22,24 @@ constexpr uint32_t kMaxGuestUsers = 4;
+ /// device took the freed slot.
+ enum class DeviceId : uint64_t { kInvalid = 0 };
+ 
++/// What a device's buttons are labeled, so a title can show each player the
++/// glyphs of the controller in their hands. Buttons are always read by
++/// position (the bottom face button is A), whatever the label.
++enum class ControllerFamily : uint8_t {
++  kUnknown = 0,    // a generic pad, or one the backend can't name
++  kXbox,           // A B X Y, LB RB, LT RT, START BACK
++  kPlayStation,    // cross circle square triangle, L1 R1, L2 R2
++  kNintendo,       // Switch: B A Y X in Xbox's A B X Y places, L R, ZL ZR, + -
++  kKeyboardMouse,  // the keyboard and mouse emulation
++};
++
+ struct DeviceInfo {
+   DeviceId id = DeviceId::kInvalid;
+   uint32_t ordinal = 0;  // connection order, assigned by InputSystem
+   std::string name;
+   std::string guid;
+   bool synthetic = false;  // keyboard/mouse emulation or the NOP stand-in
++  ControllerFamily family = ControllerFamily::kUnknown;
+ };
+ 
+ }  // namespace rex::input
+diff --git a/include/rex/input/input_system.h b/include/rex/input/input_system.h
+index 1cb3faa..0425175 100644
+--- a/include/rex/input/input_system.h
++++ b/include/rex/input/input_system.h
+@@ -10,6 +10,8 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <array>
++#include <atomic>
+ #include <memory>
+ #include <vector>
+ 
+@@ -47,12 +49,20 @@ class InputSystem : public system::IInputSystem {
+   X_RESULT SetState(uint32_t user_index, X_INPUT_VIBRATION* vibration);
+   X_RESULT GetKeystroke(uint32_t user_index, uint32_t flags, X_INPUT_KEYSTROKE* out_keystroke);
+ 
++  /// The labels on the buttons of the pad guest user `user_index` plays
++  /// with: the pad that last gave real input, if it is one of that user's
++  /// pads, else the user's first pad. kUnknown with no pad (the keyboard
++  /// alone) or one the backend can't name. Updated when the guest polls the
++  /// user (GetState); any thread may ask.
++  ControllerFamily PadFamily(uint32_t user_index) const;
++
+  private:
+   /// Re-enumerates every driver and notifies the assignment when the set
+   /// changed.
+   void RefreshDevices();
+   InputDriver* DriverForDevice(DeviceId id);
+   const DeviceInfo* DeviceInfoFor(DeviceId id) const;
++  void UpdatePadFamily(uint32_t user_index, const std::vector<DeviceId>& ids);
+ 
+   rex::ui::Window* window_ = nullptr;
+ 
+@@ -60,6 +70,8 @@ class InputSystem : public system::IInputSystem {
+ 
+   std::unique_ptr<DeviceAssignment> assignment_;
+   ActiveDeviceTracker active_devices_;
++  // ControllerFamily per guest user, read by PadFamily from any thread.
++  std::array<std::atomic<uint8_t>, kMaxGuestUsers> pad_family_{};
+ 
+   // Ordered by ordinal. Ordinals are never recycled, so unplugging pad one
+   // does not renumber pad two.
+diff --git a/src/input/input_system.cpp b/src/input/input_system.cpp
+index 813bb1c..98c5a15 100644
+--- a/src/input/input_system.cpp
++++ b/src/input/input_system.cpp
+@@ -184,6 +184,40 @@ const DeviceInfo* InputSystem::DeviceInfoFor(DeviceId id) const {
+   return nullptr;
+ }
+ 
++void InputSystem::UpdatePadFamily(uint32_t user_index, const std::vector<DeviceId>& ids) {
++  if (user_index >= kMaxGuestUsers) {
++    return;
++  }
++  // Pads only: a physical device, or a synthetic one that says what it is
++  // (a scripted test pad). The keyboard/mouse emulation and the NOP stand-in
++  // have no buttons of their own to show.
++  const DeviceId active = active_devices_.Active(user_index);
++  ControllerFamily family = ControllerFamily::kUnknown;
++  bool found = false;
++  for (DeviceId id : ids) {
++    const DeviceInfo* info = DeviceInfoFor(id);
++    if (!info || info->family == ControllerFamily::kKeyboardMouse ||
++        (info->synthetic && info->family == ControllerFamily::kUnknown)) {
++      continue;
++    }
++    if (!found || id == active) {
++      family = info->family;
++      found = true;
++    }
++    if (id == active) {
++      break;
++    }
++  }
++  pad_family_[user_index].store(static_cast<uint8_t>(family), std::memory_order_relaxed);
++}
++
++ControllerFamily InputSystem::PadFamily(uint32_t user_index) const {
++  if (user_index >= kMaxGuestUsers) {
++    return ControllerFamily::kUnknown;
++  }
++  return static_cast<ControllerFamily>(pad_family_[user_index].load(std::memory_order_relaxed));
++}
++
+ X_RESULT InputSystem::GetCapabilities(uint32_t user_index, uint32_t flags,
+                                       X_INPUT_CAPABILITIES* out_caps) {
+   SCOPE_profile_cpu_f("hid");
+@@ -241,6 +275,7 @@ X_RESULT InputSystem::GetState(uint32_t user_index, X_INPUT_STATE* out_state) {
+       MergeInto(merged, state);
+     }
+   }
++  UpdatePadFamily(user_index, ids);
+ 
+   if (!any) {
+     return X_ERROR_DEVICE_NOT_CONNECTED;
+diff --git a/src/input/mnk/mnk_input_driver.cpp b/src/input/mnk/mnk_input_driver.cpp
+index ae123cf..eda82e6 100644
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -315,6 +315,7 @@ void MnkInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+   info.id = kMnkDevice;
+   info.name = "Keyboard and Mouse";
+   info.synthetic = true;
++  info.family = ControllerFamily::kKeyboardMouse;
+   out.push_back(info);
+ }
+ 
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..fdf4be7 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -30,6 +30,27 @@ namespace {
+ // SDL clamps to SDL_MAX_RUMBLE_DURATION_MS, which is not a public constant.
+ constexpr uint32_t kRumbleDurationMs = 0xFFFF;
+ 
++// The labels SDL knows a gamepad's buttons by. SDL reads every pad by
++// position, so only the glyphs differ.
++ControllerFamily FamilyOf(SDL_Gamepad* gamepad) {
++  switch (SDL_GetGamepadType(gamepad)) {
++    case SDL_GAMEPAD_TYPE_XBOX360:
++    case SDL_GAMEPAD_TYPE_XBOXONE:
++      return ControllerFamily::kXbox;
++    case SDL_GAMEPAD_TYPE_PS3:
++    case SDL_GAMEPAD_TYPE_PS4:
++    case SDL_GAMEPAD_TYPE_PS5:
++      return ControllerFamily::kPlayStation;
++    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_PRO:
++    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_LEFT:
++    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_RIGHT:
++    case SDL_GAMEPAD_TYPE_NINTENDO_SWITCH_JOYCON_PAIR:
++      return ControllerFamily::kNintendo;
++    default:
++      return ControllerFamily::kUnknown;
++  }
++}
++
+ }  // namespace
+ 
+ SDLInputDriver::SDLInputDriver(rex::ui::Window* window, size_t window_z_order)
+@@ -162,6 +183,7 @@ void SDLInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+                      static_cast<int>(sizeof(guid_text)));
+     info.guid = guid_text;
+     info.synthetic = false;
++    info.family = FamilyOf(controller.sdl);
+     out.push_back(info);
+   }
+ }
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index 45c242a..3f1a27d 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -146,6 +146,7 @@ void XinputInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
+     info.id = DeviceForSlot(slot);
+     info.name = "XInput Controller";
+     info.synthetic = false;
++    info.family = ControllerFamily::kXbox;
+     out.push_back(info);
+   }
+ }

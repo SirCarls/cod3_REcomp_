@@ -1025,6 +1025,10 @@ inline constexpr uint32_t kFeBlock = 32;                   // campaign: *(g_FEMa
 inline constexpr uint32_t kFeInputOn = 0;                  // cod3mp: byte g_FEManager + 50, 0 = no pad input
 inline constexpr uint32_t kFePerClient = 0;                // cod3mp: object* at g_FEManager + 208 + cl * 4
 inline constexpr uint32_t kFeBlockedVfunc = 0;             // cod3mp: that object's vfunc (this) -> u8, non-zero = blocked
+// The vehicles' button aliases: int* -> 3 contexts x 328 bytes (0 Vehicle = the
+// jeep, 1 VehicleTank, 2 OnFoot), each int button[4 pads][17] (alias id or -1)
+// then the sticks; ButtonAlias_Value (sub_82467710, hooked) reads them.
+inline constexpr uint32_t kAliasContexts = 0x82A2AB44;
 }  // namespace keybinds
 
 }  // namespace cod3::addr

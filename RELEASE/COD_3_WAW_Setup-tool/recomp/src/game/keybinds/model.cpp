@@ -101,10 +101,28 @@ constexpr ActionDef kDefs[] = {
      "Shows the objectives (campaign) or the scores (multiplayer) while held. TAB does the same through "
      "the controller's BACK row.",
      G::kGeneral, D::kText, "+scores", {nullptr}, {kNoKey, kNoKey}},
+    // --- Vehicle (only while you drive; the game's own reads, no command) ------
+    // The command field is the action's id: no game command has these names.
+    {"tank_gun", "Tank: machine gun",
+     "Fires the tank's machine gun while held (the tank's own machine-gun button, COAXIAL in its hints).",
+     G::kVehicle, D::kAlias, "tank_gun", {nullptr}, {kMouse2, kNoKey}, 4},
+    {"tank_turret", "Tank: align turret",
+     "The tank's own align-turret button (ALIGNTURRET in its hints) while held.", G::kVehicle, D::kAlias,
+     "tank_turret", {nullptr}, {K('R'), kNoKey}, 3},
+    {"veh_gas", "Vehicle: gas",
+     "Drives forward while held, in a vehicle that reads a gas button (the jeep; tanks drive with the "
+     "movement keys).",
+     G::kVehicle, D::kAlias, "veh_gas", {nullptr}, {K('W'), kNoKey}, 0},
+    {"veh_reverse", "Vehicle: brake / reverse", "Brakes, then backs up while held (as Vehicle: gas).",
+     G::kVehicle, D::kAlias, "veh_reverse", {nullptr}, {K('S'), kNoKey}, 1},
+    {"veh_handbrake", "Vehicle: handbrake", "The handbrake while held (as Vehicle: gas).", G::kVehicle,
+     D::kAlias, "veh_handbrake", {nullptr}, {kKeySpace, kNoKey}, 2},
+    {"veh_view", "Vehicle: change view", "Switches the vehicle's view (the controller's right stick click).",
+     G::kVehicle, D::kView, "veh_view", {nullptr}, {K('V'), kNoKey}},
 };
 static_assert(sizeof(kDefs) / sizeof(kDefs[0]) == static_cast<size_t>(kActionCount));
 
-constexpr const char* kGroupNames[] = {"Combat", "Stance", "Weapons", "General"};
+constexpr const char* kGroupNames[] = {"Combat", "Stance", "Weapons", "General", "Vehicle"};
 static_assert(sizeof(kGroupNames) / sizeof(kGroupNames[0]) == static_cast<size_t>(Group::kCount));
 
 // The controller rows (keybind_*) and the action their button is in the
@@ -212,14 +230,18 @@ KbmSet Defaults() {
   return set;
 }
 
-Action Find(const KbmSet& set, KeyCode key, int* slot) {
+bool IsVehicleAction(Action action) { return Def(action).group == Group::kVehicle; }
+
+Action Find(const KbmSet& set, KeyCode key, int* slot, bool vehicle) {
   if (key == kNoKey) return Action::kCount;
-  for (int a = 0; a < kActionCount; ++a)
+  for (int a = 0; a < kActionCount; ++a) {
+    if (IsVehicleAction(static_cast<Action>(a)) != vehicle) continue;
     for (int s = 0; s < kSlots; ++s)
       if (set.key[a][s] == key) {
         if (slot) *slot = s;
         return static_cast<Action>(a);
       }
+  }
   return Action::kCount;
 }
 
@@ -271,7 +293,7 @@ KbmSet Parse(std::string_view text, std::vector<std::string>* notes) {
         note(KeyName(key) + " can't be bound (the console or the pause menu); ignored");
         continue;
       }
-      if (Find(set, key) != Action::kCount) {
+      if (Find(set, key, nullptr, IsVehicleAction(action)) != Action::kCount) {
         note(KeyName(key) + " is listed for two actions; the first one keeps it");
         continue;
       }
@@ -288,7 +310,8 @@ KbmSet Parse(std::string_view text, std::vector<std::string>* notes) {
     if (mentioned[a]) continue;
     int slot = 0;
     for (KeyCode key : kDefs[a].defaults)
-      if (key != kNoKey && Find(set, key) == Action::kCount) set.key[a][slot++] = key;
+      if (key != kNoKey && Find(set, key, nullptr, IsVehicleAction(static_cast<Action>(a))) == Action::kCount)
+        set.key[a][slot++] = key;
   }
   return set;
 }
@@ -317,7 +340,7 @@ std::string Assign(KbmSet& set, Action action, int slot, KeyCode key) {
   std::string note;
   if (key != kNoKey) {
     int had_slot = 0;
-    const Action had = Find(set, key, &had_slot);
+    const Action had = Find(set, key, &had_slot, IsVehicleAction(action));
     if (had == action && had_slot == slot) return "";
     if (had != Action::kCount) {
       set.key[Index(had)][had_slot] = kNoKey;
@@ -564,6 +587,81 @@ Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, b
       Compact(m.set, Index(had));
       const std::string left = KeysText(m.set, had);
       m.log.push_back(KeyName(key) + " stays with " + r.name + " (yours); " + Def(had).label +
+                      (left.empty() ? " has no key now" : " keeps " + left));
+    }
+  }
+  m.set_changed = !(m.set == current);
+  return m;
+}
+
+Migration MigrateVehicleRows(const KbmSet& current, const std::vector<OldBind>& rows, bool to_actions) {
+  Migration m;
+  m.set = current;
+  // The same changed rows and keys as MigrateRows.
+  auto normal = [](std::string_view value) {
+    std::string out;
+    for (std::string_view name : Split(value, ',')) {
+      if (!out.empty()) out += ',';
+      for (char c : name) out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return out;
+  };
+  auto changed = [&normal](const OldBind& r) { return r.from_file && normal(r.value) != normal(r.default_value); };
+  auto keys_of = [](const OldBind& r) {
+    std::vector<KeyCode> keys;
+    for (std::string_view name : Split(r.value, ',')) {
+      const KeyCode key = ParseKey(name);
+      if (IsCombination(name) || key == kNoKey || IsAlwaysReserved(key)) continue;
+      bool dup = false;
+      for (KeyCode k : keys) dup |= k == key;
+      if (!dup) keys.push_back(key);
+    }
+    return keys;
+  };
+  // 1. The forward and back rows drive the vehicles that read a gas button.
+  struct Follow {
+    const char* row;
+    Action action;
+  };
+  constexpr Follow kFollow[] = {{"keybind_lstick_up", Action::kVehGas}, {"keybind_lstick_down", Action::kVehReverse}};
+  for (const OldBind& r : rows) {
+    if (!changed(r)) continue;
+    for (const Follow& f : kFollow) {
+      if (r.name != f.row) continue;
+      std::vector<KeyCode> keys = keys_of(r);
+      if (keys.empty()) continue;
+      if (keys.size() > static_cast<size_t>(kSlots)) {
+        std::string extra;
+        for (size_t i = kSlots; i < keys.size(); ++i) extra += (extra.empty() ? "" : ", ") + KeyName(keys[i]);
+        m.log.push_back(r.name + ": two keys at most for " + Def(f.action).id + "; " + extra + " left out");
+        keys.resize(kSlots);
+      }
+      KbmSet next = m.set;
+      for (int s = 0; s < kSlots; ++s) next.key[Index(f.action)][s] = kNoKey;
+      for (size_t i = 0; i < keys.size(); ++i) {
+        const std::string n = Assign(next, f.action, static_cast<int>(i), keys[i]);
+        if (!n.empty()) m.log.push_back(r.name + ": " + n);
+      }
+      m.set = next;
+      m.log.push_back(r.name + " \"" + std::string(Trim(r.value)) + "\" (yours) -> " + Def(f.action).id + " " +
+                      KeysText(m.set, f.action));
+    }
+  }
+  // 2. The keys of the other rows that keep their keys in play leave the
+  // Vehicle actions.
+  for (const OldBind& r : rows) {
+    if (!changed(r) || (to_actions && ActionForRow(r.name) != Action::kCount)) continue;
+    bool follows = false;
+    for (const Follow& f : kFollow) follows |= r.name == f.row;
+    if (follows) continue;
+    for (KeyCode key : keys_of(r)) {
+      int slot = 0;
+      const Action had = Find(m.set, key, &slot, /*vehicle=*/true);
+      if (had == Action::kCount) continue;
+      m.set.key[Index(had)][slot] = kNoKey;
+      Compact(m.set, Index(had));
+      const std::string left = KeysText(m.set, had);
+      m.log.push_back(KeyName(key) + " stays with " + r.name + " (yours) in vehicles too; " + Def(had).label +
                       (left.empty() ? " has no key now" : " keeps " + left));
     }
   }

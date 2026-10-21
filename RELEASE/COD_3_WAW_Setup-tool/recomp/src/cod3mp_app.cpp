@@ -54,6 +54,8 @@
 #include "game/mp/controls_mp.h"
 #include "game/mp/menus_mp.h"
 #include "game/mp/session.h"
+#include "game/pc_menu.h"  // [mp-menus]
+#include "game/button_prompts.h"  // [mp-menus]
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
 #include "game/screenshot.h"
@@ -146,7 +148,7 @@ bool IsPerProgramSetting(std::string_view name) {
   for (std::string_view own :
        {"log_file", "user_data_root", "game_data_root", "cache_root", "update_data_root", "metadata_root",
         "cod3_launch_data", "cod3_test_input", "cod3_autoexec", "cod3_autoexec_delay", "cl",
-        "allow_game_relative_writes", "gpu_plugin",
+        "allow_game_relative_writes", "gpu_plugin", "start_in_background",
         "resolution_scale", "draw_resolution_scale_x", "draw_resolution_scale_y", "video_mode_width",
         "video_mode_height", "window_width", "window_height", "guest_vblank_rate",
         "display_output_transfer", "kernel_display_gamma_type", "kernel_display_gamma_power"})
@@ -318,6 +320,8 @@ void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
   }
   if (rex::cvar::GetFlagByName("allow_game_relative_writes") == "true")
     rex::cvar::SetFlagByName("allow_game_relative_writes", "false");
+  // [claude-9b] Opening behind other windows is a launch option only (game/relaunch.h).
+  cod3::UseStartInBackgroundAsLaunchOptionOnly();
   // The program's name in the system's sound settings, as the campaign does
   // (Cod3App::OnPreSetup); SDL_APP_NAME in the environment still wins.
   SDL_SetHint(SDL_HINT_APP_NAME, "Call of Duty 3 Multiplayer");
@@ -458,6 +462,9 @@ void Cod3MpApp::OnPostSetup() {
   if (auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system())) {
     if (!REXCVAR_GET(cod3_test_input).empty())
       input->AddDriver(std::make_unique<cod3::ScriptedInputDriver>(REXCVAR_GET(cod3_test_input)));
+    // [mp-menus] Each player's kind of controller for the prompts
+    // (cod3_glyph_style auto, game/button_prompts.h).
+    cod3::prompts::SetInputSystem(input);
     input->SetActiveCallback([this]() {
       if (cod3::ui::GameConsole::IsOpen()) return false;
       auto* drawer = imgui_drawer();
@@ -469,9 +476,10 @@ void Cod3MpApp::OnPostSetup() {
   cod3::ui::GameConsole::Get().SetQuitHandler([this]() {
     app_context().CallInUIThreadDeferred([this]() { SaveAndExit("quit from the console"); });
   });
-  // The main menu's QUIT TO DESKTOP (game/mp/menus_mp.h), the same way.
-  cod3::mpmenu::SetQuitHandler([this]() {
-    app_context().CallInUIThreadDeferred([this]() { SaveAndExit("quit to desktop from the main menu"); });
+  // [mp-menus] QUIT TO DESKTOP in the main menu and the pause menus, once
+  // confirmed in the game's message box (game/mp/menus_mp.cpp), the same way.
+  cod3::pcmenu::SetQuitToDesktopHandler([this]() {
+    app_context().CallInUIThreadDeferred([this]() { SaveAndExit("quit to desktop from the game's menu"); });
   });
   // A World at War name changed a port setting: save cod3mp.toml like F2's Save.
   cod3::ui::GameConsole::Get().SetSettingsChangedHandler([this]() {
@@ -533,6 +541,8 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
   hud_ = std::make_unique<cod3::ui::HudOverlay>(imgui_drawer());
   hud_->on_frame = [this]() {
     UpdateMouseCapture();
+    // [mp-menus] The OS cursor over the game's menus (game/pc_menu.h).
+    if (!mouse_listener_.captured) cod3::pcmenu::UpdateCursor(window());
     if (auto* win = window()) {
       // The picture follows the window's shape live (game/ultrawide.h).
       cod3::UpdateDisplayAspect(win->GetActualPhysicalWidth(), win->GetActualPhysicalHeight());
@@ -553,15 +563,23 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
   window()->AddInputListener(&key_listener_, 200);
   mouse_listener_.window = window();
   window()->AddInputListener(&mouse_listener_, 199);
+  // [mp-menus] Mouse and keyboard in the game's menus (game/pc_menu.h, as in
+  // the campaign): below the two above, above ImGui and the keyboard/mouse
+  // driver; never while the console or the settings window has the input.
+  cod3::pcmenu::Attach(window(), 198,
+                       [this]() { return cod3::ui::GameConsole::IsOpen() || settings_ != nullptr; });
+  // [mp-menus] Keys in the game's button prompts (game/button_prompts.h):
+  // first of all listeners, it only watches which device is in use.
+  cod3::prompts::Attach(window(), 201);
   // [keybinds] Keys that call the game's own actions while you play (fire,
   // aim, use, reload ...; game/keybinds/binds.h), as in the campaign: above
   // ImGui and the keyboard/mouse driver, which then never sees them; in the
   // game's menus the keys go on to the driver (the controller rows). Nothing
   // while the console or the settings window is open, or while another ImGui
   // window has the mouse or a text box (the game's own input rule above), or
-  // while one of this program's menu pages is up (game/mp/menus_mp.h).
+  // while the keyboard player's menu page is up (game/mp/menus_mp.h).
   cod3::binds::Attach(window(), 197, [this]() {
-    if (cod3::ui::GameConsole::IsOpen() || settings_ != nullptr || cod3::mpmenu::MenuActive()) return true;
+    if (cod3::ui::GameConsole::IsOpen() || settings_ != nullptr || cod3::mpmenu::KeyboardMenuUp()) return true;
     auto* drawer = imgui_drawer();
     return drawer && drawer->HasDialogs() && (drawer->GetIO().WantCaptureMouse || drawer->GetIO().WantTextInput);
   });
@@ -652,7 +670,7 @@ void Cod3MpApp::UpdateMouseCapture() {
   auto* win = window();
   if (!win) return;
   const bool want = cod3::MouseLook::Get().WantsCapture() && win->HasFocus() &&
-                    !cod3::ui::GameConsole::IsOpen() && !settings_ && !cod3::mpmenu::MenuActive();
+                    !cod3::ui::GameConsole::IsOpen() && !settings_ && !cod3::mpmenu::KeyboardMenuUp();
   auto& m = mouse_listener_;
   if (want == m.captured) return;
   cod3::MouseLook::Get().ClearPending();
@@ -741,6 +759,8 @@ void Cod3MpApp::OnShutdown() {
       window()->ReleaseMouse();
     }
     cod3::binds::Detach(window());  // [keybinds]
+    cod3::pcmenu::Detach(window());  // [mp-menus]
+    cod3::prompts::Detach(window());  // [mp-menus]
     window()->RemoveInputListener(&mouse_listener_);
     window()->RemoveInputListener(&key_listener_);
   }

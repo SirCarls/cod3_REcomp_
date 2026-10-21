@@ -21,6 +21,30 @@ from c3w.pipeline import BuildOptions, Pipeline  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def drop_mp_conditionals(text: str) -> str:
+    """Lines inside `#if defined(COD3_MP)` / `#ifdef COD3_MP` / `#if !defined(COD3_MP)`
+    blocks (both branches) blanked: they are written for one program on
+    purpose (the same rule as tools/mp_aliases.py's, which needs Python 3.11)."""
+    out, depth, skip_at = [], 0, None
+    for line in text.split("\n"):
+        s = line.strip()
+        if s.startswith("#if"):
+            depth += 1
+            if skip_at is None and "COD3_MP" in s:
+                skip_at = depth
+                out.append("")
+                continue
+        elif s.startswith("#endif"):
+            if skip_at == depth:
+                skip_at = None
+                depth -= 1
+                out.append("")
+                continue
+            depth -= 1
+        out.append("" if skip_at is not None else line)
+    return "\n".join(out)
+
+
 def make_pipeline(tmp: Path) -> Pipeline:
     o = BuildOptions(output_dir=str(tmp / "out"), work_dir=str(tmp / "work"))
     return Pipeline(o, Log(sinks=[]), threading.Event())
@@ -90,8 +114,16 @@ class ProjectLayoutTests(unittest.TestCase):
         # alias header renames to its MP function.
         aliases = (ROOT / "recomp" / "src" / "game" / "mp" / "mp_aliases.h").read_text(encoding="utf-8")
         renamed = set(re.findall(r"^#define (sub_[0-9A-F]{8}) ", aliases, re.M))
+        # [mp-menus] cod3mp's own files hook its own functions by their own
+        # names (the same list as tools/mp_aliases.py's MP_OWN).
+        mp_own = re.compile(r"^(main_mp\.cpp|cod3mp_app\.(h|cpp)|game/mp_hooks\.cpp|game/mp/.*)$")
         for rel in sources:
-            text = (ROOT / "recomp" / "src" / rel).read_text(encoding="utf-8")
+            if mp_own.match(rel):
+                continue
+            # [mp-menus] A file shared by both programs keeps each one's own
+            # hooks in #if [!]defined(COD3_MP) blocks (game/pc_menu.cpp,
+            # game/button_prompts.cpp): those aren't campaign names in cod3mp.
+            text = drop_mp_conditionals((ROOT / "recomp" / "src" / rel).read_text(encoding="utf-8"))
             for name in re.findall(r"REX_(?:HOOK_RAW|EXTERN)\((?:__imp__)?(sub_[0-9A-F]{8})\)", text):
                 self.assertIn(name, renamed, f"{rel} hooks {name}, which mp_aliases.h doesn't map")
 

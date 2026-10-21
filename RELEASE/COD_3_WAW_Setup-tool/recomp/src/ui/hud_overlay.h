@@ -38,6 +38,15 @@ void NotifyGameCrosshair(float aim_fraction, const float rgba[4]);
 // True while the game is showing (or would show) its crosshair.
 bool GameCrosshairVisible();
 
+// [claude-9b] A preview of the custom crosshair (owner 2026-10-20: "the
+// crosshair menu needs a preview of the crosshair"): a box in the game's menu
+// space (its 640x480 panel space, drawn over the HUD area like the menus, so
+// it lines up with the menu at any window size or shape; on the screen it is
+// as wide as it is tall, right edge and height from the box), with the
+// crosshair drawn in its middle at its in-game size. Shown while it is asked
+// for every frame (the AIM page, game/menu_aim.h). Any thread.
+void ShowCrosshairPreview(float x0, float y0, float x1, float y1);
+
 // Where the game's HUD is on the window, in pixels: the picture's 16:9 middle
 // when a wider picture keeps the HUD 16:9 (game/ultrawide.h), else the
 // picture itself (the window, or its letterboxed part). The port's own HUD
@@ -69,9 +78,8 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   bool open() const { return open_; }
   // The game window, for settings that apply to it directly (refresh rate).
   void set_window(rex::ui::Window* window) { window_ = window; }
-  void SaveIfDirty() {
-    if (dirty_) Save();
-  }
+  // Saves when something changed ([keybinds]: a key row's typed text counts).
+  void SaveIfDirty();
 
  protected:
   void OnDraw(ImGuiIO& io) override;

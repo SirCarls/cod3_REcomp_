@@ -4,10 +4,10 @@
 //   cod3_sprint          on/off   sprint in the campaign (multiplayer always has it)
 //   cod3_sprint_toggle   hold/toggle  how the sprint button works
 //   cod3_cod4_movement   off/on   the player's movement style: Call of Duty 3 / Call of Duty 4
-//   cod3_cod4_sprint, cod3_cod4_speeds, cod3_cod4_mantle, cod3_cod4_jumps
-//                        on/off   the four parts of the CoD4 style (only with cod4)
+//   cod3_cod4_sprint, cod3_cod4_speeds, cod3_cod4_jumps
+//                        on/off   the three parts of the CoD4 style (only with cod4)
 // The match's settings are server_sided_protected (game/protected_dvars.h):
-// alternate_movement and alternate_movement_sprint/_speeds/_mantle/_jumps.
+// alternate_movement and alternate_movement_sprint/_speeds/_jumps.
 //
 // The same rows (labels, values, steps, locks) are shown by F2 > Game >
 // Movement and by the game's Options menus (game/movement/menu_movement.h),
@@ -40,7 +40,6 @@ enum Row : int {
   kRowStyle,         // MOVEMENT STYLE         COD3 / COD4
   kRowCod4Sprint,    // COD4 SPRINT            ON / OFF
   kRowCod4Speeds,    // COD4 SPEEDS            ON / OFF
-  kRowCod4Mantle,    // COD4 MANTLING          ON / OFF
   kRowCod4Jumps,     // COD4 JUMP TRICKS       ON / OFF
   kRowCount
 };

@@ -66,7 +66,7 @@ class TableTests(unittest.TestCase):
         for key in ("cod3_render_resolution", "cod3_render_method", "cod3_render_percent", "cod3_live_resolution",
                     "cod3_aspect_ratio", "cod3_max_fps", "fullscreen", "vsync", "swap_post_effect",
                     "cod3_hd_textures", "cod3_shadow_quality", "cod3_graphics_api", "cod3_skip_movies",
-                    "cod3_volume", "cod3_glyph_style"):
+                    "cod3_volume", "cod3_glyph_style", "cod3_depth_of_field", "cod3_motion_blur"):
             self.assertIn(key, gs.BY_KEY)
 
     def test_defaults_match_the_game(self):
@@ -79,6 +79,8 @@ class TableTests(unittest.TestCase):
         self.assertIs(d["vsync"], False)            # the SDK allows tearing by default
         self.assertEqual(d["swap_post_effect"], "none")
         self.assertEqual(d["cod3_shadow_quality"], "original")
+        self.assertIs(d["cod3_depth_of_field"], True)   # [post-effects] the game's own look
+        self.assertIs(d["cod3_motion_blur"], True)
         self.assertEqual(d["cod3_volume"], 100)
         self.assertEqual(d["cod3_glyph_style"], "xbox")
 
@@ -153,6 +155,18 @@ class TableTests(unittest.TestCase):
                             source, re.S)
         st = gs.BY_KEY["cod3_render_percent"]
         self.assertEqual(tuple(int(x) for x in percent.groups()), (st.default, st.min, st.max))
+
+    def test_post_effect_defaults_match_the_game_source(self):
+        """[post-effects] Depth of field and motion blur: the same defaults as the
+        game's own settings (game/post_effects.cpp), when the tool's copy has them."""
+        source = TOOL / "recomp" / "src" / "game" / "post_effects.cpp"
+        if not source.is_file():
+            self.skipTest("the tool's copy of the game source has no post_effects.cpp yet")
+        text = source.read_text(encoding="utf-8")
+        for key in ("cod3_depth_of_field", "cod3_motion_blur"):
+            m = re.search(rf"REXCVAR_DEFINE_BOOL\({key}, (true|false),", text)
+            self.assertIsNotNone(m, key)
+            self.assertIs(gs.BY_KEY[key].default, m.group(1) == "true", key)
 
     def test_toml_string_escapes_like_patch_0026(self):
         self.assertEqual(gs.toml_string('a"b\\c\nd\x7f'), '"a\\"b\\\\c\\u000Ad\\u007F"')

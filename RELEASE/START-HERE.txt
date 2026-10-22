@@ -1,4 +1,4 @@
-Call of Duty 3 (Xbox 360) for PC, with World at War content
+Call of Duty 3 (Xbox 360) for PC
 ==============================================================
 
 This folder is the whole project, without any game files. You bring your

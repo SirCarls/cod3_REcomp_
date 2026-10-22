@@ -80,6 +80,7 @@ set(COD3_SOURCES
     src/game/button_prompts.cpp
     src/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     src/game/perf_stats.cpp
+    src/game/physics_step.cpp  # [claude-9b] the physics in fixed steps, 60 a second, whatever the frame rate (campaign only)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp

@@ -21,8 +21,8 @@ The owner's rules for multiplayer (2026-10-10/11):
   system.
 - Only the host (admin) can turn `sv_cheats` on in a match, and when they
   do, every player is told in a column of its own next to the kill feed.
-- (2026-10-13) One match mixes a custom Xbox 360 copy, the recomp and the
-  Rust engine, and the pool of players is as large as possible (section 4.9).
+- (2026-10-13) The recomp and
+  Rust engine; so the pool of players is as large as possible (section 4.9).
 
 ## 1. What multiplayer is on the disc
 

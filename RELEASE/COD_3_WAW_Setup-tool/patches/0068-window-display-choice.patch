@@ -1,0 +1,350 @@
+diff --git a/include/rex/ui/window.h b/include/rex/ui/window.h
+index 66b2bd1..43a1893 100644
+--- a/include/rex/ui/window.h
++++ b/include/rex/ui/window.h
+@@ -285,6 +285,45 @@ class Window {
+   virtual double GetDisplayRefreshRate() const { return 0.0; }
+   virtual std::vector<double> GetDisplayRefreshRates() const { return {}; }
+ 
++  // The displays (monitors) the system has, in its own order: index 1 is the
++  // first. A name is the system's; a repeated name gets " #2", " #3" so each
++  // can be told apart. Sizes are the desktop mode in physical pixels. Needs
++  // the windowing system, which the app context starts before any window.
++  struct DisplayInfo {
++    std::string name;
++    uint32_t width = 0;
++    uint32_t height = 0;
++    double refresh_rate = 0.0;
++    bool primary = false;
++  };
++  static std::vector<DisplayInfo> ListDisplays();
++  // Which display a window goes on: by name first (the system's order can
++  // change when a screen is plugged in or out), else by its 1-based index in
++  // ListDisplays. An empty name and index 0 leave it to the system.
++  struct DisplayChoice {
++    std::string name;
++    int32_t index = 0;
++    bool IsAutomatic() const { return name.empty() && index <= 0; }
++  };
++  // The 1-based index of the chosen display among these, or 0 when the choice
++  // is automatic or names a display that isn't there.
++  static int32_t FindDisplay(const DisplayChoice& choice, const std::vector<DisplayInfo>& displays);
++  // This window's display. A new window starts with the monitor_name /
++  // monitor settings; another window (a second player's) sets its own before
++  // Open. Set while open, the window moves there at once, centered, and a
++  // fullscreen window goes fullscreen there. Automatic while open: it stays
++  // where it is.
++  const DisplayChoice& GetDisplayChoice() const { return display_choice_; }
++  void SetDisplayChoice(const DisplayChoice& choice);
++  // The 1-based index of the display the window is on now (0 if unknown), and
++  // that display's desktop size in physical pixels.
++  virtual int32_t GetCurrentDisplay() const { return 0; }
++  virtual bool GetCurrentDisplaySize(uint32_t* width, uint32_t* height) const {
++    (void)width;
++    (void)height;
++    return false;
++  }
++
+   // Desired state stored by the common Window, externally modifiable, read-only
+   // in the implementation.
+   const std::string& GetTitle() const { return title_; }
+@@ -525,6 +564,7 @@ class Window {
+   // ApplyNew* means that the value has actually been changed to something
+   // different than it was previously.
+   virtual void ApplyNewFullscreen() {}
++  virtual void ApplyNewDisplayChoice() {}
+   virtual void ApplyNewTitle() {}
+   // can_apply_state_in_current_phase whether the window is in a life cycle
+   // phase that would normally accept Apply calls (the native window surely
+@@ -724,6 +764,7 @@ class Window {
+ 
+   bool fullscreen_ = false;
+   double fullscreen_refresh_rate_ = 0.0;
++  DisplayChoice display_choice_;
+ 
+   std::string title_;
+ 
+diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
+index 4cb8f5e..d39800a 100644
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -36,6 +36,8 @@ class WindowSDL final : public Window {
+   bool WarpMouseToCenter(int32_t& x_out, int32_t& y_out) override;
+   double GetDisplayRefreshRate() const override;
+   std::vector<double> GetDisplayRefreshRates() const override;
++  int32_t GetCurrentDisplay() const override;
++  bool GetCurrentDisplaySize(uint32_t* width, uint32_t* height) const override;
+ 
+   // Called by SDLWindowedAppContext on the UI thread.
+   void HandleWindowEvent(SDL_Event& event);
+@@ -57,6 +59,8 @@ class WindowSDL final : public Window {
+   // start_in_background: goes fullscreen the first time the window gets the
+   // focus, if it's meant to be fullscreen.
+   void ApplyFullscreenWaitingForFocus();
++  // Moves the window to GetDisplayChoice()'s display (fullscreen goes along).
++  void ApplyNewDisplayChoice() override;
+   void ApplyNewTitle() override;
+   void ApplyNewMouseCapture() override;
+   void ApplyNewMouseRelease() override;
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+index 535b05c..f8c613c 100644
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -42,6 +42,13 @@ REXCVAR_DEFINE_INT32(monitor, 0, "UI/Window",
+     .range(0, 16)
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++// Read when a window is created, like monitor; a program moves an open window
++// with Window::SetDisplayChoice (and saves these itself).
++REXCVAR_DEFINE_STRING(monitor_name, "", "UI/Window",
++                      "Monitor to display on, by the name the system gives it (wins over the "
++                      "monitor index while that screen is connected; empty = use the index)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ REXCVAR_DEFINE_STRING(video_driver, "", "UI/Window",
+                       "SDL video driver to use, such as \"wayland\" or \"x11\". Empty picks "
+                       "SDL's default for the session")
+@@ -73,7 +80,40 @@ Window::Window(WindowedAppContext& app_context, const std::string_view title,
+     : app_context_(app_context),
+       title_(title),
+       desired_logical_width_(desired_logical_width),
+-      desired_logical_height_(desired_logical_height) {}
++      desired_logical_height_(desired_logical_height) {
++  display_choice_.name = REXCVAR_GET(monitor_name);
++  display_choice_.index = REXCVAR_GET(monitor);
++}
++
++int32_t Window::FindDisplay(const DisplayChoice& choice, const std::vector<DisplayInfo>& displays) {
++  if (!choice.name.empty()) {
++    for (size_t i = 0; i < displays.size(); ++i) {
++      if (displays[i].name == choice.name) {
++        return int32_t(i + 1);
++      }
++    }
++    // That screen isn't connected: the system's choice, not whatever screen
++    // took its place in the order.
++    return 0;
++  }
++  // Only an index (a setting from before names): that place in the order.
++  if (choice.index > 0 && size_t(choice.index) <= displays.size()) {
++    return choice.index;
++  }
++  return 0;
++}
++
++void Window::SetDisplayChoice(const DisplayChoice& choice) {
++  if (display_choice_.name == choice.name && display_choice_.index == choice.index) {
++    return;
++  }
++  display_choice_ = choice;
++  if (!CanApplyState()) {
++    return;
++  }
++  WindowDestructionReceiver destruction_receiver(this);
++  ApplyNewDisplayChoice();
++}
+ 
+ Window::~Window() {
+   // In case the implementation didn't need to call EnterDestructor. Though
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+index b0c007f..53abb33 100644
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -18,6 +18,8 @@
+ #include <functional>
+ #include <cstring>
+ #include <filesystem>
++#include <string>
++#include <vector>
+ 
+ #define UTF_CPP_CPLUSPLUS 201703L  // -fno-char8_t
+ #include <utf8.h>
+@@ -57,6 +59,49 @@ namespace rex::ui {
+ 
+ namespace {
+ 
++// The displays in the system's order (empty if SDL can't list them).
++std::vector<SDL_DisplayID> DisplayIds() {
++  std::vector<SDL_DisplayID> ids;
++  int count = 0;
++  SDL_DisplayID* displays = SDL_GetDisplays(&count);
++  if (displays) {
++    ids.assign(displays, displays + std::max(count, 0));
++    SDL_free(displays);
++  }
++  return ids;
++}
++
++// A display's desktop mode in physical pixels (Wayland gives the mode in
++// logical pixels with a pixel density).
++bool DesktopSizeInPixels(SDL_DisplayID display, uint32_t* width, uint32_t* height) {
++  const SDL_DisplayMode* mode = display ? SDL_GetDesktopDisplayMode(display) : nullptr;
++  if (!mode || mode->w <= 0 || mode->h <= 0) {
++    return false;
++  }
++  const float density = mode->pixel_density > 0.0f ? mode->pixel_density : 1.0f;
++  *width = uint32_t(float(mode->w) * density + 0.5f);
++  *height = uint32_t(float(mode->h) * density + 0.5f);
++  return true;
++}
++
++// The display ListDisplays() calls index (1-based), or 0.
++SDL_DisplayID DisplayIdAt(int32_t index) {
++  const std::vector<SDL_DisplayID> ids = DisplayIds();
++  return index > 0 && size_t(index) <= ids.size() ? ids[size_t(index) - 1] : 0;
++}
++
++// One line per display, for the log (once per program, and when a choice
++// can't be found).
++std::string DescribeDisplays(const std::vector<Window::DisplayInfo>& displays) {
++  std::string text;
++  for (size_t i = 0; i < displays.size(); ++i) {
++    const Window::DisplayInfo& d = displays[i];
++    text += fmt::format("{}{} \"{}\" {}x{} at {:.2f} Hz{}", text.empty() ? "" : "; ", i + 1, d.name,
++                        d.width, d.height, d.refresh_rate, d.primary ? " (primary)" : "");
++  }
++  return text.empty() ? std::string("none listed") : text;
++}
++
+ #if REX_PLATFORM_WIN32
+ // start_in_background: puts the (still hidden) window at the bottom of the
+ // stacking order; SDL then shows it there without activating it.
+@@ -165,6 +210,32 @@ MouseEvent::Button TranslateSDLMouseButton(Uint8 button) {
+ 
+ }  // namespace
+ 
++std::vector<Window::DisplayInfo> Window::ListDisplays() {
++  std::vector<DisplayInfo> displays;
++  const SDL_DisplayID primary = SDL_GetPrimaryDisplay();
++  for (SDL_DisplayID id : DisplayIds()) {
++    DisplayInfo info;
++    const char* name = SDL_GetDisplayName(id);
++    info.name = name && *name ? name : fmt::format("Display {}", displays.size() + 1);
++    // Two screens of the same model share a name: " #2" tells them apart.
++    int same = 1;
++    for (const DisplayInfo& earlier : displays) {
++      const std::string& n = earlier.name;
++      same += n == info.name || n.rfind(info.name + " #", 0) == 0;
++    }
++    if (same > 1) {
++      info.name += fmt::format(" #{}", same);
++    }
++    DesktopSizeInPixels(id, &info.width, &info.height);
++    if (const SDL_DisplayMode* mode = SDL_GetDesktopDisplayMode(id)) {
++      info.refresh_rate = double(mode->refresh_rate);
++    }
++    info.primary = id == primary;
++    displays.push_back(std::move(info));
++  }
++  return displays;
++}
++
+ std::unique_ptr<Window> Window::Create(WindowedAppContext& app_context,
+                                        const std::string_view title, uint32_t desired_logical_width,
+                                        uint32_t desired_logical_height) {
+@@ -202,21 +273,25 @@ bool WindowSDL::OpenImpl() {
+   sdl_window_id_ = SDL_GetWindowID(sdl_window_);
+   sdl_app_context().RegisterWindow(sdl_window_id_, this);
+ 
+-  // Center on the requested display before fullscreen so SDL resolves
+-  // fullscreen against it. 1-based enumeration order; 0 = system default.
+-  if (int32_t monitor_index = REXCVAR_GET(monitor); monitor_index > 0) {
+-    int display_count = 0;
+-    SDL_DisplayID* displays = SDL_GetDisplays(&display_count);
+-    if (displays) {
+-      if (monitor_index <= display_count) {
+-        SDL_DisplayID display = displays[monitor_index - 1];
+-        SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+-                              SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+-      } else {
+-        REXLOG_WARN("monitor cvar is {} but only {} display(s) present; using default",
+-                    monitor_index, display_count);
+-      }
+-      SDL_free(displays);
++  // Center on the chosen display before fullscreen so SDL resolves
++  // fullscreen against it (GetDisplayChoice: the monitor_name / monitor
++  // settings, or what the program set before Open).
++  {
++    const std::vector<DisplayInfo> displays = ListDisplays();
++    static bool listed = false;
++    if (!listed) {
++      listed = true;
++      REXLOG_INFO("window: displays: {}", DescribeDisplays(displays));
++    }
++    const DisplayChoice& choice = GetDisplayChoice();
++    if (const int32_t index = FindDisplay(choice, displays); index > 0) {
++      const SDL_DisplayID display = DisplayIdAt(index);
++      SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
++                            SDL_WINDOWPOS_CENTERED_DISPLAY(display));
++      REXLOG_INFO("window: on display {} \"{}\"", index, displays[size_t(index) - 1].name);
++    } else if (!choice.IsAutomatic()) {
++      REXLOG_WARN("window: display \"{}\" (number {}) isn't connected; the system picks one",
++                  choice.name, choice.index);
+     }
+   }
+ 
+@@ -398,6 +473,64 @@ void WindowSDL::ApplyNewFullscreen() {
+   SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
+ }
+ 
++void WindowSDL::ApplyNewDisplayChoice() {
++  if (!sdl_window_) {
++    return;
++  }
++  const std::vector<DisplayInfo> displays = ListDisplays();
++  const DisplayChoice& choice = GetDisplayChoice();
++  const int32_t index = FindDisplay(choice, displays);
++  if (index <= 0) {
++    if (!choice.IsAutomatic()) {
++      REXLOG_WARN("window: display \"{}\" (number {}) isn't connected; staying on this one ({})",
++                  choice.name, choice.index, DescribeDisplays(displays));
++    }
++    return;  // automatic: stays where it is
++  }
++  const SDL_DisplayID display = DisplayIdAt(index);
++  if (!display || SDL_GetDisplayForWindow(sdl_window_) == display) {
++    return;
++  }
++  // SDL puts a fullscreen window on the display it is on: leave fullscreen,
++  // move, and go fullscreen again there (the refresh rate is looked up again
++  // for the new display). A window still waiting for its first focus
++  // (start_in_background) just moves.
++  const bool fullscreen = IsFullscreen() && !fullscreen_waits_for_focus_;
++  if (fullscreen) {
++    SDL_SetWindowFullscreen(sdl_window_, false);
++    SDL_SyncWindow(sdl_window_);
++  }
++  SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
++                        SDL_WINDOWPOS_CENTERED_DISPLAY(display));
++  if (fullscreen) {
++    SDL_SyncWindow(sdl_window_);
++    ApplyFullscreenDisplayMode();
++    SDL_SetWindowFullscreen(sdl_window_, true);
++  }
++  SDL_SyncWindow(sdl_window_);
++  REXLOG_INFO("window: moved to display {} \"{}\"{}", index, displays[size_t(index) - 1].name,
++              fullscreen ? " (fullscreen there)" : "");
++}
++
++int32_t WindowSDL::GetCurrentDisplay() const {
++  const SDL_DisplayID display = sdl_window_ ? SDL_GetDisplayForWindow(sdl_window_) : 0;
++  if (!display) {
++    return 0;
++  }
++  const std::vector<SDL_DisplayID> ids = DisplayIds();
++  for (size_t i = 0; i < ids.size(); ++i) {
++    if (ids[i] == display) {
++      return int32_t(i + 1);
++    }
++  }
++  return 0;
++}
++
++bool WindowSDL::GetCurrentDisplaySize(uint32_t* width, uint32_t* height) const {
++  const SDL_DisplayID display = sdl_window_ ? SDL_GetDisplayForWindow(sdl_window_) : 0;
++  return DesktopSizeInPixels(display, width, height);
++}
++
+ void WindowSDL::ApplyFullscreenDisplayMode() {
+   const double hz = GetFullscreenRefreshRate();
+   if (hz <= 0.0) {

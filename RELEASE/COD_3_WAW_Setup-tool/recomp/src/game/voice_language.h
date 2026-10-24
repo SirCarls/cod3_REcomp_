@@ -15,8 +15,15 @@
 //     hook after that call (recomp/config/default.toml) answers with the
 //     chosen language. The game falls back to English when a movie lacks it.
 // The game's text and menus stay in the game's own language (0x82A2A150 is
-// never changed). "disc" leaves everything as the game does it. A change
-// applies from the next level load (the game restarts between missions).
+// never changed). "disc" leaves everything as the game does it.
+//
+// A change: the films follow at once. The soldiers follow at the next level
+// load (starting or loading a mission): the banks of the archives that level
+// opens are registered for the new voice, and every bank still registered for
+// the old one (the same level loaded again, the battle chatter) is released,
+// registered again and loaded again while the level loads (0x824631D0,
+// hooked). Before, a bank the game kept registered or loaded kept its old
+// voice until the game was started again.
 //
 // Campaign only: the multiplayer program registers its banks in its own code
 // (0x824964E8, language 0x82BCBE24: docs/X360_FAMILY.md).

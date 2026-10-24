@@ -134,7 +134,8 @@ almost all resident. Unless the game's configuration says otherwise, `nslFmodIni
 6. **Stall watchdog.** For a resident, non-looping XMA wave, NSL reads the channel's position (ms)
    every update; when it has not moved for more than 32 ms (0x825A1800) **and** more than 4 updates
    (0x825A1804), NSL stops the voice as finished (the check around 0x8211ABFC-0x8211AC30). On
-   the console's 30 frames per second that is at least 133 ms.
+   the console's 30 frames per second that is at least 133 ms. The port gives it 1000 ms
+   (`cod3_sound_stall_ms`; "Voices played twice when the frame rate dips" below).
 
 ## The listener
 
@@ -205,6 +206,7 @@ this section). The leads as they were found:
   (0x8248A958, run from `Com_Frame`; their data has `KeyType`, `Event`, `Conditions`, `Volume`,
   `Pitch`) only update a sound while NSL reports it playing and otherwise start a new one, so an
   event sound stopped early while its event still holds starts again from the beginning.
+  **Fixed 2026-10-23**, below.
 - **Not a cause:** XMA looping. FMOD never gives the decoder loop data (the context's loop fields
   stay zero); it loops a sound by setting the context up again, seeking to the packet and
   discarding samples up to the loop start. The loop count of 255 in every stream's `fmt` chunk is
@@ -234,6 +236,21 @@ game's 5.1 frames and its XMA calls, and a recorder took what reached the output
   mixed before again. SDK patch 0061 keeps the callbacks 5.33 ms apart while the output has its
   next period queued (`audio_pace_callbacks`, on). Menu music, 129 s: repeated blocks at the output
   29 -> 3 (the rest on the cloud's two processors); spacing median 5.4 ms.
+
+**Voices played twice when the frame rate dips (2026-10-23, setup tool 2.17.1; owner:
+"Voices will play twice, Often happening during in-game cutscenes. It happens when framerate dips I
+think").** The stall watchdog above: on the console its 4 updates took at least 133 ms, so FMOD's
+mixer could fall behind for a moment without NSL noticing. At a PC's frame rates only the 32 ms
+count, and a frame-rate dip that holds FMOD's mixer back that long (loading in a scripted scene,
+many voices starting at once) left a playing voice's position where it was: NSL stopped it as
+finished, and the scene's sound event, finding it no longer playing, started the line again from
+the beginning. A sound that really ends tells NSL through FMOD's end callback, so the watchdog only
+matters for a decoder that never ends; the port lets a position stand still for 1000 ms
+(`cod3_sound_stall_ms`, 32-60000, 32 is the console's value). `game/sound_stall.cpp` (both
+programs): a mid-asm hook at the start of the check (campaign 0x8211ABF4, cod3mp 0x8212CFEC) puts
+the setting in the limit's place (0x825A1800 / 0x825B199C) and logs each stall the console's rule
+would have stopped: `cod3: sound: a playing sound's position stood still for N ms (U updates): kept
+playing (the console would have stopped it ...)`, or `... stopped as stuck` past the limit.
 
 ## FMOD in the program
 

@@ -86,6 +86,14 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
 
  private:
   void DrawVideo();
+  // [claude-9b] VIDEO's subtabs.
+  void DrawVideoDisplay();
+  void DrawVideoResolution();
+  void DrawVideoFrameRate();
+  void DrawVideoColors();
+  void DrawVideoQuality();
+  void DrawVideoAccuracy();
+  void DrawSound();
   void DrawGame();
   void DrawSoundOutput();
   void DrawCrosshair();

@@ -81,6 +81,8 @@ set(COD3_SOURCES
     src/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     src/game/perf_stats.cpp
     src/game/physics_step.cpp  # [claude-9b] the physics in fixed steps, 60 a second, whatever the frame rate (campaign only)
+    src/game/render_list_guard.cpp  # [claude-9b] a freed object in the render lists is skipped and logged, not a crash (campaign only)
+    src/game/view_cull.cpp  # [claude-9b] the game's on-screen check as wide as the picture: logs, and cod3_cull_match_view (campaign only)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
@@ -90,6 +92,7 @@ set(COD3_SOURCES
     src/game/qte_actions.cpp
     src/game/screenshot.cpp
     src/game/shadows.cpp
+    src/game/sound_stall.cpp  # [voice] voices played twice: the sound library's stuck-sound check, in both programs
     src/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp

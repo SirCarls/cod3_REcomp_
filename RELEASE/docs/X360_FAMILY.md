@@ -115,7 +115,22 @@ game code: [COD3_LIBRARIES.md](COD3_LIBRARIES.md).
   the chosen language's whole bank in the same slot, or else its split pair (`.wul` in slot 5, the
   speech in the game's language slot); without either, the game's own bank. A mid-asm hook right
   after the XGetLanguage call (0x824EEDD0) gives the movies the chosen language. The text stays the
-  game's. A change applies from the next level load (the game restarts between missions).
+  game's. A change: the movies follow at once; the soldiers at the next level load (starting or
+  loading a mission). Before setup tool 2.17.1 (2026-10-23;
+  owner 10-23: "voice/language swapping isn't working from the f2 or setup tool until the whole game
+  restarts") only the banks a load registered afresh changed: the game registers its global sounds
+  (`sp\Global.wbk`, loaded at once) and the battle chatter (`sp\bcen_*.wbk`) once, when it starts,
+  so those kept the voice the game started with, and so did a level loaded again. The hook now remembers every registration;
+  right after `SV_SpawnServer` opens the level's archive (0x824631D0, hooked), every bank still
+  registered for another voice is released if loaded (0x82494C70, then the bank pump 0x82493F00
+  until it is idle), its files are closed, it is registered again for the chosen voice and loaded
+  again (0x82494E90). `cod3_debug_voices` logs each registration and plan. Checked 2026-10-23 (PC run, German voices in
+  the test install): the game started with the disc's voices, `cod3_voice_language de` on the main
+  menu, then Blackburn: `Global.wbk now German (was the game's own), loaded again`, the four
+  `bcen_*` banks now German, the level's bank registered as `Blkbrn.wde`; the level played on with
+  no errors. A level loaded again inside the program still crashes (the known level-change crash,
+  REQUIREMENTS 7.1, not this). The setup tool's
+  Voices setting can only be saved while the game is closed, so it applies when the game starts.
 - Not done: multiplayer. cod3mp registers its banks at 0x824964E8 and loads them in 0x824AE270 by
   its region index 0x82BCBE24; the same kind of hook on its register function would do it there
   (only English, German and French multiplayer banks exist). Not yet tried in game.

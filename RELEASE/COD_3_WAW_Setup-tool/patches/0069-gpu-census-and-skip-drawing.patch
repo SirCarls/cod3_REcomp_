@@ -1,0 +1,763 @@
+diff --git a/include/rex/graphics/gpu_census.h b/include/rex/graphics/gpu_census.h
+new file mode 100644
+index 0000000..68f5479
+--- /dev/null
++++ b/include/rex/graphics/gpu_census.h
+@@ -0,0 +1,55 @@
++/**
++ * @file        rex/graphics/gpu_census.h
++ *
++ * @brief       Diagnostics for replacing the GPU emulation with a host
++ *              renderer: what the game's GPU commands use (gpu_census), and
++ *              running them without drawing anything (gpu_skip_drawing).
++ *
++ * gpu_census counts, on the GPU command thread, every command packet by
++ * kind, every draw by primitive type and by the render targets it draws to,
++ * every resolve by its source and destination formats, and every shader a
++ * draw uses (its microcode hash and size, how many draws use it, and once the
++ * shader is analyzed, whether it exports to memory, kills pixels or writes
++ * depth). A summary line goes to the log every gpu_census_interval seconds;
++ * the tables at the end, and every minute into gpu_census_path if set.
++ *
++ * gpu_skip_drawing reads and answers every command as usual (registers,
++ * constants, shaders, fences, interrupts, swaps) but issues no draw and no
++ * resolve. The picture stays black. What the game then runs at is the
++ * ceiling of a host renderer that keeps the command stream but replaces the
++ * emulated GPU's drawing: the game's own threads, Direct3D's command buffer
++ * building and the stream's decoding are all that is left.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstdint>
++
++namespace rex::graphics {
++class RegisterFile;
++class Shader;
++}  // namespace rex::graphics
++
++namespace rex::graphics::census {
++
++// gpu_census or gpu_skip_drawing is on: the calls below count.
++bool Active();
++// gpu_skip_drawing is on: the command processor issues no draws or resolves.
++bool SkipDrawing();
++
++// All of these are for the GPU command thread only.
++void Type0(uint32_t registers);
++void Type3(uint32_t opcode, bool predicated, bool skipped_by_predicate);
++// A draw packet that reached the backend (RB_MODECONTROL kCopy is a resolve).
++void Draw(const RegisterFile& regs, uint32_t prim_type, bool indexed, uint32_t index_count,
++          const Shader* vertex_shader, const Shader* pixel_shader);
++// A draw dropped because a visibility query killed it.
++void KilledDraw();
++// A swap: the periodic summary line and table file.
++void Frame();
++// After the GPU command thread has stopped: the whole run's tables.
++void Report();
++
++}  // namespace rex::graphics::census
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index e5524cf..e56399c 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -18,6 +18,7 @@ set(REXGPU_XENOS_SOURCES
+     # GPU system
+     graphics_system.cpp
+     command_processor.cpp
++    gpu_census.cpp
+     util/draw_extent_estimator.cpp
+     util/draw.cpp
+     packet_disassembler.cpp
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index 3becc6c..a751cc8 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -26,6 +26,7 @@
+ #include <rex/graphics/command_processor.h>
+ #include <rex/graphics/gpu_progress.h>
+ #include <rex/graphics/gpu_stats.h>
++#include <rex/graphics/gpu_census.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/graphics_system.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
+@@ -279,6 +280,7 @@ void CommandProcessor::Shutdown() {
+   write_ptr_index_event_->Set();
+   worker_thread_->Wait(0, 0, 0, nullptr);
+   worker_thread_.reset();
++  census::Report();
+ 
+   // Nothing can copy back resolves anymore: release the threads waiting for
+   // one, and leave no guest memory inaccessible.
+@@ -1474,6 +1476,9 @@ bool CommandProcessor::ExecutePacketType0(memory::RingBuffer* reader, uint32_t p
+     return false;
+   }
+ 
++  if (census::Active()) {
++    census::Type0(count);
++  }
+   uint32_t base_index = (packet & 0x7FFF);
+   uint32_t write_one_reg = (packet >> 15) & 0x1;
+   if (!write_one_reg && count > 1) {
+@@ -1528,10 +1533,16 @@ bool CommandProcessor::ExecutePacketType3(memory::RingBuffer* reader, uint32_t p
+   if (packet & 1) {
+     bool any_pass = (bin_select_ & bin_mask_) != 0;
+     if (!any_pass || opcode == PM4_XE_SWAP) {
++      if (census::Active()) {
++        census::Type3(opcode, true, true);
++      }
+       reader->AdvanceRead(count * sizeof(uint32_t));
+       return true;
+     }
+   }
++  if (census::Active()) {
++    census::Type3(opcode, (packet & 1) != 0, false);
++  }
+ 
+   bool result = false;
+   switch (opcode) {
+@@ -1810,6 +1821,9 @@ bool CommandProcessor::ExecutePacketType3_XE_SWAP(memory::RingBuffer* reader, ui
+   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
+ 
+   stats::Add(stats::Counter::kFrames);
++  if (census::Active()) {
++    census::Frame();
++  }
+   if (const uint32_t physical = frontbuffer_ptr & 0x1FFFFFFF; !IsPresentedFrontbuffer(physical)) {
+     presented_frontbuffers_[presented_frontbuffer_next_] = physical;
+     presented_frontbuffer_next_ =
+@@ -2246,8 +2260,15 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
+ 
+       bool major_mode_explicit =
+           xenos::IsMajorModeExplicit(vgt_draw_initiator.major_mode, vgt_draw_initiator.prim_type);
+-      draw_succeeded = IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
+-                                 is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
++      if (census::Active()) {
++        census::Draw(*register_file_, uint32_t(vgt_draw_initiator.prim_type), is_indexed,
++                     vgt_draw_initiator.num_indices, active_vertex_shader_, active_pixel_shader_);
++      }
++      // gpu_skip_drawing: the draw (or resolve) is read and counted, then dropped.
++      draw_succeeded =
++          census::SkipDrawing() ||
++          IssueDraw(vgt_draw_initiator.prim_type, vgt_draw_initiator.num_indices,
++                    is_indexed ? &index_buffer_info : nullptr, major_mode_explicit);
+       if (!draw_succeeded) {
+         auto vgt_output_path_cntl = register_file_->Get<reg::VGT_OUTPUT_PATH_CNTL>();
+         auto vgt_hos_cntl = register_file_->Get<reg::VGT_HOS_CNTL>();
+@@ -2261,6 +2282,8 @@ bool CommandProcessor::ExecutePacketType3Draw(memory::RingBuffer* reader, uint32
+             uint32_t(vgt_output_path_cntl.path_select), uint32_t(vgt_hos_cntl.tess_mode),
+             uint32_t(rb_modecontrol.edram_mode));
+       }
++    } else if (census::Active()) {
++      census::KilledDraw();
+     }
+   }
+ 
+diff --git a/src/graphics/d3d12/command_processor.cpp b/src/graphics/d3d12/command_processor.cpp
+index 9fdf339..cf0fb1e 100644
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -30,6 +30,7 @@
+ #include <rex/graphics/xenos.h>
+ #include <rex/kernel/xboxkrnl/video.h>
+ #include <rex/logging.h>
++#include <rex/graphics/gpu_census.h>
+ #include <rex/memory/utils.h>
+ #include <rex/ui/d3d12/d3d12_presenter.h>
+ #include <rex/ui/d3d12/d3d12_util.h>
+@@ -154,7 +155,9 @@ void D3D12CommandProcessor::InitializeShaderStorage(const std::filesystem::path&
+ 
+ bool D3D12CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                uint32_t packet, uint32_t count) {
+-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
++  // gpu_skip_drawing: nothing is drawn, so the queries get the fixed sample count.
++  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
++      census::SkipDrawing()) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 
+diff --git a/src/graphics/gpu_census.cpp b/src/graphics/gpu_census.cpp
+new file mode 100644
+index 0000000..d6ed874
+--- /dev/null
++++ b/src/graphics/gpu_census.cpp
+@@ -0,0 +1,554 @@
++/**
++ * @file        graphics/gpu_census.cpp
++ *
++ * @brief       gpu_census and gpu_skip_drawing (rex/graphics/gpu_census.h).
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <rex/graphics/gpu_census.h>
++
++#include <algorithm>
++#include <array>
++#include <chrono>
++#include <cstdio>
++#include <filesystem>
++#include <string>
++#include <system_error>
++#include <unordered_map>
++#include <utility>
++#include <vector>
++
++#include <fmt/format.h>
++
++#include <rex/cvar.h>
++#include <rex/graphics/pipeline/shader/shader.h>
++#include <rex/graphics/register_file.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/xenos.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_BOOL(gpu_census, false, "GPU",
++                    "Diagnostics: count what the game's GPU commands use (packets, draws by "
++                    "primitive, render target and resolve formats, shaders). A summary line in "
++                    "the log every gpu_census_interval seconds, the tables at the end")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(gpu_skip_drawing, false, "GPU",
++                    "Diagnostics: read and answer the game's GPU commands (registers, constants, "
++                    "shaders, fences, interrupts, swaps) but draw and resolve nothing. The picture "
++                    "stays black; the frame rate is what the game runs at without the GPU "
++                    "emulation's drawing. Also counts like gpu_census")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_INT32(gpu_census_interval, 10, "GPU",
++                     "gpu_census: seconds between the summary lines in the log")
++    .range(1, 3600)
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_STRING(gpu_census_path, "", "GPU",
++                      "gpu_census: a file the tables (with every shader) are written to, every "
++                      "minute and at the end; empty: the tables go to the log at the end, "
++                      "without the shader list")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++namespace rex::graphics::census {
++
++namespace {
++
++using Clock = std::chrono::steady_clock;
++
++struct ShaderInfo {
++  uint64_t hash = 0;
++  uint32_t stage = 0;  // 0 vertex, 1 pixel
++  uint32_t dwords = 0;
++  uint64_t draws = 0;
++  uint64_t first_frame = 0;
++  bool analyzed = false;
++  uint8_t memexport = 0;  // eM# written (a mask)
++  bool kills_pixels = false;
++  bool writes_depth = false;
++};
++
++struct Counts {
++  uint64_t frames = 0;
++  uint64_t draws = 0;
++  uint64_t indexed = 0;
++  uint64_t indices = 0;
++  uint64_t depth_only = 0;
++  uint64_t resolves = 0;
++  uint64_t killed = 0;
++  uint64_t registers = 0;
++  uint64_t type3 = 0;
++  uint64_t predicated = 0;
++  uint64_t predicated_skipped = 0;
++  std::array<uint64_t, 128> opcodes{};
++  std::array<uint64_t, 64> prims{};
++};
++
++struct State {
++  Counts total;
++  Counts at_report;
++  Clock::time_point start{};
++  Clock::time_point last_report{};
++  Clock::time_point last_file{};
++  std::unordered_map<uint32_t, uint64_t> targets;   // TargetKey -> draws
++  std::unordered_map<uint32_t, uint64_t> resolves;  // ResolveKey -> resolves
++  std::unordered_map<uint64_t, ShaderInfo> shaders;  // hash, stage in the top bit
++  std::array<const Shader*, 2> last_shader{};
++  std::array<uint64_t, 2> last_hash{};
++  std::array<ShaderInfo*, 2> last_info{};
++  uint64_t vertex_shaders = 0;
++  uint64_t pixel_shaders = 0;
++};
++
++State& S() {
++  static State state;
++  return state;
++}
++
++const char* PrimName(uint32_t prim) {
++  switch (xenos::PrimitiveType(prim)) {
++    case xenos::PrimitiveType::kNone: return "none";
++    case xenos::PrimitiveType::kPointList: return "point list";
++    case xenos::PrimitiveType::kLineList: return "line list";
++    case xenos::PrimitiveType::kLineStrip: return "line strip";
++    case xenos::PrimitiveType::kTriangleList: return "triangle list";
++    case xenos::PrimitiveType::kTriangleFan: return "triangle fan";
++    case xenos::PrimitiveType::kTriangleStrip: return "triangle strip";
++    case xenos::PrimitiveType::kTriangleWithWFlags: return "triangle with W flags";
++    case xenos::PrimitiveType::kRectangleList: return "rectangle list";
++    case xenos::PrimitiveType::kLineLoop: return "line loop";
++    case xenos::PrimitiveType::kQuadList: return "quad list";
++    case xenos::PrimitiveType::kQuadStrip: return "quad strip";
++    case xenos::PrimitiveType::kPolygon: return "polygon";
++    case xenos::PrimitiveType::k2DCopyRectListV0: return "2D copy rect list v0";
++    case xenos::PrimitiveType::k2DCopyRectListV1: return "2D copy rect list v1";
++    case xenos::PrimitiveType::k2DCopyRectListV2: return "2D copy rect list v2";
++    case xenos::PrimitiveType::k2DCopyRectListV3: return "2D copy rect list v3";
++    case xenos::PrimitiveType::k2DFillRectList: return "2D fill rect list";
++    case xenos::PrimitiveType::k2DLineStrip: return "2D line strip";
++    case xenos::PrimitiveType::k2DTriStrip: return "2D tri strip";
++    default: return nullptr;
++  }
++}
++
++std::string PrimLabel(uint32_t prim) {
++  const char* name = PrimName(prim);
++  return name ? std::string(name) : fmt::format("prim 0x{:02X}", prim);
++}
++
++const char* OpName(uint32_t op) {
++  switch (op) {
++    case xenos::PM4_ME_INIT: return "ME_INIT";
++    case xenos::PM4_NOP: return "NOP";
++    case xenos::PM4_INDIRECT_BUFFER: return "INDIRECT_BUFFER";
++    case xenos::PM4_INDIRECT_BUFFER_PFD: return "INDIRECT_BUFFER_PFD";
++    case xenos::PM4_WAIT_FOR_IDLE: return "WAIT_FOR_IDLE";
++    case xenos::PM4_WAIT_REG_MEM: return "WAIT_REG_MEM";
++    case xenos::PM4_WAIT_REG_EQ: return "WAIT_REG_EQ";
++    case xenos::PM4_WAIT_REG_GTE: return "WAIT_REG_GTE";
++    case xenos::PM4_WAIT_UNTIL_READ: return "WAIT_UNTIL_READ";
++    case xenos::PM4_WAIT_IB_PFD_COMPLETE: return "WAIT_IB_PFD_COMPLETE";
++    case xenos::PM4_REG_RMW: return "REG_RMW";
++    case xenos::PM4_REG_TO_MEM: return "REG_TO_MEM";
++    case xenos::PM4_MEM_WRITE: return "MEM_WRITE";
++    case xenos::PM4_MEM_WRITE_CNTR: return "MEM_WRITE_CNTR";
++    case xenos::PM4_COND_EXEC: return "COND_EXEC";
++    case xenos::PM4_COND_WRITE: return "COND_WRITE";
++    case xenos::PM4_EVENT_WRITE: return "EVENT_WRITE";
++    case xenos::PM4_EVENT_WRITE_SHD: return "EVENT_WRITE_SHD";
++    case xenos::PM4_EVENT_WRITE_CFL: return "EVENT_WRITE_CFL";
++    case xenos::PM4_EVENT_WRITE_EXT: return "EVENT_WRITE_EXT";
++    case xenos::PM4_EVENT_WRITE_ZPD: return "EVENT_WRITE_ZPD";
++    case xenos::PM4_DRAW_INDX: return "DRAW_INDX";
++    case xenos::PM4_DRAW_INDX_2: return "DRAW_INDX_2";
++    case xenos::PM4_DRAW_INDX_BIN: return "DRAW_INDX_BIN";
++    case xenos::PM4_DRAW_INDX_2_BIN: return "DRAW_INDX_2_BIN";
++    case xenos::PM4_VIZ_QUERY: return "VIZ_QUERY";
++    case xenos::PM4_SET_STATE: return "SET_STATE";
++    case xenos::PM4_SET_CONSTANT: return "SET_CONSTANT";
++    case xenos::PM4_SET_CONSTANT2: return "SET_CONSTANT2";
++    case xenos::PM4_SET_SHADER_CONSTANTS: return "SET_SHADER_CONSTANTS";
++    case xenos::PM4_LOAD_ALU_CONSTANT: return "LOAD_ALU_CONSTANT";
++    case xenos::PM4_IM_LOAD: return "IM_LOAD";
++    case xenos::PM4_IM_LOAD_IMMEDIATE: return "IM_LOAD_IMMEDIATE";
++    case xenos::PM4_LOAD_CONSTANT_CONTEXT: return "LOAD_CONSTANT_CONTEXT";
++    case xenos::PM4_INVALIDATE_STATE: return "INVALIDATE_STATE";
++    case xenos::PM4_SET_SHADER_BASES: return "SET_SHADER_BASES";
++    case xenos::PM4_SET_BIN_BASE_OFFSET: return "SET_BIN_BASE_OFFSET";
++    case xenos::PM4_SET_BIN_MASK: return "SET_BIN_MASK";
++    case xenos::PM4_SET_BIN_SELECT: return "SET_BIN_SELECT";
++    case xenos::PM4_CONTEXT_UPDATE: return "CONTEXT_UPDATE";
++    case xenos::PM4_INTERRUPT: return "INTERRUPT";
++    case xenos::PM4_XE_SWAP: return "XE_SWAP";
++    case xenos::PM4_IM_STORE: return "IM_STORE";
++    case xenos::PM4_SET_BIN_MASK_LO: return "SET_BIN_MASK_LO";
++    case xenos::PM4_SET_BIN_MASK_HI: return "SET_BIN_MASK_HI";
++    case xenos::PM4_SET_BIN_SELECT_LO: return "SET_BIN_SELECT_LO";
++    case xenos::PM4_SET_BIN_SELECT_HI: return "SET_BIN_SELECT_HI";
++    default: return nullptr;
++  }
++}
++
++std::string OpLabel(uint32_t op) {
++  const char* name = OpName(op);
++  return name ? std::string(name) : fmt::format("type-3 0x{:02X}", op);
++}
++
++const char* EdramModeName(uint32_t mode) {
++  switch (xenos::EdramMode(mode)) {
++    case xenos::EdramMode::kNoOperation: return "no operation";
++    case xenos::EdramMode::kColorDepth: return "color+depth";
++    case xenos::EdramMode::kDepthOnly: return "depth only";
++    case xenos::EdramMode::kCopy: return "copy";
++    default: return "mode ?";
++  }
++}
++
++const char* MsaaName(uint32_t msaa) {
++  switch (msaa & 3) {
++    case 0: return "1x";
++    case 1: return "2x";
++    case 2: return "4x";
++    default: return "msaa ?";
++  }
++}
++
++Register ColorInfoRegister(uint32_t rt) { return reg::RB_COLOR_INFO::rt_register_indices[rt & 3]; }
++
++// Bits 0-1 MSAA, 2-4 EDRAM mode, then 5 bits per color target (enabled,
++// format), 25 depth/stencil used, 26 the depth format.
++uint32_t TargetKey(const RegisterFile& regs, xenos::EdramMode mode) {
++  uint32_t key = uint32_t(regs.Get<reg::RB_SURFACE_INFO>().msaa_samples) & 3;
++  key |= (uint32_t(mode) & 7) << 2;
++  if (mode == xenos::EdramMode::kColorDepth) {
++    const uint32_t mask = regs.Get<reg::RB_COLOR_MASK>().value;
++    for (uint32_t rt = 0; rt < 4; ++rt) {
++      if (!((mask >> (4 * rt)) & 0xF)) {
++        continue;
++      }
++      const auto info = regs.Get<reg::RB_COLOR_INFO>(ColorInfoRegister(rt));
++      key |= (0x10u | (uint32_t(info.color_format) & 0xF)) << (5 + 5 * rt);
++    }
++  }
++  const auto depth = regs.Get<reg::RB_DEPTHCONTROL>();
++  if (depth.z_enable || depth.stencil_enable) {
++    key |= 1u << 25;
++    key |= (uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_format) & 1) << 26;
++  }
++  return key;
++}
++
++std::string TargetLabel(uint32_t key) {
++  std::string s = fmt::format("{} {}", MsaaName(key & 3), EdramModeName((key >> 2) & 7));
++  for (uint32_t rt = 0; rt < 4; ++rt) {
++    const uint32_t bits = (key >> (5 + 5 * rt)) & 0x1F;
++    if (bits & 0x10) {
++      s += fmt::format(" rt{} {}", rt,
++                       xenos::GetColorRenderTargetFormatName(
++                           xenos::ColorRenderTargetFormat(bits & 0xF)));
++    }
++  }
++  if (key & (1u << 25)) {
++    s += fmt::format(" depth {}", xenos::GetDepthRenderTargetFormatName(
++                                      xenos::DepthRenderTargetFormat((key >> 26) & 1)));
++  } else {
++    s += " no depth";
++  }
++  return s;
++}
++
++// Bits 0-2 the source (0-3 color target, 4 depth), 3-6 its format, 7-12 the
++// destination format, 13-15 its endianness, 16-17 MSAA, 18 color clear,
++// 19 depth clear, 20-21 the copy command, 22 red/blue swap, 23 exp bias.
++uint32_t ResolveKey(const RegisterFile& regs) {
++  const auto control = regs.Get<reg::RB_COPY_CONTROL>();
++  const auto dest = regs.Get<reg::RB_COPY_DEST_INFO>();
++  const uint32_t source = control.copy_src_select & 7;
++  uint32_t source_format;
++  if (source < 4) {
++    source_format = uint32_t(regs.Get<reg::RB_COLOR_INFO>(ColorInfoRegister(source)).color_format);
++  } else {
++    source_format = uint32_t(regs.Get<reg::RB_DEPTH_INFO>().depth_format);
++  }
++  uint32_t key = source;
++  key |= (source_format & 0xF) << 3;
++  key |= (uint32_t(dest.copy_dest_format) & 0x3F) << 7;
++  key |= (uint32_t(dest.copy_dest_endian) & 7) << 13;
++  key |= (uint32_t(regs.Get<reg::RB_SURFACE_INFO>().msaa_samples) & 3) << 16;
++  key |= uint32_t(control.color_clear_enable) << 18;
++  key |= uint32_t(control.depth_clear_enable) << 19;
++  key |= (uint32_t(control.copy_command) & 3) << 20;
++  key |= uint32_t(dest.copy_dest_swap) << 22;
++  key |= uint32_t(dest.copy_dest_exp_bias != 0) << 23;
++  return key;
++}
++
++std::string ResolveLabel(uint32_t key) {
++  const uint32_t source = key & 7;
++  const uint32_t source_format = (key >> 3) & 0xF;
++  std::string s;
++  if (source < 4) {
++    s = fmt::format("rt{} {}", source,
++                    xenos::GetColorRenderTargetFormatName(
++                        xenos::ColorRenderTargetFormat(source_format)));
++  } else {
++    s = fmt::format("depth {}", xenos::GetDepthRenderTargetFormatName(
++                                    xenos::DepthRenderTargetFormat(source_format & 1)));
++  }
++  static constexpr const char* kCommands[] = {"raw", "convert", "constant one", "null"};
++  s += fmt::format(" -> format {} endian {} {} {}", (key >> 7) & 0x3F, (key >> 13) & 7,
++                   MsaaName((key >> 16) & 3), kCommands[(key >> 20) & 3]);
++  if (key & (1u << 18)) s += " +clear color";
++  if (key & (1u << 19)) s += " +clear depth";
++  if (key & (1u << 22)) s += " +swap";
++  if (key & (1u << 23)) s += " +exp bias";
++  return s;
++}
++
++void Note(State& s, uint32_t stage, const Shader* shader) {
++  if (!shader) {
++    return;
++  }
++  const uint64_t hash = shader->ucode_data_hash();
++  ShaderInfo* info;
++  if (shader == s.last_shader[stage] && hash == s.last_hash[stage] && s.last_info[stage]) {
++    info = s.last_info[stage];
++  } else {
++    const uint64_t key = hash ^ (uint64_t(stage) << 63);
++    auto [it, fresh] = s.shaders.try_emplace(key);
++    info = &it->second;
++    if (fresh) {
++      info->hash = hash;
++      info->stage = stage;
++      info->dwords = uint32_t(shader->ucode_dword_count());
++      info->first_frame = s.total.frames;
++      ++(stage ? s.pixel_shaders : s.vertex_shaders);
++    }
++    s.last_shader[stage] = shader;
++    s.last_hash[stage] = hash;
++    s.last_info[stage] = info;  // elements of an unordered_map keep their address
++  }
++  ++info->draws;
++  if (!info->analyzed && shader->is_ucode_analyzed()) {
++    info->analyzed = true;
++    info->memexport = shader->memexport_eM_written();
++    info->kills_pixels = shader->kills_pixels();
++    info->writes_depth = shader->writes_depth();
++  }
++}
++
++template <typename Array>
++std::vector<std::pair<uint32_t, uint64_t>> Top(const Array& now, const Array& before) {
++  std::vector<std::pair<uint32_t, uint64_t>> out;
++  for (uint32_t i = 0; i < uint32_t(now.size()); ++i) {
++    if (now[i] > before[i]) {
++      out.emplace_back(i, now[i] - before[i]);
++    }
++  }
++  std::sort(out.begin(), out.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
++  return out;
++}
++
++uint64_t MemexportShaders(const State& s) {
++  uint64_t n = 0;
++  for (const auto& [key, info] : s.shaders) {
++    n += info.memexport != 0;
++  }
++  return n;
++}
++
++std::string Summary(const State& s, const Counts& before, double seconds) {
++  const Counts& now = s.total;
++  const double frames = double(std::max<uint64_t>(1, now.frames - before.frames));
++  const uint64_t draws = now.draws - before.draws;
++  auto per_frame = [&](uint64_t a, uint64_t b) { return double(a - b) / frames; };
++  std::string prims;
++  for (const auto& [prim, n] : Top(now.prims, before.prims)) {
++    if (!prims.empty()) prims += ", ";
++    prims += fmt::format("{} {:.0f}%", PrimLabel(prim), draws ? 100.0 * double(n) / double(draws) : 0.0);
++    if (prims.size() > 160) break;
++  }
++  std::string ops;
++  int shown = 0;
++  for (const auto& [op, n] : Top(now.opcodes, before.opcodes)) {
++    if (shown++ == 6) break;
++    if (!ops.empty()) ops += ", ";
++    ops += fmt::format("{} {:.0f}", OpLabel(op), double(n) / frames);
++  }
++  return fmt::format(
++      "{} frames in {:.1f} s ({:.0f} a second){}: per frame {:.0f} draws ({:.0f}% indexed, "
++      "{:.0f} indices each; {}), {:.1f} depth-only, {:.1f} resolves, {:.1f} dropped by visibility "
++      "queries, {:.0f} registers written, {:.0f} other packets ({}), {:.0f} predicated ({:.0f} of "
++      "them skipped); shaders so far {} vertex, {} pixel, {} exporting to memory",
++      now.frames - before.frames, seconds, seconds > 0 ? double(now.frames - before.frames) / seconds : 0.0,
++      SkipDrawing() ? ", drawing skipped (gpu_skip_drawing)" : "", per_frame(now.draws, before.draws),
++      draws ? 100.0 * double(now.indexed - before.indexed) / double(draws) : 0.0,
++      draws ? double(now.indices - before.indices) / double(draws) : 0.0, prims.empty() ? "none" : prims,
++      per_frame(now.depth_only, before.depth_only), per_frame(now.resolves, before.resolves),
++      per_frame(now.killed, before.killed), per_frame(now.registers, before.registers),
++      per_frame(now.type3, before.type3), ops.empty() ? "none" : ops,
++      per_frame(now.predicated, before.predicated),
++      per_frame(now.predicated_skipped, before.predicated_skipped), s.vertex_shaders,
++      s.pixel_shaders, MemexportShaders(s));
++}
++
++// The tables: draw targets, resolves, primitive types, packets, and with
++// with_shaders every shader.
++std::string Tables(const State& s, bool with_shaders) {
++  const Counts& t = s.total;
++  std::string out = fmt::format("gpu census tables: {} frames, {} draws, {} resolves\n", t.frames,
++                                t.draws, t.resolves);
++  auto sorted = [](const std::unordered_map<uint32_t, uint64_t>& map) {
++    std::vector<std::pair<uint32_t, uint64_t>> v(map.begin(), map.end());
++    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
++    return v;
++  };
++  out += "draw targets (MSAA, mode, color targets, depth): draws\n";
++  for (const auto& [key, n] : sorted(s.targets)) {
++    out += fmt::format("  {}: {} ({:.1f}%)\n", TargetLabel(key), n,
++                       t.draws ? 100.0 * double(n) / double(t.draws) : 0.0);
++  }
++  out += "resolves (source -> destination format, endianness, MSAA, command, clears): count\n";
++  for (const auto& [key, n] : sorted(s.resolves)) {
++    out += fmt::format("  {}: {} ({:.1f}%)\n", ResolveLabel(key), n,
++                       t.resolves ? 100.0 * double(n) / double(t.resolves) : 0.0);
++  }
++  Counts zero;
++  out += "primitive types: draws\n";
++  for (const auto& [prim, n] : Top(t.prims, zero.prims)) {
++    out += fmt::format("  {}: {}\n", PrimLabel(prim), n);
++  }
++  out += fmt::format("packets: {} registers written by type-0 packets; type-3 packets:\n", t.registers);
++  for (const auto& [op, n] : Top(t.opcodes, zero.opcodes)) {
++    out += fmt::format("  {}: {}\n", OpLabel(op), n);
++  }
++  out += fmt::format("  predicated: {} ({} skipped by the bin mask)\n", t.predicated,
++                     t.predicated_skipped);
++  out += fmt::format("shaders: {} vertex, {} pixel, {} exporting to memory\n", s.vertex_shaders,
++                     s.pixel_shaders, MemexportShaders(s));
++  if (with_shaders) {
++    std::vector<const ShaderInfo*> list;
++    list.reserve(s.shaders.size());
++    for (const auto& [key, info] : s.shaders) {
++      list.push_back(&info);
++    }
++    std::sort(list.begin(), list.end(), [](const ShaderInfo* a, const ShaderInfo* b) {
++      return a->draws > b->draws;
++    });
++    out += "  stage\thash\tdwords\tdraws\tfirst frame\tanalyzed\tmemexport\tkills pixels\twrites depth\n";
++    for (const ShaderInfo* info : list) {
++      out += fmt::format("  {}\t{:016X}\t{}\t{}\t{}\t{}\t{:#x}\t{}\t{}\n",
++                         info->stage ? "pixel" : "vertex", info->hash, info->dwords, info->draws,
++                         info->first_frame, info->analyzed ? "yes" : "no", info->memexport,
++                         info->kills_pixels ? "yes" : "no", info->writes_depth ? "yes" : "no");
++    }
++  }
++  return out;
++}
++
++void WriteFile(const State& s, const std::string& path_text) {
++  const std::filesystem::path path(path_text);
++  std::error_code ec;
++  if (path.has_parent_path()) {
++    std::filesystem::create_directories(path.parent_path(), ec);
++  }
++  const std::string text = Tables(s, true);
++  std::FILE* file = std::fopen(path.string().c_str(), "wb");
++  if (!file) {
++    REXGPU_WARN("gpu census: can't write {}", path.string());
++    return;
++  }
++  std::fwrite(text.data(), 1, text.size(), file);
++  std::fclose(file);
++}
++
++}  // namespace
++
++bool Active() { return REXCVAR_GET(gpu_census) || REXCVAR_GET(gpu_skip_drawing); }
++
++bool SkipDrawing() { return REXCVAR_GET(gpu_skip_drawing); }
++
++void Type0(uint32_t registers) { S().total.registers += registers; }
++
++void Type3(uint32_t opcode, bool predicated, bool skipped_by_predicate) {
++  Counts& t = S().total;
++  ++t.type3;
++  ++t.opcodes[opcode & 127];
++  if (predicated) {
++    ++t.predicated;
++    t.predicated_skipped += skipped_by_predicate;
++  }
++}
++
++void Draw(const RegisterFile& regs, uint32_t prim_type, bool indexed, uint32_t index_count,
++          const Shader* vertex_shader, const Shader* pixel_shader) {
++  State& s = S();
++  const xenos::EdramMode mode = regs.Get<reg::RB_MODECONTROL>().edram_mode;
++  if (mode == xenos::EdramMode::kCopy) {
++    ++s.total.resolves;
++    ++s.resolves[ResolveKey(regs)];
++    return;
++  }
++  ++s.total.draws;
++  s.total.indexed += indexed;
++  s.total.indices += index_count;
++  ++s.total.prims[prim_type & 63];
++  s.total.depth_only += mode == xenos::EdramMode::kDepthOnly;
++  ++s.targets[TargetKey(regs, mode)];
++  Note(s, 0, vertex_shader);
++  if (mode == xenos::EdramMode::kColorDepth) {
++    Note(s, 1, pixel_shader);
++  }
++}
++
++void KilledDraw() { ++S().total.killed; }
++
++void Frame() {
++  State& s = S();
++  ++s.total.frames;
++  const Clock::time_point now = Clock::now();
++  if (s.start == Clock::time_point{}) {
++    s.start = s.last_report = s.last_file = now;
++    s.at_report = s.total;
++    REXGPU_INFO("gpu census: counting{}", SkipDrawing() ? "; drawing skipped (gpu_skip_drawing)" : "");
++    return;
++  }
++  const auto interval = std::chrono::seconds(std::max(1, int(REXCVAR_GET(gpu_census_interval))));
++  if (now - s.last_report >= interval) {
++    const double seconds = std::chrono::duration<double>(now - s.last_report).count();
++    REXGPU_INFO("gpu census: {}", Summary(s, s.at_report, seconds));
++    s.at_report = s.total;
++    s.last_report = now;
++  }
++  const std::string path = REXCVAR_GET(gpu_census_path);
++  if (!path.empty() && now - s.last_file >= std::chrono::minutes(1)) {
++    WriteFile(s, path);
++    s.last_file = now;
++  }
++}
++
++void Report() {
++  State& s = S();
++  if (s.start == Clock::time_point{}) {
++    return;  // never counted
++  }
++  const double seconds = std::chrono::duration<double>(Clock::now() - s.start).count();
++  Counts zero;
++  REXGPU_INFO("gpu census, the whole run: {}", Summary(s, zero, seconds));
++  const std::string path = REXCVAR_GET(gpu_census_path);
++  if (!path.empty()) {
++    WriteFile(s, path);
++    REXGPU_INFO("gpu census: tables and {} shaders written to {}", s.shaders.size(), path);
++    return;
++  }
++  const std::string tables = Tables(s, false);
++  size_t begin = 0;
++  while (begin < tables.size()) {
++    size_t end = tables.find('\n', begin);
++    if (end == std::string::npos) end = tables.size();
++    REXGPU_INFO("{}", tables.substr(begin, end - begin));
++    begin = end + 1;
++  }
++}
++
++}  // namespace rex::graphics::census
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index d9aa702..ab82361 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -29,6 +29,7 @@
+ #include <rex/cvar.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
++#include <rex/graphics/gpu_census.h>
+ #include <rex/math.h>
+ #include <rex/graphics/util/draw.h>
+ #include <rex/graphics/flags.h>
+@@ -692,7 +693,9 @@ void VulkanCommandProcessor::InitializeShaderStorage(const std::filesystem::path
+ 
+ bool VulkanCommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(memory::RingBuffer* reader,
+                                                                 uint32_t packet, uint32_t count) {
+-  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_) {
++  // gpu_skip_drawing: nothing is drawn, so the queries get the fixed sample count.
++  if (!REXCVAR_GET(occlusion_query_enable) || !occlusion_query_resources_available_ ||
++      census::SkipDrawing()) {
+     return CommandProcessor::ExecutePacketType3_EVENT_WRITE_ZPD(reader, packet, count);
+   }
+ 

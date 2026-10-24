@@ -8,6 +8,7 @@
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>  // [claude-9b] std::atoi, the Display row
 #include <initializer_list>
 #include <string>
 #include <string_view>
@@ -625,7 +626,31 @@ void SettingsWindow::DrawVideo() {
     cod3::RequestRenderResolution();  // a reset doesn't announce itself
     dirty_ = true;
   }
-  Section("Screen");
+  // [claude-9b] Subtabs (owner 2026-10-21: "please make sub tabs for the video settings"), as
+  // GAME and CONSOLE have them; the reset button above covers all of them.
+  if (!ImGui::BeginTabBar("##video_views")) return;
+  struct Page {
+    const char* label;
+    void (SettingsWindow::*draw)();
+  };
+  static constexpr Page kPages[] = {
+      {"Display", &SettingsWindow::DrawVideoDisplay},
+      {"Resolution", &SettingsWindow::DrawVideoResolution},
+      {"Frame rate", &SettingsWindow::DrawVideoFrameRate},
+      {"Colors", &SettingsWindow::DrawVideoColors},
+      {"Quality", &SettingsWindow::DrawVideoQuality},
+      {"Accuracy", &SettingsWindow::DrawVideoAccuracy},
+  };
+  for (const Page& page : kPages) {
+    if (!ImGui::BeginTabItem(page.label)) continue;
+    (this->*page.draw)();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
+// Video > Display: the window, the screen it's on and how pictures reach it.
+void SettingsWindow::DrawVideoDisplay() {
 #ifdef _WIN32
   {
     // Both renderers are built into Windows builds; Linux only has Vulkan
@@ -646,6 +671,58 @@ void SettingsWindow::DrawVideo() {
     dirty_ |= CvarCombo("Display mode", "fullscreen", v, n, 2, &restart_needed_);
     Help("Play in a window, or fill the whole monitor without changing its resolution "
          "(borderless). Applies at once and is kept for the next start.");
+  }
+  {
+    // [claude-9b] The screen the game plays on (SDK patch 0068; owner 2026-10-21: "we also need
+    // to add the feature to bind to a specific display"). Kept by the screen's name (and its
+    // number, for settings from before names), so it stays put when other screens are plugged in
+    // or out. Each window has its own choice (rex::ui::Window::SetDisplayChoice), ready for
+    // split-screen players' own windows (dev/agents/hw-scaling/SPLITSCREEN_WINDOWS.md).
+    using Window = rex::ui::Window;
+    const std::vector<Window::DisplayInfo> displays = Window::ListDisplays();
+    Window::DisplayChoice choice;
+    if (window_) {
+      choice = window_->GetDisplayChoice();
+    } else {
+      choice.name = rex::cvar::GetFlagByName("monitor_name");
+      choice.index = std::atoi(rex::cvar::GetFlagByName("monitor").c_str());
+    }
+    auto label = [&](size_t i) {
+      const Window::DisplayInfo& d = displays[i];
+      char text[192];
+      std::snprintf(text, sizeof(text), "%zu: %s (%ux%u, %.0f Hz%s)", i + 1, d.name.c_str(), d.width,
+                    d.height, d.refresh_rate, d.primary ? ", main screen" : "");
+      return std::string(text);
+    };
+    const int32_t chosen = Window::FindDisplay(choice, displays);
+    std::string preview = "Automatic";
+    if (chosen > 0)
+      preview = label(size_t(chosen - 1));
+    else if (!choice.IsAutomatic())
+      preview = (choice.name.empty() ? "Screen " + std::to_string(choice.index) : choice.name) +
+                " (not connected)";
+    auto pick = [&](const Window::DisplayChoice& c) {
+      rex::cvar::SetFlagByName("monitor_name", c.name);
+      rex::cvar::SetFlagByName("monitor", std::to_string(c.index));
+      if (window_) window_->SetDisplayChoice(c);
+      Save();  // at once: the restart at a mission's end doesn't save F2's changes
+    };
+    if (ImGui::BeginCombo("Display", preview.c_str())) {
+      if (ImGui::Selectable("Automatic (the system's choice)", choice.IsAutomatic())) pick({});
+      for (size_t i = 0; i < displays.size(); ++i) {
+        if (ImGui::Selectable(label(i).c_str(), chosen == int32_t(i + 1)))
+          pick({displays[i].name, int32_t(i + 1)});
+      }
+      ImGui::EndCombo();
+    }
+    if (window_) {
+      const int32_t now = window_->GetCurrentDisplay();
+      if (now > 0 && size_t(now) <= displays.size())
+        ImGui::TextDisabled("The game is on %s.", label(size_t(now - 1)).c_str());
+    }
+    Help("Which screen the game plays on. It's kept by the screen's name, so it stays the same when "
+         "other screens are plugged in or out; if that screen isn't connected, the system picks one. "
+         "Applies at once (fullscreen moves along) and is kept for the next start.");
   }
   // [claude-9b] No "Start behind other windows" row: start_in_background (SDK
   // patch 0063) is a launch option for testing only (owner 2026-10-20), see
@@ -691,6 +768,34 @@ void SettingsWindow::DrawVideo() {
          "fullscreen. Applies at once when fullscreen; windowed play always uses the desktop's "
          "rate.");
   }
+  {
+    // Host V-Sync: wait for the monitor instead of showing a frame the
+    // moment it is ready (tearing). The game's frame rate isn't tied to it.
+    const bool vk = Has("vulkan_allow_present_mode_immediate");
+    const bool dx = Has("d3d12_allow_variable_refresh_rate_and_tearing");
+    if (vk || dx) {
+      bool on = vk ? !GetBool("vulkan_allow_present_mode_immediate")
+                   : !GetBool("d3d12_allow_variable_refresh_rate_and_tearing");
+      if (ImGui::Checkbox("V-Sync (no tearing)", &on)) {
+        if (vk) rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", on ? "false" : "true");
+        if (dx)
+          rex::cvar::SetFlagByName("d3d12_allow_variable_refresh_rate_and_tearing", on ? "false" : "true");
+        restart_needed_ = true;
+        dirty_ = true;
+      }
+      Help("Shows each new picture only when the monitor starts a new refresh, so there is no "
+           "tearing (a horizontal split while turning). It doesn't cap the game's frame rate; use "
+           "the frame rate limit for that. Applies after a restart.");
+    }
+  }
+  dirty_ |= CvarCheckbox("Letterbox (keep the picture's shape)", "present_letterbox", &restart_needed_);
+  Help("Keeps the picture's shape with black bars when the window has another shape (for example "
+       "16:9 chosen on an ultrawide monitor, or 4:3 on a 16:9 one), instead of stretching it to the "
+       "window.");
+}
+
+// Video > Resolution: what the game draws and the picture's shape.
+void SettingsWindow::DrawVideoResolution() {
   {
     // What the game draws and how (game/render_resolution.h): natively the
     // game draws the whole picture itself, no MSAA, no scaling, where it fits
@@ -926,32 +1031,10 @@ void SettingsWindow::DrawVideo() {
          "Letterbox off. Applies at once; the game's resolution follows the new shape a moment "
          "later.");
   }
-  {
-    // Host V-Sync: wait for the monitor instead of showing a frame the
-    // moment it is ready (tearing). The game's frame rate isn't tied to it.
-    const bool vk = Has("vulkan_allow_present_mode_immediate");
-    const bool dx = Has("d3d12_allow_variable_refresh_rate_and_tearing");
-    if (vk || dx) {
-      bool on = vk ? !GetBool("vulkan_allow_present_mode_immediate")
-                   : !GetBool("d3d12_allow_variable_refresh_rate_and_tearing");
-      if (ImGui::Checkbox("V-Sync (no tearing)", &on)) {
-        if (vk) rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", on ? "false" : "true");
-        if (dx)
-          rex::cvar::SetFlagByName("d3d12_allow_variable_refresh_rate_and_tearing", on ? "false" : "true");
-        restart_needed_ = true;
-        dirty_ = true;
-      }
-      Help("Shows each new picture only when the monitor starts a new refresh, so there is no "
-           "tearing (a horizontal split while turning). It doesn't cap the game's frame rate; use "
-           "the frame rate limit for that. Applies after a restart.");
-    }
-  }
-  dirty_ |= CvarCheckbox("Letterbox (keep the picture's shape)", "present_letterbox", &restart_needed_);
-  Help("Keeps the picture's shape with black bars when the window has another shape (for example "
-       "16:9 chosen on an ultrawide monitor, or 4:3 on a 16:9 one), instead of stretching it to the "
-       "window.");
+}
 
-  Section("Frame rate");
+// Video > Frame rate: the limit and the counter.
+void SettingsWindow::DrawVideoFrameRate() {
   {
     // com_maxfps is a limit, not a target: the game runs as fast as it can
     // up to this. Applies at once (the console's com_maxfps is the same thing).
@@ -996,8 +1079,10 @@ void SettingsWindow::DrawVideo() {
          "in milliseconds and the current limit. Green: at the limit (or 60+), yellow: 30+, red: "
          "below 30.");
   }
+}
 
-  Section("Colors");
+// Video > Colors: the picture's colors and HDR.
+void SettingsWindow::DrawVideoColors() {
   {
     // game/color_output.h (claude-5d, SDK patch 0040): the display the game is
     // told about and the tone curve the picture goes out with. Applies at once.
@@ -1050,7 +1135,10 @@ void SettingsWindow::DrawVideo() {
            "to the white level: no brighter highlights.");
     }
   }
+}
 
+// Video > Quality: edges, scaling, shadows, effects and textures.
+void SettingsWindow::DrawVideoQuality() {
   Section("Anti-aliasing & scaling");
   {
     const char* v[] = {"none", "fxaa", "fxaa_extreme"};
@@ -1138,8 +1226,10 @@ void SettingsWindow::DrawVideo() {
        "textures. The setup tool makes them (data/cod3/hd_textures) when \"Upscale the extracted "
        "textures\" is ticked; without them the game uses its own textures. Applies after a "
        "restart.");
+}
 
-  Section("Accuracy");
+// Video > Accuracy: how closely the emulated GPU follows the console.
+void SettingsWindow::DrawVideoAccuracy() {
   {
     const char* v[] = {"none", "fast", "some", "full"};
     const char* n[] = {"Off", "Fast (recommended)", "On cache miss", "Full (accurate, slow)"};
@@ -1156,7 +1246,7 @@ void SettingsWindow::DrawGame() {
   if (ResetButton("reset_game", "game settings")) {
     engine.SetFovSettings(cod3::fov::kDefaultFov, cod3::fov::kDefaultScale);
     // Aim assist follows the game's Sticky Aim again.
-    ResetSettings({"cod3_aim_assist", "cod3_volume", "audio_device", "cod3_skip_movies", "cod3_skip_prompt",
+    ResetSettings({"cod3_aim_assist", "cod3_skip_movies", "cod3_skip_prompt",
                    cod3::viewmodel::kOffsetX, cod3::viewmodel::kOffsetY, cod3::viewmodel::kOffsetZ,
                    cod3::viewmodel::kPreset});  // [claude-9b]
     dirty_ = true;
@@ -1287,21 +1377,27 @@ void SettingsWindow::DrawGame() {
     ImGui::EndTabItem();
   }
 #endif
-  if (ImGui::BeginTabItem("Sound")) {
-    if (Has("cod3_volume")) {
-      float vol = float(GetDouble("cod3_volume", 1.0)) * 100.0f;
-      if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 100.0f, "%.0f%%")) {
-        rex::cvar::SetFlagByName("cod3_volume", std::to_string(vol / 100.0f));
-        dirty_ = true;
-      }
-      Help("Everything the game plays. Music, effects and voices have their own sliders in the "
-           "game's Options > Sound. Console: snd_volume 0-1.");
-    }
-    DrawSoundOutput();
-    if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
-    ImGui::EndTabItem();
-  }
   ImGui::EndTabBar();
+}
+
+// [claude-9b] SOUND, right next to VIDEO (owner 2026-10-21: "sound needs to be right next to
+// video within f2"); it was a GAME subtab.
+void SettingsWindow::DrawSound() {
+  if (ResetButton("reset_sound", "sound settings")) {
+    ResetSettings({"cod3_volume", "audio_device"});
+    Save();  // at once, as a picked sound output is (DrawSoundOutput)
+  }
+  if (Has("cod3_volume")) {
+    float vol = float(GetDouble("cod3_volume", 1.0)) * 100.0f;
+    if (ImGui::SliderFloat("Master volume", &vol, 0.0f, 100.0f, "%.0f%%")) {
+      rex::cvar::SetFlagByName("cod3_volume", std::to_string(vol / 100.0f));
+      dirty_ = true;
+    }
+    Help("Everything the game plays. Music, effects and voices have their own sliders in the "
+         "game's Options > Sound. Console: snd_volume 0-1.");
+  }
+  DrawSoundOutput();
+  if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -1997,7 +2093,8 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
       void (SettingsWindow::*draw)();
     };
     static constexpr Tab kTabs[] = {
-        {"VIDEO", &SettingsWindow::DrawVideo},         {"GAME", &SettingsWindow::DrawGame},
+        {"VIDEO", &SettingsWindow::DrawVideo},         {"SOUND", &SettingsWindow::DrawSound},
+        {"GAME", &SettingsWindow::DrawGame},
         {"CROSSHAIR", &SettingsWindow::DrawCrosshair}, {"CONTROLS", &SettingsWindow::DrawControls},
         {"INTERFACE", &SettingsWindow::DrawInterface}, {"PERFORMANCE", &SettingsWindow::DrawPerformance},
         {"CONSOLE", &SettingsWindow::DrawConsole},

@@ -9,12 +9,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/system/xmemory.h>
+#include <rex/ui/window.h>
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -228,6 +230,27 @@ bool ParseResolutionChoice(const std::string& choice, uint32_t* width, uint32_t*
 }
 
 bool GetScreenSize(uint32_t* width, uint32_t* height) {
+  // [claude-9b] The screen chosen in F2 > Video > Display (SDK patch 0068: the monitor_name /
+  // monitor settings the window opens on), else the primary one, through the runtime's own
+  // display list; the platform's own lookup below only if that lists nothing.
+  {
+    using Window = rex::ui::Window;
+    const std::vector<Window::DisplayInfo> displays = Window::ListDisplays();
+    Window::DisplayChoice choice;
+    choice.name = rex::cvar::GetFlagByName("monitor_name");
+    choice.index = std::atoi(rex::cvar::GetFlagByName("monitor").c_str());
+    int32_t index = Window::FindDisplay(choice, displays);
+    for (size_t i = 0; index <= 0 && i < displays.size(); ++i)
+      if (displays[i].primary) index = int32_t(i + 1);
+    if (index > 0) {
+      const Window::DisplayInfo& d = displays[size_t(index) - 1];
+      if (d.width && d.height) {
+        *width = d.width;
+        *height = d.height;
+        return true;
+      }
+    }
+  }
 #if defined(_WIN32)
   // The primary display's current mode in real pixels, whatever the DPI
   // scaling. (The game's own SDL lives in the runtime DLL; a second, unused

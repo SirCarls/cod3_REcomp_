@@ -157,7 +157,8 @@ inline constexpr ResolutionChoice kResolutionChoices[] = {
 // custom limits above); false for "auto", "original", "" or anything else.
 bool ParseResolutionChoice(const std::string& choice, uint32_t* width, uint32_t* height);
 
-// The primary display's current mode, in physical pixels.
+// The current mode of the display the game is put on (F2 > Video > Display), or of the
+// primary one, in physical pixels.
 bool GetScreenSize(uint32_t* width, uint32_t* height);
 
 // 4096 with the larger emulated EDRAM (Vulkan, SDK patch 0010), else 2048.

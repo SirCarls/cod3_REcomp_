@@ -210,3 +210,17 @@ jump_address_on_true = 0x824A62A8
 address = 0x82448084
 name = "Cod3VehicleViewPressed"
 registers = ["r3", "r29", "base"]
+
+# ---------------------------------------------------------------------------
+# [voice] Voices played twice (src/game/sound_stall.cpp). nslFmodUpdate
+# (0x8211A250) stops a playing sound as stuck when its FMOD position
+# hasn't moved for more than 32 ms (0x825A1800) and 4 updates; the check
+# starts here (lis r11 / lwz r10,0x60(r31) / lwz r11,0x1800(r11)), reached
+# only when the position is the same as at the last update. r31 is the
+# sound's FMOD data. The hook puts cod3_sound_stall_ms in place of the 32 ms.
+# cod3mp's site comes from mp/config/campaign_map.tsv (0x8212CFEC).
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x8211ABF4
+name = "Cod3SoundStallCheck"
+registers = ["r31", "base"]

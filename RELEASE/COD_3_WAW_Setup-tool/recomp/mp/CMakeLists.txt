@@ -62,6 +62,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
     ${COD3_SRC}/game/settings_sync.cpp
+    ${COD3_SRC}/game/sound_stall.cpp  # [voice] voices played twice: the sound library's stuck-sound check, in both programs
     ${COD3_SRC}/game/shadows.cpp
     ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp

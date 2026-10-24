@@ -40,3 +40,9 @@ registers = ["r11", "r29"]
 address = 0x82462F48
 name = "Cod3VehicleViewPressed"
 registers = ["r3", "r29", "base"]
+
+# midasm:Cod3SoundStallCheck@8211ABF4: hand check [voice]: the start of nslFmodUpdate's stuck-sound check (MP 0x8212C600): lis r11 / lwz r10,0x60(r31) / lwz r11,0x199C(r11); r31 the sound's FMOD data in both
+[[midasm_hook]]
+address = 0x8212CFEC
+name = "Cod3SoundStallCheck"
+registers = ["r31", "base"]

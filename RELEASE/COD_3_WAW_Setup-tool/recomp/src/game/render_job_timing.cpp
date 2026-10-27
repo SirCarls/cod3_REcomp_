@@ -20,6 +20,7 @@
 #endif
 
 #include "game/thread_profiler.h"
+#include "game/viewmodel_flip.h"
 
 namespace {
 
@@ -94,7 +95,11 @@ REX_HOOK_RAW(sub_82130980) {
 REX_EXTERN(__imp__sub_8214F770);
 REX_HOOK_RAW(sub_8214F770) {
   const uint64_t wall0 = NowMicros(), cpu0 = ThreadCpuMicros();
+  // [claude-9b] 2026-10-27 The left-handed weapon (viewmodel_flip.cpp): its scene is drawn with the culling turned.
+  // Called from here because a function can have only one hook; cod3mp's back end is hooked in viewmodel_flip.cpp.
+  const bool flip_turned = cod3::viewmodel::BeginScene(base);
   __imp__sub_8214F770(ctx, base);
+  cod3::viewmodel::EndScene(base, flip_turned);
   g_back_end_cpu_us.fetch_add(ThreadCpuMicros() - cpu0, std::memory_order_relaxed);
   g_back_end_wall_us.fetch_add(NowMicros() - wall0, std::memory_order_relaxed);
 }

@@ -50,6 +50,9 @@ set(COD3_SOURCES
     src/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
     src/game/render_resolution.cpp
     src/game/engine.cpp
+    src/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
+    src/game/coronas.cpp  # [claude-9b] light coronas fade at the same speed at any frame rate (cod3_fix_corona_fade)
+    src/game/effects_debug.cpp  # [claude-9b] effects not loaded or not created (cod3_debug_effects; barrels)
     src/game/fov.cpp
     src/game/frame_rate.cpp
     src/game/function_profiler.cpp  # [hw-scaling]
@@ -68,6 +71,8 @@ set(COD3_SOURCES
     src/game/menu_aim.cpp  # [claude-9b] Pause > Options > AIM: sensitivity per weapon class, crosshair
     src/game/menu_slider.cpp  # [claude-9b] slider rows: the number box you can type in
     src/game/menu_video.cpp
+    src/game/menu_video_rows.cpp  # [menus-categories] the video rows, shared with cod3mp
+    src/game/options_pages.cpp  # [menus-categories] which rows each Options category page has, both programs
     src/game/mouse_look.cpp
     src/game/movement/hooks_sp.cpp  # [movement] sprint and the CoD4 movement style (campaign only)
     src/game/movement/menu_movement.cpp  # [movement]
@@ -81,6 +86,7 @@ set(COD3_SOURCES
     src/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     src/game/perf_stats.cpp
     src/game/physics_step.cpp  # [claude-9b] the physics in fixed steps, 60 a second, whatever the frame rate (campaign only)
+    src/game/server_step.cpp  # [acct2-main] the game in fixed updates, 60 a second, drawn smoothly between them (campaign only)
     src/game/render_list_guard.cpp  # [claude-9b] a freed object in the render lists is skipped and logged, not a crash (campaign only)
     src/game/view_cull.cpp  # [claude-9b] the game's on-screen check as wide as the picture: logs, and cod3_cull_match_view (campaign only)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
@@ -97,10 +103,12 @@ set(COD3_SOURCES
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp
     src/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands (campaign only for now)
+    src/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip)
     src/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, hip and aiming, per player
     src/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz, the match's aim assist rules
     src/game/voice_language.cpp  # [voice]
     src/game/watchdog.cpp
+    src/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start (both programs)
     src/ui/announcement_feed.cpp
     src/ui/console_pages.cpp
     src/ui/console_view.cpp
@@ -127,6 +135,11 @@ target_include_directories(cod3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 # GPU_PLUGINS stages librexgpu-xenos next to the executable (Vulkan / D3D12
 # Xenos emulation). It is loaded at startup; see Cod3App::OnPreSetup.
 rexglue_setup_target(cod3 GPU_PLUGINS xenos)
+
+# [rust-renderer] The Rust renderer's static library (engine/crates/cod3_render),
+# when the build has Rust for its target; cod3mp links it too (mp/CMakeLists.txt).
+include(cmake/cod3_render.cmake)
+cod3_render_link(cod3)
 
 # MinGW (the Windows build made on Linux): the SDK's entry point is wWinMain,
 # which MinGW's C runtime only calls when the program links with -municode.

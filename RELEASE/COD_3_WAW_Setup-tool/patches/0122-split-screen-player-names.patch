@@ -1,0 +1,65 @@
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -33,6 +33,15 @@
+ REXCVAR_DEFINE_STRING(user_name, "", "Kernel",
+                       "Player 1's gamertag as the game sees it (up to 15 characters); empty = the "
+                       "profile's own (\"User\")");
++REXCVAR_DEFINE_STRING(user_name_2, "", "Kernel",
++                      "Player 2's name in split screen (up to 14 characters); empty = the game's own "
++                      "(\"Player 2\")");
++REXCVAR_DEFINE_STRING(user_name_3, "", "Kernel",
++                      "Player 3's name in split screen (up to 14 characters); empty = the game's own "
++                      "(\"Player 3\")");
++REXCVAR_DEFINE_STRING(user_name_4, "", "Kernel",
++                      "Player 4's name in split screen (up to 14 characters); empty = the game's own "
++                      "(\"Player 4\")");
+ 
+ namespace rex {
+ namespace kernel {
+@@ -51,6 +60,31 @@
+   return name;
+ }
+ 
++// Players 2-4 (split screen): no profile is signed in for them, so a game asks XamUserGetName and
++// shows its own "Player N" when that fails. user_name_2..4 answer it, without signing anyone in (no
++// profile reads, saves or sign-in prompts start for them): printable ASCII without quotes,
++// backslashes, '%' or '^' (format and color codes), at most 14 characters (Call of Duty 3's session
++// table keeps 15 bytes a name). Empty: no such user, as before.
++static std::string LocalPlayerName(uint32_t user_index) {
++  std::string name;
++  switch (user_index) {
++    case 1: name = REXCVAR_GET(user_name_2); break;
++    case 2: name = REXCVAR_GET(user_name_3); break;
++    case 3: name = REXCVAR_GET(user_name_4); break;
++    default: return {};
++  }
++  std::string clean;
++  for (char c : name) {
++    const unsigned char u = static_cast<unsigned char>(c);
++    if (u < 32 || u > 126 || c == '"' || c == '\\' || c == '%' || c == '^') continue;
++    clean += c;
++  }
++  while (!clean.empty() && clean.back() == ' ') clean.pop_back();
++  while (!clean.empty() && clean.front() == ' ') clean.erase(clean.begin());
++  if (clean.size() > 14) clean.resize(14);
++  return clean;
++}
++
+ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+   assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 || type_mask == 4 ||
+               type_mask == 7);
+@@ -124,7 +158,12 @@
+   }
+ 
+   if (user_index) {
+-    return X_E_NO_SUCH_USER;
++    const std::string name = LocalPlayerName(user_index);
++    if (name.empty() || !buffer || !buffer_len) {
++      return X_E_NO_SUCH_USER;
++    }
++    rex::string::copy_truncating(buffer, name, std::min(buffer_len, uint32_t(16)));
++    return X_E_SUCCESS;
+   }
+ 
+   const std::string user_name = PlayerName();

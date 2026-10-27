@@ -96,6 +96,10 @@ constexpr ActionDef kDefs[] = {
      {K('1'), kNoKey}},
     {"slot2", "Weapon 2", "Your second weapon.", G::kWeapons, D::kText, "weaponslot 2", {"weapnext", nullptr},
      {K('2'), kNoKey}},
+    // [claude-9b] 2026-10-27 owner 05:11: "add option to flip gun arm (basically just mirroring)".
+    {"flipgun", "Flip weapon hand",
+     "Mirrors your weapon to the other hand (F2 > Game > Weapon: Left-handed weapon).", G::kWeapons, D::kPort,
+     "cod3_viewmodel_flip", {nullptr}, {kNoKey, kNoKey}},
     // --- General ---------------------------------------------------------------
     {"scores", "Objectives / scores",
      "Shows the objectives (campaign) or the scores (multiplayer) while held. TAB does the same through "

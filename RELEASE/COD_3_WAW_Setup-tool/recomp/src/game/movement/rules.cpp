@@ -212,4 +212,18 @@ StepPlan PlanSteps(int command_time, int final_time, int pending_ms, int step_ms
   return plan;
 }
 
+// [acct2-main] Step ends: e(k) = floor(k * 1000 / hz). The last one at or before t is the largest k
+// with floor(k * 1000 / hz) <= t, that is k * 1000 / hz < t + 1: k = floor(((t + 1) * hz - 1) / 1000).
+int MoveStepEndAtOrBefore(int t, int hz) {
+  if (hz < 1 || t < 0) return t;
+  const int64_t k = ((static_cast<int64_t>(t) + 1) * hz - 1) / 1000;
+  return static_cast<int>(k * 1000 / hz);
+}
+
+int MoveStepEndAfter(int t, int hz) {
+  if (hz < 1 || t < 0) return t + 1;
+  const int64_t k = ((static_cast<int64_t>(t) + 1) * hz - 1) / 1000 + 1;
+  return static_cast<int>(k * 1000 / hz);
+}
+
 }  // namespace cod3::movement

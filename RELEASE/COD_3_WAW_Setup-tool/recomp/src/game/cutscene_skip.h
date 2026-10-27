@@ -44,6 +44,15 @@
 // controller's A or START; cod3_skip_movies skips them all as soon as
 // possible (F2 > Game), which also makes automated tests minutes shorter.
 //
+// [acct2-decomp] 2026-10-25 (owner 23:44, asked which: "Only the briefing
+// movie"): the player's skip (keys, A / START, the prompt) is for a level's
+// briefing only. The logos, attract film, bonus movies and Finale keep the
+// game's own skip (any button after their minimum time, as on the console);
+// the level intros play in full. cod3_skip_movies still skips everything.
+// The prompt shows the key while the keyboard is in use and the
+// controller's A once a controller is (game/button_prompts.h
+// FirstPlayerLook), and fades in and out.
+//
 // No timers decide anything (owner, 2026-10-10): a movie is skippable while
 // the game's movie loop runs (hooks on its start and end) and past the game's
 // own minimum time; a briefing while the game draws it as the loading screen
@@ -114,6 +123,7 @@ class CutsceneSkip {
   std::atomic<bool> intro_skippable_{false};
   std::atomic<bool> skip_requested_{false};
   std::atomic<int64_t> skippable_since_{0};  // for the prompt's fade-in only
+  std::atomic<int64_t> hidden_since_{0};     // [acct2-decomp] and its fade-out
   uint16_t pad_buttons_ = 0;                 // PadPressed: the buttons seen last time
 
   // Intro screens (guest main thread, except the atomics read by the UI).

@@ -73,6 +73,7 @@
 #include "game/addresses.h"
 #include "game/engine.h"
 #include "game/guest.h"
+#include "game/keybinds/binds.h"  // [claude-9b] the special grenade key follows the layout
 #include "util.h"
 
 namespace {
@@ -144,6 +145,19 @@ void UpdateGrenadeKeys(uint8_t* base, bool quiet) {
   const std::string rb = Binding(base, 0, kKeyRightShoulder);
   const std::string lb = Binding(base, 0, kKeyLeftShoulder);
   const GrenadeKeys now = cod3::mpcontrols::GrenadeKeysFor(rb, lb);
+  // [claude-9b] The keyboard's special grenade key calls the other shoulder's command than the
+  // frag grenade's (layout A: RB +class), its first command when it holds several.
+  {
+    using cod3::mpcontrols::BindingIsCommand;
+    using cod3::mpcontrols::kFragCommand;
+    const std::string& other = BindingIsCommand(rb, kFragCommand)   ? lb
+                               : BindingIsCommand(lb, kFragCommand) ? rb
+                                                                    : std::string();
+    std::string first = other.substr(0, other.find_first_of("; "));
+    if (first.size() < 2 || first[0] != '+') first.clear();
+    for (char& c : first) c = char(std::tolower(static_cast<unsigned char>(c)));
+    cod3::binds::SetMpSpecialCommand(first);
+  }
   // Anything else (a bind being rewritten, a layout with the grenades
   // elsewhere): the rows press the buttons they are named for.
   const bool swap = now == GrenadeKeys::kSwapped;

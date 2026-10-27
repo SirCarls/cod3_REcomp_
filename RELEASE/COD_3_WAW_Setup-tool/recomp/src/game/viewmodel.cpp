@@ -14,6 +14,7 @@
 #include "game/addresses.h"
 #include "game/guest.h"
 #include "game/program.h"
+#include "game/viewmodel_flip.h"  // [claude-9b] the weapon in the left hand
 
 REXCVAR_DEFINE_DOUBLE(cod3_viewmodel_offset_x, 0.0, "cod3/Game",
                       "Weapon to the right, in game units (Counter-Strike 2's viewmodel_offset_x; 0 = the "
@@ -114,6 +115,19 @@ void LogWhenChanged(const cod3::viewmodel::Offsets& o) {
               o.x, o.y, o.z, cod3::viewmodel::PresetName(preset));
 }
 
+// [claude-9b] 2026-10-27 The gun mirrored to the left hand: its left axis (refEntity + 32) turned around, and its
+// scene marked for the turned culling (game/viewmodel_flip.cpp).
+constexpr uint32_t kGunLeftAxis = 32;
+
+void Mirror(uint8_t* base, uint32_t gun, uint32_t client) {
+  if (!Readable(gun)) return;
+  for (int i = 0; i < 3; ++i) {
+    const uint32_t a = gun + kGunLeftAxis + 4 * i;
+    WriteF32(base, a, -ReadF32(base, a));
+  }
+  cod3::viewmodel::MarkMirrored(client);
+}
+
 }  // namespace
 
 // The gun's place each frame (r3 = its refEntity), called from CG_AddViewWeapon
@@ -121,12 +135,21 @@ void LogWhenChanged(const cod3::viewmodel::Offsets& o) {
 // sub_82468D58; tools/mp_aliases.py renames the hook). The offsets ride on the
 // game's own cg_gunX / cg_gunY / cg_gunZ for this one call: CS2's x (right)
 // is cg_gunY's left with the sign turned, y (away) is cg_gunX, z is cg_gunZ.
+// [claude-9b] 2026-10-27 With the weapon in the left hand (game/viewmodel_flip.cpp), the gun's left axis
+// (its refEntity + 32, the axes written by this call) is turned around after the call, and CS2's x is turned too, so
+// "Right" moves the weapon outward on either side.
 REX_EXTERN(__imp__sub_82445118);
 REX_HOOK_RAW(sub_82445118) {
-  const cod3::viewmodel::Offsets o = Current();
+  const uint32_t client = ReadU32(base, kActiveLocalClient);
+  const bool flip = client < 4 && cod3::viewmodel::FlipFor(client) && !cod3::viewmodel::OnMountedGun(base, client) &&
+                    cod3::viewmodel::OwnViewModelScene(base);
+  cod3::viewmodel::Offsets o = Current();
+  if (flip) o.x = -o.x;
+  const uint32_t gun = ctx.r3.u32;  // its refEntity (the call may change r3)
   if (o.x == 0.0 && o.y == 0.0 && o.z == 0.0) {
     if (g_logged_once) LogWhenChanged(o);
     __imp__sub_82445118(ctx, base);
+    if (flip) Mirror(base, gun, client);
     return;
   }
   LogWhenChanged(o);
@@ -137,11 +160,11 @@ REX_HOOK_RAW(sub_82445118) {
   WriteF32(base, x, game_x + float(o.y) * weight);
   WriteF32(base, y, game_y - float(o.x) * weight);
   WriteF32(base, z, game_z + float(o.z) * weight);
-  const uint32_t gun = ctx.r3.u32;  // its refEntity (the call may change r3)
   __imp__sub_82445118(ctx, base);
   WriteF32(base, x, game_x);
   WriteF32(base, y, game_y);
   WriteF32(base, z, game_z);
+  if (flip) Mirror(base, gun, client);
   if (REXCVAR_GET(cod3_debug_viewmodel)) {
     static auto next = std::chrono::steady_clock::time_point{};
     const auto now = std::chrono::steady_clock::now();

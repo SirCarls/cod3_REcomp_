@@ -1,0 +1,124 @@
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -1005,6 +1005,11 @@
+   // Whether up-to-date data has been written to constant (uniform) buffers, and
+   // the buffer infos in current_constant_buffer_infos_ point to them.
+   uint32_t current_constant_buffers_up_to_date_;
++  // [claude-9b] 0124: vulkan_skip_unchanged_fetch_constants as read at start
++  // and at every swap. On, a fetch constant written with the value it already
++  // has leaves the fetch constant buffer above, its texture binding and its
++  // vertex buffer residency (vertex_buffers_in_sync_) as they are.
++  bool skip_unchanged_fetch_constants_ = true;
+   VkDescriptorSet current_graphics_descriptor_sets_[SpirvShaderTranslator::kDescriptorSetCount];
+   // Whether descriptor sets in current_graphics_descriptor_sets_ point to
+   // up-to-date data.
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -69,6 +69,16 @@
+                     "every such draw (off: as before). Read at start")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
++// [claude-9b] 0124: games set every fetch constant of a draw again, also those
++// that stay the same; each write made the texture binding be looked up again,
++// the vertex buffer be checked again and the fetch constants be uploaded again.
++REXCVAR_DEFINE_BOOL(vulkan_skip_unchanged_fetch_constants, true, "GPU/Vulkan",
++                    "Vulkan: a texture or vertex fetch constant written with the value it "
++                    "already has leaves its texture binding, vertex buffer and the uploaded "
++                    "fetch constants as they are (off: every write makes them be redone, as "
++                    "before). Applies from the next frame")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ // Legacy backend compatibility aliases for shared readback controls.
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+@@ -852,6 +862,7 @@
+   // Vulkan device can have 8 or more dynamic uniform buffers in a set
+   // (maxDescriptorSetUniformBuffersDynamic), and this needs 5.
+   constants_dynamic_offsets_ = REXCVAR_GET(vulkan_dynamic_constant_offsets);
++  skip_unchanged_fetch_constants_ = REXCVAR_GET(vulkan_skip_unchanged_fetch_constants);
+   // 16384 is bigger than any single uniform buffer that Xenia needs, but is the
+   // minimum maxUniformBufferRange, thus the safe minimum amount.
+   uniform_buffer_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
+@@ -2186,7 +2197,18 @@
+ }
+ 
+ void VulkanCommandProcessor::WriteRegister(uint32_t index, uint32_t value) {
++  // [claude-9b] 0124: whether a fetch constant keeps the value it has (read
++  // before the write below stores the new one).
++  bool fetch_constant_unchanged = skip_unchanged_fetch_constants_ &&
++                                  index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
++                                  index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 &&
++                                  register_file_->values[index] == value;
+   CommandProcessor::WriteRegister(index, value);
++  if (fetch_constant_unchanged) {
++    // The texture binding, the vertex buffer and the fetch constant buffer
++    // were made from this same value, so they stay valid.
++    return;
++  }
+ 
+   if (index >= XE_GPU_REG_SHADER_CONSTANT_000_X && index <= XE_GPU_REG_SHADER_CONSTANT_511_W) {
+     if (frame_open_) {
+@@ -2293,6 +2315,51 @@
+ 
+   if (start_index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+       end_index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
++    if (skip_unchanged_fetch_constants_) {
++      // [claude-9b] 0124: store only the dwords that change, and redo only
++      // what depends on them: the texture fetch constants (6 dwords each) and
++      // vertex fetch constants (2 dwords each) that hold a changed dword, and
++      // the fetch constant buffer if anything changed.
++      uint32_t first_fetch_dword = start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
++      uint32_t* fetch_values = register_file_->values + start_index;
++      uint32_t textures_changed = 0;
++      uint64_t vertex_fetches_changed[2] = {};
++      for (uint32_t i = 0; i < num_registers; ++i) {
++        uint32_t value = memory::load_and_swap<uint32_t>(base + i);
++        if (fetch_values[i] == value) {
++          continue;
++        }
++        fetch_values[i] = value;
++        uint32_t fetch_dword = first_fetch_dword + i;
++        textures_changed |= UINT32_C(1) << (fetch_dword / 6);
++        uint32_t vfetch_index = fetch_dword / 2;
++        vertex_fetches_changed[vfetch_index >> 6] |= uint64_t(1) << (vfetch_index & 63);
++      }
++      if (!textures_changed) {
++        // Every fetch constant dword is part of a texture fetch constant, so
++        // nothing changed.
++        return;
++      }
++      current_constant_buffers_up_to_date_ &=
++          ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
++      if (texture_cache_) {
++        uint32_t textures_remaining = textures_changed;
++        while (textures_remaining) {
++          uint32_t texture_index = uint32_t(std::countr_zero(textures_remaining));
++          textures_remaining &= textures_remaining - 1;
++          texture_cache_->TextureFetchConstantWritten(texture_index);
++        }
++      }
++      for (uint32_t i = 0; i < 2; ++i) {
++        uint64_t vfetches_remaining = vertex_fetches_changed[i];
++        while (vfetches_remaining) {
++          uint32_t vfetch_index = i * 64 + uint32_t(std::countr_zero(vfetches_remaining));
++          vfetches_remaining &= vfetches_remaining - 1;
++          InvalidateVertexBufferResidency(vfetch_index);
++        }
++      }
++      return;
++    }
+     memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
+     current_constant_buffers_up_to_date_ &=
+         ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
+@@ -2337,6 +2404,9 @@
+   ScopedGpuSection swap_section(*this, GpuSection::kSwap);
+   vertex_buffers_in_sync_[0] = 0;
+   vertex_buffers_in_sync_[1] = 0;
++  // [claude-9b] 0124: the setting as of this swap (read once a frame, not for
++  // every register write).
++  skip_unchanged_fetch_constants_ = REXCVAR_GET(vulkan_skip_unchanged_fetch_constants);
+ 
+   if (!graphics_system_)
+     return;

@@ -1,0 +1,13 @@
+[package]
+name = "xenos_diff"
+description = "[acct2-decomp] Checks xenos_ucode's WGSL against the SDK's own shader interpreter on random inputs (a developer tool; not part of the game)."
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Not a member of the engine workspace: it needs naga and the built SDK.
+[workspace]
+
+[dependencies]
+xenos_ucode = { path = "../../crates/xenos_ucode" }
+naga = { version = "=29.0.4", default-features = false, features = ["wgsl-in"] }

@@ -28,6 +28,10 @@
 #endif
 
 #include "game/addresses.h"
+#include "game/anim_clock.h"  // [claude-9b]
+#if defined(COD3_MP)
+#include "game/mp/test_autojoin_mp.h"  // [claude-9b]
+#endif
 #include "game/guest.h"
 #include "game/ultrawide.h"
 
@@ -61,8 +65,10 @@ REXCVAR_DEFINE_STRING(cod3_render_method, "native", "cod3/Display",
     .allowed({"native", "scaled"});
 REXCVAR_DEFINE_INT32(cod3_render_percent, 100, "cod3/Display",
                      "Resolution scale in percent: 100 draws every pixel; less draws fewer pixels "
-                     "and stretches them to the window, for speed. Applies at once")
-    .range(25, 100);
+                     "and stretches them to the window, for speed; more (up to 200) draws more "
+                     "pixels than the window shows and shrinks the picture to fit, for smoother "
+                     "edges (200 = 4x the pixels). Applies at once")
+    .range(25, 200);
 
 namespace cod3 {
 
@@ -367,12 +373,23 @@ RenderPlan PlanForView(const std::string& choice, uint32_t view_width, uint32_t 
   }
   const uint32_t asked_width = width, asked_height = height;
 
-  // A resolution percentage draws fewer pixels; the presenter stretches them.
-  const uint32_t percent =
-      uint32_t(std::clamp<int32_t>(REXCVAR_GET(cod3_render_percent), int32_t(kMinRenderPercent), 100));
-  if (percent < 100) {
+  // A resolution percentage below 100 draws fewer pixels; the presenter stretches them. [claude-9b]
+  // Above 100 it draws more than the window shows and the presenter shrinks them (supersampling; 200 =
+  // each pixel on screen from 2x2 drawn ones, the presenter's bilinear filter then averages them exactly).
+  // Beyond what the emulated EDRAM holds the GPU's draw scale adds the rest, as for 1440p and 4K.
+  const uint32_t percent = uint32_t(
+      std::clamp<int32_t>(REXCVAR_GET(cod3_render_percent), int32_t(kMinRenderPercent), int32_t(kMaxRenderPercent)));
+  if (percent != 100) {
     width = (width * percent + 50) / 100;
     height = (height * percent + 50) / 100;
+  }
+  if (percent > 100) {
+    // Within the largest size the port draws (8K, the custom sizes' limit).
+    const double shrink = std::min({1.0, double(kMaxCustomWidth) / width, double(kMaxCustomHeight) / height});
+    if (shrink < 1.0) {
+      width = uint32_t(width * shrink);
+      height = uint32_t(height * shrink);
+    }
   }
   // The smallest the game draws, 320x240, keeping the shape (a tiny window).
   if (width < 320 || height < 240) {
@@ -407,7 +424,7 @@ std::string DescribePlan(const RenderPlan& plan) {
     s += fmt::format(", drawn {}x by the GPU = {}", plan.scale,
                      Size(plan.output_width(), plan.output_height()));
   }
-  if (plan.percent < 100) s += fmt::format(" ({}%)", plan.percent);
+  if (plan.percent != 100) s += fmt::format(" ({}%)", plan.percent);
   // How it reaches the screen.
   const uint32_t ow = plan.output_width(), oh = plan.output_height();
   if (!plan.display_width || (ow == plan.display_width && oh == plan.display_height))
@@ -920,6 +937,10 @@ std::string RenderResolutionNote() {
 REX_EXTERN(__imp__sub_82130808);
 REX_HOOK_RAW(sub_82130808) {
   __imp__sub_82130808(ctx, base);
+  cod3::anim_clock::AfterBeginNextFrame(base);  // [claude-9b] the fallback animation clock in real time
+#if defined(COD3_MP)
+  cod3::mp_test::EachFrame(base);  // [claude-9b] tests: the menu page trace (cod3_debug_menu_pages)
+#endif
   g_fresh_list = ReadU32(base, lv::kCurrentList);
   g_fresh_cursor = ReadU32(base, lv::kListCursor);
 }

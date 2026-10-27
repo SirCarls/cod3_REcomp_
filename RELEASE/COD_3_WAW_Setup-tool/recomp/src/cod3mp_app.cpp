@@ -50,6 +50,7 @@
 #include "game/guest.h"
 #include "game/hd_textures.h"
 #include "game/keybinds/binds.h"  // [keybinds]
+#include "game/menu_video.h"  // [menus-categories]
 #include "game/mouse_look.h"
 #include "game/mp/controls_mp.h"
 #include "game/mp/menus_mp.h"
@@ -61,6 +62,7 @@
 #include "game/screenshot.h"
 #include "game/ultrawide.h"
 #include "game/watchdog.h"
+#include "render/rust_renderer.h"  // [rust-renderer]
 #include "test_input.h"
 #include "ui/problem_log.h"
 #include "ui/theme.h"
@@ -312,6 +314,8 @@ void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
     config.gpu_plugin = "xenos";
   }
   if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
+  // [rust-renderer] cod3_renderer rust: the plugin's host backend, no GPU emulation (render/rust_renderer.h).
+  cod3::render::StartHostBackend(config);
   // No guest command line (Com_Init runs it as forced writes into a fixed
   // buffer), and the game's own files stay read-only, as in the campaign.
   if (!rex::cvar::GetFlagByName("cl").empty()) {
@@ -435,6 +439,7 @@ void Cod3MpApp::ApplyRenderResolution() {
 
 void Cod3MpApp::OnPostSetup() {
   ApplyGpuDefaults();  // again, in case the runtime loaded the plugin later
+  cod3::render::ReportRustRenderer();  // [rust-renderer] linked or not, and its ABI (render/rust_renderer.h)
   // This program's own console config (seta lines): the campaign's FOV,
   // binds and the like don't carry over by themselves (cg_fov's default is
   // 80 here, 65 there).
@@ -480,6 +485,18 @@ void Cod3MpApp::OnPostSetup() {
   // confirmed in the game's message box (game/mp/menus_mp.cpp), the same way.
   cod3::pcmenu::SetQuitToDesktopHandler([this]() {
     app_context().CallInUIThreadDeferred([this]() { SaveAndExit("quit to desktop from the game's menu"); });
+  });
+  // [menus-categories] A video setting changed in Pause > OPTIONS > VIDEO
+  // (game/menu_video_rows.cpp, on the game thread): cod3mp.toml saved on the
+  // UI thread like F2's Save, as the campaign does for its own pages.
+  cod3::videomenu::SetSaveHandler([this]() {
+    app_context().CallInUIThreadDeferred([this]() {
+      try {
+        rex::cvar::SaveConfig(config_path_);
+      } catch (const std::exception& e) {
+        REXLOG_WARN("cod3mp: couldn't save {}: {}", cod3::PathToUtf8(config_path_), e.what());
+      }
+    });
   });
   // A World at War name changed a port setting: save cod3mp.toml like F2's Save.
   cod3::ui::GameConsole::Get().SetSettingsChangedHandler([this]() {

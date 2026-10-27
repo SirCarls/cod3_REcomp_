@@ -17,12 +17,14 @@
 #include "game/diagnostics.h"
 #include "game/engine.h"
 #include "game/guest.h"
+#include "game/button_prompts.h"  // [acct2-decomp] the device the prompt shows
 
 REXCVAR_DEFINE_BOOL(cod3_skip_movies, false, "cod3/Game",
                     "Skip cutscenes (logos, level briefings, level intros) as soon as the game "
                     "allows it");
 REXCVAR_DEFINE_BOOL(cod3_skip_prompt, true, "cod3/Game",
-                    "Show \"SPACE Skip\" while a cutscene can be skipped");
+                    "Show \"SPACE Skip\" (or the controller's button) while a level's briefing "
+                    "can be skipped");
 REXCVAR_DECLARE(double, cod3_volume);
 
 namespace cod3 {
@@ -36,6 +38,8 @@ constexpr int64_t Ticks(D d) {
 // Looks only (the prompt's fade-in, the cover's fades). What can be skipped
 // and when the skip ends come from the game's own state, never from these.
 constexpr int64_t kPromptFadeIn = Ticks(400ms);
+// [acct2-decomp] Owner 2026-10-26 00:00: "Please make it fade in and out as well."
+constexpr int64_t kPromptFadeOut = Ticks(400ms);
 constexpr int64_t kCoverFadeOut = Ticks(250ms);
 constexpr int64_t kCoverFadeIn = Ticks(600ms);
 // Safety net only: if a skipped intro somehow never reports its end, give
@@ -57,6 +61,9 @@ constexpr uint32_t kCvarString = 4;    // cvar_t: char* string
 constexpr uint32_t kCvarInteger = 32;  // cvar_t: int integer
 
 // Player one's controller buttons (every pad and the keyboard binds merged).
+// [acct2-decomp] The read also tells the prompts a controller is in use
+// (button_prompts.h NotePadState): the game may not read its pads while a
+// briefing is the loading screen, so "SPACE Skip" would never switch.
 uint16_t PadButtons() {
   using rex::X_RESULT;  // for X_ERROR_SUCCESS
   auto* kernel = REX_KERNEL_STATE();
@@ -64,7 +71,11 @@ uint16_t PadButtons() {
   auto* input = runtime ? static_cast<rex::input::InputSystem*>(runtime->input_system()) : nullptr;
   rex::input::X_INPUT_STATE state{};
   if (!input || input->GetState(0, &state) != X_ERROR_SUCCESS) return 0;
-  return state.gamepad.buttons;
+  const uint16_t buttons = state.gamepad.buttons;
+  const int16_t axes[4] = {static_cast<int16_t>(state.gamepad.thumb_lx), static_cast<int16_t>(state.gamepad.thumb_ly),
+                           static_cast<int16_t>(state.gamepad.thumb_rx), static_cast<int16_t>(state.gamepad.thumb_ry)};
+  prompts::NotePadState(buttons, state.gamepad.left_trigger, state.gamepad.right_trigger, axes);
+  return buttons;
 }
 }  // namespace
 
@@ -73,8 +84,17 @@ CutsceneSkip& CutsceneSkip::Get() {
   return instance;
 }
 
+// [acct2-decomp] Owner 2026-10-25 23:44: "cutscene skipping should only be
+// available when it's an in-game movie for an intro to a level", and asked
+// which: "Only the briefing movie". So the skip keys, the controller's A /
+// START and the prompt work only for a level's briefing (the loading screen
+// movie and its post-load loop). The start-up logos, attract film, bonus
+// movies and Finale keep only the game's own skip (any controller button
+// after their minimum time, as on the console), and the level intros play in
+// full. cod3_skip_movies (off by default; F2 > Game, and the test runs) still
+// skips them all.
 bool CutsceneSkip::Skippable() const {
-  return (movie_loop_.load(std::memory_order_relaxed) &&
+  return (movie_loop_.load(std::memory_order_relaxed) && briefing_loop_.load(std::memory_order_relaxed) &&
           movie_skippable_.load(std::memory_order_relaxed)) ||
          loading_skippable_.load(std::memory_order_relaxed) ||
          intro_skippable_.load(std::memory_order_relaxed);
@@ -102,6 +122,7 @@ void CutsceneSkip::SetSkippable(std::atomic<bool>& flag, bool on) {
   const bool was = Skippable();
   flag.store(on, std::memory_order_relaxed);
   if (!was && Skippable()) skippable_since_.store(Now(), std::memory_order_relaxed);
+  if (was && !Skippable()) hidden_since_.store(Now(), std::memory_order_relaxed);  // [acct2-decomp] fade out
   if (!Skippable()) skip_requested_.store(false, std::memory_order_relaxed);
 }
 
@@ -141,7 +162,15 @@ bool CutsceneSkip::OnMovieFrame(uint8_t* base, uint32_t& skip_state) {
   const bool skippable = elapsed >= minimum;
   if (skippable != movie_skippable_.load(std::memory_order_relaxed))
     SetSkippable(movie_skippable_, skippable);
-  if (!skippable || !TakeRequest()) return false;
+  if (!skippable) return false;
+  // [acct2-decomp] Only a briefing takes the player's skip (Skippable); any
+  // other movie only cod3_skip_movies (the game's own button check still
+  // stops it, as on the console).
+  if (!briefing_loop_.load(std::memory_order_relaxed)) {
+    if (!REXCVAR_GET(cod3_skip_movies)) return false;
+  } else if (!TakeRequest()) {
+    return false;
+  }
   SetSkippable(movie_skippable_, false);
   // The skip path stores "skipped" through r31, which the game sets up only
   // on its no-button path; set it here so the minimum-time path (taken by a
@@ -202,12 +231,12 @@ void CutsceneSkip::OnGuestFrame(PPCContext& ctx, uint8_t* base) {
     return;
   }
   if (!intro) gave_up_ = false;
-  const bool skippable = intro && !gave_up_;
+  // [acct2-decomp] Level intros play in full (owner 2026-10-25: only the
+  // briefing movie is skippable); cod3_skip_movies still runs them fast.
+  const bool skippable = intro && !gave_up_ && REXCVAR_GET(cod3_skip_movies);
   const bool was = intro_skippable_.load(std::memory_order_relaxed);
   if (skippable != was) SetSkippable(intro_skippable_, skippable);
   if (!skippable) return;
-  const bool pad = PadPressed(/*first=*/!was);
-  if (!pad && !TakeRequest()) return;
 
   // Fade out, mute, and run the rest of the intro on fast game time, so
   // everything it sets up (squad, objectives, music) happens as usual.
@@ -236,10 +265,17 @@ void CutsceneSkip::EndIntroSkip(PPCContext& ctx, uint8_t* base, const char* why)
 }
 
 float CutsceneSkip::PromptAlpha() const {
-  if (!REXCVAR_GET(cod3_skip_prompt) || REXCVAR_GET(cod3_skip_movies) || !Skippable()) return 0.0f;
-  const double t =
-      double(Now() - skippable_since_.load(std::memory_order_relaxed)) / double(kPromptFadeIn);
-  return float(std::clamp(t, 0.0, 1.0));
+  if (!REXCVAR_GET(cod3_skip_prompt) || REXCVAR_GET(cod3_skip_movies)) return 0.0f;
+  const int64_t now = Now();
+  const int64_t since = skippable_since_.load(std::memory_order_relaxed);
+  if (Skippable()) return float(std::clamp(double(now - since) / double(kPromptFadeIn), 0.0, 1.0));
+  // [acct2-decomp] Fading out from where it had got to (a prompt still fading
+  // in when the briefing ended starts lower).
+  const int64_t hidden = hidden_since_.load(std::memory_order_relaxed);
+  if (!hidden || hidden < since) return 0.0f;
+  const double shown = std::clamp(double(hidden - since) / double(kPromptFadeIn), 0.0, 1.0);
+  const double t = double(now - hidden) / double(kPromptFadeOut);
+  return float(std::clamp(shown * (1.0 - t), 0.0, 1.0));
 }
 
 float CutsceneSkip::CoverAlpha() const {

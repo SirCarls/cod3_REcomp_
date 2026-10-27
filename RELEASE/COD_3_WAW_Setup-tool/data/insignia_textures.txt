@@ -1,0 +1,52 @@
+# Call of Duty 3: textures that show Nazi party or German military insignia.
+#
+# To replace one with your own picture, save a PNG named <file>.png (the first
+# column, exactly, "$" and all) in <game folder>/data/cod3/user_textures_png/
+# and press "Build user texture pack" in the setup tool (Play tab). The rules
+# (PNG, RGBA 8-bit, the same aspect ratio, sizes, alpha) are in
+# docs/TEXTURE_REPLACEMENT.md. Start from the ripped original,
+# data/cod3/textures/<file>.png, so the picture lines up with the model.
+#
+# Columns (tab-separated):
+#   file    the PNG name (without .png) of the ripped picture to replace
+#   key     the texture's key (hd_keys.tsv): XXH64 of its original data. This,
+#           not a memory address, identifies it while the game runs.
+#   width, height   the original's size in texels
+#   format  the GPU format the game keeps it in (DXT1, DXT3, DXT5)
+#   sizes   sizes your PNG may have (any scale >= 1 with this aspect ratio,
+#           sides multiples of 4, at most 8192; these are the whole scales)
+#   alpha   "opaque": your PNG's alpha is ignored. "transparent parts": your
+#           picture may be more solid than the original, never more see-through.
+#   mp      whether your replacement is also used in a multiplayer match.
+#           "no" for textures soldiers or vehicles wear: a replaced copy could
+#           make players easier to see, so matches use the game's own.
+#   kind    party: a Nazi party symbol (swastika, SS runes, party eagle).
+#           military: a German military marking (Balkenkreuz, Iron Cross),
+#           not a party symbol. related: Nazi-era, no party symbol visible.
+#   shows   what the picture shows
+#   where   the archives (sp/<level>/<archive>.cod, or sp/frontend.cod for the
+#           menus) it is in
+#
+# This list covers the archives the list was made from: Saint-Lo (the first
+# level, sp/saint_lo/*.cod), the shared sp/global.cod and sp/anim.cod, and the
+# menus (sp/frontend.cod). Other levels reuse many of these (the same key);
+# textures new to them are not listed yet. Movies (attract.wmv ...) are video,
+# not textures, and can't be replaced this way; the animated menu background
+# frames in frontend.cod's DTEX section aren't textures the game looks up
+# either.
+#
+# file	key	width	height	format	sizes	alpha	mp	kind	shows	where
+cloth_masked$of_flag_german	e26a0a1331259fd8	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	yes	party	Nazi party flag: a black swastika on a white disc, red field	saint_lo/zn09
+decal$of_germanflag_dirty_c	3d71bea5f9c2267d	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	yes	party	Hanging party banner: a swastika on a white disc, dirty red cloth	saint_lo/zn07, zn09, zn10, zn12, zn12b, zn13, zn13a, zn14, zn14b
+of_c_pnzgren_helm1_c	d7d10142dfca1784	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	German soldier's helmet: an SS runes decal and a swastika shield decal	saint_lo/chars
+of_c_pnzgren_helm2_c	8d5ba713bcfd5f25	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	The same helmet with a net: SS runes and swastika shield decals	saint_lo/chars
+of_c_pnzgren_helm3_c	bec9817db2754aff	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	opaque	no	party	The same helmet, plain: SS runes and swastika shield decals	saint_lo/chars
+of_c_pnzgren_body1_c	7d8c6dbbfd2117ce	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Panzergrenadier camouflage uniform: an SS runes collar tab (and a belt buckle with an eagle emblem, not legible at this size)	saint_lo/chars, ei_char
+c_pnzgren_body1_s	04aca89141fa9c11	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	party	The same uniform's shine (specular) map: the collar runes show faintly in the shine; optional, replace together with the uniform	saint_lo/chars, ei_char
+metal$of_v_fw190	cc05fcb9517dacb0	512	256	DXT1	512x256, 1024x512, 2048x1024, 4096x2048	opaque	yes	party	Fw 190 fighter plane: a swastika on the tail fin, and Balkenkreuz crosses on the wings and fuselage	saint_lo/vehicles
+wood$us_gersmallcrate_top_c	78110e521ebffb27	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	yes	party	Ink stamp on a crate lid: an eagle over a wreath (party eagle style; the swastika in the wreath isn't legible at this size)	saint_lo/saint_lo
+metal$p_ger_knife_c	244cd5634547c2be	512	64	DXT1	512x64, 1024x128, 2048x256, 4096x512	opaque	yes	related	Hitler Youth knife: the red and white diamond emblem on the grip (its center, where the swastika would be, is blank)	saint_lo/zn09, zn14
+decal$us_german_propaganda_	43e8a8f26b93615f	256	256	DXT3	256x256, 512x512, 1024x1024, 2048x2048	transparent parts	yes	related	German wartime propaganda poster: charging soldiers and a collection can; no party symbol visible	saint_lo/mid
+panzezriv_c	aede510890dfb141	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	military	Panzer IV tank: Balkenkreuz crosses (Wehrmacht marking, not a party symbol)	saint_lo/vehicles
+sp_bs_veh_main_icon_02	fe2665c6dacb3f45	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (vehicles): an Iron Cross on red behind a German tank; no swastika	frontend
+sp_bs_wpn_main_icon_02	2beac860929168f5	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (weapons): the same cross on red behind a P38 pistol; no swastika	frontend

@@ -1,0 +1,126 @@
+diff --git a/include/rex/input/device_assignment.h b/include/rex/input/device_assignment.h
+--- a/include/rex/input/device_assignment.h
++++ b/include/rex/input/device_assignment.h
+@@ -28,14 +28,17 @@
+   virtual void DevicesForUser(uint32_t user_index, std::vector<DeviceId>& out) const = 0;
+ };
+ 
+-/// Device ordinal N feeds guest user N. Synthetic devices feed user 0.
++/// Device ordinal N feeds guest user N, or the user the input_player_order
++/// setting gives the Nth controller. Synthetic devices feed user 0.
+ class SlotAssignment final : public DeviceAssignment {
+  public:
+   void OnDevicesChanged(const std::vector<DeviceInfo>& devices) override;
+   void DevicesForUser(uint32_t user_index, std::vector<DeviceId>& out) const override;
+ 
+  private:
+-  std::vector<std::vector<DeviceId>> users_ = std::vector<std::vector<DeviceId>>(kMaxGuestUsers);
++  // The physical devices by ordinal, and the synthetic ones (always user 0).
++  std::vector<std::vector<DeviceId>> pads_ = std::vector<std::vector<DeviceId>>(kMaxGuestUsers);
++  std::vector<DeviceId> synthetic_;
+ };
+ 
+ /// Every device feeds guest user 0. Users 1 and up report not connected. For
+diff --git a/src/input/device_assignment.cpp b/src/input/device_assignment.cpp
+--- a/src/input/device_assignment.cpp
++++ b/src/input/device_assignment.cpp
+@@ -11,20 +11,78 @@
+ 
+ #include <rex/input/device_assignment.h>
+ 
++#include <array>
++#include <string>
++
++#include <rex/cvar.h>
++#include <rex/logging.h>
++
++REXCVAR_DEFINE_STRING(input_player_order, "", "Input",
++                      "Which player each controller plays as, in the order the controllers "
++                      "connected: up to 4 digits, the first controller's player first (\"2134\": "
++                      "the first controller is player 2, the second player 1). Controllers past "
++                      "the digits take the players left, in order. Empty or not an order (a digit "
++                      "twice, not 1-4): the connection order. The keyboard and mouse stay player 1");
++
+ namespace rex::input {
+ 
++namespace {
++
++// The guest user of each controller ordinal: input_player_order, else the ordinal itself. Read
++// at every lookup, so a change applies at once.
++std::array<uint32_t, kMaxGuestUsers> PlayerOrder() {
++  std::array<uint32_t, kMaxGuestUsers> order{};
++  for (uint32_t i = 0; i < kMaxGuestUsers; i++) {
++    order[i] = i;
++  }
++  const std::string text = REXCVAR_GET(input_player_order);
++  std::array<uint32_t, kMaxGuestUsers> parsed = order;
++  std::array<bool, kMaxGuestUsers> used{};
++  uint32_t count = 0;
++  for (char c : text) {
++    if (c == ' ' || c == ',') {
++      continue;
++    }
++    if (c < '1' || c > '0' + static_cast<char>(kMaxGuestUsers) || count >= kMaxGuestUsers) {
++      return order;
++    }
++    const uint32_t user = static_cast<uint32_t>(c - '1');
++    if (used[user]) {
++      return order;
++    }
++    used[user] = true;
++    parsed[count++] = user;
++  }
++  for (uint32_t i = count; i < kMaxGuestUsers; i++) {
++    uint32_t user = 0;
++    while (used[user]) {
++      user++;
++    }
++    used[user] = true;
++    parsed[i] = user;
++  }
++  return parsed;
++}
++
++}  // namespace
++
+ void SlotAssignment::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {
+-  for (auto& user : users_) {
+-    user.clear();
++  for (auto& pad : pads_) {
++    pad.clear();
+   }
++  synthetic_.clear();
+ 
+   // Key off the ordinal rather than list position, so unplugging pad one does
+   // not promote pad two to player one.
++  const auto order = PlayerOrder();
+   for (const auto& device : devices) {
+     if (device.synthetic) {
+-      users_[0].push_back(device.id);
++      synthetic_.push_back(device.id);
+     } else if (device.ordinal < kMaxGuestUsers) {
+-      users_[device.ordinal].push_back(device.id);
++      pads_[device.ordinal].push_back(device.id);
++      REXLOG_INFO("Input: controller {} ({}) plays as player {} (input_player_order \"{}\").",
++                  device.ordinal + 1, device.name, order[device.ordinal] + 1,
++                  REXCVAR_GET(input_player_order));
+     }
+   }
+ }
+@@ -34,7 +92,15 @@
+   if (user_index >= kMaxGuestUsers) {
+     return;
+   }
+-  out = users_[user_index];
++  const auto order = PlayerOrder();
++  for (uint32_t ordinal = 0; ordinal < kMaxGuestUsers; ordinal++) {
++    if (order[ordinal] == user_index) {
++      out.insert(out.end(), pads_[ordinal].begin(), pads_[ordinal].end());
++    }
++  }
++  if (user_index == 0) {
++    out.insert(out.end(), synthetic_.begin(), synthetic_.end());
++  }
+ }
+ 
+ void SharedAssignment::OnDevicesChanged(const std::vector<DeviceInfo>& devices) {

@@ -1,0 +1,670 @@
+diff --git a/include/rex/graphics/host/command_processor.h b/include/rex/graphics/host/command_processor.h
+new file mode 100644
+index 0000000..16b1225
+--- /dev/null
++++ b/include/rex/graphics/host/command_processor.h
+@@ -0,0 +1,62 @@
++/**
++ * @file        rex/graphics/host/command_processor.h
++ *
++ * @brief       The "host" backend's command processor: the base command
++ *              processor's ring walk, registers, fences and swaps, with every
++ *              shader, draw, resolve and swap handed to the host renderer
++ *              (rex/graphics/host_renderer.h) instead of being emulated.
++ *
++ * Built like Xenia's null backend. What the base keeps for every backend
++ * stays as it is: predication, the register file, the gamma ramps, the
++ * fences and waits, the read pointer, the occlusion queries' fixed counts.
++ * Resolves aren't copied back to guest memory (as with gpu_skip_drawing):
++ * that is the host renderer's to do.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <array>
++#include <cstdint>
++#include <memory>
++#include <unordered_map>
++
++#include <rex/graphics/command_processor.h>
++#include <rex/graphics/host_renderer.h>
++
++namespace rex::graphics::host {
++
++class HostGraphicsSystem;
++
++class HostCommandProcessor : public CommandProcessor {
++ public:
++  HostCommandProcessor(HostGraphicsSystem* graphics_system, system::KernelState* kernel_state);
++  ~HostCommandProcessor() override;
++
++  void IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
++                 uint32_t frontbuffer_height) override;
++
++ protected:
++  bool SetupContext() override;
++  void ShutdownContext() override;
++
++  Shader* LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
++                     const uint32_t* host_address, uint32_t dword_count) override;
++
++  bool IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
++                 IndexBufferInfo* index_buffer_info, bool major_mode_explicit) override;
++  bool IssueCopy() override;
++
++ private:
++  // The renderer while it runs (from a successful start to stop), else null.
++  const RexHostRenderer* renderer_ = nullptr;
++  // What start got; valid until stop.
++  RexHostGpu gpu_ = {};
++  // The guest's shaders by microcode hash, vertex [0] and pixel [1]. Kept for
++  // the program's life, as the Vulkan backend keeps its own: the base's
++  // active shaders point at them.
++  std::array<std::unordered_map<uint64_t, std::unique_ptr<Shader>>, 2> shaders_;
++};
++
++}  // namespace rex::graphics::host
+diff --git a/include/rex/graphics/host/graphics_system.h b/include/rex/graphics/host/graphics_system.h
+new file mode 100644
+index 0000000..9c02070
+--- /dev/null
++++ b/include/rex/graphics/host/graphics_system.h
+@@ -0,0 +1,48 @@
++/**
++ * @file        rex/graphics/host/graphics_system.h
++ *
++ * @brief       The "host" backend's graphics system: the guest-visible GPU
++ *              without the GPU emulation's drawing (rex/graphics/host_renderer.h).
++ *
++ * The Vulkan provider and presenter are made as the Vulkan backend makes
++ * them, for the window, its overlays and the host renderer, which draws on
++ * that device.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <memory>
++#include <string>
++
++#include <rex/graphics/command_processor.h>
++#include <rex/graphics/graphics_system.h>
++#include <rex/graphics/host_renderer.h>
++
++namespace rex::graphics::host {
++
++class HostGraphicsSystem : public GraphicsSystem {
++ public:
++  // renderer may be null (nothing is drawn). It is copied: the fields its
++  // struct_size covers, the others left null.
++  explicit HostGraphicsSystem(const RexHostRenderer* renderer);
++  ~HostGraphicsSystem() override;
++
++  std::string name() const override;
++
++  // The renderer the command processor uses: null when none was given or it
++  // was written for another REX_HOST_RENDERER_ABI_VERSION.
++  const RexHostRenderer* renderer() const { return has_renderer_ ? &renderer_ : nullptr; }
++
++ protected:
++  void CreateProvider(bool with_presentation) override;
++
++ private:
++  std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
++
++  RexHostRenderer renderer_ = {};
++  bool has_renderer_ = false;
++};
++
++}  // namespace rex::graphics::host
+diff --git a/include/rex/graphics/host_renderer.h b/include/rex/graphics/host_renderer.h
+new file mode 100644
+index 0000000..fea5075
+--- /dev/null
++++ b/include/rex/graphics/host_renderer.h
+@@ -0,0 +1,152 @@
++/**
++ * @file        rex/graphics/host_renderer.h
++ *
++ * @brief       The host renderer: what the GPU plugin's "host" backend hands
++ *              the guest's GPU work to, instead of emulating the GPU.
++ *
++ * The host backend (rexgpu-xenos with GpuCreateInfo::backend "host",
++ * rex/system/gpu_plugin.h) keeps everything the guest sees of its GPU: the
++ * registers and MMIO, the vblank interrupts, the ring buffer walk with its
++ * fences, waits, register writes and read pointer, and the gamma ramps. It
++ * draws nothing itself: no EDRAM, render-target, texture or shared-memory
++ * cache, no shader translation, no host GPU work. Each shader the guest
++ * loads, each draw, each resolve and each swap goes to the host renderer
++ * given in GpuCreateInfo::host_renderer, which draws them its own way on the
++ * plugin's Vulkan device. Without one nothing is drawn (as with
++ * gpu_skip_drawing, rex/graphics/gpu_census.h): the picture stays black.
++ *
++ * Plain C, so a renderer in another language can implement it. The rules:
++ *  - Every struct starts with struct_size. Whoever reads a struct reads only
++ *    the fields its struct_size covers, so either side can grow a struct at
++ *    its end. A change of meaning or order raises
++ *    REX_HOST_RENDERER_ABI_VERSION; a renderer written for another version
++ *    isn't used.
++ *  - Every call is made on the GPU command thread, in the guest's command
++ *    order, and returns before the next command is read. What a call's
++ *    arguments point to is valid only during the call, except the RexHostGpu
++ *    given to start, which stays valid until stop.
++ *  - During a call, the registers and the guest memory are as the guest set
++ *    them for that command. Once it returns, the guest may change them (the
++ *    next fence the backend writes lets it), so a renderer copies what it
++ *    needs before returning.
++ *  - A renderer never throws or unwinds across a call.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++// Raised when a struct below changes meaning or order (growing one at its end
++// doesn't need it).
++#define REX_HOST_RENDERER_ABI_VERSION 1u
++
++// RexHostShader::type (xenos::ShaderType).
++#define REX_HOST_SHADER_VERTEX 0u
++#define REX_HOST_SHADER_PIXEL 1u
++
++// What the backend gives the renderer when the GPU command thread starts.
++// Valid until stop.
++typedef struct RexHostGpu {
++  uint32_t struct_size;
++  uint32_t abi_version;  // REX_HOST_RENDERER_ABI_VERSION of the plugin
++  // Guest physical memory, physical_memory_size bytes from physical address
++  // 0. A renderer writes into it only what the guest would read back from the
++  // GPU (resolve destinations, memory exports).
++  uint8_t* physical_memory;
++  uint64_t physical_memory_size;
++  // The GPU's register file: register_count 32-bit values indexed by register
++  // number (rex/graphics/registers.h), current during every call. Read only.
++  const uint32_t* registers;
++  uint32_t register_count;
++  // The device's Vulkan version (VK_MAKE_API_VERSION); 0 when the plugin has
++  // no Vulkan device, and then all the vulkan_ fields below are 0 too.
++  uint32_t vulkan_api_version;
++  // The plugin's Vulkan objects (rex::ui::vulkan::VulkanProvider), shared
++  // with the presenter: VkInstance, VkPhysicalDevice, VkDevice and the
++  // PFN_vkGetInstanceProcAddr everything else is loaded through.
++  void* vulkan_instance;
++  void* vulkan_physical_device;
++  void* vulkan_device;
++  void* vulkan_get_instance_proc_addr;
++  // The graphics and compute queue, also the presenter's.
++  uint32_t vulkan_queue_family;
++  uint32_t vulkan_queue_index;
++  // Vulkan wants a queue's host access synchronized: hold the queue with
++  // lock_queue around each vkQueueSubmit (and anything else on the queue),
++  // then unlock_queue on the same thread. lock_queue returns the VkQueue. Both
++  // take gpu_user. They may be used from any thread.
++  void* (*lock_queue)(void* gpu_user);
++  void (*unlock_queue)(void* gpu_user);
++  void* gpu_user;
++} RexHostGpu;
++
++// A shader the guest loads for the first time (its microcode hash is new).
++typedef struct RexHostShader {
++  uint32_t struct_size;
++  uint32_t type;  // REX_HOST_SHADER_VERTEX or _PIXEL
++  // XXH3-64 of the microcode as the guest wrote it (big-endian), the name the
++  // Vulkan backend gives the same shader.
++  uint64_t hash;
++  uint32_t guest_address;  // physical
++  uint32_t dword_count;
++  const uint32_t* ucode;  // dword_count dwords, in the host's byte order
++} RexHostShader;
++
++// A draw (a draw packet whose RB_MODECONTROL isn't the copy mode). The rest of
++// its state is in the registers.
++typedef struct RexHostDraw {
++  uint32_t struct_size;
++  uint32_t primitive_type;  // xenos::PrimitiveType (VGT_DRAW_INITIATOR)
++  uint32_t index_count;     // VGT_DRAW_INITIATOR num_indices
++  // 1: the index_ fields are the index buffer; 0: auto-indexed.
++  uint32_t indexed;
++  uint32_t index_format;         // xenos::IndexFormat (0 16-bit, 1 32-bit)
++  uint32_t index_endian;         // xenos::Endian
++  uint32_t index_guest_address;  // physical
++  uint32_t index_buffer_bytes;
++  uint32_t major_mode_explicit;  // 1: VGT_DRAW_INITIATOR major mode is explicit
++  uint32_t reserved;             // 0
++  // The draw's shaders, by RexHostShader::hash; 0 if none.
++  uint64_t vertex_shader;
++  uint64_t pixel_shader;
++} RexHostDraw;
++
++// A swap: the guest shows a picture.
++typedef struct RexHostSwap {
++  uint32_t struct_size;
++  uint32_t frontbuffer_address;  // physical
++  uint32_t frontbuffer_width;
++  uint32_t frontbuffer_height;
++} RexHostSwap;
++
++// The renderer (GpuCreateInfo::host_renderer). The plugin copies it when it is
++// created; user and the functions stay valid for the program's life. Any
++// function may be null (that call isn't made).
++typedef struct RexHostRenderer {
++  uint32_t struct_size;
++  uint32_t abi_version;  // REX_HOST_RENDERER_ABI_VERSION it was written for
++  void* user;            // passed to every call
++  const char* name;      // for the log (NUL-terminated); may be null
++  // When the GPU command thread starts, before any other call. Nonzero: the
++  // renderer runs. Zero: it is never called again and nothing is drawn.
++  int32_t (*start)(void* user, const RexHostGpu* gpu);
++  // When the GPU command thread stops, after every other call. A program may
++  // end without it.
++  void (*stop)(void* user);
++  void (*shader)(void* user, const RexHostShader* shader);
++  void (*draw)(void* user, const RexHostDraw* draw);
++  // A resolve (a draw packet in RB_MODECONTROL's copy mode; RB_COPY_* and the
++  // other copy registers say what is copied where).
++  void (*resolve)(void* user);
++  void (*swap)(void* user, const RexHostSwap* swap);
++} RexHostRenderer;
++
++#ifdef __cplusplus
++}  // extern "C"
++#endif
+diff --git a/include/rex/system/gpu_plugin.h b/include/rex/system/gpu_plugin.h
+index 453c210..be3675a 100644
+--- a/include/rex/system/gpu_plugin.h
++++ b/include/rex/system/gpu_plugin.h
+@@ -26,9 +26,14 @@
+ #define REX_GPU_PLUGIN_EXPORT __attribute__((visibility("default")))
+ #endif
+ 
++// rex/graphics/host_renderer.h
++struct RexHostRenderer;
++
+ namespace rex::system {
+ 
+-// Bump on any change to GpuCreateInfo or to the IGraphicsSystem interface.
++// Bump on any change to GpuCreateInfo or to the IGraphicsSystem interface,
++// except a field added at GpuCreateInfo's end: struct_size says which fields
++// the host filled, and a plugin reads only those.
+ inline constexpr uint32_t kGpuPluginAbiVersion = 1;
+ 
+ inline constexpr const char* kGpuCreateSymbol = "rex_gpu_create";
+@@ -36,7 +41,11 @@ inline constexpr const char* kGpuAbiVersionSymbol = "rex_gpu_abi_version";
+ 
+ struct GpuCreateInfo {
+   uint32_t struct_size = 0;       // sizeof(GpuCreateInfo), set by the host
+-  const char* backend = nullptr;  // "d3d12", "vulkan", or "any"
++  const char* backend = nullptr;  // "d3d12", "vulkan", "any", or "host"
++  // Backend "host" (rex/graphics/host_renderer.h): the renderer the guest's
++  // GPU work goes to instead of a GPU emulation; null: nothing is drawn. The
++  // plugin copies it.
++  const RexHostRenderer* host_renderer = nullptr;
+ };
+ 
+ // extern "C" exports every GPU plugin must provide:
+@@ -50,7 +59,9 @@ using GpuCreateFn = IGraphicsSystem* (*)(uint32_t abi_version, const GpuCreateIn
+ // graphics system. Returns nullptr after logging a detailed error (missing
+ // file, missing exports, ABI mismatch, or factory failure). The library
+ // handle is retained for process lifetime; plugins are never unloaded.
++// host_renderer is for backend "host" (GpuCreateInfo::host_renderer).
+ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name,
+-                                               std::string_view backend = "any");
++                                               std::string_view backend = "any",
++                                               const RexHostRenderer* host_renderer = nullptr);
+ 
+ }  // namespace rex::system
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index e56399c..199e413 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -54,6 +54,10 @@ set(REXGPU_XENOS_VULKAN_SOURCES
+     vulkan/shader.cpp
+     vulkan/shared_memory.cpp
+     vulkan/texture_cache.cpp
++    # The host backend (rex/graphics/host_renderer.h): no GPU emulation, its
++    # draws go to the host renderer on the Vulkan provider's device.
++    host/graphics_system.cpp
++    host/command_processor.cpp
+ )
+ 
+ # D3D12 backend
+diff --git a/src/graphics/host/command_processor.cpp b/src/graphics/host/command_processor.cpp
+new file mode 100644
+index 0000000..59b833e
+--- /dev/null
++++ b/src/graphics/host/command_processor.cpp
+@@ -0,0 +1,183 @@
++/**
++ * @file        graphics/host/command_processor.cpp
++ *
++ * @brief       The "host" backend's command processor
++ *              (rex/graphics/host/command_processor.h).
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <rex/graphics/host/command_processor.h>
++
++#include <rex/graphics/gpu_stats.h>
++#include <rex/graphics/host/graphics_system.h>
++#include <rex/graphics/pipeline/shader/shader.h>
++#include <rex/graphics/register_file.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/xenos.h>
++#include <rex/hash.h>  // XXH3_64bits
++#include <rex/logging.h>
++#include <rex/system/xmemory.h>
++#include <rex/ui/vulkan/provider.h>
++
++namespace rex::graphics::host {
++
++namespace {
++
++// RexHostGpu::lock_queue / unlock_queue: the queue's own lock, the one the
++// presenter and VulkanDevice::AcquireQueue take.
++void* LockQueue(void* gpu_user) {
++  auto* queue = static_cast<ui::vulkan::VulkanDevice::Queue*>(gpu_user);
++  queue->mutex.lock();
++  return queue->queue;
++}
++
++void UnlockQueue(void* gpu_user) {
++  static_cast<ui::vulkan::VulkanDevice::Queue*>(gpu_user)->mutex.unlock();
++}
++
++}  // namespace
++
++HostCommandProcessor::HostCommandProcessor(HostGraphicsSystem* graphics_system,
++                                           system::KernelState* kernel_state)
++    : CommandProcessor(graphics_system, kernel_state) {}
++
++HostCommandProcessor::~HostCommandProcessor() = default;
++
++bool HostCommandProcessor::SetupContext() {
++  if (!CommandProcessor::SetupContext()) {
++    return false;
++  }
++  const RexHostRenderer* renderer = static_cast<HostGraphicsSystem*>(graphics_system_)->renderer();
++  if (!renderer) {
++    REXGPU_INFO(
++        "host backend: the GPU emulation is off and there is no host renderer, so nothing is "
++        "drawn (the picture stays black)");
++    return true;
++  }
++  const char* name = renderer->name ? renderer->name : "the host renderer";
++
++  gpu_ = {};
++  gpu_.struct_size = uint32_t(sizeof(gpu_));
++  gpu_.abi_version = REX_HOST_RENDERER_ABI_VERSION;
++  gpu_.physical_memory = memory_->TranslatePhysical<uint8_t*>(0);
++  gpu_.physical_memory_size = UINT64_C(0x20000000);
++  gpu_.registers = register_file_->values;
++  gpu_.register_count = uint32_t(RegisterFile::kRegisterCount);
++  auto* provider = static_cast<ui::vulkan::VulkanProvider*>(graphics_system_->provider());
++  const ui::vulkan::VulkanDevice* device = provider ? provider->vulkan_device() : nullptr;
++  if (device) {
++    const ui::vulkan::VulkanInstance* instance = device->vulkan_instance();
++    const uint32_t queue_family = device->queue_family_graphics_compute();
++    gpu_.vulkan_api_version = device->properties().apiVersion;
++    gpu_.vulkan_instance = instance->instance();
++    gpu_.vulkan_physical_device = device->physical_device();
++    gpu_.vulkan_device = device->device();
++    gpu_.vulkan_get_instance_proc_addr =
++        reinterpret_cast<void*>(instance->functions().vkGetInstanceProcAddr);
++    gpu_.vulkan_queue_family = queue_family;
++    gpu_.vulkan_queue_index = 0;
++    gpu_.lock_queue = LockQueue;
++    gpu_.unlock_queue = UnlockQueue;
++    gpu_.gpu_user = device->queue_families()[queue_family].queues[0].get();
++  }
++
++  if (!renderer->start || !renderer->start(renderer->user, &gpu_)) {
++    REXGPU_WARN("host backend: {} didn't start, so nothing is drawn (the picture stays black)",
++                name);
++    return true;
++  }
++  renderer_ = renderer;
++  REXGPU_INFO("host backend: the GPU emulation is off; {} gets the guest's draws{}", name,
++              device ? "" : " (no Vulkan device)");
++  return true;
++}
++
++void HostCommandProcessor::ShutdownContext() {
++  if (renderer_ && renderer_->stop) {
++    renderer_->stop(renderer_->user);
++  }
++  renderer_ = nullptr;
++  CommandProcessor::ShutdownContext();
++}
++
++Shader* HostCommandProcessor::LoadShader(xenos::ShaderType shader_type, uint32_t guest_address,
++                                         const uint32_t* host_address, uint32_t dword_count) {
++  // The same name the Vulkan backend gives the shader (its pipeline cache).
++  const uint64_t hash = XXH3_64bits(host_address, size_t(dword_count) * sizeof(uint32_t));
++  auto& shaders = shaders_[shader_type == xenos::ShaderType::kPixel ? 1 : 0];
++  if (auto it = shaders.find(hash); it != shaders.end()) {
++    return it->second.get();
++  }
++  auto made = std::make_unique<Shader>(shader_type, hash, host_address, dword_count);
++  Shader* shader = made.get();
++  shaders.emplace(hash, std::move(made));
++  if (renderer_ && renderer_->shader) {
++    RexHostShader record = {};
++    record.struct_size = uint32_t(sizeof(record));
++    record.type =
++        shader_type == xenos::ShaderType::kPixel ? REX_HOST_SHADER_PIXEL : REX_HOST_SHADER_VERTEX;
++    record.hash = hash;
++    record.guest_address = guest_address;
++    record.dword_count = uint32_t(shader->ucode_dword_count());
++    record.ucode = shader->ucode_dwords();
++    renderer_->shader(renderer_->user, &record);
++  }
++  return shader;
++}
++
++bool HostCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t index_count,
++                                     IndexBufferInfo* index_buffer_info,
++                                     bool major_mode_explicit) {
++  const RegisterFile& regs = *register_file_;
++  if (regs.Get<reg::RB_MODECONTROL>().edram_mode == xenos::EdramMode::kCopy) {
++    // A resolve, as in the Vulkan backend.
++    stats::Add(stats::Counter::kResolves);
++    return IssueCopy();
++  }
++  stats::Add(stats::Counter::kDraws);
++  if (!renderer_ || !renderer_->draw) {
++    return true;
++  }
++  RexHostDraw draw = {};
++  draw.struct_size = uint32_t(sizeof(draw));
++  draw.primitive_type = uint32_t(prim_type);
++  draw.index_count = index_count;
++  if (index_buffer_info) {
++    draw.indexed = 1;
++    draw.index_format = uint32_t(index_buffer_info->format);
++    draw.index_endian = uint32_t(index_buffer_info->endianness);
++    draw.index_guest_address = index_buffer_info->guest_base;
++    draw.index_buffer_bytes = uint32_t(index_buffer_info->length);
++  }
++  draw.major_mode_explicit = major_mode_explicit ? 1 : 0;
++  const Shader* vertex_shader = active_vertex_shader();
++  const Shader* pixel_shader = active_pixel_shader();
++  draw.vertex_shader = vertex_shader ? vertex_shader->ucode_data_hash() : 0;
++  draw.pixel_shader = pixel_shader ? pixel_shader->ucode_data_hash() : 0;
++  renderer_->draw(renderer_->user, &draw);
++  return true;
++}
++
++bool HostCommandProcessor::IssueCopy() {
++  if (renderer_ && renderer_->resolve) {
++    renderer_->resolve(renderer_->user);
++  }
++  return true;
++}
++
++void HostCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr, uint32_t frontbuffer_width,
++                                     uint32_t frontbuffer_height) {
++  if (!renderer_ || !renderer_->swap) {
++    return;
++  }
++  RexHostSwap swap = {};
++  swap.struct_size = uint32_t(sizeof(swap));
++  swap.frontbuffer_address = frontbuffer_ptr & 0x1FFFFFFF;
++  swap.frontbuffer_width = frontbuffer_width;
++  swap.frontbuffer_height = frontbuffer_height;
++  renderer_->swap(renderer_->user, &swap);
++}
++
++}  // namespace rex::graphics::host
+diff --git a/src/graphics/host/graphics_system.cpp b/src/graphics/host/graphics_system.cpp
+new file mode 100644
+index 0000000..aaa1453
+--- /dev/null
++++ b/src/graphics/host/graphics_system.cpp
+@@ -0,0 +1,64 @@
++/**
++ * @file        graphics/host/graphics_system.cpp
++ *
++ * @brief       The "host" backend's graphics system
++ *              (rex/graphics/host/graphics_system.h).
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <rex/graphics/host/graphics_system.h>
++
++#include <algorithm>
++#include <cstddef>
++#include <cstring>
++
++#include <rex/graphics/host/command_processor.h>
++#include <rex/logging.h>
++#include <rex/system/kernel_state.h>
++#include <rex/ui/vulkan/provider.h>
++
++namespace rex::graphics::host {
++
++HostGraphicsSystem::HostGraphicsSystem(const RexHostRenderer* renderer) {
++  if (!renderer) {
++    return;
++  }
++  // struct_size and abi_version come first, so even a smaller table than this
++  // plugin's is read in bounds; fields it doesn't have stay null.
++  const size_t given = std::min<size_t>(renderer->struct_size, sizeof(renderer_));
++  if (given < offsetof(RexHostRenderer, user)) {
++    REXGPU_ERROR("host backend: the host renderer's table is {} bytes, too small; nothing is drawn",
++                 renderer->struct_size);
++    return;
++  }
++  if (renderer->abi_version != REX_HOST_RENDERER_ABI_VERSION) {
++    REXGPU_ERROR(
++        "host backend: the host renderer was written for interface version {}, this plugin has {}; "
++        "nothing is drawn",
++        renderer->abi_version, REX_HOST_RENDERER_ABI_VERSION);
++    return;
++  }
++  std::memcpy(&renderer_, renderer, given);
++  renderer_.struct_size = uint32_t(sizeof(renderer_));
++  has_renderer_ = true;
++}
++
++HostGraphicsSystem::~HostGraphicsSystem() = default;
++
++std::string HostGraphicsSystem::name() const {
++  return "host";
++}
++
++void HostGraphicsSystem::CreateProvider(bool with_presentation) {
++  // The same device the Vulkan backend would make: the host renderer draws
++  // the same guest work on it.
++  provider_ = rex::ui::vulkan::VulkanProvider::Create(true, with_presentation);
++}
++
++std::unique_ptr<CommandProcessor> HostGraphicsSystem::CreateCommandProcessor() {
++  return std::make_unique<HostCommandProcessor>(this, kernel_state_);
++}
++
++}  // namespace rex::graphics::host
+diff --git a/src/graphics/plugin_main.cpp b/src/graphics/plugin_main.cpp
+index ec756d3..77a816d 100644
+--- a/src/graphics/plugin_main.cpp
++++ b/src/graphics/plugin_main.cpp
+@@ -9,6 +9,7 @@
+  *              See LICENSE file in the project root for full license text.
+  */
+ 
++#include <cstddef>
+ #include <string_view>
+ 
+ #include <rex/logging.h>
+@@ -18,6 +19,7 @@
+ #include <rex/graphics/d3d12/graphics_system.h>
+ #endif
+ #if REX_HAS_VULKAN
++#include <rex/graphics/host/graphics_system.h>
+ #include <rex/graphics/vulkan/graphics_system.h>
+ #endif
+ 
+@@ -32,12 +34,28 @@ extern "C" REX_GPU_PLUGIN_EXPORT rex::system::IGraphicsSystem* rex_gpu_create(
+                  rex::system::kGpuPluginAbiVersion);
+     return nullptr;
+   }
+-  if (!info || info->struct_size < sizeof(rex::system::GpuCreateInfo)) {
++  // GpuCreateInfo grows at its end: a host built before host_renderer
++  // existed fills only the fields before it.
++  using rex::system::GpuCreateInfo;
++  constexpr size_t kHostRendererEnd =
++      offsetof(GpuCreateInfo, host_renderer) + sizeof(GpuCreateInfo::host_renderer);
++  if (!info || info->struct_size < offsetof(GpuCreateInfo, host_renderer)) {
+     REXLOG_ERROR("rexgpu-xenos: invalid GpuCreateInfo");
+     return nullptr;
+   }
+ 
+   std::string_view backend = info->backend ? info->backend : "any";
++  // The host backend (rex/graphics/host_renderer.h) is only used when asked
++  // for by name: "any" stays a GPU emulation.
++  if (backend == "host") {
++#if REX_HAS_VULKAN
++    return new rex::graphics::host::HostGraphicsSystem(
++        info->struct_size >= kHostRendererEnd ? info->host_renderer : nullptr);
++#else
++    REXLOG_ERROR("rexgpu-xenos: the host backend needs Vulkan, which isn't in this plugin");
++    return nullptr;
++#endif
++  }
+ #if REX_HAS_D3D12
+   if (backend == "any" || backend == "d3d12") {
+     return new rex::graphics::d3d12::D3D12GraphicsSystem();
+diff --git a/src/system/gpu_plugin_loader.cpp b/src/system/gpu_plugin_loader.cpp
+index 75a69be..c6afce2 100644
+--- a/src/system/gpu_plugin_loader.cpp
++++ b/src/system/gpu_plugin_loader.cpp
+@@ -110,7 +110,8 @@ std::vector<platform::DynamicLibrary>& LoadedPlugins() {
+ 
+ }  // namespace
+ 
+-std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend) {
++std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::string_view backend,
++                                               const RexHostRenderer* host_renderer) {
+   auto candidates = PluginCandidates(name);
+   std::filesystem::path path;
+   for (const auto& candidate : candidates) {
+@@ -156,6 +157,7 @@ std::unique_ptr<IGraphicsSystem> LoadGpuPlugin(std::string_view name, std::strin
+   GpuCreateInfo info{};
+   info.struct_size = sizeof(GpuCreateInfo);
+   info.backend = backend_str.c_str();
++  info.host_renderer = host_renderer;
+ 
+   IGraphicsSystem* graphics_system = create_fn(kGpuPluginAbiVersion, &info);
+   if (!graphics_system) {

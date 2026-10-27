@@ -107,6 +107,10 @@ inline constexpr uint32_t kMaxCustomWidth = 15360;
 inline constexpr uint32_t kMaxCustomHeight = 4320;
 // cod3_render_percent: the share of the resolution drawn (100 = all of it).
 inline constexpr uint32_t kMinRenderPercent = 25;
+// [claude-9b] 2026-10-27 Above 100 the game draws more pixels than the window shows and the presenter shrinks
+// the picture to fit (supersampling: smoother edges and textures; owner 2026-10-27 06:41: "perhaps allow for a
+// higher rendering resolution than 100% perhaps 200% should be an option"). 200 is 4x the pixels.
+inline constexpr uint32_t kMaxRenderPercent = 200;
 
 // Tiles one 32-bit surface takes (2x MSAA doubles the rows).
 uint32_t SurfaceTiles(uint32_t width, uint32_t height, bool msaa);

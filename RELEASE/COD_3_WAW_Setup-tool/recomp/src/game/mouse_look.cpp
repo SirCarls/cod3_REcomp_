@@ -29,6 +29,13 @@ REXCVAR_DEFINE_BOOL(cod3_invert_mouse, false, "cod3/Mouse", "Invert vertical mou
 REXCVAR_DEFINE_DOUBLE(cod3_zoom_sensitivity, 1.0, "cod3/Mouse",
                       "Extra multiplier while aiming down sights (on top of the FOV ratio)")
     .range(0.05, 4.0);
+// [claude-9b] Owner 2026-10-26: "Horizontal and vertical sensitivity sliders should only effect
+// controller's sense. Make a new slider for mouse and keyboard that's independent from those two."
+// The mouse has cod3_sensitivity (F2 > Controls, Pause > Options > AIM); the game's two rows are
+// the controller's. True brings back the earlier behavior (both rows scaled the mouse too).
+REXCVAR_DEFINE_BOOL(cod3_mouse_game_sensitivity, false, "cod3/Mouse",
+                    "Also scale the mouse by the game's Horizontal / Vertical sensitivity rows "
+                    "(the controller's). Off: the mouse uses only its own sensitivity");
 
 REXCVAR_DECLARE(bool, mnk_mode);
 
@@ -130,17 +137,18 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
   // [claude-9b] The weapon in hand's percentage, hip blending into aiming (game/aim_sensitivity.h).
   sens *= aimsens::Multiplier(base, local);
 
-  // The game's own Options > Controls rows apply to the mouse too:
-  // horizontal / vertical sensitivity scale it the way they scale the stick
-  // (1.0 at the default 25), and Invert aim flips it.
+  // The game's own Options > Controls rows: Invert aim flips the mouse too;
+  // horizontal / vertical sensitivity are the controller's only, unless
+  // cod3_mouse_game_sensitivity asks for them (then 1.0 at the default 25).
   namespace c = addr::controls;
   auto game_scale = [&](uint32_t field) {
     int32_t v = static_cast<int32_t>(guest::ReadU32(base, c::kSettings + field));
     if (v < 0 || v > 1000) return 1.0;  // not set up yet
     return v == 0 ? double(c::kSensZero) : v * double(c::kSensScale);
   };
-  const double scale_x = game_scale(c::kHorizontalSens);
-  const double scale_y = game_scale(c::kVerticalSens);
+  const bool rows_too = REXCVAR_GET(cod3_mouse_game_sensitivity);  // [claude-9b] off: controller only
+  const double scale_x = rows_too ? game_scale(c::kHorizontalSens) : 1.0;
+  const double scale_y = rows_too ? game_scale(c::kVerticalSens) : 1.0;
   const bool game_invert = guest::ReadU8(base, c::kSettings + c::kInvertAim) != 0;
   game_invert_.store(game_invert, std::memory_order_relaxed);
 

@@ -37,6 +37,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
     ${COD3_SRC}/game/diagnostics.cpp
     ${COD3_SRC}/game/engine.cpp
+    ${COD3_SRC}/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
+    ${COD3_SRC}/game/coronas.cpp  # [claude-9b] light coronas fade at the same speed at any frame rate (cod3_fix_corona_fade)
     ${COD3_SRC}/game/fov.cpp
     ${COD3_SRC}/game/frame_rate.cpp
     ${COD3_SRC}/game/function_profiler.cpp
@@ -54,6 +56,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/pc_menu.cpp  # [mp-menus] mouse and keyboard in the game's menus, shared with the campaign
     ${COD3_SRC}/game/perf_stats.cpp
     ${COD3_SRC}/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
+    ${COD3_SRC}/game/menu_video_rows.cpp  # [menus-categories] the video rows of Pause > OPTIONS > VIDEO
+    ${COD3_SRC}/game/options_pages.cpp  # [menus-categories] which rows each Options category page has
     ${COD3_SRC}/game/print_hooks.cpp
     ${COD3_SRC}/game/relaunch.cpp
     ${COD3_SRC}/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
@@ -68,6 +72,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
     ${COD3_SRC}/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands
+    ${COD3_SRC}/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip, _2 to _4)
     ${COD3_SRC}/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, per player
     ${COD3_SRC}/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz
     ${COD3_SRC}/game/watchdog.cpp
@@ -76,8 +81,12 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/controls_mp.cpp
     ${COD3_SRC}/game/mp/hud_mp.cpp
     ${COD3_SRC}/game/mp/menus_mp.cpp
-    ${COD3_SRC}/game/mp/options_mp.cpp  # [mp-menus] FIELD OF VIEW and FOV SCALE on Options > Gameplay
+    ${COD3_SRC}/game/mp/options_mp.cpp  # [mp-menus] FIELD OF VIEW and FOV SCALE on Options > Gameplay; [menus-categories] Pause > OPTIONS as category pages
     ${COD3_SRC}/game/mp/session.cpp
+    ${COD3_SRC}/game/mp/test_autojoin_mp.cpp  # [claude-9b] tests: each local player joins a team and picks a class (cod3_test_autojoin)
+    ${COD3_SRC}/game/mp/pose_debug_mp.cpp  # [claude-9b] rival players' poses between draws, measurement (cod3_debug_pose_mp)
+    ${COD3_SRC}/game/mp/server_step_mp.cpp  # [claude-9b] the host's game in fixed updates (cod3mp_server_hz, off until tested)
+    ${COD3_SRC}/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start
     ${COD3_SRC}/test_input.cpp
     ${COD3_SRC}/ui/announcement_feed.cpp
     ${COD3_SRC}/ui/console_pages.cpp
@@ -114,6 +123,7 @@ else()
 endif()
 
 rexglue_setup_target(cod3mp GPU_PLUGINS xenos)
+cod3_render_link(cod3mp)  # [rust-renderer] made by the top folder's cmake/cod3_render.cmake
 
 if(MINGW)
     target_link_options(cod3mp PRIVATE -municode)

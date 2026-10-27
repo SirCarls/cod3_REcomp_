@@ -49,6 +49,7 @@ GS_GROUPS = [
                   "cod3_hd_textures", "cod3_user_textures", "cod3_graphics_api"]),
     ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
                             "cod3_skip_movies"]),
+    ("Player", ["user_name", "user_name_2", "user_name_3", "user_name_4"]),  # [claude-9b] SDK patches 0070, 0074
 ]
 
 
@@ -342,7 +343,11 @@ class Pages:
             if st.kind == "choice":
                 labels = [label for _, label in st.choices]
                 var = tk.StringVar(value=self._gs_label(st, st.default))
-                w = ttk.Combobox(s, textvariable=var, state="readonly", values=labels)
+                # [claude-9b] A setting that also takes values of the player's own (an aspect ratio
+                # such as 24:10, a render size such as 2560x1080) can be typed into (owner 2026-10-26:
+                # the custom aspect ratio boxes weren't respected: the list only took its own rows).
+                w = ttk.Combobox(s, textvariable=var, state="normal" if st.also else "readonly",
+                                 values=labels)
                 widgets.fit_list_width(w, labels)
             elif st.choices:
                 # A number with suggestions (the frame rate limit): pick one or type your own.
@@ -408,8 +413,17 @@ class Pages:
             value = self._gs_value(st, var)
             valid = getattr(st, "valid", None)
             if value is None or (valid is not None and not valid(value)):
-                bad.append(f"{st.label}: pick a whole number from {st.min} to {st.max}." if st.kind == "int"
-                           else f"{st.label}: pick one from the list.")
+                if st.kind == "int":
+                    bad.append(f"{st.label}: pick a whole number from {st.min} to {st.max}.")
+                elif st.also:  # [claude-9b] typed values of the player's own
+                    own = {"cod3_aspect_ratio": "W:H from 4:3 to 48:9, e.g. 24:10",
+                           "user_name": "up to 15 letters, digits or signs, no quotes",
+                           "user_name_2": "up to 14 letters, digits or signs, no quotes",  # [claude-9b] 0074
+                           "user_name_3": "up to 14 letters, digits or signs, no quotes",
+                           "user_name_4": "up to 14 letters, digits or signs, no quotes"}.get(st.key, "WxH, e.g. 2560x1080")
+                    bad.append(f"{st.label}: pick one from the list or type your own ({own}).")
+                else:
+                    bad.append(f"{st.label}: pick one from the list.")
         return bad
 
     def _gs_edits(self) -> dict:

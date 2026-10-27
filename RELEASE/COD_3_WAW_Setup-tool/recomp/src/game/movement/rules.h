@@ -223,6 +223,15 @@ struct StepPlan {
 };
 StepPlan PlanSteps(int command_time, int final_time, int pending_ms, int step_ms, int max_span_ms);
 
+// [acct2-main] 2026-10-26 The player's movement at a fixed rate (cod3_move_hz; owner 2026-10-25:
+// "collision needs to be that of 60fps"). The steps end at fixed times of the game's clock,
+// k * 1000 / hz milliseconds rounded down (at 60: 16, 33, 50, 66 ...: steps of 16, 17, 17 ms, the
+// game's own milliseconds at 60 fps), so where they fall never depends on the frame rate.
+// The last step end at or before `t` (ms, t >= 0; hz >= 1).
+int MoveStepEndAtOrBefore(int t, int hz);
+// The first step end after `t`.
+int MoveStepEndAfter(int t, int hz);
+
 // --- bounces (PC jump tricks) --------------------------------------------------------
 // A steep slope the step move projects onto instead of clipping (CoD4): from
 // 0.3 (steeper is a wall) up to the walkable 0.7.

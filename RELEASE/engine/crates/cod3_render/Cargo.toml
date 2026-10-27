@@ -1,0 +1,18 @@
+[package]
+name = "cod3_render"
+description = "The Rust renderer under the port (dev/agents/rust-renderer): the static library the game links and its C ABI. M1 step 2: it takes the SDK host backend's draws and counts them; it draws nothing yet."
+version = "0.2.0"
+edition = "2021"
+license = "MIT"
+rust-version = "1.80"
+
+# Its own workspace, not a member of engine/'s: the game's build compiles it offline
+# (recomp/cmake/cod3_render.cmake, `cargo build --offline --locked`), and engine/'s lock file
+# names the rippers' crates.io packages, which cargo would want to see in its cache first.
+# Only path dependencies inside engine/ (and, later, ash) come in, pinned by this folder's
+# Cargo.lock.
+[workspace]
+
+[lib]
+# staticlib: linked into cod3 and cod3mp. rlib: so `cargo test` can call the ABI functions.
+crate-type = ["staticlib", "rlib"]

@@ -1,0 +1,95 @@
+diff --git a/include/rex/graphics/gpu_stats.h b/include/rex/graphics/gpu_stats.h
+index 21ad64e..864055e 100644
+--- a/include/rex/graphics/gpu_stats.h
++++ b/include/rex/graphics/gpu_stats.h
+@@ -23,9 +23,10 @@
+ // 5: kHostGpuDrawMicros ... kHostGpuOtherMicros. 6: kTextureLoadBytes, and
+ // kTextureLoads counts every load (before 6 it missed RequestTextures' batch).
+ // 7: kTextureRequestMicros ... kTextureDestroyMicros (where the GPU thread's
+-// texture time goes).
++// texture time goes). 8: kResolveMicros, kRenderTargetUpdateMicros,
++// kPipelineConfigureMicros (more of the GPU thread's time, timed).
+ // A game built against any version can test this to know which counters exist.
+-#define REX_GRAPHICS_STATS_VERSION 7
++#define REX_GRAPHICS_STATS_VERSION 8
+ 
+ namespace rex::graphics::stats {
+ 
+@@ -90,6 +91,13 @@ enum class Counter : uint32_t {
+   // time (in CompletedSubmissionUpdated, also on the GPU thread).
+   kTexturesDestroyed,
+   kTextureDestroyMicros,
++  // More of the GPU thread's time (version 8), so a slow frame says what it
++  // was: resolves (IssueCopy, with their readbacks), the render targets made
++  // ready for draws (RenderTargetCache::Update: EDRAM transfers, new render
++  // targets), the pipelines found or made for draws (ConfigurePipeline).
++  kResolveMicros,
++  kRenderTargetUpdateMicros,
++  kPipelineConfigureMicros,
+   kCount
+ };
+ 
+diff --git a/src/core/gpu_stats.cpp b/src/core/gpu_stats.cpp
+index 23a600d..81b6e73 100644
+--- a/src/core/gpu_stats.cpp
++++ b/src/core/gpu_stats.cpp
+@@ -71,6 +71,9 @@ const char* Name(Counter counter) {
+     case Counter::kTextureUploadMicros: return "texture_upload_us";
+     case Counter::kTexturesDestroyed: return "textures_destroyed";
+     case Counter::kTextureDestroyMicros: return "texture_destroy_us";
++    case Counter::kResolveMicros: return "resolve_us";
++    case Counter::kRenderTargetUpdateMicros: return "render_target_update_us";
++    case Counter::kPipelineConfigureMicros: return "pipeline_configure_us";
+     case Counter::kCount: break;
+   }
+   return "?";
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+index ab82361..45de45f 100644
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -3922,9 +3922,12 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+ 
+   const VulkanPipelineCache::PipelineLayoutProvider* pipeline_layout_provider;
+   // Set up the render targets - this may perform dispatches and draws.
+-  if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
+-                                    normalized_color_mask, *vertex_shader)) {
+-    return draw_fail("render_target_update");
++  {
++    stats::ScopedMicros render_target_time(stats::Counter::kRenderTargetUpdateMicros);
++    if (!render_target_cache_->Update(is_rasterization_done, normalized_depth_control,
++                                      normalized_color_mask, *vertex_shader)) {
++      return draw_fail("render_target_update");
++    }
+   }
+ 
+   // Create the pipeline (for this, need the render pass from the render target
+@@ -3932,12 +3935,15 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type, uint32_t
+   // textures.
+   VkPipeline pipeline;
+   void* pipeline_handle = nullptr;
+-  if (!pipeline_cache_->ConfigurePipeline(vertex_shader_translation, pixel_shader_translation,
+-                                          primitive_processing_result, normalized_depth_control,
+-                                          normalized_color_mask,
+-                                          render_target_cache_->last_update_render_pass_key(),
+-                                          pipeline, pipeline_layout_provider, &pipeline_handle)) {
+-    return draw_fail("configure_pipeline");
++  {
++    stats::ScopedMicros pipeline_time(stats::Counter::kPipelineConfigureMicros);
++    if (!pipeline_cache_->ConfigurePipeline(vertex_shader_translation, pixel_shader_translation,
++                                            primitive_processing_result, normalized_depth_control,
++                                            normalized_color_mask,
++                                            render_target_cache_->last_update_render_pass_key(),
++                                            pipeline, pipeline_layout_provider, &pipeline_handle)) {
++      return draw_fail("configure_pipeline");
++    }
+   }
+   bool pipeline_is_placeholder = false;
+   // Reload the current handle state to observe async hot-swap completions that
+@@ -4467,6 +4473,7 @@ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFastPath(uint32_t total_
+ }
+ 
+ bool VulkanCommandProcessor::IssueCopy() {
++  stats::ScopedMicros resolve_time(stats::Counter::kResolveMicros);
+   ScopedGpuSection resolve_section(*this, GpuSection::kResolves);
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");

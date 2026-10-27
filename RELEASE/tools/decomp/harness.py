@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import inspect
 import math
+import os  # [acct2-decomp] COD3_DECOMP_ANSWERER
 import random
 import struct
 import subprocess
@@ -514,6 +515,13 @@ class RustChecker:
     """Talks to engine/target/release/decomp_check over its stdin and stdout."""
 
     def __init__(self, build: bool = True):
+        # [acct2-decomp] COD3_DECOMP_ANSWERER names another program that answers the same
+        # protocol: engine/cod3_cpp's cod3_check_cpp, the C++ version. Without it: decomp_check.
+        answerer = os.environ.get("COD3_DECOMP_ANSWERER")
+        if answerer:
+            self.proc = subprocess.Popen([answerer], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                         bufsize=1)
+            return
         if build:
             subprocess.run(["cargo", "build", "--release", "--quiet", "-p", "decomp_check"], cwd=ENGINE,
                            check=True)

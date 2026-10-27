@@ -233,6 +233,15 @@ PortText g_texts[] = {
     {"FEMENU_GAMEPLAY_INST_FOV_SCALE",
      "Multiply the field of view (cg_fovScale), World at War style: 1.20 turns 80 into 96. Aiming down the "
      "sights is scaled the same way."},
+    // [claude-9b] The game's sensitivity rows are the controller's (owner 2026-10-26: "Horizontal and
+    // vertical sensitivity sliders should only effect controller's sense"; game/mouse_look.cpp), the
+    // campaign's keys (game/menu_aim.cpp kGameTexts). The mouse's is F2 > Controls.
+    {"FEMENU_COP_HORIZONTALSENS", "HORIZ. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_HORIZ_SENS", "HORIZ. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_VERTICALSENS", "VERT. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_VERT_SENS", "VERT. SENS. (CONTROLLER)"},
+    {"FEMENU_CONTROLS_INST_HORIZONTALSENS", "Controller only. The mouse has its own sensitivity in F2 > Controls."},
+    {"FEMENU_CONTROLS_INST_VERTICALSENS", "Controller only. The mouse has its own sensitivity in F2 > Controls."},
 };
 
 uint32_t GuestString(uint8_t* base, const char* text) {

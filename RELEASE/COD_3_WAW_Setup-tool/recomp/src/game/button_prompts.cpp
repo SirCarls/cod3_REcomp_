@@ -25,9 +25,18 @@
 // patch 0067): an Xbox or unknown pad the game's pictures, a PlayStation pad
 // [CROSS] ..., a Nintendo one [B] for the bottom button. So two players on
 // one screen with a DualSense and an Xbox pad each see their own.
+//
+// [acct2-decomp] 2026-10-25, owner 23:42-23:43: keys are drawn as key caps
+// like "SPACE Skip" (cod3_key_caps: the game draws each name invisibly, the
+// overlay draws the cap over its room, KeyCap); our own key names (stick
+// words, an action's key, the vehicle view hint's "Press [V]") are tokens the
+// game's token pass takes like its buttons (KeyToken), so they are caps and
+// follow device switches too; the cutscene skip's own controller reads count
+// for the switch (NotePadState), and its prompt asks FirstPlayerLook.
 
 #include "game/button_prompts.h"
 
+#include <algorithm>  // [claude-9b] std::min, the key caps' fade
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -39,6 +48,7 @@
 #include <string_view>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
@@ -66,6 +76,11 @@ REXCVAR_DEFINE_STRING(cod3_glyph_style, "auto", "cod3/Interface",
                       "names), xbox (the game's own pictures), playstation, nintendo or gamecube "
                       "(button names until pictures of our own exist)")
     .allowed({"auto", "xbox", "playstation", "nintendo", "gamecube"});
+// [acct2-decomp] Owner 2026-10-25 23:42: "the keyboard glyphs need to match
+// the 'SPACE to skip' button".
+REXCVAR_DEFINE_BOOL(cod3_key_caps, true, "cod3/Interface",
+                    "Draw the keys in the game's prompts as key caps, like the \"SPACE Skip\" "
+                    "prompt's (else the key's name in brackets, [R])");
 
 namespace {
 
@@ -209,9 +224,11 @@ void RefreshSettings() {
   }
 }
 
-// X_INPUT_STATE in guest memory (big-endian): u32 packet, u16 buttons,
-// u8 left / right trigger, s16 LX, LY, RX, RY.
-void WatchPad(uint8_t* base, uint32_t state) {
+// The first controller's state, from whichever read saw it: the game's own
+// pad reads (WatchPad) or [acct2-decomp] the cutscene skip's (NotePadState;
+// the game may not read its pads while a briefing is the loading screen).
+// Both see the same pad, so one set of "last" values serves both.
+void WatchPadValues(uint16_t buttons, const uint8_t triggers[2], const int16_t axes[4]) {
   static std::mutex mutex;
   static uint16_t last_buttons = 0;
   static uint8_t last_triggers[2] = {};
@@ -224,10 +241,6 @@ void WatchPad(uint8_t* base, uint32_t state) {
     RefreshSettings();
     next_refresh = now + 1000;
   }
-  const uint16_t buttons = ReadU16(base, state + 4);
-  const uint8_t triggers[2] = {ReadU8(base, state + 6), ReadU8(base, state + 7)};
-  int16_t axes[4];
-  for (int i = 0; i < 4; ++i) axes[i] = static_cast<int16_t>(ReadU16(base, state + 8 + 2 * i));
   bool pad = (buttons & ~last_buttons) != 0;
   for (int i = 0; i < 2; ++i) pad |= triggers[i] > 30 && last_triggers[i] <= 30;
   // Sticks only from well off center (no drift).
@@ -242,6 +255,16 @@ void WatchPad(uint8_t* base, uint32_t state) {
                         now - g_kbm_time.load(std::memory_order_relaxed) < 250;
   last_presses = presses;
   if (pad && !keyboard) SetDevice(Device::kPad, "a controller");
+}
+
+// X_INPUT_STATE in guest memory (big-endian): u32 packet, u16 buttons,
+// u8 left / right trigger, s16 LX, LY, RX, RY.
+void WatchPad(uint8_t* base, uint32_t state) {
+  const uint16_t buttons = ReadU16(base, state + 4);
+  const uint8_t triggers[2] = {ReadU8(base, state + 6), ReadU8(base, state + 7)};
+  int16_t axes[4];
+  for (int i = 0; i < 4; ++i) axes[i] = static_cast<int16_t>(ReadU16(base, state + 8 + 2 * i));
+  WatchPadValues(buttons, triggers, axes);
 }
 
 // ---------------------------------------------------------------------------
@@ -286,10 +309,14 @@ uint32_t PadUser(uint8_t* base, uint32_t player) {
 // [mp-menus] cod3_glyph_style auto: how `player`'s own controller labels its
 // buttons. A pad the SDK can't name (or none, or the keyboard alone) gets
 // the game's pictures.
-Mode PadMode(uint8_t* base, uint32_t player) {
+Mode UserPadMode(uint32_t user);
+Mode PadMode(uint8_t* base, uint32_t player) { return UserPadMode(PadUser(base, player)); }
+
+// [acct2-decomp] The same for a controller (guest user) itself: PadMode's
+// part that needs no guest memory, so the overlay can ask (FirstPlayerLook).
+Mode UserPadMode(uint32_t user) {
   using rex::input::ControllerFamily;
   auto* input = g_input_system.load(std::memory_order_acquire);
-  const uint32_t user = PadUser(base, player);
   const ControllerFamily family = input ? input->PadFamily(user) : ControllerFamily::kUnknown;
   static std::atomic<uint8_t> last[4];  // ControllerFamily; static: starts at kUnknown
   if (user < 4 && last[user].exchange(uint8_t(family), std::memory_order_relaxed) != uint8_t(family)) {
@@ -515,6 +542,42 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
   return at;
 }
 
+// [acct2-decomp] A key name written into a text by us (stick words "Use
+// [WASD]", an action's key "Press [B]", the vehicle view switch): a token of
+// our own, "~\x02WASD\x02", which the game's token pass (0x824C68E0, hooked
+// below) takes like one of its "~name" buttons. So it is laid out and drawn
+// as a name (a key cap, KeyCap), and its text is remembered and laid out
+// again when the device changes, as the game's own buttons are.
+constexpr char kKeyTokenMark = '\x02';
+std::string KeyToken(const std::string& name) {
+  return std::string("~") + kKeyTokenMark + name + kKeyTokenMark;
+}
+// The guest "[NAME]" string of a key token at `text` ("~\x02...\x02") and the
+// token's length, or 0. A ring of strings: the layout copies each into its
+// line at once.
+uint32_t KeyTokenText(uint8_t* base, uint32_t text, uint32_t* length) {
+  if (base[text] != '~' || base[text + 1] != kKeyTokenMark) return 0;
+  std::string name;
+  uint32_t i = 2;
+  for (; i < 2 + kSlotSize; ++i) {
+    const char c = char(base[text + i]);
+    if (c == kKeyTokenMark || c == '\0') break;
+    name += c;
+  }
+  if (base[text + i] != kKeyTokenMark || name.empty()) return 0;
+  constexpr uint32_t kRing = 64;
+  static uint32_t ring = 0;
+  static std::atomic<uint32_t> next{0};
+  if (!ring) ring = rex::system::kernel_state()->memory()->SystemHeapAlloc(kRing * kSlotSize);
+  if (!ring) return 0;
+  std::string shown = "[" + name + "]";
+  if (shown.size() > kSlotSize - 1) shown.resize(kSlotSize - 1);
+  const uint32_t at = ring + kSlotSize * (next.fetch_add(1, std::memory_order_relaxed) % kRing);
+  std::memcpy(base + at, shown.c_str(), shown.size() + 1);
+  *length = i + 1;
+  return at;
+}
+
 // A guest copy of a text for the game to read right away (one at a time).
 uint32_t TempText(uint8_t* base, const std::string& text) {
   const uint32_t scratch = GuestScratch();
@@ -557,8 +620,9 @@ thread_local Mode t_name_mode = Mode::kPlayKeys;
 thread_local uint32_t t_tokens = 0;          // button tokens laid out so far
 
 std::mutex g_mutex;
-// Lines laid out with names: they are drawn with the text font too.
-std::unordered_map<uint32_t, bool> g_text_lines;
+// Lines laid out with names: they are drawn with the text font too. [acct2-
+// decomp] The mode they were laid out in: keys are drawn as key caps.
+std::unordered_map<uint32_t, Mode> g_text_lines;
 // The last set-text call of each text that had buttons, to lay it out again.
 struct TextCall {
   uint32_t slot = 0;        // the virtual slot called (bp::kSet*)
@@ -572,6 +636,59 @@ struct TextCall {
 std::unordered_map<uint32_t, TextCall> g_texts;
 
 Mode LayoutMode(uint8_t* base) { return t_set_depth ? t_set_mode : Wanted(base, PromptPlayer(base)); }
+
+// [acct2-decomp] Key caps (button_prompts.h KeyCap): each line drawn with
+// keys notes where its key names are, in menu space; the overlay draws them.
+struct DrawnCaps {
+  int64_t ms = 0;  // when the line was drawn
+  std::vector<cod3::prompts::KeyCap> caps;
+};
+std::mutex g_cap_mutex;
+std::unordered_map<uint32_t, DrawnCaps> g_caps;  // by line
+
+// The key names of a line laid out with keys, as the line draw places them:
+// segment 2k is button k (from its x offset to the next segment's), the line
+// starts at its x / y and is the line font's height times the y scale tall.
+// The segment table: s16 pairs {string index, x offset} (addresses.h
+// pc_menu::kLineSegments; pc_menu.cpp's clickable footers read it the same way).
+void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, float alpha) {
+  namespace pm = cod3::addr::pc_menu;
+  const int32_t n = int32_t(ReadU32(base, line + pm::kLineSegmentCount));
+  const uint32_t segments = ReadU32(base, line + pm::kLineSegments);
+  const uint32_t string = ReadU32(base, line + pm::kLineString);
+  DrawnCaps drawn;
+  drawn.ms = NowMs();
+  if (n > 0 && n <= 64 && Valid(segments) && Valid(string)) {
+    const std::string text = ReadString(base, string + bp::kStringChars, 512);
+    const float x = cod3::guest::ReadF32(base, line + pm::kLineX);
+    const float y = cod3::guest::ReadF32(base, line + pm::kLineY);
+    const float width = cod3::guest::ReadF32(base, line + pm::kLineWidth);
+    const float height = float(int32_t(ReadU32(base, font + pm::kFontLineHeight))) * y_scale;
+    auto entry = [&](int i, int field) {
+      return int32_t(int16_t(ReadU16(base, segments + 4 * uint32_t(i) + 2 * uint32_t(field))));
+    };
+    if (std::isfinite(x) && std::isfinite(y) && std::isfinite(width) && height > 0.0f && height < 480.0f) {
+      for (int k = 0; k < n; k += 2) {
+        const int32_t start = entry(k, 0);
+        const int32_t end = k + 1 < n ? entry(k + 1, 0) : int32_t(text.size());
+        if (start < 0 || end <= start + 2 || end > int32_t(text.size())) continue;
+        std::string name = text.substr(size_t(start), size_t(end - start));
+        if (name.front() != '[' || name.back() != ']') continue;  // not one of our names
+        name = name.substr(1, name.size() - 2);
+        const float x0 = x + float(entry(k, 1));
+        const float x1 = k + 1 < n ? x + float(entry(k + 1, 1)) : x + width;
+        if (!(x1 > x0)) continue;
+        drawn.caps.push_back({x0, y, x1, y + height, std::move(name), alpha});
+      }
+    }
+  }
+  std::lock_guard lock(g_cap_mutex);
+  if (g_caps.size() > 512) {  // lines that went away: forget the old ones
+    const int64_t now = drawn.ms;
+    std::erase_if(g_caps, [now](const auto& kv) { return now - kv.second.ms > 1000; });
+  }
+  g_caps[line] = std::move(drawn);
+}
 
 // font* of a font index, 0 for none or the button font.
 uint32_t TextFont(uint8_t* base, uint32_t index) {
@@ -678,11 +795,12 @@ std::string StickWords(int stick) {
   const std::string move = FourKeys(kBindMoveUp);
   const bool mouse = g_mouse_aim.load(std::memory_order_relaxed);
   const std::string look_keys = FourKeys(kBindLookUp);
-  const std::string look = mouse ? "the mouse" : look_keys.empty() ? "" : "[" + look_keys + "]";
-  if (stick == 1) return move.empty() ? "" : "Use [" + move + "]";
+  // [acct2-decomp] The keys as key tokens (KeyToken), drawn as key caps.
+  const std::string look = mouse ? "the mouse" : look_keys.empty() ? "" : KeyToken(look_keys);
+  if (stick == 1) return move.empty() ? "" : "Use " + KeyToken(move);
   if (stick == 2) return look.empty() ? "" : "Use " + look;
   if (move.empty() || look.empty()) return "";
-  return "Use [" + move + "] and " + look;
+  return "Use " + KeyToken(move) + " and " + look;
 }
 
 // [keybinds] The game's action words come in four forms (its table at
@@ -710,11 +828,47 @@ int ActionWordForm(std::string_view text, std::string_view* word) {
 std::string KeyActionText(PPCContext& ctx, uint8_t* base, std::string_view word, int form) {
   const std::string key = cod3::binds::KeyNameForActionWord(word);
   if (key.empty()) return "";
-  if (form == 0) return "[" + key + "]";
+  if (form == 0) return KeyToken(key);  // [acct2-decomp] key tokens (KeyToken)
   std::string verb = GameText(ctx, base, form == 3 ? "INGAME_PRESS_AND_HOLD" : "INGAME_PRESS");
   if (verb.empty()) verb = form == 3 ? "Press and hold" : "Press";
-  return verb + " [" + key + "]";
+  return verb + " " + KeyToken(key);
 }
+
+#if !defined(COD3_MP)
+// [acct2-decomp] The vehicle view hints (owner 2026-10-25 23:42: "there still
+// seems to be 'Click Right Stick For view change' when using mouse and
+// keyboard when in vehicles"): plain words in the level's string tables (the
+// tank's "... to toggle camera view.", the jeep's "... to toggle view"), in
+// the three wordings the tables keep for each, with no button token in them.
+// Multiplayer's tables have none. The view switch is the Vehicle action
+// veh_view (game/keybinds), so with keys "Press [V] to toggle camera view.".
+constexpr const char* kViewSwitchWords[] = {
+    "Click the right stick to toggle",
+    "Click the right thumbstick to toggle",
+    "Press the right analog stick to toggle",
+    "Press R3 button to toggle",
+};
+size_t FindViewSwitch(const std::string& text, size_t* words) {
+  for (const char* w : kViewSwitchWords)
+    if (const size_t at = text.find(w); at != std::string::npos) {
+      *words = std::strlen(w) - std::strlen(" to toggle");
+      return at;
+    }
+  return std::string::npos;
+}
+// With keys: the button words become the game's own "Press" and the key.
+std::string ViewSwitchKeys(PPCContext& ctx, uint8_t* base, std::string text) {
+  size_t words = 0;
+  const size_t at = FindViewSwitch(text, &words);
+  if (at == std::string::npos) return text;
+  const std::string key = cod3::binds::KeyNameForAction("veh_view");
+  if (key.empty()) return text;
+  std::string press = GameText(ctx, base, "INGAME_PRESS");
+  if (press.empty()) press = "Press";
+  text.replace(at, words, press + " " + KeyToken(key));
+  return text;
+}
+#endif
 
 #if !defined(COD3_MP)
 // With keys, "Pull ~r1" and "Click ~lstick" (the game's words for triggers
@@ -827,6 +981,41 @@ bool KeyboardMouseInUse() {
          g_device.load(std::memory_order_relaxed) == Device::kKeyboard;
 }
 
+// [acct2-decomp] See button_prompts.h.
+Look FirstPlayerLook() {
+  if (REXCVAR_GET(cod3_key_prompts) && g_mnk_mode.load(std::memory_order_relaxed) &&
+      g_device.load(std::memory_order_relaxed) == Device::kKeyboard)
+    return Look::kKeys;
+  Mode mode = Mode::kXbox;
+  switch (g_style.load(std::memory_order_relaxed)) {
+    case Style::kXbox: mode = Mode::kXbox; break;
+    case Style::kPlayStation: mode = Mode::kPlayStation; break;
+    case Style::kNintendo: mode = Mode::kNintendo; break;
+    case Style::kGameCube: mode = Mode::kGameCube; break;
+    default: mode = UserPadMode(0); break;  // the first controller (guest user 0)
+  }
+  switch (mode) {
+    case Mode::kPlayStation: return Look::kPlayStation;
+    case Mode::kNintendo: return Look::kNintendo;
+    case Mode::kGameCube: return Look::kGameCube;
+    default: return Look::kXbox;
+  }
+}
+
+void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger, const int16_t axes[4]) {
+  const uint8_t triggers[2] = {left_trigger, right_trigger};
+  WatchPadValues(buttons, triggers, axes);
+}
+
+std::vector<KeyCap> CurrentKeyCaps(int max_age_ms) {
+  std::vector<KeyCap> out;
+  const int64_t now = NowMs();
+  std::lock_guard lock(g_cap_mutex);
+  for (const auto& [line, drawn] : g_caps)
+    if (now - drawn.ms <= max_age_ms) out.insert(out.end(), drawn.caps.begin(), drawn.caps.end());
+  return out;
+}
+
 }  // namespace cod3::prompts
 
 // ---------------------------------------------------------------------------
@@ -855,8 +1044,19 @@ REX_HOOK_RAW(sub_82344F98) {
 // "~name" -> the button's character: the name instead while names are laid out.
 REX_EXTERN(__imp__sub_824C68E0);
 REX_HOOK_RAW(sub_824C68E0) {
+  const uint32_t text = ctx.r3.u32;
   const uint32_t out = ctx.r4.u32;
   __imp__sub_824C68E0(ctx, base);
+  // [acct2-decomp] Not one of the game's: one of our key tokens (KeyToken)?
+  if (ctx.r3.u32 == 0 && Valid(text) && Valid(out)) {
+    uint32_t length = 0;
+    if (const uint32_t name = KeyTokenText(base, text, &length)) {
+      WriteU32(base, out, name);
+      ctx.r3.u64 = length;
+      ++t_tokens;
+    }
+    return;
+  }
   if (ctx.r3.u32 == 0 || !Valid(out)) return;  // not a button token
   ++t_tokens;
   if (!t_names) return;
@@ -888,7 +1088,7 @@ REX_HOOK_RAW(sub_824D7650) {
   if (t_tokens != tokens) {
     // Practically never this many; a forgotten line only loses its names.
     if (g_text_lines.size() > 50000) g_text_lines.clear();
-    g_text_lines[line] = true;
+    g_text_lines[line] = mode;
   } else {
     g_text_lines.erase(line);
   }
@@ -918,11 +1118,19 @@ REX_HOOK_RAW(sub_824D7D88) {
   const uint32_t line = ctx.r3.u32;
   cod3::pcmenu::NoteLineDrawn(base, line, ctx.f3.f64);  // footer prompts can be clicked (pc_menu.h)
   bool names;
+  Mode mode = Mode::kXbox;
   {
     std::lock_guard lock(g_mutex);
-    names = g_text_lines.count(line) != 0;
+    auto it = g_text_lines.find(line);
+    names = it != g_text_lines.end();
+    if (names) mode = it->second;
   }
   const uint32_t font = names ? TextFont(base, ReadU32(base, line + bp::kLineFont)) : 0;
+  // [acct2-decomp] A line not drawn with keys now has no key caps.
+  if (!font || !IsKeys(mode) || !REXCVAR_GET(cod3_key_caps)) {
+    std::lock_guard lock(g_cap_mutex);
+    g_caps.erase(line);
+  }
   if (!font) {
     __imp__sub_824D7D88(ctx, base);
     return;
@@ -930,6 +1138,19 @@ REX_HOOK_RAW(sub_824D7D88) {
   const double baseline = double(int32_t(ReadU32(base, font + bp::kFontBaseline)));
   ctx.f4.f64 = ctx.f2.f64;                            // the text's x scale
   ctx.f5.f64 = baseline * (ctx.f2.f64 - ctx.f3.f64);  // raise: baselines meet
+  // [acct2-decomp] Keys as key caps: the game draws the names invisibly (the
+  // button color's alpha 0; D3DCOLOR, alpha in the top byte) to keep their
+  // room, and the overlay draws a cap there at the color's own opacity.
+  if (IsKeys(mode) && REXCVAR_GET(cod3_key_caps)) {
+    const uint32_t color = ctx.r6.u32;
+    // [claude-9b] The cap fades with the line's text (owner 2026-10-26: the keyboard and mouse glyphs
+    // didn't follow their prompt's fade-out; the glyph alone showed for a moment): the game fades a
+    // prompt through its text color (r5, the text segments' color in this function) while the
+    // button color (r6) can stay opaque, so the cap takes the fainter of the two.
+    const uint32_t text_alpha = ctx.r5.u32 >> 24, button_alpha = color >> 24;
+    NoteKeyCaps(base, line, font, float(ctx.f3.f64), float(std::min(text_alpha, button_alpha)) / 255.0f);
+    ctx.r6.u64 = color & 0x00FFFFFFu;
+  }
 #if defined(COD3_MP)
   const uint32_t widescreen = ReadU32(base, kWidescreenInt);
   WriteU32(base, kWidescreenInt, 0);
@@ -950,14 +1171,20 @@ REX_HOOK_RAW(sub_824DD9A8) {
 }
 
 // The whole text after its "[ACTION]" pass (a static 512-byte buffer): with
-// keys, "Pull ~r1" -> "Press ~r1".
+// keys, "Pull ~r1" -> "Press ~r1", and [acct2-decomp] the vehicle view hint's
+// words -> "Press [V]" (ViewSwitchKeys).
 REX_EXTERN(__imp__sub_824DE290);
 REX_HOOK_RAW(sub_824DE290) {
   __imp__sub_824DE290(ctx, base);
   const uint32_t buf = ctx.r3.u32;
-  if (!Valid(buf) || !IsKeys(LayoutMode(base))) return;
+  if (!Valid(buf)) return;
   const std::string text = ReadString(base, buf, 512);
-  const std::string out = KeyVerbs(ctx, base, text);
+  // [acct2-decomp] A view hint is remembered with either device (counted as
+  // a button), so a later switch lays it out again.
+  size_t words = 0;
+  if (FindViewSwitch(text, &words) != std::string::npos) ++t_tokens;
+  if (!IsKeys(LayoutMode(base))) return;
+  const std::string out = ViewSwitchKeys(ctx, base, KeyVerbs(ctx, base, text));
   if (out != text && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
 }
 #else

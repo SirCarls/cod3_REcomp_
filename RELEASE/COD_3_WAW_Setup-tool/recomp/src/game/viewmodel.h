@@ -34,6 +34,11 @@ inline constexpr const char* kOffsetX = "cod3_viewmodel_offset_x";
 inline constexpr const char* kOffsetY = "cod3_viewmodel_offset_y";
 inline constexpr const char* kOffsetZ = "cod3_viewmodel_offset_z";
 inline constexpr const char* kPreset = "cod3_viewmodel_presetpos";
+// [claude-9b] 2026-10-27 The weapon in the left hand (owner 2026-10-27 05:11: "add option to flip gun arm (basically
+// just mirroring)"), per local player: game/viewmodel_flip.cpp.
+inline constexpr const char* kFlip = "cod3_viewmodel_flip";
+inline constexpr const char* kFlipPlayers[4] = {"cod3_viewmodel_flip", "cod3_viewmodel_flip_2", "cod3_viewmodel_flip_3",
+                                                "cod3_viewmodel_flip_4"};
 
 // Counter-Strike 2's axes: x right, y away from you, z up.
 struct Offsets {

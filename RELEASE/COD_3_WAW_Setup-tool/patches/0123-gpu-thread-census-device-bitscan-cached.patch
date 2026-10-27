@@ -1,0 +1,219 @@
+diff --git a/include/rex/graphics/gpu_census.h b/include/rex/graphics/gpu_census.h
+--- a/include/rex/graphics/gpu_census.h
++++ b/include/rex/graphics/gpu_census.h
+@@ -38,6 +38,10 @@
+ bool Active();
+ // gpu_skip_drawing is on: the command processor issues no draws or resolves.
+ bool SkipDrawing();
++// [claude-9b] Active and SkipDrawing answer from the two settings as last read
++// (they run for every packet and draw); this reads them again. The command
++// processor calls it at every swap, so a change applies from the next frame.
++void RefreshSettings();
+ 
+ // All of these are for the GPU command thread only.
+ void Type0(uint32_t registers);
+diff --git a/src/graphics/gpu_census.cpp b/src/graphics/gpu_census.cpp
+--- a/src/graphics/gpu_census.cpp
++++ b/src/graphics/gpu_census.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <atomic>
+ #include <chrono>
+ #include <cstdio>
+ #include <filesystem>
+@@ -462,11 +463,34 @@
+   std::fclose(file);
+ }
+ 
++// [claude-9b] 2026-10-27 The two settings as last read: bit 0 gpu_census, bit 1
++// gpu_skip_drawing, kSettingsUnread before the first read. Active() runs for
++// every packet and draw, and each REXCVAR_GET is a call into a function with a
++// guarded static (0.9% of the GPU emulation thread in a 4-player split-screen
++// profile); RefreshSettings reads them again at every swap.
++constexpr uint32_t kSettingsUnread = 0x80;
++std::atomic<uint32_t> g_settings{kSettingsUnread};
++
++uint32_t ReadSettings() {
++  return (REXCVAR_GET(gpu_census) ? 1u : 0u) | (REXCVAR_GET(gpu_skip_drawing) ? 2u : 0u);
++}
++
++uint32_t Settings() {
++  uint32_t settings = g_settings.load(std::memory_order_relaxed);
++  if (settings & kSettingsUnread) {
++    settings = ReadSettings();
++    g_settings.store(settings, std::memory_order_relaxed);
++  }
++  return settings;
++}
++
+ }  // namespace
+ 
+-bool Active() { return REXCVAR_GET(gpu_census) || REXCVAR_GET(gpu_skip_drawing); }
++bool Active() { return Settings() != 0; }
++
++bool SkipDrawing() { return (Settings() & 2u) != 0; }
+ 
+-bool SkipDrawing() { return REXCVAR_GET(gpu_skip_drawing); }
++void RefreshSettings() { g_settings.store(ReadSettings(), std::memory_order_relaxed); }
+ 
+ void Type0(uint32_t registers) { S().total.registers += registers; }
+ 
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -1821,6 +1821,7 @@
+   reader->AdvanceRead((count - 4) * sizeof(uint32_t));
+ 
+   stats::Add(stats::Counter::kFrames);
++  census::RefreshSettings();  // [claude-9b] 0123: the settings as of this swap
+   if (census::Active()) {
+     census::Frame();
+   }
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include <array>
++#include <atomic>
+ #include <climits>
+ #include <cstdint>
+ #include <deque>
+@@ -167,8 +168,18 @@
+                                bool blocking) override;
+ 
+   ui::vulkan::VulkanDevice* GetVulkanDevice() const {
+-    return static_cast<const ui::vulkan::VulkanProvider*>(graphics_system_->provider())
+-        ->vulkan_device();
++    // [claude-9b] 0123: kept after the first call. It runs dozens of times a
++    // draw, and provider() is a virtual call (0.8% of the GPU emulation thread
++    // in a 4-player split-screen profile). The provider and its device live as
++    // long as the graphics system; the descriptor allocators made in the
++    // constructor already keep the same device pointer.
++    ui::vulkan::VulkanDevice* device = vulkan_device_.load(std::memory_order_relaxed);
++    if (!device) {
++      device = static_cast<const ui::vulkan::VulkanProvider*>(graphics_system_->provider())
++                   ->vulkan_device();
++      vulkan_device_.store(device, std::memory_order_relaxed);
++    }
++    return device;
+   }
+ 
+   bool CompileGlslToSpirv(VkShaderStageFlagBits stage, std::string_view source,
+@@ -920,6 +931,8 @@
+   };
+   std::array<VertexBufferState, 96> vertex_buffer_states_{};
+   uint64_t vertex_buffers_in_sync_[2] = {};
++  // [claude-9b] 0123: GetVulkanDevice's pointer, filled on its first call.
++  mutable std::atomic<ui::vulkan::VulkanDevice*> vulkan_device_{nullptr};
+   std::unordered_map<uint64_t, ReadbackBuffer> readback_buffers_;
+   // readback_resolve_full_deferred: where each destination's last deferred
+   // copy back went, by MakeReadbackResolveKey of its physical address: its
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <bit>
+ #include <chrono>
+ #include <cstdint>
+ #include <string>
+@@ -619,8 +620,10 @@
+     }
+   };
+   uint32_t textures_remaining = used_texture_mask & ~texture_bindings_in_sync_;
+-  uint32_t index = 0;
+-  while (rex::bit_scan_forward(textures_remaining, &index)) {
++  // [claude-9b] 0123: an inline bit scan (rex::bit_scan_forward is out of line
++  // in the runtime library: a call for every binding of every draw).
++  while (textures_remaining) {
++    uint32_t index = uint32_t(std::countr_zero(textures_remaining));
+     uint32_t index_bit = UINT32_C(1) << index;
+     textures_remaining &= ~index_bit;
+     TextureBinding& binding = texture_bindings_[index];
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -11,6 +11,7 @@
+ 
+ #include <algorithm>
+ #include <array>
++#include <bit>
+ #include <cstddef>
+ #include <cstring>
+ #include <utility>
+@@ -587,7 +588,8 @@
+   if (REXCVAR_GET(gpu_3d_to_2d_texture)) {
+     uint32_t textures_3d = used_texture_mask;
+     uint32_t index_3d;
+-    while (rex::bit_scan_forward(textures_3d, &index_3d)) {
++    while (textures_3d) {
++      index_3d = uint32_t(std::countr_zero(textures_3d));  // [claude-9b] 0123: inline
+       textures_3d &= ~(uint32_t(1) << index_3d);
+       const TextureBinding* binding = GetValidTextureBinding(index_3d);
+       if (!binding || binding->key.dimension != xenos::DataDimension::k3D) {
+@@ -612,7 +614,10 @@
+                        new_layout);
+   uint32_t textures_remaining = used_texture_mask;
+   uint32_t index;
+-  while (rex::bit_scan_forward(textures_remaining, &index)) {
++  // [claude-9b] 0123: an inline bit scan (rex::bit_scan_forward is out of line
++  // in the runtime library: a call for every texture of every draw).
++  while (textures_remaining) {
++    index = uint32_t(std::countr_zero(textures_remaining));
+     textures_remaining &= ~(uint32_t(1) << index);
+     const TextureBinding* binding = GetValidTextureBinding(index);
+     if (!binding) {
+@@ -2010,7 +2015,8 @@
+ void VulkanTextureCache::UpdateTextureBindingsImpl(uint32_t fetch_constant_mask) {
+   uint32_t bindings_remaining = fetch_constant_mask;
+   uint32_t binding_index;
+-  while (rex::bit_scan_forward(bindings_remaining, &binding_index)) {
++  while (bindings_remaining) {
++    binding_index = uint32_t(std::countr_zero(bindings_remaining));  // [claude-9b] 0123: inline
+     bindings_remaining &= ~(UINT32_C(1) << binding_index);
+     VulkanTextureBinding& vulkan_binding = vulkan_texture_bindings_[binding_index];
+     vulkan_binding.Reset();
+diff --git a/src/graphics/shared_memory.cpp b/src/graphics/shared_memory.cpp
+--- a/src/graphics/shared_memory.cpp
++++ b/src/graphics/shared_memory.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <bit>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -458,9 +459,13 @@
+           uint32_t block_page;
+           if (range_start == UINT32_MAX) {
+             // Check if need to open a new range.
+-            if (!rex::bit_scan_forward(~block_valid, &block_page)) {
++            // [claude-9b] 0123: an inline bit scan (rex::bit_scan_forward is
++            // out of line in the runtime library; this runs for every block of
++            // every range a draw requests).
++            if (block_valid == ~uint64_t(0)) {
+               break;
+             }
++            block_page = uint32_t(std::countr_zero(~block_valid));
+             range_start = (i << 6) + block_page;
+           } else {
+             // Check if need to close the range.
+@@ -469,9 +474,10 @@
+             if (i == (range_start >> 6)) {
+               block_valid_from_start &= ~((uint64_t(1) << (range_start & 63)) - 1);
+             }
+-            if (!rex::bit_scan_forward(block_valid_from_start, &block_page)) {
++            if (!block_valid_from_start) {
+               break;
+             }
++            block_page = uint32_t(std::countr_zero(block_valid_from_start));
+             append_upload_range(range_start, (i << 6) + block_page - range_start);
+             // In the next iteration within this block, consider this range
+             // valid since it has been queued for upload.

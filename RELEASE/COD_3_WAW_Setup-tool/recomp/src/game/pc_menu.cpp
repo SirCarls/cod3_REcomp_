@@ -13,6 +13,7 @@
 #include "game/pc_menu.h"
 
 #include <algorithm>
+#include <cfloat>  // [claude-9b] FLT_MAX, the hit areas
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -533,6 +534,7 @@ struct RowControls {
 struct Item {
   int index = 0;
   Box ink;                    // the label's letters as drawn
+  Box layout;                 // [claude-9b] the letters at the unselected size (hit areas don't jump)
   Box hit;                    // what the pointer selects it in
   bool left_aligned = false;  // label on the left, a value to its right
   RowControls ctl;            // [menus-brightness] its arrows and gauge
@@ -879,9 +881,9 @@ void LayOutHitAreas(std::vector<Item>& items, bool has_values) {
   float left = 640.0f, right = 0.0f, line = 0.0f;
   bool any_left = false;
   for (const auto& it : items) {
-    left = std::min(left, it.ink.x0);
-    right = std::max(right, it.ink.x1);
-    line = std::max(line, it.ink.y1 - it.ink.y0);
+    left = std::min(left, it.layout.x0);
+    right = std::max(right, it.layout.x1);
+    line = std::max(line, it.layout.y1 - it.layout.y0);
     any_left |= it.left_aligned;
   }
   if (any_left && has_values) right = std::max(right, 640.0f - left);
@@ -894,26 +896,34 @@ void LayOutHitAreas(std::vector<Item>& items, bool has_values) {
   }
   const float reach = std::max(line, 8.0f);  // farthest a hit area reaches past its letters
   auto same_line = [line](const Item& a, const Item& b) {
-    return std::abs(a.ink.cy() - b.ink.cy()) < line * 0.5f;
+    return std::abs(a.layout.cy() - b.layout.cy()) < line * 0.5f;
   };
   for (auto& it : items) {
-    float top = it.ink.y0 - reach * 0.5f, bottom = it.ink.y1 + reach * 0.5f;
+    const Box& me = it.layout;
+    float top = me.y0 - reach * 0.5f, bottom = me.y1 + reach * 0.5f;
     float x0 = left - 6.0f, x1 = right + 6.0f;
     bool shares_line = false;
+    float to_right = FLT_MAX, to_left = -FLT_MAX;  // half way to the nearest neighbor on each side
     for (const auto& o : items) {
       if (&o == &it) continue;
       if (same_line(o, it)) {
-        // Side by side: up to half way to the neighbor.
-        if (!shares_line) x0 = it.ink.x0 - reach, x1 = it.ink.x1 + reach;
+        // Side by side: all the way to half way to the neighbor ([claude-9b] owner 2026-10-26: hover
+        // on side-by-side items needs more precision; before, each reached only a line's height past
+        // its letters and the gap between them selected nothing). The outer ones keep a line's
+        // height past their letters.
         shares_line = true;
-        const float mid = o.ink.cx() > it.ink.cx() ? (it.ink.x1 + o.ink.x0) * 0.5f : (o.ink.x1 + it.ink.x0) * 0.5f;
-        if (o.ink.cx() > it.ink.cx()) x1 = std::min(x1, mid);
-        else x0 = std::max(x0, mid);
+        const Box& n = o.layout;
+        if (n.cx() > me.cx()) to_right = std::min(to_right, (me.x1 + n.x0) * 0.5f);
+        else to_left = std::max(to_left, (n.x1 + me.x0) * 0.5f);
         continue;
       }
-      const float mid = (o.ink.cy() + it.ink.cy()) * 0.5f;
-      if (o.ink.cy() > it.ink.cy()) bottom = std::min(bottom, mid);
+      const float mid = (o.layout.cy() + me.cy()) * 0.5f;
+      if (o.layout.cy() > me.cy()) bottom = std::min(bottom, mid);
       else top = std::max(top, mid);
+    }
+    if (shares_line) {
+      x0 = to_left > -FLT_MAX ? to_left : me.x0 - reach;
+      x1 = to_right < FLT_MAX ? to_right : me.x1 + reach;
     }
     it.hit = Box{x0, top, x1, bottom};
   }
@@ -958,6 +968,7 @@ std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint3
       Item it;
       const uint32_t label = ListRowText(base, rows, k);
       if (!DrawnText(ctx, base, label, false, &it.ink)) continue;
+      it.layout = it.ink;
       it.index = i;
       it.left_aligned = (ReadU16(base, label + pm::kTextAlign) & pm::kAlignLeft) != 0;
       items.push_back(it);
@@ -994,6 +1005,9 @@ std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint3
     }
     Item it;
     if (!DrawnText(ctx, base, label, selected, &it.ink)) continue;
+    // [claude-9b] Hit areas from the unselected size, so they don't move when the highlight does.
+    it.layout = it.ink;
+    if (selected) DrawnText(ctx, base, label, false, &it.layout);
     it.index = i;
     it.left_aligned = (ReadU16(base, label + pm::kTextAlign) & pm::kAlignLeft) != 0;
     items.push_back(it);
@@ -1009,7 +1023,7 @@ const Item* ItemAt(const std::vector<Item>& items, float x, float y) {
   float best_d = 1e9f;
   for (const auto& it : items) {
     if (!it.hit.Contains(x, y)) continue;
-    const float dx = x - it.ink.cx(), dy = y - it.ink.cy();
+    const float dx = x - it.layout.cx(), dy = y - it.layout.cy();
     const float d = dx * dx * 0.01f + dy * dy;  // mostly the nearest row
     if (d < best_d) best = &it, best_d = d;
   }
@@ -1032,7 +1046,9 @@ int Selected(uint8_t* base, uint32_t page) {
 // Moves the highlight to `target` with the page's own MoveUp / MoveDown, the
 // way the D-pad does (so the page updates its titles, help text and sound),
 // stepping the way the target lies on screen.
-void SelectItem(PPCContext& ctx, uint8_t* base, uint32_t page, const std::vector<Item>& items,
+void Press(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code, bool hold);
+
+void SelectItem(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, const std::vector<Item>& items,
                 int target) {
   const Item* to = FindItem(items, target);
   if (!to) return;
@@ -1042,9 +1058,15 @@ void SelectItem(PPCContext& ctx, uint8_t* base, uint32_t page, const std::vector
     if (sel == target) return;
     const Item* from = FindItem(items, sel);
     const float line = std::max(1.0f, (to->ink.y1 - to->ink.y0) * 0.5f);
-    const bool down = from ? (to->ink.cy() > from->ink.cy() + line ||
-                              (std::abs(to->ink.cy() - from->ink.cy()) <= line && to->ink.cx() > from->ink.cx()))
-                           : target > sel;
+    // [claude-9b] Items side by side (Pause > OPTIONS' VIDEO, MOVEMENT and AIM): the page's
+    // MoveUp / MoveDown go to the row above or below them and back, never along the line, so the
+    // highlight steps along it with left / right, as the D-pad does there.
+    if (from && std::abs(to->ink.cy() - from->ink.cy()) <= line) {
+      Press(ctx, base, system, to->ink.cx() > from->ink.cx() ? pm::kCodeRight : pm::kCodeLeft, false);
+      if (Selected(base, page) == sel) return;  // the page didn't move
+      continue;
+    }
+    const bool down = from ? to->ink.cy() > from->ink.cy() + line : target > sel;
     VCall(ctx, base, page, down ? pm::kPageMoveDown : pm::kPageMoveUp);
     if (Selected(base, page) == sel) return;  // the page didn't move
   }
@@ -1347,7 +1369,7 @@ std::optional<Prompt> PromptAt(uint32_t system, float x, float y) {
 void ClickItem(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, const std::vector<Item>& items,
                int index, uint32_t code) {
   const bool was_selected = Selected(base, page) == index;
-  if (!was_selected) SelectItem(ctx, base, page, items, index);
+  if (!was_selected) SelectItem(ctx, base, system, page, items, index);
   if (was_selected && !PageLocked(base, page)) {
     Press(ctx, base, system, code);
     return;
@@ -1369,7 +1391,7 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
   // (game/menu_slider.h) and the row is highlighted.
   if (const int box = cod3::menuslider::ClickAt(page, x, y); box >= 0) {
     if (REXCVAR_GET(cod3_menu_trace)) REXLOG_INFO("cod3: menu trace: number box of item {} clicked", box);
-    if (Selected(base, page) != box) SelectItem(ctx, base, page, items, box);
+    if (Selected(base, page) != box) SelectItem(ctx, base, system, page, items, box);
     g_hover.target = Selected(base, page) == box ? -1 : box;
     g_hover.tries = 0;
     return;
@@ -1386,7 +1408,7 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
         return;
       }
       if (GaugeAt(row.ctl, x, y)) {
-        if (Selected(base, page) != row.index) SelectItem(ctx, base, page, items, row.index);
+        if (Selected(base, page) != row.index) SelectItem(ctx, base, system, page, items, row.index);
         StartDrag(page, row.index, x);
         g_hover.target = row.index;
         g_hover.tries = 0;
@@ -1648,7 +1670,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
       if (Selected(base, page) != h.target) h.click_item = -1;
       h.target = -1;
     } else if (!PageLocked(base, page)) {
-      SelectItem(ctx, base, page, ItemRects(ctx, base, page, system), h.target);
+      SelectItem(ctx, base, system, page, ItemRects(ctx, base, page, system), h.target);
     }
   }
   // A click's action, once the highlight is on its item and has settled.

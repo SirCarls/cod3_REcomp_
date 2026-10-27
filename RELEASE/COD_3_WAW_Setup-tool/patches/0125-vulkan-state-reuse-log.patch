@@ -1,0 +1,197 @@
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -513,6 +513,9 @@
+   void InvalidateAllVertexBufferResidency();
+   void InvalidateVertexBufferResidency(uint32_t vfetch_index);
+   void InvalidateVertexBufferResidencyRange(uint32_t first_vfetch, uint32_t last_vfetch);
++  // [claude-9b] 0125: vulkan_log_state_reuse's counts for a register write
++  // (called before the write stores the value).
++  void CountRegisterWriteForStateReuse(uint32_t index, uint32_t value);
+   struct ReadbackBuffer {
+     VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+     VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+@@ -1010,6 +1013,21 @@
+   // has leaves the fetch constant buffer above, its texture binding and its
+   // vertex buffer residency (vertex_buffers_in_sync_) as they are.
+   bool skip_unchanged_fetch_constants_ = true;
++  // [claude-9b] 0125: vulkan_log_state_reuse as read at start and at every
++  // swap, and what it counts between two of its log lines: fetch constant
++  // dwords written, and those written with the value they already had; draws,
++  // and those for which neither shader nor any context register (other than
++  // those every draw packet writes) changed since the draw before.
++  bool log_state_reuse_ = false;
++  bool draw_state_changed_ = true;
++  const Shader* last_draw_vertex_shader_ = nullptr;
++  const Shader* last_draw_pixel_shader_ = nullptr;
++  uint64_t state_reuse_frames_ = 0;
++  uint64_t state_reuse_fetch_dwords_ = 0;
++  uint64_t state_reuse_fetch_dwords_unchanged_ = 0;
++  uint64_t state_reuse_draws_ = 0;
++  uint64_t state_reuse_draws_unchanged_ = 0;
++  uint64_t state_reuse_log_time_us_ = 0;
+   VkDescriptorSet current_graphics_descriptor_sets_[SpirvShaderTranslator::kDescriptorSetCount];
+   // Whether descriptor sets in current_graphics_descriptor_sets_ point to
+   // up-to-date data.
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <bit>
++#include <chrono>
+ #include <cstdint>
+ #include <cstring>
+ #include <iterator>
+@@ -79,6 +80,14 @@
+                     "before). Applies from the next frame")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// [claude-9b] 0125: how much state the game sets again unchanged.
++REXCVAR_DEFINE_BOOL(vulkan_log_state_reuse, false, "GPU/Vulkan",
++                    "Vulkan: every 10 seconds, log how many fetch constant writes kept the "
++                    "value they had, and how many draws changed neither shader nor any "
++                    "context register since the draw before (what reusing the last draw's "
++                    "state could save). Off: nothing counted. Applies from the next frame")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ // Legacy backend compatibility aliases for shared readback controls.
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+@@ -863,6 +872,7 @@
+   // (maxDescriptorSetUniformBuffersDynamic), and this needs 5.
+   constants_dynamic_offsets_ = REXCVAR_GET(vulkan_dynamic_constant_offsets);
+   skip_unchanged_fetch_constants_ = REXCVAR_GET(vulkan_skip_unchanged_fetch_constants);
++  log_state_reuse_ = REXCVAR_GET(vulkan_log_state_reuse);
+   // 16384 is bigger than any single uniform buffer that Xenia needs, but is the
+   // minimum maxUniformBufferRange, thus the safe minimum amount.
+   uniform_buffer_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
+@@ -2203,6 +2213,9 @@
+                                   index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+                                   index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 &&
+                                   register_file_->values[index] == value;
++  if (log_state_reuse_) {
++    CountRegisterWriteForStateReuse(index, value);
++  }
+   CommandProcessor::WriteRegister(index, value);
+   if (fetch_constant_unchanged) {
+     // The texture binding, the vertex buffer and the fetch constant buffer
+@@ -2244,6 +2257,37 @@
+   }
+ }
+ 
++void VulkanCommandProcessor::CountRegisterWriteForStateReuse(uint32_t index, uint32_t value) {
++  if (index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
++      index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
++    ++state_reuse_fetch_dwords_;
++    if (register_file_->values[index] == value) {
++      ++state_reuse_fetch_dwords_unchanged_;
++    }
++    return;
++  }
++  if (draw_state_changed_ || index < XE_GPU_REG_RB_SURFACE_INFO ||
++      index >= XE_GPU_REG_SHADER_CONSTANT_000_X || register_file_->values[index] == value) {
++    return;
++  }
++  switch (index) {
++    // Written for every draw by the draw packet, or by the game with the
++    // draw's index range and base vertex (they don't change the pipeline, the
++    // viewport or the render targets).
++    case XE_GPU_REG_VGT_MAX_VTX_INDX:
++    case XE_GPU_REG_VGT_MIN_VTX_INDX:
++    case XE_GPU_REG_VGT_INDX_OFFSET:
++    case XE_GPU_REG_VGT_EVENT_INITIATOR:
++    case XE_GPU_REG_VGT_DMA_BASE:
++    case XE_GPU_REG_VGT_DMA_SIZE:
++    case XE_GPU_REG_VGT_DRAW_INITIATOR:
++      return;
++    default:
++      draw_state_changed_ = true;
++      return;
++  }
++}
++
+ void VulkanCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
+                                                    uint32_t num_registers) {
+   if (!num_registers) {
+@@ -2315,6 +2359,16 @@
+ 
+   if (start_index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+       end_index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
++    if (log_state_reuse_) {
++      // [claude-9b] 0125
++      state_reuse_fetch_dwords_ += num_registers;
++      const uint32_t* fetch_values = register_file_->values + start_index;
++      for (uint32_t i = 0; i < num_registers; ++i) {
++        if (fetch_values[i] == memory::load_and_swap<uint32_t>(base + i)) {
++          ++state_reuse_fetch_dwords_unchanged_;
++        }
++      }
++    }
+     if (skip_unchanged_fetch_constants_) {
+       // [claude-9b] 0124: store only the dwords that change, and redo only
+       // what depends on them: the texture fetch constants (6 dwords each) and
+@@ -2407,6 +2461,39 @@
+   // [claude-9b] 0124: the setting as of this swap (read once a frame, not for
+   // every register write).
+   skip_unchanged_fetch_constants_ = REXCVAR_GET(vulkan_skip_unchanged_fetch_constants);
++  // [claude-9b] 0125: vulkan_log_state_reuse's line, every 10 seconds.
++  if (log_state_reuse_) {
++    ++state_reuse_frames_;
++    uint64_t now_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                                   std::chrono::steady_clock::now().time_since_epoch())
++                                   .count());
++    if (!state_reuse_log_time_us_) {
++      state_reuse_log_time_us_ = now_us;
++    } else if (now_us - state_reuse_log_time_us_ >= 10000000) {
++      double frames = double(state_reuse_frames_);
++      REXGPU_INFO(
++          "Vulkan state reuse over {} frames: {:.0f} fetch constant dwords written a frame, "
++          "{:.1f}% with the value they had; {:.0f} draws a frame, {:.1f}% changing neither "
++          "shader nor any context register since the draw before",
++          state_reuse_frames_, double(state_reuse_fetch_dwords_) / frames,
++          state_reuse_fetch_dwords_
++              ? 100.0 * double(state_reuse_fetch_dwords_unchanged_) /
++                    double(state_reuse_fetch_dwords_)
++              : 0.0,
++          double(state_reuse_draws_) / frames,
++          state_reuse_draws_
++              ? 100.0 * double(state_reuse_draws_unchanged_) / double(state_reuse_draws_)
++              : 0.0);
++      state_reuse_frames_ = 0;
++      state_reuse_fetch_dwords_ = 0;
++      state_reuse_fetch_dwords_unchanged_ = 0;
++      state_reuse_draws_ = 0;
++      state_reuse_draws_unchanged_ = 0;
++      state_reuse_log_time_us_ = now_us;
++    }
++  }
++  log_state_reuse_ = REXCVAR_GET(vulkan_log_state_reuse);
++  draw_state_changed_ = true;
+ 
+   if (!graphics_system_)
+     return;
+@@ -3759,9 +3846,22 @@
+   if (edram_mode == xenos::EdramMode::kCopy) {
+     // Special copy handling.
+     stats::Add(stats::Counter::kResolves);
++    draw_state_changed_ = true;  // [claude-9b] 0125
+     return IssueCopy();
+   }
+   stats::Add(stats::Counter::kDraws);
++  if (log_state_reuse_) {
++    // [claude-9b] 0125: a draw that a fast path reusing the last draw's
++    // pipeline, viewport and render targets could take.
++    ++state_reuse_draws_;
++    if (!draw_state_changed_ && active_vertex_shader() == last_draw_vertex_shader_ &&
++        active_pixel_shader() == last_draw_pixel_shader_) {
++      ++state_reuse_draws_unchanged_;
++    }
++    draw_state_changed_ = false;
++    last_draw_vertex_shader_ = active_vertex_shader();
++    last_draw_pixel_shader_ = active_pixel_shader();
++  }
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 

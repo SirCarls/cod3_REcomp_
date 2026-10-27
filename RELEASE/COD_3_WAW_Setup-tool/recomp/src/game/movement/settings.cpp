@@ -32,6 +32,14 @@ REXCVAR_DEFINE_BOOL(cod3_cod4_speeds, true, "cod3/Movement",
 REXCVAR_DEFINE_BOOL(cod3_cod4_jumps, true, "cod3/Movement",
                     "CoD4 style part: CoD4 PC bounces off steep slopes (CoD4's air strafing is part of "
                     "cod3_cod4_speeds)");
+// [acct2-main] 2026-10-26 (owner 2026-10-25: "collision needs to be that of 60fps").
+REXCVAR_DEFINE_INT32(cod3_move_hz, 60, "cod3/Movement",
+                     "Your movement steps a second, whatever the frame rate: how you meet walls, stairs, "
+                     "slopes and the ground is the same at any fps (60 = the game at 60 fps; the view is "
+                     "smoothed between steps). 0 = one move a frame with the frame's time, as the game "
+                     "does. The CoD4 style keeps CoD4 PC's 125 fps steps")
+    .range(0, 240)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_movement, false, "cod3",
                     "Log the player's movement 4 times a second (position, speed, stamina, sprint, rules)");
 
@@ -91,6 +99,8 @@ Preference OwnPreference() {
 }
 
 bool DebugMovement() { return REXCVAR_GET(cod3_debug_movement); }
+
+int MoveStepHz() { return REXCVAR_GET(cod3_move_hz); }  // [acct2-main]
 
 MoveRules LocalRules() {
   Parts host;

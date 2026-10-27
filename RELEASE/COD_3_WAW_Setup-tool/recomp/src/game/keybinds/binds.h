@@ -117,8 +117,20 @@ std::string KeyNameForCommand(std::string_view command);
 // instead ("Press and hold [F]").
 bool IsActionWord(std::string_view word);
 std::string KeyNameForActionWord(std::string_view word);
+// [acct2-decomp] The first key of one of these actions by its id ("veh_view"
+// -> "V"), as the prompts write it; "" when it has none (any thread).
+std::string KeyNameForAction(std::string_view id);
 // + 1 whenever a key changes (the prompts lay their texts out again).
 uint32_t Generation();
+
+// --- game/mp/controls_mp.cpp (cod3mp) -------------------------------------------------
+// [claude-9b] The command player 1's controller layout puts on the shoulder that isn't the
+// frag grenade's (+grenadeattack): "+class" (the class item) in multiplayer's layout A. The
+// "smoke" action (F2: special grenade / class item, 4) calls it, so the keyboard reaches what the
+// controller's RB does (owner 2026-10-26: "The lethal button switch had adverse effects not
+// allowing for the user to use what would be their original RB press"). "" = +smokegrenade.
+// Game thread, after the shoulders' binds change.
+void SetMpSpecialCommand(const std::string& command);
 
 // --- ui/game_console.cpp ---------------------------------------------------------------
 // "bind K +reload" (or "bind K reload"), "unbind K", "bind K" for keyboard and

@@ -64,6 +64,25 @@ def _is_aspect(value: Any) -> bool:
     return w > 0 and h > 0 and MIN_ASPECT - 0.001 <= w / h <= MAX_ASPECT + 0.001
 
 
+def _is_player_name(value: Any) -> bool:
+    """[claude-9b] A player name for user_name (SDK patch 0070): 1-15 printable ASCII
+    characters (the gamertag's room), no quotes or backslashes."""
+    if not isinstance(value, str):
+        return False
+    name = value.strip()
+    return 0 < len(name) <= 15 and all(32 <= ord(c) <= 126 and c not in '"\\' for c in name)
+
+
+def _is_other_player_name(value: Any) -> bool:
+    """[claude-9b] A split-screen player's name for user_name_2..4 (SDK patch 0074): 1-14 printable
+    ASCII characters (the game's session table keeps 15 bytes a name), no quotes, backslashes, '%' or
+    '^'."""
+    if not isinstance(value, str):
+        return False
+    name = value.strip()
+    return 0 < len(name) <= 14 and all(32 <= ord(c) <= 126 and c not in '"\\%^' for c in name)
+
+
 @dataclass(frozen=True)
 class Setting:
     key: str                 # the name in cod3.toml (or a name of our own when `cvars` is set)
@@ -120,8 +139,10 @@ SETTINGS: List[Setting] = [
                        ("scaled", "Scaled: smaller with the game's 2x MSAA, multiplied by the GPU")),
             default="native"),
     Setting("cod3_render_percent", "Resolution scale (%)",
-            "Below 100 draws fewer pixels and stretches them to the screen, for speed.",
-            "int", min=25, max=100, default=100),
+            "Below 100 draws fewer pixels and stretches them to the screen, for speed. Above 100 (up to 200) "
+            "draws more pixels than the screen shows and shrinks them, for smoother edges (200 is 4x the "
+            "pixels).",  # [claude-9b] 2026-10-27 owner 06:41: 200% as an option
+            "int", min=25, max=200, default=100),
     Setting("cod3_live_resolution", "Change the resolution without restarting",
             "On: a new render resolution applies while the game runs. Off: it applies at the next start.",
             "bool", default=True),
@@ -197,6 +218,21 @@ SETTINGS: List[Setting] = [
             "USA/Europe disc.",
             "choice", ((1, "English"), (3, "German"), (4, "French"), (5, "Spanish"), (6, "Italian")),
             default=1),
+    # [claude-9b] The SDK's own setting (SDK patch 0070): the gamertag the game is given.
+    Setting("user_name", "Player name",
+            "Your name in the game, up to 15 characters: the name others see in multiplayer. Pick the "
+            "profile's own or type a name. The game reads it when it starts.",
+            "choice", (("", "The profile's own (User)"),), default="", also=_is_player_name),
+    # [claude-9b] SDK patch 0074: split-screen players 2-4 in multiplayer.
+    Setting("user_name_2", "Player 2 name",
+            "Split-screen player 2's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "choice", (("", "The game's own (Player 2)"),), default="", also=_is_other_player_name),
+    Setting("user_name_3", "Player 3 name",
+            "Split-screen player 3's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "choice", (("", "The game's own (Player 3)"),), default="", also=_is_other_player_name),
+    Setting("user_name_4", "Player 4 name",
+            "Split-screen player 4's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "choice", (("", "The game's own (Player 4)"),), default="", also=_is_other_player_name),
     Setting("cod3_glyph_style", "Controller button style",
             "How the game's prompts show controller buttons.",
             "choice", (("xbox", "Xbox 360 (the game's own)"), ("playstation", "PlayStation"),

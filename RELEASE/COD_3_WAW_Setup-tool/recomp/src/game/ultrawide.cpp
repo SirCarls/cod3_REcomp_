@@ -29,6 +29,15 @@ REXCVAR_DEFINE_STRING(cod3_aspect_ratio, "auto", "cod3/Display",
 REXCVAR_DEFINE_BOOL(cod3_ultrawide_hud, true, "cod3/Display",
                     "Advanced: keep the HUD, menus and movies 16:9 in the middle of a wider "
                     "picture (off = stretch them across it, for comparison)");
+#if defined(COD3_MP)
+// [claude-9b] 2026-10-27 owner 06:28 "4 player splitscreen ... FPS way consistently bad", 06:43 "the way it calculates
+// what the player can see/should render in seems flawed" (FINDINGS-SPLITSCREEN-PERF G1).
+REXCVAR_DEFINE_BOOL(cod3mp_split_lod, false, "cod3/Display",
+                    "Split screen: models' detail chosen for each view's own size. The game picks it from the "
+                    "view's field of view only, so a half or quarter view (half the lines) gets the detail of a "
+                    "2x zoom and draws more than its pixels show")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#endif
 
 namespace {
 namespace uw = cod3::addr::ultrawide;
@@ -44,6 +53,15 @@ std::atomic<bool> g_hud_mapping{true};
 std::atomic<int> g_scene_depth{0};   // inside RE_RenderScene
 std::atomic<int> g_scene_frames{0};  // > 0: a 3D view was drawn this frame or the last
 std::atomic<bool> g_logged_target{false};
+
+// [claude-9b] cod3mp split screen (owner 2026-10-27 05:49: "splitscreen hud drawing seems off, like it's
+// not scaling correct"; dev/agents/claude-9b-think/FINDINGS-SPLITSCREEN-VIEW.md): the part of the
+// 640-wide virtual screen whose 2D is being drawn. The game draws each local player's 2D (CG_Draw2D)
+// in full-screen coordinates and puts a quarter view's HUD in its own half of the width itself
+// (0x82448ED8: layouts 5 and 7 x * 0.5, 6 and 8 x * 0.5 + 320), so the squeeze is centered on that
+// view. Everything else (menus, the divider bars, the campaign) keeps the whole width.
+std::atomic<float> g_view_x0{0.0f};
+std::atomic<float> g_view_x1{640.0f};
 
 bool IsWide(float aspect) { return aspect > cod3::kSixteenByNine + cod3::kSameShape; }
 
@@ -298,7 +316,99 @@ float HudScale(uint8_t* base) {
   return cod3::kSixteenByNine / aspect;
 }
 
-float MapX(float x, float scale) { return 320.0f + (x - 320.0f) * scale; }
+float MapX(float x, float scale) {
+  const float center = 0.5f * (g_view_x0.load(std::memory_order_relaxed) + g_view_x1.load(std::memory_order_relaxed));
+  return center + (x - center) * scale;
+}
+
+// An edge of the screen, or of the view whose 2D is being drawn when the quad covers that whole view
+// (a quarter view's own overlays: fades, flashes). [claude-9b] 2026-10-27 Only for quads spanning the view:
+// run c9b-test-ss-4p-219 showed the top-right player's compass spokes stretched out of its circle, their
+// ends at x = 320 (that quarter's left edge) kept while the rest was squeezed.
+bool AtEdge(float x, bool spans_view) {
+  if (x <= 0.5f || x >= 639.5f) return true;
+  return spans_view && (std::abs(x - g_view_x0.load(std::memory_order_relaxed)) <= 0.5f ||
+                        std::abs(x - g_view_x1.load(std::memory_order_relaxed)) <= 0.5f);
+}
+
+#if defined(COD3_MP)
+// [claude-9b] cod3mp addresses (MP only, so not in addresses.h's table).
+constexpr uint32_t kMpActiveLocalClient = 0x82BCBE9C;
+constexpr uint32_t kMpClientLayout = 0x82C7A31C;  // + client * 3208: 0 whole screen, 3/4 halves, 5-8 quarters
+constexpr uint32_t kMpClientStride = 3208;
+constexpr uint32_t kMpCgRefdef = 0x82C7D490 + 4928;  // + client * 6368: x, y, width, height (640x480 units)
+constexpr uint32_t kMpCgStride = 6368;
+uint8_t* g_mp_base = nullptr;  // the guest memory, for the 3D shape's log line (set by RE_RenderScene)
+constexpr uint32_t kMpLocalPlayers = 0x82BCC878;  // local players in the match (split screen: 2-4)
+// r_lodscale (default 1): RE_RenderScene's detail scale is min(r_lodscale, 4) * tan(min(fov_x, fov_y) / 2) / tan(40
+// deg), smaller meaning more detail; the dvar's pointer, its value a float at +0x1C (FINDINGS-SPLITSCREEN-PERF 1.5).
+constexpr uint32_t kMpLodScaleDvar = 0x82BA333C;
+constexpr uint32_t kDvarValue = 0x1C;
+
+// G1: for one RE_RenderScene call of a split-screen view (the active local client's layout: 3/4 halves, 5-8
+// quarters, each with half the picture's lines), r_lodscale times 2: the same detail per pixel as one player's view.
+// [claude-9b] By layout, not the refdef: bench c9b-splitab1 never engaged with a 640x480-unit height test (the
+// renderer's refdef is in pixels). Returns the dvar written (0: none) and its value before.
+uint32_t MpLayout(uint8_t* base, uint32_t client);  // below
+
+uint32_t SplitLodBegin(uint8_t* base, float* saved) {
+  if (!REXCVAR_GET(cod3mp_split_lod)) return 0;
+  const uint32_t client = ReadU32(base, kMpActiveLocalClient);
+  const uint32_t layout = MpLayout(base, client);
+  static bool explained = false;
+  auto explain = [&](const char* why) {
+    if (explained) return;
+    explained = true;
+    REXLOG_INFO("cod3mp: split-screen detail: not applied ({}; client {}, layout {}, players {})", why, client, layout,
+                ReadU32(base, kMpLocalPlayers));
+  };
+  if (layout < 3 || layout > 8) return 0;  // one player's whole picture
+  const uint32_t dvar = ReadU32(base, kMpLodScaleDvar);
+  if (dvar < 0x10000 || (dvar & 3)) {
+    explain("no r_lodscale dvar");
+    return 0;
+  }
+  *saved = ReadF32(base, dvar + kDvarValue);
+  if (!(*saved > 0.01f && *saved < 16.0f)) {  // not the value it should be: leave it alone
+    explain("r_lodscale's value isn't where it should be");
+    return 0;
+  }
+  constexpr float kHalfTheLines = 2.0f;
+  WriteF32(base, dvar + kDvarValue, *saved * kHalfTheLines);
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("cod3mp: split-screen detail: r_lodscale {:.2f} x 2 for a view of layout {}", *saved, layout);
+  }
+  return dvar;
+}
+
+uint32_t MpLayout(uint8_t* base, uint32_t client) {
+  return client < 4 ? ReadU32(base, kMpClientLayout + client * kMpClientStride) : 0;
+}
+
+// The 3D view's shape in the log, once per player and change (a player joining or leaving, a new
+// picture shape): the projection the port gives the game against the view's shape on the picture.
+void LogViewShape(double game, double used) {
+  if (!g_mp_base) return;
+  const uint32_t client = ReadU32(g_mp_base, kMpActiveLocalClient);
+  if (client >= 4) return;
+  const uint32_t at = kMpCgRefdef + client * kMpCgStride;
+  const int32_t w = int32_t(ReadU32(g_mp_base, at + 8)), h = int32_t(ReadU32(g_mp_base, at + 12));
+  static float logged[4] = {};
+  static int32_t logged_w[4] = {}, logged_h[4] = {};
+  if (float(used) == logged[client] && w == logged_w[client] && h == logged_h[client]) return;
+  static int lines = 0;  // the scene setup's second call (a dvar's own shape) could alternate with the first
+  if (++lines > 32) return;
+  logged[client] = float(used);
+  logged_w[client] = w;
+  logged_h[client] = h;
+  const double shown = h > 0 ? double(w) / double(h) * 0.75 * g_aspect.load(std::memory_order_relaxed) : 0.0;
+  REXLOG_INFO("cod3mp: player {}'s 3D view (layout {}, {}x{} of 640x480): projection shape {:.4f} (the "
+              "game's {:.4f}), shape on the picture {:.4f}",
+              client + 1, MpLayout(g_mp_base, client), w, h, used, game, shown);
+}
+#endif
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -308,10 +418,26 @@ float MapX(float x, float scale) { return 320.0f + (x - 320.0f) * scale; }
 // picture's shape. The vertical field of view (set right after) stays the
 // game's.
 // ---------------------------------------------------------------------------
+//
+// [claude-9b] cod3mp's half views (layouts 3 and 4: two players, or the top one of three) are twice
+// as wide: the game gives 32/9 (8/3 without cg_widescreen), which becomes twice the picture's shape.
+// Quarter views have the picture's shape (they get the 16/9 above). Before, a half view kept 32/9 on
+// any picture: stretched on wider ones, squashed on 16:10 and 4:3 (FINDINGS-SPLITSCREEN-VIEW).
 void Cod3SceneAspectHook(PPCRegister& f1) {
   const float aspect = g_aspect.load(std::memory_order_relaxed);
-  if (cod3::IsSixteenByNine(aspect)) return;
-  if (std::abs(f1.f64 - 16.0 / 9.0) < 1e-3 || std::abs(f1.f64 - 4.0 / 3.0) < 1e-3) f1.f64 = aspect;
+  [[maybe_unused]] const double game = f1.f64;
+  if (!cod3::IsSixteenByNine(aspect)) {
+    if (std::abs(f1.f64 - 16.0 / 9.0) < 1e-3 || std::abs(f1.f64 - 4.0 / 3.0) < 1e-3)
+      f1.f64 = aspect;
+    else if (cod3::kMultiplayer && (std::abs(f1.f64 - 32.0 / 9.0) < 1e-3 || std::abs(f1.f64 - 8.0 / 3.0) < 1e-3))
+      f1.f64 = 2.0 * aspect;
+  }
+#if defined(COD3_MP)
+  // Only the screen's views (not the game's square renders).
+  const bool screen = std::abs(game - 16.0 / 9.0) < 1e-3 || std::abs(game - 4.0 / 3.0) < 1e-3 ||
+                      std::abs(game - 32.0 / 9.0) < 1e-3 || std::abs(game - 8.0 / 3.0) < 1e-3;
+  if (screen && g_scene_depth.load(std::memory_order_relaxed) > 0) LogViewShape(game, f1.f64);
+#endif
 }
 
 // RE_RenderScene(refdef): the 3D view. 2D recorded inside it belongs to the
@@ -319,10 +445,18 @@ void Cod3SceneAspectHook(PPCRegister& f1) {
 // below that the game is being played (not a menu, movie or loading screen).
 REX_EXTERN(__imp__RE_RenderScene);
 REX_HOOK_RAW(RE_RenderScene) {
+#if defined(COD3_MP)
+  g_mp_base = base;
+  float lod_saved = 0.0f;
+  const uint32_t lod_dvar = SplitLodBegin(base, &lod_saved);  // [claude-9b] cod3mp_split_lod
+#endif
   g_scene_depth.fetch_add(1, std::memory_order_relaxed);
   g_scene_frames.store(2, std::memory_order_relaxed);
   __imp__RE_RenderScene(ctx, base);
   g_scene_depth.fetch_sub(1, std::memory_order_relaxed);
+#if defined(COD3_MP)
+  if (lod_dvar) WriteF32(base, lod_dvar + kDvarValue, lod_saved);
+#endif
 }
 
 REX_EXTERN(__imp__RE_BeginFrame);
@@ -350,11 +484,13 @@ REX_HOOK_RAW(nglListAddQuad) {
   const bool movie = !cod3::kMultiplayer && quad == ReadU32(base, uw::kMovieQuadPtr);  // [mp] no films
   const bool playing = !movie && g_scene_frames.load(std::memory_order_relaxed) > 0;
   float x[4];
+  for (int i = 0; i < 4; ++i) x[i] = ReadF32(base, quad + uw::kQuadVertexStride * i);
+  const float lo = std::min({x[0], x[1], x[2], x[3]}), hi = std::max({x[0], x[1], x[2], x[3]});
+  const bool spans_view = lo <= g_view_x0.load(std::memory_order_relaxed) + 0.5f &&
+                          hi >= g_view_x1.load(std::memory_order_relaxed) - 0.5f;
   for (int i = 0; i < 4; ++i) {
-    const uint32_t at = quad + uw::kQuadVertexStride * i;
-    x[i] = ReadF32(base, at);
-    const bool edge = x[i] <= 0.5f || x[i] >= 639.5f;
-    if (!(playing && edge)) WriteF32(base, at, MapX(x[i], scale));
+    const bool edge = AtEdge(x[i], spans_view);
+    if (!(playing && edge)) WriteF32(base, quad + uw::kQuadVertexStride * i, MapX(x[i], scale));
   }
   __imp__nglListAddQuad(ctx, base);
   for (int i = 0; i < 4; ++i) WriteF32(base, quad + uw::kQuadVertexStride * i, x[i]);
@@ -371,3 +507,29 @@ REX_HOOK_RAW(nglListAddString) {
   }
   __imp__nglListAddString(ctx, base);
 }
+
+#if defined(COD3_MP)
+// [claude-9b] CG_Draw2D (cod3mp 0x82460620; campaign 0x82446238, one view there): once per local
+// player's view, with that player as the game's active local client. Its 2D is squeezed around the
+// middle of its own part of the screen (a quarter view's half of the width); the whole width again
+// after it. The part chosen is logged when it changes.
+REX_EXTERN(__imp__sub_82460620);
+REX_HOOK_RAW(sub_82460620) {
+  const uint32_t client = ReadU32(base, kMpActiveLocalClient);
+  const uint32_t layout = MpLayout(base, client);
+  float x0 = 0.0f, x1 = 640.0f;
+  if (layout == 5 || layout == 7) x1 = 320.0f;
+  if (layout == 6 || layout == 8) x0 = 320.0f;
+  static uint32_t logged[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+  if (client < 4 && logged[client] != layout) {
+    logged[client] = layout;
+    REXLOG_INFO("cod3mp: player {}'s HUD in x {:.0f}-{:.0f} of 640 (layout {}){}", client + 1, x0, x1, layout,
+                IsWide(g_aspect.load(std::memory_order_relaxed)) ? ", 16:9 in its middle" : "");
+  }
+  g_view_x0.store(x0, std::memory_order_relaxed);
+  g_view_x1.store(x1, std::memory_order_relaxed);
+  __imp__sub_82460620(ctx, base);
+  g_view_x0.store(0.0f, std::memory_order_relaxed);
+  g_view_x1.store(640.0f, std::memory_order_relaxed);
+}
+#endif

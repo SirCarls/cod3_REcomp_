@@ -62,8 +62,14 @@ enum Row : int {
 };
 
 // String keys (resolved by Localize below through the game's Localize hook).
+// [menus-categories] The rows (the enum above, these two keys, LabelText,
+// HelpText, Value, Note, Step, NoteStartValues, SetSaveHandler) are
+// menu_video_rows.cpp's, built into both programs; the rest is the campaign's
+// (menu_video.cpp).
 const char* LabelKey(int row);         // "RESOLUTION" ...
 const char* InstructionsKey(int row);  // the row's help text (front end)
+const char* LabelText(int row);        // the label's English text, "RESOLUTION" ...
+std::string HelpText(int row);         // the row's help text as it applies now
 const char* TitleKey();                // "OPTIONS / VIDEO" (page title)
 const char* ItemKey();                 // the front end Options item "VIDEO"
 const char* ItemInstructionsKey();     // its help text
@@ -89,8 +95,8 @@ void NoteStartValues();
 // so they say what applies now.
 uint32_t Localize(uint8_t* base, const char* key);
 
-// Cod3App: how to save the port's settings file after a change from a menu
-// (it saves on the UI thread).
+// Cod3App (and [menus-categories] Cod3MpApp): how to save the port's
+// settings file after a change from a menu (it saves on the UI thread).
 void SetSaveHandler(std::function<void()> save);
 
 // game/menu_fov.cpp: the next time the Options > Gameplay page `page` opens

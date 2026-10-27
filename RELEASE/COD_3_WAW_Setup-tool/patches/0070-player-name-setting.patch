@@ -1,0 +1,67 @@
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -13,6 +13,7 @@
+ #pragma GCC diagnostic ignored "-Wunused-parameter"
+ 
+ #include <cstring>
++#include <string>
+ 
+ #include <rex/cvar.h>
+ #include <rex/kernel/xam/private.h>
+@@ -29,12 +30,26 @@
+ #include <rex/system/xtypes.h>
+ 
+ REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
++REXCVAR_DEFINE_STRING(user_name, "", "Kernel",
++                      "Player 1's gamertag as the game sees it (up to 15 characters); empty = the "
++                      "profile's own (\"User\")");
+ 
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+ using namespace rex::system;
+ using namespace rex::system::xam;
++
++// The name the game is given for the signed-in player: user_name when set (its first 15
++// characters, the gamertag's room), else the profile's.
++static std::string PlayerName() {
++  std::string name = REXCVAR_GET(user_name);
++  while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
++  while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
++  if (name.empty()) return REX_KERNEL_STATE()->user_profile()->name();
++  if (name.size() > 15) name.resize(15);
++  return name;
++}
+ 
+ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {
+   assert_true(type_mask == 1 || type_mask == 2 || type_mask == 3 || type_mask == 4 ||
+@@ -99,7 +114,7 @@
+   const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+   info->xuid = user_profile->xuid();
+   info->signin_state = user_profile->signin_state();
+-  rex::string::copy_truncating(info->name, user_profile->name(), rex::countof(info->name));
++  rex::string::copy_truncating(info->name, PlayerName(), rex::countof(info->name));
+   return X_E_SUCCESS;
+ }
+ 
+@@ -112,8 +127,7 @@
+     return X_E_NO_SUCH_USER;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+-  const auto& user_name = user_profile->name();
++  const std::string user_name = PlayerName();
+   rex::string::copy_truncating(buffer, user_name, std::min(buffer_len, uint32_t(16)));
+   return X_E_SUCCESS;
+ }
+@@ -131,8 +145,7 @@
+     return X_E_INVALIDARG;
+   }
+ 
+-  const auto& user_profile = REX_KERNEL_STATE()->user_profile();
+-  auto user_name = rex::string::to_utf16(user_profile->name());
++  auto user_name = rex::string::to_utf16(PlayerName());
+   rex::string::copy_and_swap_truncating(buffer, user_name, std::min(buffer_len, uint32_t(16)));
+   return X_E_SUCCESS;
+ }

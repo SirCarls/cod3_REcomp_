@@ -19,8 +19,23 @@
 //   PM_AirMove 0x82490B70     marks the air move (a bounce happens only there)
 //   PM_ClipVelocity 0x8246B138  the step move's two clips become CoD4's
 //                             projection on steep slopes (bounces)
+//   0x82483C20 from ClientThink_real  [claude-9b] not after a usercmd that ran
+//                             no movement step (see g_no_step)
 // With alternate rules off (sprint off, CoD3 style) every hook calls the
 // game's own code unchanged: the console's movement, number for number.
+//
+// [acct2-main] 2026-10-26 The movement's rate (owner 2026-10-25 23:30: "also collision needs to
+// be that of 60fps", and asked which: "Player vs world, All game collision"). The campaign moves
+// the player once per usercmd, one per drawn frame, with that frame's milliseconds, so how the
+// player meets walls, stairs, slopes and the ground changed with the frame rate. With
+// cod3_move_hz (60) the CoD3 style moves in steps that end at fixed times of the game's clock
+// (rules.h MoveStepEndAfter: 16, 17, 17 ms at 60, the game's own milliseconds at 60 fps), one Pmove
+// call per step as the game at 60 fps makes one per frame: none, one or several in a usercmd. The
+// playerState's commandTime is the usercmd's time again afterwards (as with the CoD4 steps), and a
+// usercmd too short for a step still turns the view (PM_UpdateViewAngles). The CoD4 style keeps
+// CoD4 PC's 125 fps steps (its own design). Above the rate the player's position changes in steps,
+// so the camera is smoothed between the last two (CG_CalcViewValues hook below; one step behind
+// at most, the view angles are never delayed). 0: one move a frame, as the game.
 //
 // Client side (the player's input):
 //   IN_SprintDown/Up, IN_SprintbreathDown/Up (empty in the retail campaign):
@@ -40,6 +55,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include <rex/cvar.h>  // [claude-9b]
 #include <rex/hook.h>
 #include <rex/logging.h>
 
@@ -49,9 +65,16 @@
 #include "game/movement/settings.h"
 #include "game/movement/sprint_input.h"
 #include "game/protected_dvars.h"
+#include "game/server_step.h"  // [acct2-main] the camera on a vehicle
 
 // Pmove, the game's own (hooked below); RunCod4Steps calls it too.
 REX_EXTERN(__imp__sub_82496978);
+
+// [claude-9b] 2026-10-27 Stairs between the movement steps (dev/agents/claude-9b-think/CAMERA_ORIGIN.md 5 (A)).
+REXCVAR_DEFINE_BOOL(cod3_move_stairs_view, true, "cod3",
+                    "Walking up or down stairs above 60 fps: the camera eases each stair step once, as the game does; "
+                    "off: the step between movement steps is eased a second time (a dip of about a stair's height)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -71,6 +94,23 @@ struct MoveContext {
   bool air_move = false;    // inside PM_AirMove (a bounce happens only there)
 };
 thread_local MoveContext g_move;
+
+// [claude-9b] 2026-10-27 The last Pmove call ran no movement step: a usercmd shorter than what is left
+// of a step (RunHzSteps, RunCod4Steps) runs Pmove with no time and only turns the view. Owner 10-27
+// 03:27: "movement is still fucked. Now it doesn't matter the fps when you move you bounce";
+// 03:29: CoD4 movement "doesn't work right either". After Pmove, ClientThink_real (0x8256C260) calls
+// 0x82483C20 (the call returns to 0x8256C644) when the player pressed to move, Pmove left the origin
+// where it was and the player isn't in pm_type 2: the game's fix for a player held in place (relatives:
+// CoD2 PC SP 0x005092F0, World at War PC SP 0x004156C0). On the console every usercmd moved the player
+// (one Pmove step a frame), so it ran only for a player really held; with steps of 1/60 s (or CoD4's
+// 8 ms) every usercmd without a step looked held to it. Run c9b-vt-144 (saint_lo, 144 fps, walking,
+// cod3_debug_view_trace): it lifted the player 30 units at the first such usercmd and put him back up
+// after each step, while the falling speed kept growing (the step fell 0.1, 0.3 ... 12 units): the
+// origin went down and up by up to 12 units every other frame, at any frame rate that has frames
+// without a step (CoD4's random lifts on slopes, 10-18, are the same call). Now it runs only after a
+// usercmd that ran a step, as on the console.
+thread_local bool g_no_step = false;
+int g_no_step_skips = 0;  // calls left out (the debug log)
 
 // CoD4 sprint's "let go of the button after running out", per client (the
 // campaign moves client 0 only).
@@ -240,6 +280,9 @@ void UpdateViewAngles(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, 
   g::WriteU32(base, P.pm, saved_pm);
 }
 
+void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], int start_time, int steps,
+                   int step_ms, int final_time);  // [claude-9b] below
+
 // Runs the game's Pmove in CoD4 PC's 8 ms steps (its own pmove_fixed loop),
 // the usercmd's time and the time left from the usercmds before. The
 // playerState's commandTime is the usercmd's time again afterwards, so
@@ -264,15 +307,148 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(plan.start_time + plan.steps * kStep));
   g::WriteU32(base, pm + P.pmove.pmove_fixed, 1);
   g::WriteU32(base, pm + P.pmove.pmove_msec, kStep);
+  float before[3];  // [claude-9b] the camera between the steps (StepViewOffset)
+  for (int i = 0; i < 3; ++i) before[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
   g_move.snap = true;
   __imp__sub_82496978(ctx, base);  // no steps: its loop runs none
   g_move.snap = false;
+  if (plan.steps == 0) g_no_step = true;  // [claude-9b]
   g::WriteU32(base, pm + P.pmove.pmove_fixed, fixed);
   g::WriteU32(base, pm + P.pmove.pmove_msec, step_msec);
   if (plan.steps == 0) UpdateViewAngles(ctx, base, pm, ps, final_time - command_time);
   g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
   st.pending = plan.pending_after;
+  Cod4StepsDone(base, ps, client, before, plan.start_time, plan.steps, kStep, final_time);  // [claude-9b]
+}
+
+// [acct2-main] The fixed movement rate (cod3_move_hz), per client: the last step's positions, to
+// smooth the camera between steps, and the newest usercmd's time.
+struct HzSteps {
+  bool valid = false;  // a step to smooth from
+  float from[3] = {};  // the origin before the last step
+  float to[3] = {};    // and after it
+  int step_end = 0;    // the last step's end (game ms)
+  int step_len = 1;    // its length
+  int now = 0;         // the newest usercmd's time
+  uint32_t ps = 0;     // the playerState moved
+  int32_t ease_time = 0;  // [claude-9b] the game's stair easing time when the last step ran (StepEaseTime)
+  // The debug log: steps and usercmds since the last line.
+  int log_steps = 0;
+  int log_cmds = 0;
+  int log_time = -1000000;
+};
+HzSteps g_hz[mv::PlayerPreferences::kMaxClients];
+
+void ReadOrigin(uint8_t* base, uint32_t ps, float o[3]) {
+  for (int i = 0; i < 3; ++i) o[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
+}
+
+// [claude-9b] 2026-10-27 The game's stair easing (cg.stepTime, cg + 0x10BC; cg_t 0x82A98D90 + client x 5840): set
+// to cg.time by the stair-step event (0xA8) that ClientThink_real's ClientEvents passes to CG_EntityEvent after
+// Pmove; the camera then rises (or sinks) through the stair's height over 100 ms (CAMERA_ORIGIN.md 3). Read when a
+// movement step runs, it tells StepViewOffset whether that step went up or down a stair.
+int32_t StepEaseTime(uint8_t* base, int client) {
+  return g::ReadS32(base, 0x82A98D90u + static_cast<uint32_t>(client) * 5840u + 0x10BCu);
+}
+
+// Moves the player through every step end up to the usercmd's time, one Pmove call each (the
+// game's own loop runs one step: the call's time is that step). A usercmd with no step end in it
+// runs Pmove with no time, then turns the view, as RunCod4Steps does.
+void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int client, int hz) {
+  const uint32_t cmd = Cmd(pm);
+  const int final_time = g::ReadS32(base, cmd + P.cmd.server_time);
+  const int command_time = g::ReadS32(base, ps + P.ps.command_time);
+  HzSteps& h = g_hz[client];
+  if (final_time <= command_time || command_time < 0) {
+    // Nothing to move (the game refuses an older usercmd): its own call, as before.
+    __imp__sub_82496978(ctx, base);
+    return;
+  }
+  // Pmove keeps at most 1000 ms, and 50 with pm_flags 0x80000 (the time before it is dropped,
+  // as the game drops it).
+  const int max_span = (g::ReadU32(base, ps + P.ps.pm_flags) & 0x80000u) ? 50 : 1000;
+  int start = mv::MoveStepEndAtOrBefore(command_time, hz);
+  if (final_time - start > max_span) start = final_time - max_span;
+
+  float before[3] = {};
+  int steps = 0, t = start, last_len = 1;
+  // Pmove(pm, r4) is called with two arguments (ClientThink_real passes 0 in r4); a call leaves
+  // the argument registers changed, so each step gets the caller's again (2026-10-26: without
+  // this the second step's r4 was left over and the trace called through a null pointer).
+  const PPCRegister args[8] = {ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10};
+  auto restore_args = [&] {
+    ctx.r3 = args[0]; ctx.r4 = args[1]; ctx.r5 = args[2]; ctx.r6 = args[3];
+    ctx.r7 = args[4]; ctx.r8 = args[5]; ctx.r9 = args[6]; ctx.r10 = args[7];
+  };
+  for (int end = mv::MoveStepEndAfter(t, hz); end <= final_time; end = mv::MoveStepEndAfter(end, hz)) {
+    ReadOrigin(base, ps, before);
+    g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(t));
+    g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(end));
+    restore_args();
+    __imp__sub_82496978(ctx, base);
+    last_len = end - t;
+    t = end;
+    ++steps;
+  }
+  if (steps == 0) {
+    g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(start));
+    g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(start));
+    restore_args();
+    __imp__sub_82496978(ctx, base);  // no time: its loop runs none
+    UpdateViewAngles(ctx, base, pm, ps, final_time - command_time);
+    g_no_step = true;  // [claude-9b]
+  }
+  g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
+  g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
+
+  if (steps > 0) {
+    for (int i = 0; i < 3; ++i) h.from[i] = before[i];
+    ReadOrigin(base, ps, h.to);
+    const float dx = h.to[0] - h.from[0], dy = h.to[1] - h.from[1], dz = h.to[2] - h.from[2];
+    // More than a step can move (a teleport, a spawn): nothing to smooth.
+    h.valid = dx * dx + dy * dy + dz * dz < 64.0f * 64.0f;
+    h.step_end = t;
+    h.step_len = std::max(last_len, 1);
+    h.ease_time = StepEaseTime(base, client);  // [claude-9b] before this usercmd's events
+  }
+  h.now = final_time;
+  h.ps = ps;
+  h.log_steps += steps;
+  h.log_cmds += 1;
+  if (mv::DebugMovement() && (final_time - h.log_time >= 1000 || final_time < h.log_time)) {
+    if (h.log_time > -1000000 && final_time > h.log_time)
+      REXLOG_INFO("cod3: movement steps: {} steps of 1/{} s in {} usercmds over {} ms (cod3_move_hz); "
+                  "held-player fix left out after {} usercmds without a step",  // [claude-9b]
+                  h.log_steps, hz, h.log_cmds, final_time - h.log_time, g_no_step_skips);
+    h.log_time = final_time;
+    h.log_steps = 0;
+    h.log_cmds = 0;
+  }
+}
+
+// [claude-9b] 2026-10-27 The CoD4 style's camera between its 8 ms steps (owner 10-27 03:29: CoD4 movement
+// "doesn't work right either"): above 125 fps some frames run no step and the next one runs one, so the
+// camera moved in steps of 1/125 s. The steps of one usercmd run in one Pmove call (the game's own
+// loop), so the last step's start is taken as the call's movement split evenly over its steps; the
+// camera is drawn between it and the end by how far the usercmd's time is past the last step's end
+// (StepViewOffset, as for cod3_move_hz's steps: one step behind at most). Run c9b-vt2-cod4-144 with
+// the whole call as one span: the camera lagged and caught up (0.6 then 3.2 units) after each usercmd
+// that ran two steps.
+void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], int start_time, int steps,
+                   int step_ms, int final_time) {
+  HzSteps& h = g_hz[client];
+  if (steps > 0) {
+    ReadOrigin(base, ps, h.to);
+    const float dx = h.to[0] - before[0], dy = h.to[1] - before[1], dz = h.to[2] - before[2];
+    h.valid = dx * dx + dy * dy + dz * dz < 64.0f * 64.0f * steps * steps;  // more: a teleport, a spawn
+    for (int i = 0; i < 3; ++i) h.from[i] = h.to[i] - (h.to[i] - before[i]) / static_cast<float>(steps);
+    h.step_end = start_time + steps * step_ms;
+    h.step_len = std::max(step_ms, 1);
+    h.ease_time = StepEaseTime(base, client);  // [claude-9b] before this usercmd's events
+  }
+  h.now = final_time;
+  h.ps = ps;
 }
 
 // The debug log's jump height: the highest point of each jump above where it
@@ -310,6 +486,7 @@ void WatchJump(uint8_t* base, uint32_t ps, int client, bool cod4_steps) {
 // Pmove(pmove_t* pm): one usercmd of one player.
 REX_EXTERN(__imp__sub_82496978);
 REX_HOOK_RAW(sub_82496978) {
+  g_no_step = false;  // [claude-9b] set again below for a usercmd that runs no step
   cod3::protected_dvars::Tick();  // the test's pretend match (game/protected_dvars.h)
   const uint32_t pm = ctx.r3.u32;
   const uint32_t ps = ValidGuest(pm) ? g::ReadU32(base, pm + P.pmove.ps) : 0;
@@ -319,13 +496,20 @@ REX_HOOK_RAW(sub_82496978) {
   }
   const mv::MoveRules rules = RulesFor(ClientIndex(base, ps));
   if (rules.AllOriginal()) {
-    // The console's movement: nothing of ours runs. A sprint key still held
-    // from before sprint was switched off doesn't count (the console game
-    // never sets the sprint bit).
+    // The console's movement: nothing of ours runs (but the fixed rate,
+    // cod3_move_hz). A sprint key still held from before sprint was switched
+    // off doesn't count (the console game never sets the sprint bit).
     g_move.active = false;
     const uint32_t buttons = g::ReadU32(base, Cmd(pm) + P.cmd.buttons);
     if (buttons & mv::button::kSprint) g::WriteU32(base, Cmd(pm) + P.cmd.buttons, buttons & ~mv::button::kSprint);
-    __imp__sub_82496978(ctx, base);
+    // [acct2-main] At the fixed rate (cod3_move_hz), as the console at 60 fps; 0: the game's call.
+    const int hz = mv::MoveStepHz();
+    if (hz > 0 && P.update_view_angles != 0) {
+      RunHzSteps(ctx, base, pm, ps, ClientIndex(base, ps), hz);
+    } else {
+      g_hz[ClientIndex(base, ps)].valid = false;
+      __imp__sub_82496978(ctx, base);
+    }
     if (buttons & mv::button::kSprint) g::WriteU32(base, Cmd(pm) + P.cmd.buttons, buttons);
     g_steps[ClientIndex(base, ps)].on = false;
     RecordView(base, ps);
@@ -348,10 +532,16 @@ REX_HOOK_RAW(sub_82496978) {
     g::WriteF32(base, ps + P.ps.scale_sprint, m.scales[2] * (mv::cod4::kSprintSpeedScale / P.spawn_sprint_scale));
 
   const int client = ClientIndex(base, ps);
+  const int hz = mv::MoveStepHz();  // [acct2-main]
   if (rules.Cod4Steps() && P.pmove.pmove_fixed != 0 && P.update_view_angles != 0) {
+    // [acct2-main] CoD4 PC's own steps; [claude-9b] RunCod4Steps keeps the camera's steps (g_hz)
     RunCod4Steps(ctx, base, pm, ps, client);
+  } else if (hz > 0 && P.update_view_angles != 0) {
+    g_steps[client].on = false;
+    RunHzSteps(ctx, base, pm, ps, client, hz);  // [acct2-main] the fixed rate (cod3_move_hz)
   } else {
     g_steps[client].on = false;
+    g_hz[client].valid = false;  // [acct2-main]
     __imp__sub_82496978(ctx, base);
   }
 
@@ -523,6 +713,84 @@ REX_HOOK_RAW(sub_8246B138) {
     }
   }
   __imp__sub_8246B138(ctx, base);
+}
+
+// [claude-9b] 2026-10-27 0x82483C20: ClientThink_real calls it after Pmove for a player that pressed to
+// move and stayed in place (see g_no_step); Pmove's own code calls it too (0x82486CA8, 0x8248EFF8),
+// left as it is. Left out after a usercmd that ran no movement step.
+namespace {
+constexpr uint32_t kHeldFixReturn = 0x8256C644;  // ClientThink_real, after its call
+}  // namespace
+REX_EXTERN(__imp__sub_82483C20);
+REX_HOOK_RAW(sub_82483C20) {
+  if (g_no_step && static_cast<uint32_t>(ctx.lr) == kHeldFixReturn) {
+    g_no_step = false;
+    ++g_no_step_skips;
+    return;
+  }
+  __imp__sub_82483C20(ctx, base);
+}
+
+// ===========================================================================
+// [acct2-main] 2026-10-26 Client side: the camera between the fixed movement steps
+// ===========================================================================
+// CG_CalcViewValues: the view setup it calls (0x824505E8) places the camera from the player's
+// origin (refdef origin at cg + 4480, cg = 0x82A98D90 + client x 5840; the client index at
+// 0x82A2A1C8), so above cod3_move_hz it would move in steps. After it, the camera is moved back by
+// the part of the last step not due yet: the origin between that step's start and end, by how far
+// the newest usercmd's time is into the next step. Only while the playerState is where that step
+// left it (nothing else moved the player: a vehicle, a script) and the camera is at the player's
+// eye (not a cutscene or a turret's camera). The view angles are not touched.
+namespace {
+constexpr uint32_t kCgBase = 0x82A98D90;    // cg_t of local client 0
+constexpr uint32_t kCgSize = 5840;
+constexpr uint32_t kCgRefdefOrigin = 4480;  // vec3
+constexpr uint32_t kActiveLocalClient = 0x82A2A1C8;
+
+// The camera's offset from the movement steps: true while the playerState is where the last step
+// left it and the camera is at the player's eye.
+bool StepViewOffset(uint8_t* base, uint32_t client, uint32_t cam, float out[3]) {
+  if (mv::MoveStepHz() <= 0) return false;
+  const HzSteps& h = g_hz[client];
+  if (!h.valid || !ValidGuest(h.ps)) return false;
+  float now[3];
+  ReadOrigin(base, h.ps, now);
+  if (now[0] != h.to[0] || now[1] != h.to[1] || now[2] != h.to[2]) return false;  // moved since the step
+  float c[3];
+  for (int i = 0; i < 3; ++i) c[i] = g::ReadF32(base, cam + 4 * i);
+  // The eye: above the origin by the view height (standing, crouched, prone) with the lean, bob
+  // and landing offsets.
+  const float ex = c[0] - h.to[0], ey = c[1] - h.to[1], ez = c[2] - h.to[2];
+  if (ex * ex + ey * ey > 40.0f * 40.0f || ez < -24.0f || ez > 96.0f) return false;
+  const float into = static_cast<float>(h.now - h.step_end) / static_cast<float>(h.step_len);
+  const float back = 1.0f - std::clamp(into, 0.0f, 1.0f);  // the part of the last step not due yet
+  if (back <= 0.0f) return false;
+  for (int i = 0; i < 3; ++i) out[i] = (h.from[i] - h.to[i]) * back;
+  // [claude-9b] 2026-10-27 A stair step in the last movement step: the game eases the camera through it (from the
+  // event the step raised), so its height is not eased here too (CAMERA_ORIGIN.md 5 (A): a dip of about the stair's
+  // height, then a 100 ms return). The step's sideways part is still drawn between the steps.
+  if (REXCVAR_GET(cod3_move_stairs_view) && StepEaseTime(base, static_cast<int>(client)) != h.ease_time) {
+    out[2] = 0.0f;
+  }
+  return true;
+}
+
+void SmoothView(uint8_t* base) {
+  const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+  if (client >= static_cast<uint32_t>(mv::PlayerPreferences::kMaxClients)) return;
+  const uint32_t cam = kCgBase + client * kCgSize + kCgRefdefOrigin;
+  float off[3];
+  // Walking: the movement steps. Carried by a vehicle (moved in the game's updates, not by the
+  // movement): the same smoothing as the vehicle is drawn with (game/server_step.h).
+  if (!StepViewOffset(base, client, cam, off) && !cod3::server_step::PlayerViewOffset(base, off)) return;
+  for (int i = 0; i < 3; ++i) g::WriteF32(base, cam + 4 * i, g::ReadF32(base, cam + 4 * i) + off[i]);
+}
+}  // namespace
+
+REX_EXTERN(__imp__CG_CalcViewValues);
+REX_HOOK_RAW(CG_CalcViewValues) {
+  __imp__CG_CalcViewValues(ctx, base);
+  SmoothView(base);
 }
 
 // ===========================================================================

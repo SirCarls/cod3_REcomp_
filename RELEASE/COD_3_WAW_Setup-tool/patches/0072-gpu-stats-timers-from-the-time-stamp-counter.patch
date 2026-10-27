@@ -1,0 +1,123 @@
+diff --git a/src/core/gpu_stats.cpp b/src/core/gpu_stats.cpp
+--- a/src/core/gpu_stats.cpp
++++ b/src/core/gpu_stats.cpp
+@@ -9,17 +9,102 @@
+ 
+ #include <atomic>
+ #include <chrono>
++#include <cstdint>
++
++// [claude-9b] the processor's time-stamp counter (see NowMicros)
++#if defined(__x86_64__) || defined(_M_X64)
++#if defined(_MSC_VER)
++#include <intrin.h>
++#else
++#include <cpuid.h>
++#include <x86intrin.h>
++#endif
++#define REX_STATS_TSC 1
++#else
++#define REX_STATS_TSC 0
++#endif
+ 
+ namespace rex::graphics::stats {
+ 
+ namespace {
+ std::atomic<uint64_t> g_counters[size_t(Counter::kCount)];
+ 
+-uint64_t NowMicros() {
++uint64_t SteadyMicros() {
+   return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+                       std::chrono::steady_clock::now().time_since_epoch())
+                       .count());
+ }
++
++// [claude-9b] 2026-10-27 The GPU thread's timers (ScopedMicros: every draw's textures, render
++// targets and pipeline, among others) read the clock about 20,000 times a frame in a heavy scene.
++// Through steady_clock that was 6% of the GPU emulation thread in Black Baron's tank scene (3,200
++// draws a frame; function profile: clock reads 6.2%, ScopedMicros 0.8%), and that thread is what
++// limits the frame rate there (owner 2026-10-27: "the tank mission's fps is really low ... It's
++// capping out around 130fps"). Where the processor's time-stamp counter runs at a constant rate
++// (invariant TSC: CPUID 0x80000007, EDX bit 8) it is read instead, in a few cycles, and scaled to
++// microseconds by its rate, measured once against steady_clock (10 ms, at the first timer) and
++// counted from steady_clock's value then, so the times stay steady_clock's microseconds.
++// Elsewhere (no invariant TSC, other processors): steady_clock, as before.
++#if REX_STATS_TSC
++bool InvariantTsc() {
++#if defined(_MSC_VER)
++  int regs[4] = {};
++  __cpuid(regs, int(0x80000000u));
++  if (uint32_t(regs[0]) < 0x80000007u) return false;
++  __cpuid(regs, int(0x80000007u));
++  return (uint32_t(regs[3]) & (1u << 8)) != 0;
++#else
++  if (__get_cpuid_max(0x80000000u, nullptr) < 0x80000007u) return false;
++  unsigned eax = 0, ebx = 0, ecx = 0, edx = 0;
++  __cpuid(0x80000007u, eax, ebx, ecx, edx);
++  return (edx & (1u << 8)) != 0;
++#endif
++}
++
++struct TscClock {
++  bool ok = false;
++  uint64_t tsc0 = 0;         // the counter at us0
++  uint64_t us0 = 0;          // steady_clock's microseconds then
++  double us_per_tick = 0.0;  // the counter's rate
++};
++
++TscClock MakeTscClock() {
++  TscClock clock;
++  if (!InvariantTsc()) return clock;
++  const auto t0 = std::chrono::steady_clock::now();
++  const uint64_t tsc0 = __rdtsc();
++  auto t1 = t0;
++  uint64_t tsc1 = tsc0;
++  do {
++    t1 = std::chrono::steady_clock::now();
++    tsc1 = __rdtsc();
++  } while (t1 - t0 < std::chrono::milliseconds(10));
++  const double us = std::chrono::duration<double, std::micro>(t1 - t0).count();
++  if (tsc1 <= tsc0 || !(us > 0.0)) return clock;
++  clock.us_per_tick = us / double(tsc1 - tsc0);
++  clock.tsc0 = tsc1;
++  clock.us0 = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(t1.time_since_epoch()).count());
++  clock.ok = true;
++  return clock;
++}
++#endif
++
++uint64_t NowMicros() {
++#if REX_STATS_TSC
++  static const TscClock tsc = MakeTscClock();
++  if (tsc.ok) {
++    const uint64_t now = __rdtsc();
++    if (now >= tsc.tsc0) return tsc.us0 + uint64_t(double(now - tsc.tsc0) * tsc.us_per_tick);
++  }
++#endif
++  return SteadyMicros();
++}
++
++// [claude-9b] A timer's length: never below 0 (two cores' counters may differ by a few cycles).
++uint64_t Since(uint64_t start_us) {
++  const uint64_t now = NowMicros();
++  return now > start_us ? now - start_us : 0;
++}
+ }  // namespace
+ 
+ void Add(Counter counter, uint64_t amount) {
+@@ -83,13 +168,13 @@
+ 
+ ScopedGpuWait::~ScopedGpuWait() {
+   Add(Counter::kGpuWaits);
+-  Add(Counter::kGpuWaitMicros, NowMicros() - start_us_);
++  Add(Counter::kGpuWaitMicros, Since(start_us_));
+ }
+ 
+ ScopedMicros::ScopedMicros(Counter counter) : counter_(counter), start_us_(NowMicros()) {}
+ 
+ ScopedMicros::~ScopedMicros() {
+-  Add(counter_, NowMicros() - start_us_);
++  Add(counter_, Since(start_us_));
+ }
+ 
+ }  // namespace rex::graphics::stats

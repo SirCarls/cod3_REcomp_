@@ -6,6 +6,7 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstring>  // [acct2-main] strlen
 #include <ctime>
 #include <deque>
 #include <fstream>
@@ -68,6 +69,16 @@ std::vector<std::string> g_level_loads;    // "saint_lo: 43.2 s (briefing after 
 double g_avg_frame_s = 0.0;
 Clock::time_point g_last_slow_log{};
 int g_slow_suppressed = 0;
+double g_slow_suppressed_worst_ms = 0.0;  // [acct2-main] the worst of those not logged
+
+// [acct2-main] The spread of frame times, logged every 10 s (verbose): the microstutters under the
+// slow-frame bar (2.5x the average and 25 ms), such as single frames of two vblanks at a 60 fps cap.
+// A fixed buffer, so nothing is allocated per frame; only the game's main thread uses it.
+constexpr size_t kSpreadMax = size_t(1) << 15;  // 10 s at up to 3,276 fps
+std::array<float, kSpreadMax> g_spread_ms{};
+size_t g_spread_count = 0;
+uint64_t g_spread_dropped = 0;
+Clock::time_point g_spread_start{};
 #if COD3_HAS_GPU_STATS
 rex::graphics::stats::Snapshot g_last_gpu;
 #endif
@@ -202,20 +213,71 @@ void Start(const std::filesystem::path& logs_dir) {
               REXCVAR_GET(cod3_log_detail));
 }
 
+namespace {
+
+// [acct2-main] Adds a frame to the spread; every 10 s, one line: frames, median, 99th percentile and
+// worst frame time, and how many frames took over 1.5x and 2x the median, 50 ms and 100 ms.
+void NoteFrameTime(double frame_s) {
+  const auto now = Clock::now();
+  if (g_spread_start == Clock::time_point{}) g_spread_start = now;
+  if (g_spread_count < kSpreadMax)
+    g_spread_ms[g_spread_count++] = float(frame_s * 1000.0);
+  else
+    ++g_spread_dropped;
+  const double span_s = std::chrono::duration<double>(now - g_spread_start).count();
+  if (span_s < 10.0) return;
+  const size_t n = g_spread_count;
+  const uint64_t dropped = g_spread_dropped;
+  g_spread_count = 0;
+  g_spread_dropped = 0;
+  g_spread_start = now;
+  if (n < 2) return;
+  float* first = g_spread_ms.data();
+  float* last = first + n;
+  const float worst = *std::max_element(first, last);
+  // The median, then the 99th percentile among the frames at or above it.
+  std::nth_element(first, first + n / 2, last);
+  const float median = first[n / 2];
+  const size_t p99_at = std::min(n - 1, n * 99 / 100);
+  std::nth_element(first + n / 2, first + p99_at, last);
+  const float p99 = first[p99_at];
+  size_t over_15 = 0, over_2 = 0, over_50 = 0, over_100 = 0;
+  for (const float* p = first; p != last; ++p) {
+    over_15 += *p > median * 1.5f;
+    over_2 += *p > median * 2.0f;
+    over_50 += *p > 50.0f;
+    over_100 += *p > 100.0f;
+  }
+  REXLOG_INFO("cod3: frame times {:.1f} s: {} frames, median {:.1f} ms, 99th {:.1f} ms, worst {:.1f} "
+              "ms; over 1.5x the median {}, over 2x {}, over 50 ms {}, over 100 ms {}{}",
+              span_s, n + dropped, median, p99, worst, over_15, over_2, over_50, over_100,
+              dropped ? " (the counts leave out frames over the buffer)" : "");
+}
+
+}  // namespace
+
 void OnFrame(double frame_s, double busy_s) {
 #if COD3_HAS_GPU_STATS
   namespace gs = rex::graphics::stats;
   const gs::Snapshot cur = gs::Read();
   const gs::Snapshot prev = g_last_gpu;
   g_last_gpu = cur;
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 9
+  // [claude-9b] 2026-10-27 SDK patch 0120: the GPU thread's per-draw timers (texture request,
+  // upload and create, resolve, render target update, pipeline configure; stats 7 and 8) time
+  // only while the detailed slow-frame line below, their only reader, is on. They cost about 4%
+  // of the GPU emulation thread in a heavy scene (Black Baron's tanks).
+  gs::SetDetailTimers(Verbose());
+#endif
 #endif
   if (frame_s <= 0.0 || frame_s > 3.0) return;  // a load or a stall, not a frame
   const double avg = g_avg_frame_s > 0.0 ? g_avg_frame_s : frame_s;
   g_avg_frame_s = avg * 0.95 + frame_s * 0.05;
   if (!Verbose()) return;
+  NoteFrameTime(frame_s);  // [acct2-main]
   // Slow: over 2.5x the running average and over 25 ms.
   if (frame_s < 0.025 || frame_s < avg * 2.5) return;
-  char line[512];
+  char line[896];  // [acct2-main] room for the texture times (stats 7) and 0112 (stats 8)
 #if COD3_HAS_GPU_STATS
   auto d = [&](gs::Counter c) { return (unsigned long long)(cur[c] - prev[c]); };
   std::snprintf(line, sizeof(line),
@@ -228,6 +290,51 @@ void OnFrame(double frame_s, double busy_s) {
                 d(gs::Counter::kReadbacks), d(gs::Counter::kReadbackBytes) / 1024,
                 d(gs::Counter::kUploadBytes) / 1024, d(gs::Counter::kTextureLoads),
                 d(gs::Counter::kWatchFaults));
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 6
+  // [acct2-main] What else the GPU emulation did since the last frame, to tell the causes of a
+  // stutter apart: texture data loaded, shaders translated while a draw waited, HD textures made,
+  // and how long the GPU thread was busy (about the frame time: that thread held the frame up).
+  {
+    const size_t used = std::strlen(line);
+    std::snprintf(line + used, sizeof(line) - used,
+                  " | texture loads %llu KB, %llu shaders translated (%.1f ms), %llu HD textures "
+                  "made, GPU thread busy %.1f ms (submit %.1f ms)",
+                  d(gs::Counter::kTextureLoadBytes) / 1024, d(gs::Counter::kShaderTranslations),
+                  double(d(gs::Counter::kShaderTranslateMicros)) / 1000.0,
+                  d(gs::Counter::kTexturesReplaced),
+                  double(d(gs::Counter::kGpuThreadMicros)) / 1000.0,
+                  double(d(gs::Counter::kSubmitMicros)) / 1000.0);
+  }
+#endif
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 7
+  // [acct2-main] 2026-10-25 Where the GPU thread's texture time went (SDK patch 0111): all of it
+  // for the draws, and of it the textures made, the guest data uploaded; textures destroyed over
+  // the cache's memory limits.
+  {
+    const size_t used = std::strlen(line);
+    std::snprintf(line + used, sizeof(line) - used,
+                  " | textures %.1f ms: %llu made (%.1f ms), guest data uploaded %.1f ms; %llu "
+                  "destroyed (%.1f ms)",
+                  double(d(gs::Counter::kTextureRequestMicros)) / 1000.0,
+                  d(gs::Counter::kTextureCreates),
+                  double(d(gs::Counter::kTextureCreateMicros)) / 1000.0,
+                  double(d(gs::Counter::kTextureUploadMicros)) / 1000.0,
+                  d(gs::Counter::kTexturesDestroyed),
+                  double(d(gs::Counter::kTextureDestroyMicros)) / 1000.0);
+  }
+#endif
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 8
+  // [acct2-main] 2026-10-26 The rest of the GPU thread's draw and copy work (SDK patch 0112):
+  // resolves (EDRAM -> memory), render target changes, pipelines picked or made for the draws.
+  {
+    const size_t used = std::strlen(line);
+    std::snprintf(line + used, sizeof(line) - used,
+                  " | resolves %.1f ms, render targets %.1f ms, pipelines %.1f ms",
+                  double(d(gs::Counter::kResolveMicros)) / 1000.0,
+                  double(d(gs::Counter::kRenderTargetUpdateMicros)) / 1000.0,
+                  double(d(gs::Counter::kPipelineConfigureMicros)) / 1000.0);
+  }
+#endif
 #else
   std::snprintf(line, sizeof(line), "slow frame %.1f ms (average %.1f ms, game thread %.1f ms)",
                 frame_s * 1000.0, avg * 1000.0, busy_s * 1000.0);
@@ -241,11 +348,14 @@ void OnFrame(double frame_s, double busy_s) {
   const auto now = Clock::now();
   if (now - g_last_slow_log < std::chrono::milliseconds(250)) {
     ++g_slow_suppressed;
+    g_slow_suppressed_worst_ms = std::max(g_slow_suppressed_worst_ms, frame_s * 1000.0);  // [acct2-main]
     return;
   }
   g_last_slow_log = now;
   if (g_slow_suppressed) {
-    REXLOG_INFO("cod3: {} ({} more slow frames since the last line)", line, g_slow_suppressed);
+    REXLOG_INFO("cod3: {} ({} more slow frames since the last line, the worst {:.1f} ms)", line,
+                g_slow_suppressed, g_slow_suppressed_worst_ms);  // [acct2-main] the worst
+    g_slow_suppressed_worst_ms = 0.0;
     g_slow_suppressed = 0;
   } else {
     REXLOG_INFO("cod3: {}", line);

@@ -88,6 +88,7 @@ enum class Action : uint8_t {
   kWeapAlt,
   kSlot1,
   kSlot2,
+  kFlipGun,  // [claude-9b] 2026-10-27 the weapon in the left hand (a port setting, Delivery::kPort)
   // General
   kScores,
   // Vehicle
@@ -119,6 +120,8 @@ enum class Delivery : uint8_t {
             // "held" while the key is down; no game command
   kView,    // the vehicle view switch: the game's own read of it (the right
             // stick click's press) gets one press per key press
+  kPort,    // [claude-9b] 2026-10-27 a port setting, not the game's: the press switches the bool setting named by
+            // `command` (for split-screen players 2 to 4 its "_2" .. "_4" twin, where there is one)
 };
 
 enum class Group : uint8_t { kCombat, kStance, kWeapons, kGeneral, kVehicle, kCount };

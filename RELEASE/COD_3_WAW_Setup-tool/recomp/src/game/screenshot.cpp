@@ -7,7 +7,9 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <ctime>
 #include <deque>
 #include <mutex>
@@ -26,6 +28,8 @@
 #include <rex/logging.h>
 #include <rex/ui/presenter.h>
 
+#include "game/engine.h"      // [claude-9b] cg_drawFPS
+#include "game/frame_rate.h"  // [claude-9b] the frame rate
 #include "util.h"
 
 REXCVAR_DEFINE_INT32(cod3_debug_screenshots, 60, "cod3/Performance",
@@ -154,6 +158,84 @@ bool ValidImage(const rex::ui::RawImage& image) {
   return image.data.size() >= image.stride * (image.height - 1) + size_t(image.width) * 4;
 }
 
+// [claude-9b] 2026-10-27 The frame rate on the pictures (owner 10-27 02:44: "have all tests show
+// cg_drawfps 1"). The game's counter is the overlay's, and the capture is the game's own picture
+// without it, so with cg_drawFPS on each saved picture carries the counter at its top right: "N FPS"
+// (1), "N FPS M.M MS" (2, 3: the average frame time), in the overlay's colors (green at the limit or
+// 60, yellow from 30, red below), from a built-in 5x7 font.
+namespace {
+struct Glyph {
+  char c;
+  uint8_t rows[7];  // 5 bits a row, the leftmost pixel highest
+};
+constexpr Glyph kGlyphs[] = {
+    {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}}, {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
+    {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}}, {'3', {0x1E, 0x01, 0x01, 0x0E, 0x01, 0x01, 0x1E}},
+    {'4', {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}}, {'5', {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}},
+    {'6', {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}}, {'7', {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}},
+    {'8', {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}}, {'9', {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}},
+    {'F', {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x10}}, {'P', {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
+    {'S', {0x0F, 0x10, 0x10, 0x0E, 0x01, 0x01, 0x1E}}, {'M', {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+    {'.', {0x00, 0x00, 0x00, 0x00, 0x00, 0x0C, 0x0C}}, {' ', {0, 0, 0, 0, 0, 0, 0}},
+};
+const Glyph* FindGlyph(char c) {
+  for (const Glyph& g : kGlyphs)
+    if (g.c == c) return &g;
+  return nullptr;
+}
+
+void StampFps(std::vector<uint8_t>& rgba, uint32_t width, uint32_t height) {
+  const int mode = cod3::Engine::Get().draw_fps();
+  if (mode <= 0) return;
+  const cod3::FrameStats st = cod3::FrameRate::Get().Stats();
+  if (!st.valid) return;
+  char text[48];
+  const int fps = static_cast<int>(st.fps + 0.5f);
+  if (mode == 1)
+    std::snprintf(text, sizeof(text), "%d FPS", fps);
+  else
+    std::snprintf(text, sizeof(text), "%d FPS %.1f MS", fps, st.frame_ms);
+  const uint32_t s = std::max<uint32_t>(2, height / 270);  // pixels a font dot: 4 at 1080 lines
+  const uint32_t len = static_cast<uint32_t>(std::strlen(text));
+  const uint32_t text_w = len * 6 * s - s, text_h = 7 * s;
+  const uint32_t pad = 2 * s, margin = 3 * s;
+  if (text_w + 2 * (pad + margin) > width || text_h + 2 * (pad + margin) > height) return;
+  const uint32_t x0 = width - margin - pad - text_w, y0 = margin + pad;
+  // A dark box behind the text, then the text with a one-dot shadow.
+  for (uint32_t y = y0 - pad; y < y0 + text_h + pad; ++y)
+    for (uint32_t x = x0 - pad; x < x0 + text_w + pad; ++x) {
+      uint8_t* p = rgba.data() + (size_t(y) * width + x) * 4;
+      for (int c = 0; c < 3; ++c) p[c] = static_cast<uint8_t>(p[c] * 2 / 5);
+    }
+  const float good = st.limit > 0 ? st.limit * 0.95f : 59.0f;
+  const uint8_t color[3] = {static_cast<uint8_t>(st.fps >= good ? 110 : 255),
+                            static_cast<uint8_t>(st.fps >= good ? 255 : st.fps >= 29.5f ? 230 : 90),
+                            static_cast<uint8_t>(st.fps >= good ? 110 : st.fps >= 29.5f ? 90 : 80)};
+  for (int pass = 0; pass < 2; ++pass) {
+    const uint32_t off = pass == 0 ? s / 2 : 0;
+    const uint8_t black[3] = {0, 0, 0};
+    const uint8_t* col = pass == 0 ? black : color;
+    for (uint32_t i = 0; i < len; ++i) {
+      const Glyph* g = FindGlyph(text[i]);
+      if (!g) continue;
+      for (uint32_t row = 0; row < 7; ++row)
+        for (uint32_t bit = 0; bit < 5; ++bit) {
+          if (!(g->rows[row] & (0x10 >> bit))) continue;
+          for (uint32_t dy = 0; dy < s; ++dy)
+            for (uint32_t dx = 0; dx < s; ++dx) {
+              const uint32_t x = x0 + i * 6 * s + bit * s + dx + off, y = y0 + row * s + dy + off;
+              if (x >= width || y >= height) continue;
+              uint8_t* p = rgba.data() + (size_t(y) * width + x) * 4;
+              p[0] = col[0];
+              p[1] = col[1];
+              p[2] = col[2];
+            }
+        }
+    }
+  }
+}
+}  // namespace
+
 // Writes the picture as a PNG: to <file>.part first, then renamed, so a
 // half-written file never has the real name.
 bool WritePng(const rex::ui::RawImage& image, const std::filesystem::path& file, std::string& error) {
@@ -169,6 +251,7 @@ bool WritePng(const rex::ui::RawImage& image, const std::filesystem::path& file,
       dst[x * 4 + 3] = 0xFF;
     }
   }
+  StampFps(rgba, image.width, image.height);  // [claude-9b] with cg_drawFPS on
   SDL_Surface* surface = SDL_CreateSurfaceFrom(int(image.width), int(image.height),
                                                SDL_PIXELFORMAT_RGBA32, rgba.data(),
                                                int(image.width * 4));

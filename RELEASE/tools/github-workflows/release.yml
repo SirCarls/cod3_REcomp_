@@ -1,0 +1,63 @@
+# Publishing a release: push a tag such as v0.2.0. This builds the ripper for
+# Linux and Windows and attaches one download to the GitHub release:
+# the whole project plus the prebuilt rippers in engine/bin/, so players
+# don't need Rust. (The setup tool still installs it if a binary is missing.)
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  ripper:
+    strategy:
+      matrix:
+        include:
+          # Built on the oldest supported Ubuntu so it runs on older glibc too.
+          - os: ubuntu-22.04
+            platform: linux-amd64
+            exe: rip
+          - os: windows-latest
+            platform: win-amd64
+            exe: rip.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: cargo build --release --locked -p rip
+        working-directory: engine
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rip-${{ matrix.platform }}
+          path: engine/target/release/${{ matrix.exe }}
+
+  package:
+    needs: ripper
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 tools/check_repo.py
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Build the download
+        run: |
+          name="COD3-WaW-${GITHUB_REF_NAME}"
+          mkdir -p "dist/$name"
+          git archive HEAD | tar -x -C "dist/$name"
+          mkdir -p "dist/$name/engine/bin/linux-amd64" "dist/$name/engine/bin/win-amd64"
+          cp artifacts/rip-linux-amd64/rip "dist/$name/engine/bin/linux-amd64/rip"
+          cp artifacts/rip-win-amd64/rip.exe "dist/$name/engine/bin/win-amd64/rip.exe"
+          chmod +x "dist/$name/engine/bin/linux-amd64/rip" "dist/$name/setup.sh" "dist/$name/tools/run_local.sh" \
+                   "dist/$name/COD_3_WAW_Setup-tool/setup.sh"
+          (cd dist && zip -qr "$name.zip" "$name")
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" "dist/COD3-WaW-${GITHUB_REF_NAME}.zip" --clobber

@@ -19,6 +19,10 @@
 //   CROSSHAIR COLOR      AUTO, the game's own colors (cod3_crosshair_constant_color
 //                        off), or one color (on, cod3_crosshair_color)
 //   -- a gap --
+//   MOUSE SENSITIVITY    cod3_sensitivity, the mouse's own (World at War's scale); the game's
+//                        Horizontal / Vertical rows are the controller's only ([claude-9b]
+//                        owner 2026-10-26: "Sensitivity options need to be specific if it
+//                        affects controller or mnk", "Make a new slider for mouse and keyboard")
 //   SENSITIVITY FOR      which weapon class the next two rows set (not a
 //                        setting; it opens at the class in the player's hands)
 //     FROM THE HIP       that class's turning speed from the hip, 0-200%
@@ -55,13 +59,14 @@ enum Row : int {
   kGap,
   kThickness,
   kColor,
-  kWeaponClass,  // first row of the second group
+  kMouse,        // first row of the second group: the mouse's own sensitivity ([claude-9b] 2026-10-26)
+  kWeaponClass,
   kHip,
   kAiming,
   kRowCount
 };
 inline constexpr int kRows = kRowCount;
-inline constexpr int kSecondGroup = kWeaponClass;
+inline constexpr int kSecondGroup = kMouse;
 
 // String keys (resolved by Localize below through the game's Localize hook).
 const char* LabelKey(int row);   // "WEAPON CLASS" ...

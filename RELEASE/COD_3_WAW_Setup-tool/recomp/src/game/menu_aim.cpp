@@ -41,6 +41,7 @@ constexpr Text kTexts[] = {
     {"FEMENU_COP_AIM_ITEM", "AIM"},
     {"FEMENU_COP_AIM_VIDEO_BUTTON", "VIDEO"},
     {"FEMENU_COP_AIM_MOVEMENT_BUTTON", "MOVEMENT"},
+    {"FEMENU_COP_AIM_MOUSE", "MOUSE SENSITIVITY"},  // [claude-9b] 2026-10-26
     {"FEMENU_COP_AIM_CLASS", "SENSITIVITY FOR"},
     {"FEMENU_COP_AIM_HIP", "  FROM THE HIP"},
     {"FEMENU_COP_AIM_ADS", "  AIMING DOWN SIGHTS"},
@@ -55,7 +56,8 @@ constexpr Text kTexts[] = {
 constexpr const char* kLabelKeys[kRows] = {
     "FEMENU_COP_AIM_XHAIR",     "FEMENU_COP_AIM_XHAIR_STYLE",     "FEMENU_COP_AIM_XHAIR_LENGTH",
     "FEMENU_COP_AIM_XHAIR_GAP", "FEMENU_COP_AIM_XHAIR_THICKNESS", "FEMENU_COP_AIM_XHAIR_COLOR",
-    "FEMENU_COP_AIM_CLASS",     "FEMENU_COP_AIM_HIP",             "FEMENU_COP_AIM_ADS",
+    "FEMENU_COP_AIM_MOUSE",     "FEMENU_COP_AIM_CLASS",           "FEMENU_COP_AIM_HIP",
+    "FEMENU_COP_AIM_ADS",
 };
 
 // The weapon classes as the menu shows them (aim_sensitivity.h's groups, in
@@ -74,6 +76,20 @@ struct Size {
 constexpr Size kLengthSize = {"cod3_crosshair_size", 0.0, 32.0, 1.0};
 constexpr Size kGapSize = {"cod3_crosshair_gap", -4.0, 32.0, 1.0};
 constexpr Size kThicknessSize = {"cod3_crosshair_thickness", 0.5, 8.0, 0.5};
+// [claude-9b] MOUSE SENSITIVITY: the same range as F2 > Controls' slider, arrows in quarter steps.
+constexpr Size kMouseSize = {"cod3_sensitivity", 0.1, 30.0, 0.25};
+
+// [claude-9b] The game's own Horizontal / Vertical sensitivity rows say they are the
+// controller's (owner 2026-10-26: "Horizontal and vertical sensitivity sliders should only effect
+// controller's sense"; game/mouse_look.cpp no longer applies them to the mouse).
+constexpr Text kGameTexts[] = {
+    {"FEMENU_COP_HORIZONTALSENS", "HORIZ. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_HORIZ_SENS", "HORIZ. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_VERTICALSENS", "VERT. SENS. (CONTROLLER)"},
+    {"FEMENU_COP_VERT_SENS", "VERT. SENS. (CONTROLLER)"},
+    {"FEMENU_CONTROLS_INST_HORIZONTALSENS", "Controller only. The mouse has its own sensitivity on the AIM page."},
+    {"FEMENU_CONTROLS_INST_VERTICALSENS", "Controller only. The mouse has its own sensitivity on the AIM page."},
+};
 
 // CROSSHAIR COLOR's choices: AUTO (the game's own colors), then one color each.
 struct Color {
@@ -179,6 +195,7 @@ const char* MovementButtonKey() { return "FEMENU_COP_AIM_MOVEMENT_BUTTON"; }
 std::string Value(int row) {
   const int group = std::clamp(g_class.load(), 0, as::kGroupCount - 1);
   switch (row) {
+    case kMouse: return fmt::format("{:.2f}", GetDouble(kMouseSize.setting));
     case kWeaponClass: return kClassNames[group];
     case kHip: return Percent(as::Percent(kPlayer, group, false));
     case kAiming: return Percent(as::Percent(kPlayer, group, true));
@@ -200,6 +217,7 @@ std::string Value(int row) {
 
 std::string Note(int row) {
   switch (row) {
+    case kMouse: return "MOUSE ONLY (WORLD AT WAR'S SCALE, 5 IS ITS DEFAULT)";
     case kWeaponClass: return "EACH WEAPON CLASS HAS ITS OWN SENSITIVITY";
     case kHip:
     case kAiming: return "MOUSE AND STICK, 100% IS THE GAME'S OWN";
@@ -245,6 +263,7 @@ std::string Step(PPCContext& ctx, uint8_t* base, int row, bool right) {
       changed = Set("cod3_crosshair_style", std::to_string((s + (right ? 1 : n - 1)) % n));
       break;
     }
+    case kMouse: changed = StepSize(kMouseSize, right); break;
     case kLength: changed = StepSize(kLengthSize, right); break;
     case kGap: changed = StepSize(kGapSize, right); break;
     case kThickness: changed = StepSize(kThicknessSize, right); break;
@@ -276,6 +295,10 @@ bool NumberOf(int row, menuslider::Number* n, double* value) {
   };
   const int group = std::clamp(g_class.load(), 0, as::kGroupCount - 1);
   switch (row) {
+    case kMouse:
+      *n = menuslider::Number{kMouseSize.lo, kMouseSize.hi, 0.05, 1.0, 2, ""};
+      *value = std::clamp(GetDouble(kMouseSize.setting), kMouseSize.lo, kMouseSize.hi);
+      return true;
     case kLength: return size(kLengthSize);
     case kGap: return size(kGapSize);
     case kThickness: return size(kThicknessSize);
@@ -292,6 +315,7 @@ std::string SetNumber(int row, double value) {
   const int group = std::clamp(g_class.load(), 0, as::kGroupCount - 1);
   bool changed = false;
   switch (row) {
+    case kMouse: changed = Set(kMouseSize.setting, fmt::format("{:.2f}", value)); break;
     case kLength: changed = Set(kLengthSize.setting, fmt::format("{:.2f}", value)); break;
     case kGap: changed = Set(kGapSize.setting, fmt::format("{:.2f}", value)); break;
     case kThickness: changed = Set(kThicknessSize.setting, fmt::format("{:.2f}", value)); break;
@@ -319,7 +343,10 @@ void OnOpen(uint8_t* base) {
 }
 
 uint32_t Localize(uint8_t* base, const char* key) {
-  if (!key || std::strncmp(key, "FEMENU_COP_AIM_", 15) != 0) return 0;
+  if (!key) return 0;
+  for (const Text& t : kGameTexts)  // [claude-9b] the game's own sensitivity rows: the controller's
+    if (std::strcmp(key, t.key) == 0) return FixedText(base, t.key, t.text);
+  if (std::strncmp(key, "FEMENU_COP_AIM_", 15) != 0) return 0;
   for (const Text& t : kTexts)
     if (std::strcmp(key, t.key) == 0) return FixedText(base, t.key, t.text);
   return 0;

@@ -36,6 +36,9 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace rex::ui {
 class Window;
@@ -59,5 +62,30 @@ void SetInputSystem(rex::input::InputSystem* input);
 // key or mouse press since the last controller button (what the first
 // controller's prompts follow, whatever cod3_key_prompts says). Any thread.
 bool KeyboardMouseInUse();
+
+// [acct2-decomp] 2026-10-25 (owner 23:42/23:43: the keys should look like the
+// "SPACE Skip" key cap; that prompt should follow the controller too):
+
+// What the first player's prompts show right now: keys, or a controller's
+// buttons in one style (the same choice the game's prompts make: mnk_mode,
+// cod3_key_prompts, the last device used, cod3_glyph_style). Any thread.
+enum class Look : uint8_t { kKeys, kXbox, kPlayStation, kNintendo, kGameCube };
+Look FirstPlayerLook();
+// A read of the first controller's state outside the game's own pad reads
+// (the cutscene skip reads it while the game's pad reads may not run): a
+// button pressed there with no key or mouse press brings the controller's
+// buttons back, as in play. Any thread.
+void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger, const int16_t axes[4]);
+// The keys the game's prompts show, as key caps: while keys are shown, each
+// key name a text line draws ("[ENTER]", "[WASD]") is drawn invisibly by the
+// game and noted here, in the game's 640x480 menu space, for the overlay to
+// draw as a key cap like "SPACE Skip"'s (ui/hud_overlay.cpp). Entries are
+// those drawn in the last `max_age_ms`. UI thread.
+struct KeyCap {
+  float x0, y0, x1, y1;  // menu space
+  std::string name;      // without the brackets
+  float alpha;           // the text's opacity as the game draws it (fades)
+};
+std::vector<KeyCap> CurrentKeyCaps(int max_age_ms);
 
 }  // namespace cod3::prompts

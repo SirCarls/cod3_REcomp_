@@ -1,0 +1,10 @@
+[package]
+name = "xenos_ucode"
+description = "Xbox 360 (Xenos) shader microcode: decoding, analysis and disassembly (a port of Xenia's), the first part of the Rust renderer's shader translator."
+version.workspace = true
+rust-version.workspace = true
+edition.workspace = true
+# Ported from Xenia / ReXGlue (BSD 3-Clause); parts of the instruction layouts come from freedreno (MIT).
+license = "BSD-3-Clause AND MIT"
+
+[dependencies]

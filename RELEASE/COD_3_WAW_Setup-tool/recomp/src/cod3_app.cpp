@@ -55,6 +55,7 @@
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
 #include "game/watchdog.h"
+#include "render/rust_renderer.h"  // [rust-renderer]
 #include "test_input.h"
 #include "ui/problem_log.h"
 #include "ui/theme.h"
@@ -255,6 +256,8 @@ void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
   }
   // Use the Xenos GPU plugin unless the user picked one (or asked for none).
   if (config.gpu_plugin.empty() && !REXCVAR_GET(cod3_no_gpu)) config.gpu_plugin = "xenos";
+  // [rust-renderer] cod3_renderer rust: the plugin's host backend, no GPU emulation (render/rust_renderer.h).
+  cod3::render::StartHostBackend(config);
 #ifdef _WIN32
   // Graphics API (F2 > Video): Windows builds have Direct3D 12 and Vulkan.
   // "auto" is Vulkan, as on Linux (the same 4096-tile EDRAM, so the game
@@ -441,6 +444,7 @@ void Cod3App::ApplyGpuDefaults() {
 
 void Cod3App::OnPostSetup() {
   ApplyGpuDefaults();   // again, in case the runtime loaded the plugin later
+  cod3::render::ReportRustRenderer();  // [rust-renderer] linked or not, and its ABI (render/rust_renderer.h)
   auto& engine = cod3::Engine::Get();
   engine.SetConfigPath(user_data_root() / "cod3_config.cfg");
   cod3::ui::GameConsole::Get().SetUserDir(user_data_root());

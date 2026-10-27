@@ -1,0 +1,371 @@
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index 222ee32..10c038c 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -12,16 +12,22 @@
+ 
+ #include <array>
+ #include <atomic>
++#include <condition_variable>
+ #include <cstdint>
+ #include <cstring>
++#include <deque>
++#include <filesystem>
+ #include <memory>
++#include <mutex>
+ #include <optional>
+ #include <string>
++#include <thread>
+ #include <unordered_map>
+ #include <unordered_set>
+ #include <vector>
+ 
+ #include <rex/assert.h>
++#include <rex/graphics/pipeline/texture/replacement.h>  // the loader's images (0110)
+ #include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/register_file.h>
+ #include <rex/graphics/shared_memory.h>
+@@ -278,6 +284,12 @@ class TextureCache {
+       replacement_key_ = replacement_key;
+       replacement_denied_ = true;
+     }
++    // A normal texture standing in while its replacement image is read off the
++    // GPU thread (texture_replacement_async): the id of that read
++    // (TextureCache::RequestReplacementImage), 0 when there's none. Once the
++    // image is in, the next lookup of the key makes the replacement texture.
++    uint64_t replacement_load_id() const { return replacement_load_id_; }
++    void set_replacement_load_id(uint64_t id) { replacement_load_id_ = id; }
+     // The policy generation the decision to replace (or not) was made under.
+     uint32_t replacement_policy_generation() const { return replacement_policy_generation_; }
+     void set_replacement_policy_generation(uint32_t generation) {
+@@ -325,6 +337,7 @@ class TextureCache {
+     uint32_t replacement_level_count_ = 0;
+     bool replacement_denied_ = false;
+     uint32_t replacement_policy_generation_ = 0;
++    uint64_t replacement_load_id_ = 0;
+ 
+     // These are to be accessed within the global critical region to synchronize
+     // with shared memory.
+@@ -691,10 +704,43 @@ class TextureCache {
+   // data and the policy allows it, logging the outcome with
+   // texture_replacement_log. nullptr if not; then `denied_key_out` is set to
+   // the key when only the policy stood in the way (the normal texture made
+-  // instead remembers it, see Texture::SetReplacementDenied).
++  // instead remembers it, see Texture::SetReplacementDenied). With
++  // texture_replacement_async, the first time a texture's image is needed it is
++  // only asked for: nullptr, and `load_id_out` is the read's id, which the
++  // normal texture made instead keeps (Texture::set_replacement_load_id).
+   std::unique_ptr<Texture> TryCreateReplacementTexture(const TextureKey& key,
+                                                        const texture_replacement::Policy& policy,
+-                                                       std::optional<uint64_t>& denied_key_out);
++                                                       std::optional<uint64_t>& denied_key_out,
++                                                       uint64_t& load_id_out);
++  // Replacement images read off the GPU thread (texture_replacement_async):
++  // the DDS files of new textures were read on the GPU thread in the middle of
++  // a frame, which held the frame up (in Call of Duty 3, frames of 60-360 ms
++  // whenever new HD textures came into view, about 1 s at a level's start). A
++  // loader thread reads them now, and the texture's guest data is shown until
++  // its image is in.
++  struct ReplacementImageRequest {
++    uint64_t id;
++    std::filesystem::path path;
++    xenos::TextureFormat format;
++    uint32_t width, height, level_count, max_width_height;
++    uint64_t max_bytes;
++  };
++  struct ReplacementImageResult {
++    texture_replacement::Image image;
++    std::string error;
++    bool ok = false;
++    bool too_large = false;
++    uint64_t done_time_ms = 0;
++  };
++  // The image for the request, if it has been read (taken out: the caller
++  // owns it); otherwise asks the loader for it (once) and returns false.
++  bool TakeOrRequestReplacementImage(const ReplacementImageRequest& request,
++                                     ReplacementImageResult& result_out);
++  // Whether the read with this id is done (its result is waiting).
++  bool IsReplacementImageReady(uint64_t id);
++  void ReplacementLoaderThread();
++  void StopReplacementLoader();
++
+   // Whether a texture's replacement decision no longer holds under the
+   // current policy: a replaced texture the policy now refuses, or a texture
+   // the policy refused that it now allows. Brings the texture's generation up
+@@ -781,6 +827,21 @@ class TextureCache {
+   size_t replacement_over_limit_count_ = 0;
+   // The policy generation RequestTextures last saw.
+   uint32_t replacement_policy_generation_seen_ = 0;
++  // The replacement image loader (texture_replacement_async): requests waiting
++  // or being read (their ids), the images read and not yet taken, how many
++  // reads have finished (bindings are looked up again when that changes, so
++  // the textures waiting for them are made again), and the thread, started on
++  // the first request.
++  std::mutex replacement_loader_mutex_;
++  std::condition_variable replacement_loader_cv_;
++  std::deque<ReplacementImageRequest> replacement_loader_queue_;
++  std::unordered_set<uint64_t> replacement_loader_requested_;
++  std::unordered_map<uint64_t, ReplacementImageResult> replacement_loader_results_;
++  uint64_t replacement_loader_result_bytes_ = 0;
++  bool replacement_loader_stop_ = false;
++  std::thread replacement_loader_thread_;
++  std::atomic<uint32_t> replacement_loads_done_{0};
++  uint32_t replacement_loads_done_seen_ = 0;
+   struct RetiredTexture {
+     std::unique_ptr<Texture> texture;
+     uint64_t last_usage_submission_index;
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index dc7e4ef..1fca236 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -32,6 +32,10 @@
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++#include <rex/thread.h>
++
++// SDK patch 0110: replacement images read off the GPU thread (replacement.cpp).
++REXCVAR_DECLARE(bool, texture_replacement_async);
+ 
+ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_render_to_texture, 24, "GPU",
+                      "Texture cache memory limit for render-to-texture (MB)")
+@@ -240,6 +244,7 @@ TextureCache::TextureCache(const RegisterFile& register_file, SharedMemory& shar
+ }
+ 
+ TextureCache::~TextureCache() {
++  StopReplacementLoader();
+   DestroyAllTextures(true);
+ 
+   if (scaled_resolve_global_watch_handle_) {
+@@ -568,6 +573,13 @@ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
+       replacement_policy_generation_seen_ = policy_generation;
+       ResetTextureBindings();
+     }
++    // Replacement images have been read off the GPU thread (0110): bindings
++    // are looked up again, so the textures standing in for them are replaced.
++    uint32_t loads_done = replacement_loads_done_.load(std::memory_order_acquire);
++    if (loads_done != replacement_loads_done_seen_) {
++      replacement_loads_done_seen_ = loads_done;
++      ResetTextureBindings();
++    }
+   }
+ 
+   // Update the texture keys and the textures.
+@@ -1000,6 +1012,11 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+       // off for a multiplayer match, or back on): the key gets a new texture
+       // made under the current policy.
+       RetireTexture(found_texture_it, "the replacement policy has changed");
++    } else if (found_texture->replacement_load_id() &&
++               IsReplacementImageReady(found_texture->replacement_load_id())) {
++      // A normal texture stood in while its replacement image was read (0110):
++      // the image is in, so the key gets the replacement texture now.
++      RetireTexture(found_texture_it, "its replacement image has been read");
+     } else if (!found_texture->is_replacement() || !found_texture->outdated_mask() ||
+                IsReplacementUpToDate(*found_texture)) {
+       return found_texture;
+@@ -1017,19 +1034,23 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+   {
+     std::unique_ptr<Texture> new_texture;
+     std::optional<uint64_t> denied_key;
++    uint64_t load_id = 0;
+     uint32_t policy_generation = 0;
+     if (replacement_index_ && IsReplacementCandidate(key)) {
+       // The policy as of now: the texture remembers the generation, so a
+       // later change is noticed (ReplacementDecisionChanged).
+       texture_replacement::Policy policy = texture_replacement::GetPolicy();
+       policy_generation = policy.generation;
+-      new_texture = TryCreateReplacementTexture(key, policy, denied_key);
++      new_texture = TryCreateReplacementTexture(key, policy, denied_key, load_id);
+     }
+     if (!new_texture) {
+       new_texture = CreateTexture(key);
+       if (new_texture && denied_key) {
+         new_texture->SetReplacementDenied(*denied_key);
+       }
++      if (new_texture && load_id) {
++        new_texture->set_replacement_load_id(load_id);
++      }
+     }
+     if (!new_texture) {
+       key.LogAction("Failed to create");
+@@ -1110,13 +1131,14 @@ bool TextureCache::IsReplacementUpToDate(Texture& texture) {
+ 
+ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture(
+     const TextureKey& key, const texture_replacement::Policy& policy,
+-    std::optional<uint64_t>& denied_key_out) {
++    std::optional<uint64_t>& denied_key_out, uint64_t& load_id_out) {
+   const bool log = REXCVAR_GET(texture_replacement_log);
+   const uint32_t width = key.GetWidth();
+   const uint32_t height = key.GetHeight();
+   const uint32_t base_address = key.base_page << 12;
+   uint64_t replacement_key = 0;
+   denied_key_out.reset();
++  load_id_out = 0;
+   // One line per texture that could be replaced, in the columns of the pack's
+   // hd_keys.tsv: key, width, height, Xenos format number.
+   auto log_result = [&](std::string_view result) {
+@@ -1194,9 +1216,51 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+   texture_replacement::Image image;
+   std::string error;
+   bool too_large = false;
+-  if (!texture_replacement::LoadDds(file_path, key.format, width, height, key.mip_max_level + 1,
+-                                    GetMaxHostTextureWidthHeight(key.dimension), memory_left,
+-                                    image, error, &too_large)) {
++  bool loaded;
++  if (REXCVAR_GET(texture_replacement_async)) {
++    // Off the GPU thread (0110): the first time, the image is only asked for,
++    // and the guest's texture is made meanwhile (it keeps the request's id and
++    // is replaced once the image is in, see the lookup above).
++    ReplacementImageRequest request;
++    request.path = file_path;
++    request.format = key.format;
++    request.width = width;
++    request.height = height;
++    request.level_count = key.mip_max_level + 1;
++    request.max_width_height = GetMaxHostTextureWidthHeight(key.dimension);
++    request.max_bytes = memory_left;
++    request.id = XXH3_64bits(file_name.data(), file_name.size()) ^
++                 (uint64_t(request.format) << 56) ^ (uint64_t(request.width) << 40) ^
++                 (uint64_t(request.height) << 24) ^ (uint64_t(request.level_count) << 16) ^
++                 request.max_width_height;
++    if (!request.id) {
++      request.id = 1;
++    }
++    ReplacementImageResult result;
++    if (!TakeOrRequestReplacementImage(request, result)) {
++      load_id_out = request.id;
++      log_result(fmt::format("in the pack, {} is being read; the guest's texture is used until then",
++                             file_name));
++      return nullptr;
++    }
++    image = std::move(result.image);
++    error = std::move(result.error);
++    too_large = result.too_large;
++    loaded = result.ok;
++    // The limit as of now: other replacements may have come in while it was read.
++    if (loaded && memory_limit && image.data.size() > memory_left) {
++      loaded = false;
++      too_large = true;
++      error = fmt::format("its {} MB are over what is left under the limit",
++                          image.data.size() >> 20);
++    }
++  } else {
++    loaded = texture_replacement::LoadDds(file_path, key.format, width, height,
++                                          key.mip_max_level + 1,
++                                          GetMaxHostTextureWidthHeight(key.dimension), memory_left,
++                                          image, error, &too_large);
++  }
++  if (!loaded) {
+     if (too_large) {
+       // Not the file's fault: it may fit later, when other replacement
+       // textures are gone. Said once per texture cache.
+@@ -1259,6 +1323,92 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+   return texture;
+ }
+ 
++bool TextureCache::TakeOrRequestReplacementImage(const ReplacementImageRequest& request,
++                                                 ReplacementImageResult& result_out) {
++  std::lock_guard<std::mutex> lock(replacement_loader_mutex_);
++  auto result_it = replacement_loader_results_.find(request.id);
++  if (result_it != replacement_loader_results_.end()) {
++    result_out = std::move(result_it->second);
++    replacement_loader_result_bytes_ -= result_out.image.data.size();
++    replacement_loader_results_.erase(result_it);
++    return true;
++  }
++  if (replacement_loader_requested_.insert(request.id).second) {
++    replacement_loader_queue_.push_back(request);
++    if (!replacement_loader_thread_.joinable()) {
++      replacement_loader_stop_ = false;
++      replacement_loader_thread_ = std::thread([this]() { ReplacementLoaderThread(); });
++    }
++    replacement_loader_cv_.notify_one();
++  }
++  return false;
++}
++
++bool TextureCache::IsReplacementImageReady(uint64_t id) {
++  std::lock_guard<std::mutex> lock(replacement_loader_mutex_);
++  if (replacement_loader_results_.count(id)) {
++    return true;
++  }
++  // Neither waiting nor read (its result was dropped, see below): the texture
++  // is made again, and asks again.
++  return !replacement_loader_requested_.count(id);
++}
++
++void TextureCache::ReplacementLoaderThread() {
++  rex::thread::set_current_thread_name("Texture replacement loader");
++  // Images read but not taken within this time are dropped (their texture
++  // went out of use first); a later use reads them again. Also the most
++  // memory they may hold at once.
++  constexpr uint64_t kResultLifetimeMs = 30000;
++  constexpr uint64_t kMaxResultBytes = uint64_t(1) << 30;
++  std::unique_lock<std::mutex> lock(replacement_loader_mutex_);
++  while (true) {
++    replacement_loader_cv_.wait(
++        lock, [this]() { return replacement_loader_stop_ || !replacement_loader_queue_.empty(); });
++    if (replacement_loader_stop_) {
++      return;
++    }
++    ReplacementImageRequest request = std::move(replacement_loader_queue_.front());
++    replacement_loader_queue_.pop_front();
++    lock.unlock();
++    ReplacementImageResult result;
++    result.ok = texture_replacement::LoadDds(request.path, request.format, request.width,
++                                             request.height, request.level_count,
++                                             request.max_width_height, request.max_bytes,
++                                             result.image, result.error, &result.too_large);
++    if (!result.ok) {
++      result.image = texture_replacement::Image();
++    }
++    const uint64_t now_ms = rex::chrono::Clock::QueryHostUptimeMillis();
++    result.done_time_ms = now_ms;
++    lock.lock();
++    for (auto it = replacement_loader_results_.begin(); it != replacement_loader_results_.end();) {
++      if (now_ms - it->second.done_time_ms > kResultLifetimeMs ||
++          replacement_loader_result_bytes_ + result.image.data.size() > kMaxResultBytes) {
++        replacement_loader_result_bytes_ -= it->second.image.data.size();
++        it = replacement_loader_results_.erase(it);
++      } else {
++        ++it;
++      }
++    }
++    replacement_loader_requested_.erase(request.id);
++    replacement_loader_result_bytes_ += result.image.data.size();
++    replacement_loader_results_[request.id] = std::move(result);
++    replacement_loads_done_.fetch_add(1, std::memory_order_release);
++  }
++}
++
++void TextureCache::StopReplacementLoader() {
++  {
++    std::lock_guard<std::mutex> lock(replacement_loader_mutex_);
++    replacement_loader_stop_ = true;
++  }
++  replacement_loader_cv_.notify_all();
++  if (replacement_loader_thread_.joinable()) {
++    replacement_loader_thread_.join();
++  }
++}
++
+ bool TextureCache::ReplacementDecisionChanged(Texture& texture) {
+   const uint32_t generation = texture_replacement::GetPolicyGeneration();
+   if (texture.replacement_policy_generation() == generation) {
+diff --git a/src/graphics/pipeline/texture/replacement.cpp b/src/graphics/pipeline/texture/replacement.cpp
+index defea32..58cdbe9 100644
+--- a/src/graphics/pipeline/texture/replacement.cpp
++++ b/src/graphics/pipeline/texture/replacement.cpp
+@@ -64,6 +64,12 @@ REXCVAR_DEFINE_INT32(texture_replacement_memory_limit, 4096, "GPU",
+                      "texture that would go beyond it is loaded from the guest's data instead. "
+                      "0 = no limit");
+ 
++REXCVAR_DEFINE_BOOL(texture_replacement_async, true, "GPU",
++                    "Read the replacement images of textures as they come into view on a thread "
++                    "of their own, showing the game's own texture until the image is in (SDK "
++                    "patch 0110). Off: they are read on the GPU thread the first time the "
++                    "texture is drawn, and that frame waits for the file (a stutter)");
++
+ namespace rex::graphics::texture_replacement {
+ 
+ bool IsFormatSupported(xenos::TextureFormat format) {

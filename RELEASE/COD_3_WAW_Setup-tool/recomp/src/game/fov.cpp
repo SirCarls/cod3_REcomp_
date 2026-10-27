@@ -44,6 +44,20 @@
 #include "game/mouse_look.h"
 #include "ui/game_console.h"
 
+// [claude-9b] 2026-10-27 The view from a vehicle (owner 10-27 03:15: "vehicle fov needs to be a slider").
+// Every vehicle and turret view gets its FOV from CG_GetViewFov (the hook below), and the game picks
+// it there: a tank's crew (type 2, riding or on its gun, with cg_altTankCam) and a jeep's driver get
+// cg_fov itself, other seats the seat weapon's turretFov (weapon def +0x89C; multiplayer +0x8A0) or,
+// fully aimed, its turretAdsFov (+0x640). No vehicle data has a FOV of its own and no vehicle code
+// changes cg_fov (claude-9b-think, FINDINGS-2026-10-27). So the scale goes on that result while the
+// playerState says the player rides (flags +0xD0, 0x100000) or works a tank's gun (0x6000 with
+// vehicle type 2 at +0x4F8, the game's own test), on top of cg_fovScale; the mouse follows it the
+// same way (MouseLook::SetViewFov).
+REXCVAR_DEFINE_DOUBLE(cod3_vehicle_fov_scale, 1.0, "cod3/View",
+                      "Multiplies the field of view while you ride a vehicle or work a tank's gun (tanks, "
+                      "jeeps, bikes, their guns), on top of the FOV scale: 1 = the game's own view")
+    .range(0.5, 2.0);
+
 REXCVAR_DEFINE_BOOL(cod3_debug_fov, false, "cod3",
                     "Log the FOV state (the player's values, the dvars, cgame's copy, the view) every 5 s");
 // For automated tests (0 = off): the game-made changes the port must keep
@@ -531,6 +545,40 @@ void Engine::ApplyFovFromGuest(PPCContext& ctx, uint8_t* base, float value) {
 // ---------------------------------------------------------------------------
 // Hooks
 // ---------------------------------------------------------------------------
+namespace {
+// [claude-9b] 2026-10-27 The player's playerState says a vehicle view (cod3_vehicle_fov_scale above).
+namespace vehicle_view {
+#if defined(COD3_MP)  // [mp] codmp_xenonf.xex (claude-9b-think, FINDINGS-2026-10-27 section 4)
+constexpr uint32_t kEntityTable = 0x82BCC7FC;  // *(it) + 4 * (client + 1): the player's entity
+constexpr uint32_t kEntPs = 0x200;             // its playerState
+constexpr uint32_t kPsFlags = 0xF0;
+constexpr uint32_t kPsVehicleType = 0x518;
+#else
+constexpr uint32_t kEntityTable = 0x82A2AB40;
+constexpr uint32_t kEntPs = 0x210;
+constexpr uint32_t kPsFlags = 0xD0;
+constexpr uint32_t kPsVehicleType = 0x4F8;
+#endif
+constexpr uint32_t kRiding = 0x100000;   // in a vehicle, any seat, any camera
+constexpr uint32_t kOnAGun = 0x6000;     // working a turret
+constexpr uint32_t kTankType = 2;
+bool Valid(uint32_t p) { return p >= 0x10000 && (p & 3) == 0; }
+bool Active(uint8_t* base) {
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4) return false;
+  const uint32_t table = cod3::guest::ReadU32(base, kEntityTable);
+  if (!Valid(table)) return false;
+  const uint32_t ent = cod3::guest::ReadU32(base, table + 4 * (client + 1));
+  if (!Valid(ent)) return false;
+  const uint32_t ps = cod3::guest::ReadU32(base, ent + kEntPs);
+  if (!Valid(ps)) return false;
+  const uint32_t flags = cod3::guest::ReadU32(base, ps + kPsFlags);
+  if (flags & kRiding) return true;
+  return (flags & kOnAGun) && cod3::guest::ReadU32(base, ps + kPsVehicleType) == kTankType;
+}
+}  // namespace vehicle_view
+}  // namespace
+
 REX_EXTERN(__imp__CG_GetViewFov);
 REX_HOOK_RAW(CG_GetViewFov) {
   cod3::fov::SyncNow(ctx, base, /*from_view=*/true);
@@ -541,6 +589,10 @@ REX_HOOK_RAW(CG_GetViewFov) {
     float v = cod3::guest::ReadF32(base, scale_cvar + cod3::addr::cvar::kValue);
     if (v > 0.0f) scale = std::clamp(v, cod3::fov::kMinScale, cod3::fov::kMaxScale);  // also rejects NaN
   }
+  // [claude-9b] cod3_vehicle_fov_scale, in a vehicle's view only
+  const double vehicle = REXCVAR_GET(cod3_vehicle_fov_scale);
+  if (vehicle != 1.0 && std::isfinite(vehicle) && vehicle_view::Active(base))
+    scale *= static_cast<float>(std::clamp(vehicle, 0.5, 2.0));
   if (scale != 1.0f) ctx.f1.f64 = std::clamp(ctx.f1.f64 * scale, 1.0, 170.0);
 
   // Zoom ratio for mouse sensitivity while aiming down sights (WaW style):

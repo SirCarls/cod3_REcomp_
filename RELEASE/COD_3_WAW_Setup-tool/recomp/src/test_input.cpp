@@ -65,6 +65,11 @@ ScriptedInputDriver::ScriptedInputDriver(const std::string& script)
       REXLOG_WARN("cod3: scripted test input cut at {} events", kMaxEvents);
       break;
     }
+    // [claude-9b] "pads=N": N scripted pads, each a controller of its own.
+    if (entry.rfind("pads=", 0) == 0) {
+      pads_ = std::clamp(std::atoi(entry.c_str() + 5), 1, kMaxPads);
+      continue;
+    }
     // [mp-menus] "pad=playstation": the kind of controller it says it is.
     if (entry.rfind("pad=", 0) == 0) {
       const std::string kind = entry.substr(4);
@@ -75,8 +80,16 @@ ScriptedInputDriver::ScriptedInputDriver(const std::string& script)
       continue;
     }
     auto parts = Split(entry, ':');
+    // [claude-9b] "p2:...": the pad it is for.
+    int pad = 0;
+    if (parts.size() >= 3 && parts[0].size() == 2 && parts[0][0] == 'p' && parts[0][1] >= '1' &&
+        parts[0][1] <= '0' + kMaxPads) {
+      pad = parts[0][1] - '1';
+      parts.erase(parts.begin());
+    }
     if (parts.size() < 2) continue;
     Event ev;
+    ev.pad = pad;
     ev.start = std::atof(parts[0].c_str());
     ev.end = ev.start + (parts.size() > 2 ? std::atof(parts[2].c_str()) : 0.15);
     if (!std::isfinite(ev.start) || !std::isfinite(ev.end) || ev.start < 0.0) continue;
@@ -104,7 +117,13 @@ ScriptedInputDriver::ScriptedInputDriver(const std::string& script)
     }
     events_.push_back(ev);
   }
-  REXLOG_INFO("cod3: scripted test input with {} events", events_.size());
+  REXLOG_INFO("cod3: scripted test input with {} events for {} pad(s)", events_.size(), pads_);
+}
+
+// [claude-9b] Pad k's device id: kScriptDevice + k.
+int ScriptedInputDriver::PadOf(DeviceId id) const {
+  const uint64_t k = static_cast<uint64_t>(id) - static_cast<uint64_t>(kScriptDevice);
+  return k < static_cast<uint64_t>(pads_) ? static_cast<int>(k) : -1;
 }
 
 X_STATUS ScriptedInputDriver::Setup() {
@@ -116,22 +135,26 @@ X_RESULT ScriptedInputDriver::SetDeviceVibration(DeviceId, X_INPUT_VIBRATION*) {
 }
 
 void ScriptedInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
-  DeviceInfo info;
-  info.id = kScriptDevice;
-  info.name = "cod3 test script";
-  info.synthetic = true;
-  info.family = family_;  // [mp-menus]
-  out.push_back(info);
+  // [claude-9b] One pad: the synthetic pad on player 1, as before. More: each a connected controller,
+  // which the SDK gives to players 1 to N in the order they are listed.
+  for (int k = 0; k < pads_; ++k) {
+    DeviceInfo info;
+    info.id = static_cast<DeviceId>(static_cast<uint64_t>(kScriptDevice) + k);
+    info.name = pads_ == 1 ? "cod3 test script" : "cod3 test script pad " + std::to_string(k + 1);
+    info.synthetic = pads_ == 1;
+    info.family = family_;  // [mp-menus]
+    out.push_back(info);
+  }
 }
 
-void ScriptedInputDriver::Update() {
+void ScriptedInputDriver::Update(int which) {
   double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
   X_INPUT_GAMEPAD pad{};
   uint16_t buttons = 0;
   int16_t axis[4] = {};
   uint8_t lt = 0, rt = 0;
   for (const auto& ev : events_) {
-    if (t < ev.start || t >= ev.end) continue;
+    if (ev.pad != which || t < ev.start || t >= ev.end) continue;
     buttons |= ev.buttons;
     lt = std::max(lt, ev.lt);
     rt = std::max(rt, ev.rt);
@@ -147,37 +170,38 @@ void ScriptedInputDriver::Update() {
   pad.thumb_ry = axis[3];
 
   // Keystroke events for edges, for titles that navigate menus with them.
-  uint16_t changed = buttons ^ last_buttons_;
+  uint16_t changed = buttons ^ last_buttons_[which];
   for (const auto& b : kButtons) {
     if (!(changed & b.mask)) continue;
     X_INPUT_KEYSTROKE ks{};
     ks.virtual_key = static_cast<uint16_t>(b.key);
     ks.flags = (buttons & b.mask) ? X_INPUT_KEYSTROKE_KEYDOWN : X_INPUT_KEYSTROKE_KEYUP;
-    keys_.push(ks);
+    keys_[which].push(ks);
   }
-  if (std::memcmp(&pad, &pad_, sizeof(pad)) != 0) {
-    ++packet_;
-    if (buttons != last_buttons_)
-      REXLOG_INFO("cod3: test input t={:.1f}s buttons={:04X}", t, buttons);
+  if (std::memcmp(&pad, &pad_[which], sizeof(pad)) != 0) {
+    ++packet_[which];
+    if (buttons != last_buttons_[which])
+      REXLOG_INFO("cod3: test input t={:.1f}s pad {} buttons={:04X}", t, which + 1, buttons);
   }
-  last_buttons_ = buttons;
-  pad_ = pad;
+  last_buttons_[which] = buttons;
+  pad_[which] = pad;
 }
 
 X_RESULT ScriptedInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
-  if (id != kScriptDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+  const int which = PadOf(id);  // [claude-9b]
+  if (which < 0) return X_ERROR_DEVICE_NOT_CONNECTED;
   std::lock_guard lock(mutex_);
-  Update();
+  Update(which);
   if (out_state) {
-    out_state->packet_number = packet_;
-    out_state->gamepad = pad_;
+    out_state->packet_number = packet_[which];
+    out_state->gamepad = pad_[which];
   }
   return X_ERROR_SUCCESS;
 }
 
 X_RESULT ScriptedInputDriver::GetDeviceCapabilities(DeviceId id, uint32_t,
                                                      X_INPUT_CAPABILITIES* out_caps) {
-  if (id != kScriptDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+  if (PadOf(id) < 0) return X_ERROR_DEVICE_NOT_CONNECTED;  // [claude-9b]
   if (out_caps) {
     std::memset(out_caps, 0, sizeof(*out_caps));
     out_caps->type = 0x01;
@@ -195,12 +219,13 @@ X_RESULT ScriptedInputDriver::GetDeviceCapabilities(DeviceId id, uint32_t,
 
 X_RESULT ScriptedInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t,
                                                   X_INPUT_KEYSTROKE* out_keystroke) {
-  if (id != kScriptDevice) return X_ERROR_DEVICE_NOT_CONNECTED;
+  const int which = PadOf(id);  // [claude-9b]
+  if (which < 0) return X_ERROR_DEVICE_NOT_CONNECTED;
   std::lock_guard lock(mutex_);
-  Update();
-  if (keys_.empty()) return X_ERROR_EMPTY;
-  if (out_keystroke) *out_keystroke = keys_.front();
-  keys_.pop();
+  Update(which);
+  if (keys_[which].empty()) return X_ERROR_EMPTY;
+  if (out_keystroke) *out_keystroke = keys_[which].front();
+  keys_[which].pop();
   return X_ERROR_SUCCESS;
 }
 

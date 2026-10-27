@@ -22,11 +22,13 @@
 #include <rex/hook.h>  // PPCRegister, for the midasm hooks below
 #include <rex/ui/hdr_output.h>  // SDK patch 0044
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>  // [claude-9b] the game's crosshair option (F2 > Crosshair)
 
 #include "app_defaults.h"
 #include "game/aim_assist.h"
 #include "game/cheat_watch.h"
 #include "game/cutscene_skip.h"
+#include "game/button_prompts.h"  // [acct2-decomp] key caps, the skip prompt's device
 #include "game/diagnostics.h"
 #include "game/engine.h"
 #include "game/fov.h"
@@ -75,6 +77,10 @@ REXCVAR_DECLARE(bool, cod3_invert_mouse);
 // ---------------------------------------------------------------------------
 REXCVAR_DEFINE_BOOL(cod3_crosshair, false, "cod3/Crosshair",
                     "Replace the game's crosshair with a customizable one");
+// [claude-9b] 2026-10-27 tests: each view's custom crosshair in the log once a second (screenshots don't show it)
+REXCVAR_DEFINE_BOOL(cod3_debug_crosshair, false, "cod3",
+                    "Log once a second where each view's custom crosshair is drawn, its size and alpha (tests)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(cod3_crosshair_style, 0, "cod3/Crosshair",
                      "0 cross, 1 cross+dot, 2 dot, 3 circle, 4 T")
     .range(0, 4);
@@ -95,6 +101,21 @@ REXCVAR_DEFINE_BOOL(cod3_crosshair_constant_color, false, "cod3/Crosshair",
                     "black over a dead body)");
 REXCVAR_DEFINE_STRING(cod3_crosshair_color, "0 255 0 255", "cod3/Crosshair",
                       "R G B A (0-255)");
+// [claude-9b] Colors of the player's own in place of the game's four (owner 2026-10-26: "Allow for
+// custom colors that switch like the default ones but allowing for custom individual colors that
+// replace them"). The crosshair still changes when the game's does (over nothing, an enemy, a
+// friendly, a dead body); each case shows its color below. Ignored while cod3_crosshair_constant_color.
+REXCVAR_DEFINE_BOOL(cod3_crosshair_own_colors, false, "cod3/Crosshair",
+                    "Use cod3_crosshair_color_normal / _enemy / _friendly / _dead in place of the "
+                    "game's white, red, green and black");
+REXCVAR_DEFINE_STRING(cod3_crosshair_color_normal, "255 255 255 255", "cod3/Crosshair",
+                      "R G B A over nothing (the game's white)");
+REXCVAR_DEFINE_STRING(cod3_crosshair_color_enemy, "255 0 0 255", "cod3/Crosshair",
+                      "R G B A over an enemy (the game's red)");
+REXCVAR_DEFINE_STRING(cod3_crosshair_color_friendly, "64 255 64 255", "cod3/Crosshair",
+                      "R G B A over a friendly (the game's green)");
+REXCVAR_DEFINE_STRING(cod3_crosshair_color_dead, "0 0 0 255", "cod3/Crosshair",
+                      "R G B A over a dead body (the game's black)");
 
 REXCVAR_DEFINE_STRING(cod3_render_resolution, "auto", "cod3/Display",
                       "Render resolution: auto (the screen, or the window when windowed), 720p, "
@@ -121,10 +142,20 @@ namespace cod3::ui {
 
 namespace {
 
-std::atomic<int64_t> g_last_game_crosshair_ns{0};
-std::atomic<float> g_aim_fraction{0.0f};  // 0 hip fire .. 1 aiming down sights
-// The game's crosshair color this frame (written by the guest thread).
-std::atomic<float> g_game_color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+// [claude-9b] What the game's CG_DrawCrosshair hooks said for each local player's view (written by
+// the guest thread, read when the overlay draws). The campaign has only view 0, the whole picture.
+constexpr int kCrosshairViews = 4;
+struct GameCrosshairView {
+  std::atomic<int64_t> ns{0};       // when the game last wanted this view's crosshair
+  std::atomic<float> aim{0.0f};     // 0 hip fire .. 1 aiming down sights
+  std::atomic<float> color[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // the game's crosshair color
+  std::atomic<float> rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};   // x, y, width, height on the picture (0-1)
+};
+GameCrosshairView g_crosshair_views[kCrosshairViews];
+// The view the next NotifyGameCrosshair is for (SetGameCrosshairView, same guest thread).
+int g_next_view = 0;
+float g_next_rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+constexpr int64_t kCrosshairShownNs = 150'000'000;
 
 int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -149,20 +180,86 @@ double GetDouble(const char* name, double fallback = 0) {
   return v.empty() ? fallback : std::strtod(v.c_str(), nullptr);
 }
 
+// [claude-9b] "R G B A" (0-255) as floats 0-1; `fallback` when it doesn't parse.
+std::array<float, 4> ParseRgba(const std::string& text, std::array<float, 4> fallback) {
+  int r, g, b, a;
+  if (std::sscanf(text.c_str(), "%d %d %d %d", &r, &g, &b, &a) != 4) return fallback;
+  return {std::clamp(r, 0, 255) / 255.0f, std::clamp(g, 0, 255) / 255.0f, std::clamp(b, 0, 255) / 255.0f,
+          std::clamp(a, 0, 255) / 255.0f};
+}
+
+// [claude-9b] The game's crosshair color (white, red, green or black: CG_CalcCrosshairColor,
+// addresses.h `crosshair`) replaced by the player's own for that case, keeping the game's alpha.
+void ApplyOwnCrosshairColor(float rgba[4]) {
+  struct Case {
+    float r, g, b;
+    const char* setting;
+  };
+  static constexpr Case kCases[] = {{1.0f, 1.0f, 1.0f, "cod3_crosshair_color_normal"},
+                                    {1.0f, 0.0f, 0.0f, "cod3_crosshair_color_enemy"},
+                                    {0.25f, 1.0f, 0.25f, "cod3_crosshair_color_friendly"},
+                                    {0.0f, 0.0f, 0.0f, "cod3_crosshair_color_dead"}};
+  int best = 0;
+  float best_d = 1e9f;
+  for (int i = 0; i < 4; ++i) {
+    const float dr = rgba[0] - kCases[i].r, dg = rgba[1] - kCases[i].g, db = rgba[2] - kCases[i].b;
+    const float d = dr * dr + dg * dg + db * db;
+    if (d < best_d) best_d = d, best = i;
+  }
+  const auto own = ParseRgba(Get(kCases[best].setting), {kCases[best].r, kCases[best].g, kCases[best].b, 1.0f});
+  rgba[0] = own[0];
+  rgba[1] = own[1];
+  rgba[2] = own[2];
+  rgba[3] *= own[3];
+}
+
+// [claude-9b] The game's own Options > Gameplay > Crosshair (player 1's control settings,
+// addresses.h `controls`; in cod3mp the first profile's block). -1 while the game isn't running.
+uint8_t* GuestBase() {
+  auto* ks = rex::system::kernel_state();
+  return ks && ks->memory() ? ks->memory()->virtual_membase() : nullptr;
+}
+int GameCrosshairOption() {
+  uint8_t* base = GuestBase();
+  if (!base) return -1;
+  return cod3::guest::ReadU8(base, cod3::addr::controls::kSettings + cod3::addr::controls::kCrosshair) != 0;
+}
+void SetGameCrosshairOption(bool on) {
+  if (uint8_t* base = GuestBase())
+    cod3::guest::WriteU8(base, cod3::addr::controls::kSettings + cod3::addr::controls::kCrosshair, on ? 1 : 0);
+}
+
 }  // namespace
 
+void SetGameCrosshairView(int view, float x, float y, float width, float height) {
+  g_next_view = std::clamp(view, 0, kCrosshairViews - 1);
+  const float r[4] = {x, y, width, height};
+  const bool ok = std::isfinite(x) && std::isfinite(y) && width > 0.0f && height > 0.0f && x >= -0.01f &&
+                  y >= -0.01f && x + width <= 1.01f && y + height <= 1.01f;
+  for (int i = 0; i < 4; ++i) g_next_rect[i] = ok ? r[i] : (i < 2 ? 0.0f : 1.0f);  // else the whole picture
+}
+
 void NotifyGameCrosshair(float aim_fraction, const float rgba[4]) {
+  GameCrosshairView& v = g_crosshair_views[g_next_view];
   for (int i = 0; i < 4; ++i) {
     float c = std::isfinite(rgba[i]) ? std::clamp(rgba[i], 0.0f, 1.0f) : 1.0f;
-    g_game_color[i].store(c, std::memory_order_relaxed);
+    v.color[i].store(c, std::memory_order_relaxed);
+    v.rect[i].store(g_next_rect[i], std::memory_order_relaxed);
   }
   if (!std::isfinite(aim_fraction)) aim_fraction = 0.0f;
-  g_aim_fraction.store(std::clamp(aim_fraction, 0.0f, 1.0f), std::memory_order_relaxed);
-  g_last_game_crosshair_ns.store(NowNs(), std::memory_order_relaxed);
+  v.aim.store(std::clamp(aim_fraction, 0.0f, 1.0f), std::memory_order_relaxed);
+  v.ns.store(NowNs(), std::memory_order_relaxed);
+  // The next call is player 1's whole picture again unless its hook says otherwise.
+  g_next_view = 0;
+  g_next_rect[0] = g_next_rect[1] = 0.0f;
+  g_next_rect[2] = g_next_rect[3] = 1.0f;
 }
 
 bool GameCrosshairVisible() {
-  return NowNs() - g_last_game_crosshair_ns.load(std::memory_order_relaxed) <= 150'000'000;
+  const int64_t now = NowNs();
+  for (const auto& v : g_crosshair_views)
+    if (now - v.ns.load(std::memory_order_relaxed) <= kCrosshairShownNs) return true;
+  return false;
 }
 
 // [claude-9b] The crosshair preview's box (hud_overlay.h), in menu space.
@@ -327,32 +424,76 @@ static void DrawPerfOverlay(ImGuiIO& io) {
   }
 }
 
-// "SPACE  Skip" while a movie can be skipped (game/cutscene_skip.h), in the
-// game's own colors at the bottom of the screen, where the loading screen
-// shows its "Loading ..." line.
+// [acct2-decomp] A key cap as "SPACE Skip" draws it (owner 2026-10-25 23:42:
+// "the keyboard glyphs need to match the 'SPACE to skip' button"): a shadow, a
+// dark rounded box with a gold edge and the key's name in gold, centered.
+// The game's prompts' keys are drawn with it too (DrawPromptKeyCaps).
+static void DrawKeyCapBox(ImDrawList* dl, ImFont* font, float text_size, ImVec2 p0, ImVec2 p1,
+                          const char* text, int a, float scale) {
+  const ImU32 gold = IM_COL32(214, 172, 104, a);  // the game's menu and loading text
+  const ImU32 shadow = IM_COL32(0, 0, 0, a * 3 / 4);
+  const float round = 4.0f * scale;
+  dl->AddRectFilled(ImVec2(p0.x + 2, p0.y + 2), ImVec2(p1.x + 2, p1.y + 2), shadow, round);
+  dl->AddRectFilled(p0, p1, IM_COL32(20, 16, 10, a * 4 / 5), round);
+  dl->AddRect(p0, p1, gold, round, 0, 1.5f * scale);
+  const ImVec2 ext = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, text);
+  dl->AddText(font, text_size,
+              ImVec2(std::floor((p0.x + p1.x - ext.x) * 0.5f), std::floor((p0.y + p1.y - ext.y) * 0.5f)), gold, text);
+}
+
+// [acct2-decomp] A controller's skip button in the same colors: a round
+// button with its label, the bottom face button (the game's A) as each
+// controller names it: A, a cross for a PlayStation pad, B for a Nintendo
+// one (simple shapes of our own, not any company's art).
+static void DrawPadButton(ImDrawList* dl, ImFont* font, float text_size, ImVec2 center, float radius,
+                          cod3::prompts::Look look, int a, float scale) {
+  const ImU32 gold = IM_COL32(214, 172, 104, a);
+  dl->AddCircleFilled(ImVec2(center.x + 2, center.y + 2), radius, IM_COL32(0, 0, 0, a * 3 / 4));
+  dl->AddCircleFilled(center, radius, IM_COL32(20, 16, 10, a * 4 / 5));
+  dl->AddCircle(center, radius, gold, 0, 1.5f * scale);
+  if (look == cod3::prompts::Look::kPlayStation) {
+    const float d = radius * 0.42f;
+    dl->AddLine(ImVec2(center.x - d, center.y - d), ImVec2(center.x + d, center.y + d), gold, 2.0f * scale);
+    dl->AddLine(ImVec2(center.x - d, center.y + d), ImVec2(center.x + d, center.y - d), gold, 2.0f * scale);
+    return;
+  }
+  const char* label = look == cod3::prompts::Look::kNintendo ? "B" : "A";
+  const ImVec2 ext = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, label);
+  dl->AddText(font, text_size, ImVec2(std::floor(center.x - ext.x * 0.5f), std::floor(center.y - ext.y * 0.5f)),
+              gold, label);
+}
+
+// "SPACE  Skip" while a level's briefing can be skipped (game/cutscene_skip.h),
+// in the game's own colors at the bottom of the screen, where the loading
+// screen shows its "Loading ..." line. [acct2-decomp] With a controller in use
+// (owner 2026-10-25 23:43: "the space to skip button glyph doesn't change to
+// controller buttons when it detects input from one") its A button instead,
+// switching with the device as the game's prompts do; `alpha` fades it in
+// and out (cutscene_skip.cpp).
 static void DrawSkipPrompt(ImGuiIO& io, float alpha) {
   const float scale = std::max(0.6f, io.DisplaySize.y / 1080.0f);
   const float size = 24.0f * scale;
   ImFont* font = FontFor(size);
+  const cod3::prompts::Look look = cod3::prompts::FirstPlayerLook();
+  const bool keys = look == cod3::prompts::Look::kKeys;
   const char* key = "SPACE";
   const char* label = "Skip";
   const ImVec2 key_ext = font->CalcTextSizeA(size * 0.8f, FLT_MAX, 0.0f, key);
   const ImVec2 label_ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, label);
   const float pad_x = 10.0f * scale, pad_y = 4.0f * scale, gap = 12.0f * scale;
-  const float key_w = key_ext.x + 2 * pad_x, key_h = std::max(key_ext.y, label_ext.y) + 2 * pad_y;
+  const float key_h = std::max(key_ext.y, label_ext.y) + 2 * pad_y;
+  const float key_w = keys ? key_ext.x + 2 * pad_x : key_h;  // the button is round
   const float total = key_w + gap + label_ext.x;
   const float x = std::floor((io.DisplaySize.x - total) * 0.5f);
   const float y = std::floor(io.DisplaySize.y * 0.86f);
   const int a = static_cast<int>(alpha * 255);
-  const ImU32 gold = IM_COL32(214, 172, 104, a);       // the game's menu and loading text
+  const ImU32 gold = IM_COL32(214, 172, 104, a);
   const ImU32 shadow = IM_COL32(0, 0, 0, a * 3 / 4);
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  // Key cap.
-  dl->AddRectFilled(ImVec2(x + 2, y + 2), ImVec2(x + key_w + 2, y + key_h + 2), shadow, 4.0f * scale);
-  dl->AddRectFilled(ImVec2(x, y), ImVec2(x + key_w, y + key_h), IM_COL32(20, 16, 10, a * 4 / 5),
-                    4.0f * scale);
-  dl->AddRect(ImVec2(x, y), ImVec2(x + key_w, y + key_h), gold, 4.0f * scale, 0, 1.5f * scale);
-  dl->AddText(font, size * 0.8f, ImVec2(x + pad_x, y + (key_h - key_ext.y) * 0.5f), gold, key);
+  if (keys)
+    DrawKeyCapBox(dl, font, size * 0.8f, ImVec2(x, y), ImVec2(x + key_w, y + key_h), key, a, scale);
+  else
+    DrawPadButton(dl, font, size * 0.8f, ImVec2(x + key_w * 0.5f, y + key_h * 0.5f), key_h * 0.5f, look, a, scale);
   // Label.
   const ImVec2 lp(x + key_w + gap, y + (key_h - label_ext.y) * 0.5f);
   dl->AddText(font, size, ImVec2(lp.x + 2, lp.y + 2), shadow, label);
@@ -377,6 +518,43 @@ HudArea CurrentHudArea(const ImGuiIO& io) {
     a.width = hud_width;
   }
   return a;
+}
+
+// [acct2-decomp] The keys in the game's prompts as key caps (owner
+// 2026-10-25 23:42): game/button_prompts.cpp notes each key name a text line
+// draws, in the game's 640x480 menu space (the game draws the name itself
+// invisibly to keep its room); here each becomes DrawKeyCapBox's cap over
+// that room, mapped like the menus' other overlay pieces (the HUD area: the
+// menus are drawn over its whole width and height), at the opacity the game
+// drew the text with, so a hint fading in or out takes its caps along.
+static void DrawPromptKeyCaps(ImGuiIO& io) {
+  // [claude-9b] Only lines drawn in the last few frames (was 150 ms: a prompt that went away left
+  // its key cap on screen alone for a moment).
+  const std::vector<cod3::prompts::KeyCap> caps = cod3::prompts::CurrentKeyCaps(50);
+  if (caps.empty()) return;
+  const HudArea area = CurrentHudArea(io);
+  if (area.width < 1.0f || area.height < 1.0f) return;
+  const float sx = area.width / 640.0f, sy = area.height / 480.0f;
+  ImDrawList* dl = ImGui::GetBackgroundDrawList();
+  for (const auto& cap : caps) {
+    const int a = static_cast<int>(std::clamp(cap.alpha, 0.0f, 1.0f) * 255.0f);
+    if (a <= 0 || cap.name.empty()) continue;
+    ImVec2 p0(area.x + cap.x0 * sx, area.y + cap.y0 * sy);
+    ImVec2 p1(area.x + cap.x1 * sx, area.y + cap.y1 * sy);
+    const float h = p1.y - p0.y;
+    if (h < 4.0f || p1.x - p0.x < 4.0f) continue;
+    // A little inside the line's height, as tall as the text's capitals.
+    p0.y += std::floor(h * 0.06f);
+    p1.y -= std::floor(h * 0.06f);
+    const float scale = std::max(0.5f, (p1.y - p0.y) / 37.0f);  // "SPACE Skip"'s cap is 37 px tall at 1080p
+    float text_size = (p1.y - p0.y) * 0.62f;
+    ImFont* font = FontFor(text_size);
+    const float room = (p1.x - p0.x) - 8.0f * scale;
+    const float wide = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, cap.name.c_str()).x;
+    if (wide > room && room > 0.0f) text_size *= std::max(0.6f, room / wide);
+    DrawKeyCapBox(dl, font, text_size, ImVec2(std::floor(p0.x), std::floor(p0.y)), ImVec2(std::floor(p1.x), std::floor(p1.y)),
+                  cap.name.c_str(), a, scale);
+  }
 }
 
 // [claude-9b] The crosshair preview a menu asked for (ShowCrosshairPreview):
@@ -444,6 +622,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   DrawCheatWatermark(io);
   cod3::hud::AnnouncementFeed::Draw(io);
   DrawQteSpinner(io);  // stick battle actions (ui/qte_spinner.h)
+  DrawPromptKeyCaps(io);  // [acct2-decomp] the game's prompts' keys as key caps
   if (const float cover = cod3::CutsceneSkip::Get().CoverAlpha(); cover > 0.0f) {
     // Skipping a level intro: black while game time runs fast behind it.
     ImGui::GetBackgroundDrawList()->AddRectFilled(
@@ -456,27 +635,70 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   auto s = CurrentCrosshair();
   if (!s.enabled) return;
   // Only while the game itself would draw its crosshair (not in menus or
-  // cutscenes): the CG_DrawCrosshair hooks stamp that every frame. Raising the
-  // sights fades it out over the first half of the motion.
-  if (!GameCrosshairVisible()) return;
-  const float fade = std::clamp(1.0f - 2.0f * g_aim_fraction.load(std::memory_order_relaxed), 0.0f, 1.0f);
-  if (fade <= 0.0f) return;
-  // The game's own color unless the player chose a constant one.
-  if (!s.constant_color) {
-    for (int i = 0; i < 4; ++i) s.color[i] = g_game_color[i].load(std::memory_order_relaxed);
-  }
-  const float alpha = s.color[3] * fade;
-  if (alpha <= 0.0f) return;
+  // cutscenes): the CG_DrawCrosshair hooks stamp that every frame, for each
+  // local player's view in split screen. Raising the sights fades it out over
+  // the first half of the motion.
+  // [claude-9b] Each view's crosshair at the middle of that view on the game's picture (bars and
+  // picture shape included), sized by the view's height; a view whose player left or died stops
+  // being stamped and so stops being drawn.
+  // The whole window is the whole picture's place (centered, as before); a split-screen view's
+  // place is worked out from the picture as the presenter shows it, once a frame when needed.
+  cod3::PictureRect picture{};
+  bool picture_known = false;
+  const int64_t now = NowNs();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  ImVec2 c(std::floor(io.DisplaySize.x * 0.5f), std::floor(io.DisplaySize.y * 0.5f));
-  float scale = std::max(0.5f, io.DisplaySize.y / 1080.0f);
-  if (s.outline) {
-    DrawCrosshairShape(dl, c, s, scale, IM_COL32(0, 0, 0, static_cast<int>(alpha * 255)),
-                       s.outline_thickness * scale);
+  for (auto& v : g_crosshair_views) {
+    if (now - v.ns.load(std::memory_order_relaxed) > kCrosshairShownNs) continue;
+    const float fade = std::clamp(1.0f - 2.0f * v.aim.load(std::memory_order_relaxed), 0.0f, 1.0f);
+    if (fade <= 0.0f) continue;
+    float color[4] = {s.color[0], s.color[1], s.color[2], s.color[3]};
+    // The game's own color unless the player chose a constant one.
+    if (!s.constant_color) {
+      for (int i = 0; i < 4; ++i) color[i] = v.color[i].load(std::memory_order_relaxed);
+      if (REXCVAR_GET(cod3_crosshair_own_colors)) ApplyOwnCrosshairColor(color);  // [claude-9b]
+    }
+    const float alpha = color[3] * fade;
+    if (alpha <= 0.0f) continue;
+    const float rx = v.rect[0].load(std::memory_order_relaxed), ry = v.rect[1].load(std::memory_order_relaxed);
+    const float rw = v.rect[2].load(std::memory_order_relaxed), rh = v.rect[3].load(std::memory_order_relaxed);
+    ImVec2 c(std::floor(io.DisplaySize.x * 0.5f), std::floor(io.DisplaySize.y * 0.5f));
+    float view_h = io.DisplaySize.y;
+    if (rw < 0.99f || rh < 0.99f) {
+      if (!picture_known) {
+        picture = cod3::PictureInView(uint32_t(io.DisplaySize.x + 0.5f), uint32_t(io.DisplaySize.y + 0.5f),
+                                      cod3::DisplayAspect());
+        picture_known = true;
+      }
+      view_h = float(picture.height) * rh;
+      c = ImVec2(std::floor(float(picture.x) + float(picture.width) * (rx + rw * 0.5f)),
+                 std::floor(float(picture.y) + float(picture.height) * (ry + rh * 0.5f)));
+    }
+    // [claude-9b] A split-screen view's crosshair is the whole picture's size times the view's share
+    // of its height (owner 2026-10-27 05:49 "splitscreen hud drawing seems off"): the 0.5 minimum
+    // applies to the whole picture, so a half view in a 720-line window gets 0.33, not 0.5 (1.5x too
+    // big before), like the game's own HUD, which is drawn smaller in split screen.
+    const float scale = (rw < 0.99f || rh < 0.99f)
+                            ? std::max(0.25f, std::max(0.5f, float(picture.height) / 1080.0f) * rh)
+                            : std::max(0.5f, view_h / 1080.0f);
+    // [claude-9b] 2026-10-27 cod3_debug_crosshair: screenshots are the game's own picture without this
+    // overlay (game/screenshot.cpp), so tests read each view's crosshair from the log instead.
+    if (REXCVAR_GET(cod3_debug_crosshair)) {
+      static int64_t logged_ns[kCrosshairViews] = {};
+      const int view = int(&v - g_crosshair_views);
+      if (now - logged_ns[view] > 1'000'000'000) {
+        logged_ns[view] = now;
+        REXLOG_INFO("cod3: crosshair: view {} drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, scale {:.3f} (view {:.2f} of "
+                    "the picture's height), alpha {:.2f}",
+                    view + 1, c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, scale, rh, alpha);
+      }
+    }
+    if (s.outline) {
+      DrawCrosshairShape(dl, c, s, scale, IM_COL32(0, 0, 0, static_cast<int>(alpha * 255)),
+                         s.outline_thickness * scale);
+    }
+    DrawCrosshairShape(dl, c, s, scale, ImGui::ColorConvertFloat4ToU32(ImVec4(color[0], color[1], color[2], alpha)),
+                       0.0f);
   }
-  DrawCrosshairShape(dl, c, s, scale,
-                     ImGui::ColorConvertFloat4ToU32(ImVec4(s.color[0], s.color[1], s.color[2], alpha)),
-                     0.0f);
 }
 
 // ===========================================================================
@@ -651,6 +873,26 @@ void SettingsWindow::DrawVideo() {
 
 // Video > Display: the window, the screen it's on and how pictures reach it.
 void SettingsWindow::DrawVideoDisplay() {
+  // [acct2-decomp] Who draws, as a toggle (owner 2026-10-24 23:45: "Please make
+  // sure the option for emulation/native is a toggle"). Off: cod3_renderer
+  // "xenos", the emulated Xbox 360 GPU (the default). On: "rust", the native
+  // Rust renderer with the GPU emulation off (render/rust_renderer.h, acct2-main's
+  // setting; nothing about it changes here). Both programs; after a restart.
+  if (Has("cod3_renderer")) {
+    bool native = Get("cod3_renderer") == "rust";
+    // [claude-9b] Greyed out for now (owner 2026-10-26: "The F2 \"Native Renderer\" option/toggle
+    // needs to be grayed out for right now as it's not ready yet"): only turning it off is offered.
+    const bool can_turn_on = false;
+    ImGui::BeginDisabled(!can_turn_on && !native);
+    if (ImGui::Checkbox("Native renderer (no GPU emulation)", &native)) {
+      rex::cvar::SetFlagByName("cod3_renderer", native ? "rust" : "xenos");
+      restart_needed_ = true;
+      dirty_ = true;
+    }
+    ImGui::EndDisabled();
+    Help("Not ready yet: the native Rust renderer is still being written, so the emulated Xbox 360 "
+         "GPU draws the game. If it was turned on earlier, untick it here (applies after a restart).");
+  }
 #ifdef _WIN32
   {
     // Both renderers are built into Windows builds; Linux only has Vulkan
@@ -888,7 +1130,9 @@ void SettingsWindow::DrawVideoResolution() {
       // render targets.
       static int percent = 100;
       if (!ImGui::IsAnyItemActive()) percent = std::atoi(Get("cod3_render_percent").c_str());
-      ImGui::SliderInt("Resolution scale", &percent, int(cod3::kMinRenderPercent), 100, "%d%%");
+      // [claude-9b] up to 200%: more pixels than the window shows, shrunk to fit (supersampling)
+      ImGui::SliderInt("Resolution scale", &percent, int(cod3::kMinRenderPercent), int(cod3::kMaxRenderPercent),
+                       "%d%%");
       if (ImGui::IsItemDeactivatedAfterEdit()) {
         rex::cvar::SetFlagByName("cod3_render_percent", std::to_string(percent));
         cod3::RequestRenderResolution();
@@ -1179,6 +1423,32 @@ void SettingsWindow::DrawVideoQuality() {
         Help("AMD CAS and FSR need the game built with SDK patch 0064 (run the setup tool's "
              "build again).");
     }
+    // [claude-9b] Sharpening as a slider (owner 2026-10-26: "FSR sharpening should be an option with
+    // slider"): FSR 1's RCAS takes a reduction in stops (0 = sharpest, 2 = softest), CAS an extra
+    // sharpness (0-1); both shown as 0-100%. The SDK reads them when the window's output starts.
+    if (cur == "fsr" && Has("present_fsr_sharpness_reduction")) {
+      float pct = static_cast<float>((1.0 - GetDouble("present_fsr_sharpness_reduction", 0.2) / 2.0) * 100.0);
+      if (SliderFloatBox("FSR sharpness", &pct, 0.0f, 100.0f, "%.0f%%")) {
+        rex::cvar::SetFlagByName("present_fsr_sharpness_reduction",
+                                 fmt::format("{:.3f}", (1.0 - std::clamp(pct, 0.0f, 100.0f) / 100.0) * 2.0));
+        restart_needed_ = true;
+        dirty_ = true;
+      }
+      Help("How much FSR 1 sharpens the picture: 100% the most, 0% none. 90% is AMD's default. "
+           "Applies after a restart.");
+    } else if (cur == "cas" && Has("present_cas_additional_sharpness")) {
+      float pct = static_cast<float>(GetDouble("present_cas_additional_sharpness", 0.0) * 100.0);
+      if (SliderFloatBox("CAS sharpness", &pct, 0.0f, 100.0f, "%.0f%%")) {
+        rex::cvar::SetFlagByName("present_cas_additional_sharpness",
+                                 fmt::format("{:.3f}", std::clamp(pct, 0.0f, 100.0f) / 100.0));
+        restart_needed_ = true;
+        dirty_ = true;
+      }
+      Help("Extra sharpening on top of AMD CAS's own: 0% its default, 100% the most. Applies after "
+           "a restart.");
+    } else {
+      ImGui::TextDisabled("Sharpness: pick AMD CAS or AMD FSR 1 above.");
+    }
   }
   {
     const char* v[] = {"-1", "0", "1", "2", "3", "4", "5"};
@@ -1248,7 +1518,7 @@ void SettingsWindow::DrawGame() {
     // Aim assist follows the game's Sticky Aim again.
     ResetSettings({"cod3_aim_assist", "cod3_skip_movies", "cod3_skip_prompt",
                    cod3::viewmodel::kOffsetX, cod3::viewmodel::kOffsetY, cod3::viewmodel::kOffsetZ,
-                   cod3::viewmodel::kPreset});  // [claude-9b]
+                   cod3::viewmodel::kPreset, "cod3_vehicle_fov_scale"});  // [claude-9b]
     dirty_ = true;
   }
   // [claude-9b] Subtabs (owner 2026-10-20: "please add subtabs for whats under game in F2"),
@@ -1284,6 +1554,17 @@ void SettingsWindow::DrawGame() {
          "and at every level start, and only your own changes are saved.");
     if (fov::ScriptedViewActive())
       ImGui::TextDisabled("A scripted view has the FOV right now; yours comes back after it.");
+    // [claude-9b] 2026-10-27 (owner 03:15: "vehicle fov needs to be a slider"; game/fov.cpp)
+    if (Has("cod3_vehicle_fov_scale")) {
+      float vehicle = static_cast<float>(GetDouble("cod3_vehicle_fov_scale", 1.0));
+      if (SliderFloatBox("Vehicle FOV scale", &vehicle, 0.5f, 2.0f, "%.2f")) {
+        rex::cvar::SetFlagByName("cod3_vehicle_fov_scale", std::to_string(std::clamp(vehicle, 0.5f, 2.0f)));
+        dirty_ = true;
+      }
+      Help("Multiplies the field of view while you ride a vehicle or work a tank's gun (tanks, jeeps, "
+           "bikes, their guns), on top of the FOV scale above; the mouse turns to match. 1 is the game's "
+           "own view. In the ~ console: cod3_vehicle_fov_scale.");
+    }
     ImGui::EndTabItem();
   }
   // [claude-9b] Weapon position with Counter-Strike 2's commands (game/viewmodel.h),
@@ -1333,6 +1614,19 @@ void SettingsWindow::DrawGame() {
       ImGui::SetTooltip("In the ~ console: viewmodel_offset_x (right), viewmodel_offset_y (forward),\n"
                         "viewmodel_offset_z (up) and viewmodel_presetpos: a CS2 config line pastes as it is.\n"
                         "CS2's viewmodel_fov has no counterpart: the weapon uses the view's field of view.");
+    // [claude-9b] 2026-10-27 The weapon in the left hand (owner 05:11), per local player.
+    if (Has(vm::kFlip)) {
+      ImGui::Spacing();
+      dirty_ |= CvarCheckbox("Left-handed weapon (mirrored)", vm::kFlip, &restart_needed_);
+      Help("Mirrors the weapon and your hands to the left. \"Right\" above then moves the weapon outward, to the "
+           "left. Not on mounted guns. A key can switch it too: \"Flip weapon hand\" in the key list.");
+#if defined(COD3_MP)
+      dirty_ |= CvarCheckbox("Player 2: left-handed weapon", vm::kFlipPlayers[1], &restart_needed_);
+      dirty_ |= CvarCheckbox("Player 3: left-handed weapon", vm::kFlipPlayers[2], &restart_needed_);
+      dirty_ |= CvarCheckbox("Player 4: left-handed weapon", vm::kFlipPlayers[3], &restart_needed_);
+      Help("Split-screen players 2 to 4, each their own.");
+#endif
+    }
     ImGui::EndTabItem();
   }
 #if !defined(COD3_MP)  // [mp] multiplayer plays no films; aim assist is per profile there (later)
@@ -1377,6 +1671,124 @@ void SettingsWindow::DrawGame() {
     ImGui::EndTabItem();
   }
 #endif
+  // [claude-9b] The player's name (owner 2026-10-26: "Selectable names... the in-game dvar still uses
+  // the gamertag"): the gamertag the game is given (SDK patch 0070's user_name), both programs.
+  if (Has("user_name") && ImGui::BeginTabItem("Player")) {
+    static char name[32] = "";
+    static bool editing = false;
+    if (!editing) std::snprintf(name, sizeof(name), "%s", Get("user_name").c_str());
+    ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+    const bool entered = ImGui::InputTextWithHint("Player name", "User", name, 16,
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
+    editing = ImGui::IsItemActive();
+    if (entered || ImGui::IsItemDeactivatedAfterEdit()) {
+      std::string typed = name;
+      for (char& c : typed)
+        if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126 || c == '"' || c == '\\') c = ' ';
+      rex::cvar::SetFlagByName("user_name", typed);
+      restart_needed_ = true;
+      dirty_ = true;
+      editing = false;
+    }
+    Help("Your name in the game, up to 15 characters (the gamertag's room): the name others see in "
+         "multiplayer and the game's name setting. Empty: \"User\", the profile's own. The game reads "
+         "it when it starts.");
+    // [claude-9b] 2026-10-27 Split-screen players 2-4 (owner 2026-10-26: "Player names: setup tool and per
+    // split-screen player"): SDK patch 0074's user_name_2..4, the names XamUserGetName gives the game for
+    // users 1-3 (no one is signed in for them).
+    if (Has("user_name_2")) {
+      static char others[3][32] = {};
+      static bool other_editing[3] = {};
+      static const char* const kNames[] = {"user_name_2", "user_name_3", "user_name_4"};
+      static const char* const kLabels[] = {"Player 2 name", "Player 3 name", "Player 4 name"};
+      static const char* const kHints[] = {"Player 2", "Player 3", "Player 4"};
+      for (int i = 0; i < 3; ++i) {
+        if (!other_editing[i]) std::snprintf(others[i], sizeof(others[i]), "%s", Get(kNames[i]).c_str());
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 12.0f);
+        const bool done = ImGui::InputTextWithHint(kLabels[i], kHints[i], others[i], 15,
+                                                   ImGuiInputTextFlags_EnterReturnsTrue);
+        other_editing[i] = ImGui::IsItemActive();
+        if (done || ImGui::IsItemDeactivatedAfterEdit()) {
+          std::string typed = others[i];
+          std::string clean;
+          for (char c : typed) {
+            const unsigned char u = static_cast<unsigned char>(c);
+            if (u >= 32 && u <= 126 && c != '"' && c != '\\' && c != '%' && c != '^') clean += c;
+          }
+          rex::cvar::SetFlagByName(kNames[i], clean);
+          restart_needed_ = true;
+          dirty_ = true;
+          other_editing[i] = false;
+        }
+      }
+      Help("The names of split-screen players 2 to 4 in multiplayer, up to 14 characters each. Empty: "
+           "the game's own \"Player 2\" and so on. The game reads them when it starts.");
+    }
+    // [claude-9b] 2026-10-27 The player order (owner 2026-10-26: "player order 1-4 in F2"): which
+    // player each controller plays as, by the order the controllers connected (SDK patch 0071's
+    // input_player_order: one digit a controller, the first controller's player first).
+    if (Has("input_player_order")) {
+      ImGui::Spacing();
+      ImGui::Separator();
+      ImGui::TextUnformatted("Controllers");
+      int order[4] = {0, 1, 2, 3};  // the player (0-3) of each controller, in connection order
+      {
+        const std::string text = Get("input_player_order");
+        int parsed[4] = {0, 1, 2, 3};
+        bool used[4] = {};
+        int count = 0;
+        bool ok = true;
+        for (char c : text) {
+          if (c == ' ' || c == ',') continue;
+          if (c < '1' || c > '4' || count >= 4 || used[c - '1']) {
+            ok = false;
+            break;
+          }
+          used[c - '1'] = true;
+          parsed[count++] = c - '1';
+        }
+        if (ok) {
+          for (int i = count; i < 4; ++i) {
+            int u = 0;
+            while (used[u]) ++u;
+            used[u] = true;
+            parsed[i] = u;
+          }
+          for (int i = 0; i < 4; ++i) order[i] = parsed[i];
+        }
+      }
+      static const char* const kPlayers[] = {"Player 1", "Player 2", "Player 3", "Player 4"};
+      static const char* const kPads[] = {"First controller to connect", "Second controller",
+                                          "Third controller", "Fourth controller"};
+      bool changed = false;
+      for (int i = 0; i < 4; ++i) {
+        int player = order[i];
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 8.0f);
+        if (ImGui::Combo(kPads[i], &player, kPlayers, 4) && player != order[i]) {
+          // Still one controller a player: the one that had this player takes this one's old one.
+          for (int j = 0; j < 4; ++j)
+            if (order[j] == player) order[j] = order[i];
+          order[i] = player;
+          changed = true;
+        }
+      }
+      if (ImGui::Button("Connection order")) {
+        for (int i = 0; i < 4; ++i) order[i] = i;
+        changed = true;
+      }
+      if (changed) {
+        std::string text;
+        for (int i = 0; i < 4; ++i) text += static_cast<char>('1' + order[i]);
+        rex::cvar::SetFlagByName("input_player_order", text == "1234" ? "" : text);
+        dirty_ = true;
+      }
+      Help("Which player each controller plays as in split screen, by the order the controllers "
+           "connected. It applies at once. The game's log names each one when they connect "
+           "(\"controller 1 (...) plays as player 2\"). The keyboard and mouse always play as "
+           "player 1, together with the controller that is player 1.");
+    }
+    ImGui::EndTabItem();
+  }
   ImGui::EndTabBar();
 }
 
@@ -1446,8 +1858,25 @@ void SettingsWindow::DrawCrosshair() {
   if (ResetButton("reset_crosshair", "crosshair settings")) {
     ResetSettings({"cod3_crosshair", "cod3_crosshair_style", "cod3_crosshair_size", "cod3_crosshair_thickness",
                    "cod3_crosshair_gap", "cod3_crosshair_outline", "cod3_crosshair_outline_thickness",
-                   "cod3_crosshair_dot", "cod3_crosshair_constant_color", "cod3_crosshair_color"});
+                   "cod3_crosshair_dot", "cod3_crosshair_constant_color", "cod3_crosshair_color",
+                   "cod3_crosshair_own_colors", "cod3_crosshair_color_normal", "cod3_crosshair_color_enemy",
+                   "cod3_crosshair_color_friendly", "cod3_crosshair_color_dead"});
     changed = true;
+  }
+  {
+    // [claude-9b] The game's own crosshair switch (owner 2026-10-26: "F2 crosshair menu should have a
+    // toggle box for show crosshair that reflects the in-game one menu toggle"): Options > Gameplay >
+    // Crosshair, read from the game every time F2 draws, so both places always agree.
+    const int game_on = GameCrosshairOption();
+    bool show = game_on != 0;
+    ImGui::BeginDisabled(game_on < 0);
+    if (ImGui::Checkbox("Show crosshair", &show)) SetGameCrosshairOption(show);
+    ImGui::EndDisabled();
+    Help(game_on < 0 ? "The game's own crosshair switch (Options > Gameplay > Crosshair): shown once the "
+                       "game has started."
+                     : "The game's own crosshair switch, the same as Options > Gameplay > Crosshair: off "
+                       "hides the crosshair, the game's and the custom one. The game saves it with your "
+                       "profile.");
   }
   bool en = REXCVAR_GET(cod3_crosshair);
   if (ImGui::Checkbox("Use custom crosshair", &en)) {
@@ -1455,8 +1884,8 @@ void SettingsWindow::DrawCrosshair() {
     changed = true;
   }
   Help("Draws the crosshair below instead of the game's. It appears only when the game would show "
-       "its own: not in menus or cutscenes, and it fades out as you aim down the sights. The game's "
-       "Options > Gameplay > Crosshair switch still hides it.");
+       "its own: not in menus or cutscenes, and it fades out as you aim down the sights. Show "
+       "crosshair above (the game's own switch) still hides it.");
   {
     // [claude-9b] Preview at its in-game size (owner 2026-10-20: "the crosshair menu needs a preview").
     const float side = std::floor(ImGui::GetFrameHeight() * 5.0f);
@@ -1521,6 +1950,46 @@ void SettingsWindow::DrawCrosshair() {
     changed = true;
   }
   if (!constant) ImGui::EndDisabled();
+  {
+    // [claude-9b] A color of your own for each of the game's cases (owner 2026-10-26).
+    bool own = REXCVAR_GET(cod3_crosshair_own_colors);
+    ImGui::BeginDisabled(constant);
+    if (ImGui::Checkbox("My own colors for each case", &own)) {
+      REXCVAR_SET(cod3_crosshair_own_colors, own);
+      changed = true;
+    }
+    Help("The crosshair still changes color when the game's does, but to your colors: over nothing, "
+         "over an enemy, over a friendly and over a dead body. Off: the game's white, red, green and "
+         "black. Not used with Constant color.");
+    if (own && !constant) {
+      struct Case {
+        const char* label;
+        const char* setting;
+      };
+      static constexpr Case kCases[] = {{"Over nothing", "cod3_crosshair_color_normal"},
+                                        {"Over an enemy", "cod3_crosshair_color_enemy"},
+                                        {"Over a friendly", "cod3_crosshair_color_friendly"},
+                                        {"Over a dead body", "cod3_crosshair_color_dead"}};
+      for (const Case& k : kCases) {
+        auto c = ParseRgba(Get(k.setting), {1.0f, 1.0f, 1.0f, 1.0f});
+        if (ImGui::ColorEdit4(k.label, c.data())) {
+          rex::cvar::SetFlagByName(k.setting, fmt::format("{} {} {} {}", int(c[0] * 255 + .5f), int(c[1] * 255 + .5f),
+                                                          int(c[2] * 255 + .5f), int(c[3] * 255 + .5f)));
+          changed = true;
+        }
+      }
+    }
+    ImGui::EndDisabled();
+    // [claude-9b] Owner 2026-10-26: "an option for resetting the colors".
+    if (ImGui::Button("Reset colors")) {
+      ResetSettings({"cod3_crosshair_constant_color", "cod3_crosshair_color", "cod3_crosshair_own_colors",
+                     "cod3_crosshair_color_normal", "cod3_crosshair_color_enemy", "cod3_crosshair_color_friendly",
+                     "cod3_crosshair_color_dead"});
+      changed = true;
+    }
+    ImGui::SameLine();
+    ImGui::TextDisabled("Back to the game's own colors.");
+  }
   // Preview: the chosen color, or the game's normal white.
   ImGui::Text("Preview:");
   ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1543,7 +2012,8 @@ void SettingsWindow::DrawControls() {
     restart_needed_ |= ResetSettings({"mnk_mode", "cod3_raw_mouse", "mnk_mouse", "cod3_sensitivity",
                                       "cod3_zoom_sensitivity", "cod3_invert_mouse", "cod3_m_yaw",
                                       "cod3_m_pitch", "mnk_sensitivity", "cod3_key_prompts",
-                                      "cod3_glyph_style"});
+                                      "cod3_glyph_style", "cod3_key_caps",  // [acct2-decomp] key caps
+                                      "cod3_mouse_game_sensitivity"});  // [claude-9b]
     dirty_ = true;
   }
   dirty_ |= CvarCheckbox("Keyboard & mouse", "mnk_mode", &restart_needed_);
@@ -1553,6 +2023,10 @@ void SettingsWindow::DrawControls() {
   Help("While you play with the keyboard and mouse, the game's prompts show the key to press "
        "([R], [ENTER]) instead of a controller button. Pressing a controller button brings the "
        "buttons back.");
+  // [acct2-decomp] The keys as key caps, like "SPACE Skip".
+  dirty_ |= CvarCheckbox("Keys as key caps", "cod3_key_caps", &restart_needed_);
+  Help("Draws the keys in the game's prompts as key caps, like the \"SPACE Skip\" prompt. Off: "
+       "the key's name in brackets ([R]).");
   {
     // [mp-menus] auto: each player's own controller (split screen too).
     const char* v[] = {"auto", "xbox", "playstation", "nintendo", "gamecube"};
@@ -1622,9 +2096,14 @@ void SettingsWindow::DrawControls() {
       if (REXCVAR_GET(cod3_m_yaw) != 0.0 && sens > 0.0f)
         cm360 = static_cast<float>(360.0 / (sens * std::abs(REXCVAR_GET(cod3_m_yaw))));
       ImGui::Text("%.0f mouse counts per full turn", cm360);
-      Help("The mouse is held by the game only during gameplay; menus, the console and this window "
-           "get a normal cursor. The game's Options > Controls rows apply on top: Horizontal / "
-           "Vertical sensitivity (25 = 1x) and Invert aim.");
+      // [claude-9b] Owner 2026-10-26: the game's Horizontal / Vertical rows are the controller's only.
+      dirty_ |= CvarCheckbox("Game's horizontal / vertical rows scale the mouse too", "cod3_mouse_game_sensitivity",
+                             &restart_needed_);
+      Help("Off (default): the mouse uses only the sensitivity above; the game's Options > Controls "
+           "Horizontal / Vertical sensitivity rows are the controller's. On: those rows scale the mouse "
+           "too (25 = 1x), as in earlier versions. The game's Invert aim flips both either way. The "
+           "mouse is held by the game only during gameplay; menus, the console and this window get a "
+           "normal cursor.");
     } else if (mode == 1 && Has("mnk_sensitivity")) {
       float sens = static_cast<float>(GetDouble("mnk_sensitivity", 1.0));
       if (ImGui::SliderFloat("Stick sensitivity", &sens, 0.05f, 10.0f, "%.2f",
@@ -1637,8 +2116,10 @@ void SettingsWindow::DrawControls() {
       Help("How far a mouse movement pushes the emulated right stick.");
     }
   }
+  // [claude-9b] Sensitivity per weapon right under the mouse's own (owner 2026-10-26: "the sliders for
+  // individual weapons sensitivity need to be organized with other sensitivity controls").
+  dirty_ |= cod3::aimsens::DrawF2Section();  // sensitivity per weapon, hip and aiming (game/aim_sensitivity.h)
   dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h)
-  dirty_ |= cod3::aimsens::DrawF2Section();  // [claude-9b] sensitivity per weapon, hip and aiming (game/aim_sensitivity.h)
   Section("Key bindings");
   if (ResetButton("reset_binds", "key bindings")) {
     restart_needed_ |= ResetSettings(

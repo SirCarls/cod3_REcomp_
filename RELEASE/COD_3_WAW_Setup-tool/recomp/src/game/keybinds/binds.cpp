@@ -646,6 +646,13 @@ struct Handlers {
   uint32_t down = 0, up = 0;
 };
 Handlers g_handlers[kActionCount];
+// [claude-9b] cod3mp: the command the layout puts on the other shoulder than the frag grenade
+// (SetMpSpecialCommand); the "smoke" action calls it. Written and read on the game thread; the
+// label F2 shows is copied under the mutex.
+std::string g_mp_special;
+bool g_mp_special_changed = false;
+std::mutex g_mp_special_label_mutex;
+std::string g_mp_special_label;
 uint32_t g_aim_toggle = 0;   // "toggle cl_run": the game's aim toggle
 bool g_looked_up = false;
 bool g_missing[kActionCount] = {};  // looked up again now and then (RetryMissing)
@@ -662,6 +669,7 @@ struct Slot {
   bool toggle = false;           // kDirect aim: pressed as a toggle (nothing on the release)
 };
 Slot g_slots[kActionCount][kSlots];
+bool g_port_held[kActionCount][kSlots] = {};  // [claude-9b] a port setting's key is down (one switch per press)
 // The frag key's press made the game hold +activatereload with the
 // controller's X (the throw-back, Deliver); its release lets that go.
 bool g_frag_added_x[kSlots] = {};
@@ -697,7 +705,10 @@ uint32_t FindCommand(uint8_t* base, std::string_view name, uint32_t* type) {
 // One action's handlers: true when the game has them, of the kind the action
 // calls (a button command's pair, a plain command's pair, one plain command).
 bool LookUp(uint8_t* base, int a, std::string* why) {
-  const ActionDef& def = Def(static_cast<Action>(a));
+  ActionDef def = Def(static_cast<Action>(a));
+  // [claude-9b] cod3mp: the special grenade key calls what the layout's other shoulder holds.
+  if (cod3::kMultiplayer && static_cast<Action>(a) == Action::kSmoke && !g_mp_special.empty())
+    def.command = g_mp_special.c_str();
   Handlers h;
   uint32_t type = 0;
   switch (def.delivery) {
@@ -708,6 +719,9 @@ bool LookUp(uint8_t* base, int a, std::string* why) {
     case Delivery::kView:
       g_handlers[a] = {};
       return true;  // the vehicle's own reads (the hooks at the end)
+    case Delivery::kPort:
+      g_handlers[a] = {};
+      return true;  // [claude-9b] a port setting: switched in Press
     case Delivery::kOnce:
       h.down = FindCommand(base, def.command, &type);
       if (!InImage(h.down) || type != kTypePlain)
@@ -758,6 +772,19 @@ void LookUpAll(uint8_t* base) {
 
 // Actions the game didn't have yet are looked up again now and then (a
 // command registered late); their keys stay the keyboard rows' meanwhile.
+void SetMpSpecial(const std::string& command) {
+  if (command == g_mp_special) return;
+  g_mp_special = command;
+  g_mp_special_changed = true;
+  std::string label;
+  if (command == "+class")
+    label = "Class item (RB)";
+  else if (!command.empty() && command != "+smokegrenade")
+    label = "Special (" + command + ")";
+  std::lock_guard lock(g_mp_special_label_mutex);
+  g_mp_special_label = label;
+}
+
 void RetryMissing(uint8_t* base) {
   for (int a = 0; a < kActionCount; ++a) {
     if (!g_missing[a]) continue;
@@ -1014,10 +1041,30 @@ void ReleaseDirect(int a, int s) {
   slot = {};
 }
 
+// [claude-9b] 2026-10-27 A port setting's key (Delivery::kPort): switches the bool setting the action names, for
+// local player `cl` (split-screen players 2 to 4: its "_2" .. "_4" twin, where there is one).
+void SwitchPortSetting(const ActionDef& def, uint32_t cl) {
+  std::string name = def.command;
+  if (cl >= 1 && cl <= 3) {
+    const std::string own = name + "_" + std::to_string(cl + 1);
+    if (rex::cvar::GetFlagInfo(own.c_str())) name = own;
+  }
+  if (!rex::cvar::GetFlagInfo(name.c_str())) return;
+  const std::string now = rex::cvar::GetFlagByName(name.c_str());
+  const bool on = now == "true" || now == "1";
+  rex::cvar::SetFlagByName(name.c_str(), on ? "false" : "true");
+  REXLOG_INFO("cod3: binds: {} switched {} ({})", def.id, on ? "off" : "on", name);
+}
+
 void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) {
   Slot& slot = g_slots[a][s];
   if (slot.mode != Mode::kNone) return;
   const Action action = static_cast<Action>(a);
+  if (Def(action).delivery == Delivery::kPort) {  // [claude-9b] the port's own setting, never the game's
+    if (!g_port_held[a][s]) SwitchPortSetting(Def(action), cl);
+    g_port_held[a][s] = true;
+    return;
+  }
   if (g_missing[a]) return;  // the game doesn't have it (RetryMissing)
   // A Vehicle action is answered at the vehicle's own read, inside an
   // interaction too (never a controller button).
@@ -1050,6 +1097,10 @@ void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) 
 }
 
 void Release(int a, int s) {
+  if (Def(static_cast<Action>(a)).delivery == Delivery::kPort) {  // [claude-9b]
+    g_port_held[a][s] = false;
+    return;
+  }
   Slot& slot = g_slots[a][s];
   if (slot.mode == Mode::kDirect) {
     // Pressed in this same poll: let go on the next one, so the game sees
@@ -1092,6 +1143,22 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
     LookUpAll(base);
   else if (g_poll % 600 == 0)
     RetryMissing(base);
+  if (g_mp_special_changed && g_looked_up) {
+    // [claude-9b] cod3mp: the layout's shoulders changed; the special key follows them.
+    g_mp_special_changed = false;
+    const int a = int(Action::kSmoke);
+    std::string why;
+    const bool ok = LookUp(base, a, &why);
+    g_missing[a] = !ok;
+    g_action_ok[a].store(ok, std::memory_order_relaxed);
+    if (ok)
+      REXLOG_INFO("cod3mp: key binds: smoke (the special grenade key) calls {} now, the controller layout's "
+                  "other shoulder",
+                  g_mp_special.empty() ? std::string(Def(Action::kSmoke).command) : g_mp_special);
+    else
+      REXLOG_WARN("cod3mp: key binds: smoke: {}; its keys press their keyboard row's controller button instead",
+                  why);
+  }
   const uint32_t cl = KbmClient(base);
   // Is the game taking the player's presses? The listener takes the keys
   // only then (otherwise they press the keyboard rows' controller buttons).
@@ -1239,6 +1306,8 @@ void Deliver(PPCContext& ctx, uint8_t* base, uint32_t now, const Pending& d) {
     case Delivery::kView:
       if (d.down) g_view_press_poll.store(g_poll ? g_poll : 1, std::memory_order_relaxed);
       how = ", the vehicle reads it";
+      break;
+    case Delivery::kPort:  // [claude-9b] switched in Press; never queued
       break;
     case Delivery::kText: {
       std::string text;
@@ -1504,6 +1573,15 @@ std::string KeyNameForActionWord(std::string_view word) {
   return "";
 }
 
+// [acct2-decomp] See binds.h.
+std::string KeyNameForAction(std::string_view id) {
+  if (!REXCVAR_GET(cod3_binds_actions)) return "";
+  const Action a = ActionById(id);
+  if (a == Action::kCount) return "";
+  const KeyCode key = CurrentSet().key[static_cast<int>(a)][0];
+  return key != kNoKey ? PromptName(key) : "";
+}
+
 std::string KeyNameForCommand(std::string_view binding) {
   if (binding.empty() || !REXCVAR_GET(cod3_binds_actions)) return "";
   const KbmSet set = CurrentSet();
@@ -1523,6 +1601,8 @@ std::string KeyNameForCommand(std::string_view binding) {
 }
 
 uint32_t Generation() { return g_generation.load(std::memory_order_acquire); }
+
+void SetMpSpecialCommand(const std::string& command) { SetMpSpecial(command); }  // [claude-9b]
 
 bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source source,
                           const std::function<void(bool error, const std::string& text)>& print,
@@ -1800,12 +1880,23 @@ bool DrawF2Rows() {
       }
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
-      if (g_action_ok[a].load(std::memory_order_relaxed)) {
-        ImGui::TextUnformatted(def.label);
-      } else {
-        ImGui::TextDisabled("%s (not in this game)", def.label);
+      // [claude-9b] cod3mp: the special grenade key names what it calls in the controller layout.
+      std::string label = def.label;
+      const char* help = def.help;
+      if (cod3::kMultiplayer && action == Action::kSmoke) {
+        std::lock_guard lock(g_mp_special_label_mutex);
+        if (!g_mp_special_label.empty()) {
+          label = g_mp_special_label;
+          help = "What the controller layout puts on the other shoulder than the frag grenade (the right "
+                 "shoulder's +class in layout A: your class's item). Hold and let go to use it.";
+        }
       }
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", def.help);
+      if (g_action_ok[a].load(std::memory_order_relaxed)) {
+        ImGui::TextUnformatted(label.c_str());
+      } else {
+        ImGui::TextDisabled("%s (not in this game)", label.c_str());
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", help);
       ImGui::TableNextColumn();
       ImGui::PushID(def.id);
       ImGui::SetNextItemWidth(-1);

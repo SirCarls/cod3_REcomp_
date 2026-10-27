@@ -35,6 +35,12 @@ CrosshairStyle CurrentCrosshair();
 // white, red over an enemy, green over a friendly, black over a dead body).
 // aim_fraction: 0 = hip fire, 1 = fully aimed down the sights.
 void NotifyGameCrosshair(float aim_fraction, const float rgba[4]);
+// [claude-9b] Split screen (owner 2026-10-26: "custom crosshairs per player, placed where the
+// original would be", following the number of players and players leaving): the local player
+// (0-3) whose view the next NotifyGameCrosshair is for, and that view's place on the game's
+// picture as fractions (x, y, width, height). Without it a crosshair is player 1's, whole picture
+// (the campaign). cod3mp's CG_DrawCrosshair hooks call it (game/mp/hud_mp.cpp).
+void SetGameCrosshairView(int view, float x, float y, float width, float height);
 // True while the game is showing (or would show) its crosshair.
 bool GameCrosshairVisible();
 

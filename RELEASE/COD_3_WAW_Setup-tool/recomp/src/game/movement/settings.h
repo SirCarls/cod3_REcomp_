@@ -6,6 +6,7 @@
 //   cod3_cod4_movement   off/on   the player's movement style: Call of Duty 3 / Call of Duty 4
 //   cod3_cod4_sprint, cod3_cod4_speeds, cod3_cod4_jumps
 //                        on/off   the three parts of the CoD4 style (only with cod4)
+//   cod3_move_hz         0..240   movement steps a second at any frame rate (60) [acct2-main]
 // The match's settings are server_sided_protected (game/protected_dvars.h):
 // alternate_movement and alternate_movement_sprint/_speeds/_jumps.
 //
@@ -27,6 +28,7 @@ bool SprintSetting();        // cod3_sprint
 SprintMode SprintButtonMode();  // cod3_sprint_toggle
 Preference OwnPreference();  // cod3_cod4_movement + cod3_cod4_*
 bool DebugMovement();        // cod3_debug_movement
+int MoveStepHz();            // cod3_move_hz (0 = one move a frame) [acct2-main]
 
 // The rules for this machine's player now: the campaign is its own server,
 // so these are what its movement follows (alternate_movement 2 by default:

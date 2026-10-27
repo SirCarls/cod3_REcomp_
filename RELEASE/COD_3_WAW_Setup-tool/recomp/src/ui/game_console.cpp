@@ -322,7 +322,9 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
     // native-render: the port's own settings by their own names too
     // ("cod3_render_percent 75", also from cod3_autoexec), like the F10 log
     // console; F2 shows the new value.
-    if (args.size() >= 2 && args[0].rfind("cod3_", 0) == 0) {
+    // [claude-9b] 2026-10-27 cod3mp's own settings too (cod3mp_server_hz, cod3mp_split_lod): bench c9b-splitab2's
+    // "cod3mp_split_lod true" went to the game as an unknown command and did nothing.
+    if (args.size() >= 2 && (args[0].rfind("cod3_", 0) == 0 || args[0].rfind("cod3mp_", 0) == 0)) {
       if (const auto* info = rex::cvar::GetFlagInfo(args[0]); info && info->type != rex::cvar::FlagType::Command) {
         std::string value = JoinFrom(args, 1);
         // A choice by its number in the domain list, as World at War takes them.

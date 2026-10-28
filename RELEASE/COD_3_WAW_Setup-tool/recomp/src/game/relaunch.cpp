@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fstream>
 #include <iterator>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <vector>
@@ -36,6 +37,11 @@ extern char** environ;
 REXCVAR_DEFINE_STRING(cod3_launch_data, "", "cod3/Internal",
                       "Set by the program itself when the game reboots to its main menu: the "
                       "file with the game's launch data")
+    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+// [claude-9b-think] 2026-10-28 v2 UNTESTED: see relaunch.h StartedByLevelGuard.
+REXCVAR_DEFINE_BOOL(cod3_relaunch_by_level_guard, false, "cod3/Internal",
+                    "Set by the program itself when the console's level-command guard restarted it: the "
+                    "guard doesn't restart this instance again in its first minute")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
 namespace cod3 {
@@ -109,7 +115,8 @@ bool IsLaunchDataArg(const std::string& arg) { return arg.rfind(kLaunchDataArg, 
 // battle action demo): not handed to the next instance, or quitting to the
 // menu would run "spmap ..." again, and a "reboot" in it would never end.
 bool IsOneOffArg(const std::string& arg) {
-  for (const char* prefix : {"--cod3_autoexec", "--cod3_test_", "--cod3_qte_demo"})
+  for (const char* prefix :
+       {"--cod3_autoexec", "--cod3_test_", "--cod3_qte_demo", "--cod3_relaunch_by_level_guard"})
     if (arg.rfind(prefix, 0) == 0) return true;
   return false;
 }
@@ -141,6 +148,22 @@ std::vector<std::string> WindowArgs() {
   if (rex::cvar::GetFlagInfo("start_in_background"))
     out.push_back(std::string("--start_in_background=") +
                   (g_has_focus.load(std::memory_order_relaxed) ? "false" : "true"));
+  return out;
+}
+
+// [claude-9b-think] 2026-10-28 v2 UNTESTED: SetStartupCommand's line, for the next instance only.
+std::mutex g_startup_mutex;
+std::string g_startup_command;
+
+// The startup line as the new instance's --cod3_autoexec, and the mark that the guard started it (the old command
+// line's one-off arguments, an old --cod3_autoexec and an old mark among them, are left out before these are
+// added).
+std::vector<std::string> StartupArgs() {
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  std::vector<std::string> out;
+  if (g_startup_command.empty()) return out;
+  out.push_back("--cod3_autoexec=" + g_startup_command);
+  out.push_back("--cod3_relaunch_by_level_guard=true");
   return out;
 }
 
@@ -191,6 +214,9 @@ bool Spawn(Program program, const std::filesystem::path& data_file) {
   }
   if (argv) LocalFree(argv);
   for (const std::string& arg : WindowArgs()) cmd += L" " + std::filesystem::path(arg).wstring();
+  // [claude-9b-think] SetStartupCommand's line (it has a space: quoted) and the guard's mark.
+  for (const std::string& arg : StartupArgs())
+    cmd += L" " + QuoteArg(std::filesystem::path(arg).wstring());
   cmd += L" " + QuoteArg(skip + data_file.wstring());
   STARTUPINFOW si = {};
   si.cb = sizeof(si);
@@ -247,6 +273,7 @@ bool Spawn(Program program_id, const std::filesystem::path& data_file) {
     }
   }
   for (std::string& arg : WindowArgs()) args.push_back(std::move(arg));
+  for (std::string& arg : StartupArgs()) args.push_back(std::move(arg));  // [claude-9b-think]
   args.push_back(kLaunchDataArg + data_file.string());
   std::vector<char*> argv;
   for (auto& a : args) argv.push_back(a.data());
@@ -285,6 +312,14 @@ bool Spawn(Program program_id, const std::filesystem::path& data_file) {
 
 }  // namespace
 
+
+// [claude-9b-think] 2026-10-28 v2 UNTESTED: see relaunch.h.
+void SetStartupCommand(const std::string& line) {
+  std::lock_guard<std::mutex> lock(g_startup_mutex);
+  g_startup_command = line;
+}
+
+bool StartedByLevelGuard() { return REXCVAR_GET(cod3_relaunch_by_level_guard); }
 
 void UseStartInBackgroundAsLaunchOptionOnly() {
   if (!rex::cvar::GetFlagInfo("start_in_background")) return;  // an SDK without patch 0063
@@ -346,9 +381,20 @@ bool Relaunch(const std::filesystem::path& userdata_dir) {
                  data->launch_data.size(), kMaxLaunchDataBytes);
     return false;
   }
+  // [claude-9b-think] 2026-10-28 v3 UNTESTED (claude-9b-test g2-2: after the guard's restart the new instance loaded
+  // saint_lo by itself 0.25 s after its start, before its autoexec, then refused its own carried 'spmap blkbrn' as a
+  // second level). The game's reboot hands the next instance its launch data, and a game started with launch data goes
+  // straight back into the level it names (a cold start, g2-1, loads none). For the guard's restart the carried command
+  // is the level to load, so the new instance starts cold: no launch data (its control settings come from the profile,
+  // as at any start). The game's own reboots (quitting to the menu) keep theirs.
+  bool guard_restart = false;
+  {
+    std::lock_guard<std::mutex> lock(g_startup_mutex);
+    guard_restart = !g_startup_command.empty();
+  }
   {
     std::ofstream out(file, std::ios::binary | std::ios::trunc);
-    if (data->launch_data_present && !data->launch_data.empty())
+    if (!guard_restart && data->launch_data_present && !data->launch_data.empty())
       out.write(reinterpret_cast<const char*>(data->launch_data.data()),
                 std::streamsize(data->launch_data.size()));
     if (!out) {
@@ -361,8 +407,13 @@ bool Relaunch(const std::filesystem::path& userdata_dir) {
                  LaunchName(data->launch_path));
     return false;
   }
-  REXLOG_INFO("cod3: the game launched {}; started {} ({} bytes of launch data)",
-              LaunchName(data->launch_path), ProgramName(*program), data->launch_data.size());
+  if (guard_restart)
+    REXLOG_INFO("cod3: the game launched {}; started {} for the level command, cold (its {} bytes of launch data "
+                "left out, so it doesn't load this level again first)",
+                LaunchName(data->launch_path), ProgramName(*program), data->launch_data.size());
+  else
+    REXLOG_INFO("cod3: the game launched {}; started {} ({} bytes of launch data)",
+                LaunchName(data->launch_path), ProgramName(*program), data->launch_data.size());
   return true;
 }
 

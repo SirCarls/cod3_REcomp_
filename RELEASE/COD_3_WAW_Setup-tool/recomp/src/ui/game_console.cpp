@@ -21,6 +21,8 @@
 #include "game/diagnostics.h"
 #include "game/hd_textures.h"
 #include "game/program.h"
+#include "game/guest.h"     // [claude-9b-think] the level-command guard (campaign)
+#include "game/relaunch.h"
 #if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
 #include "game/protected_dvars.h"
 #endif
@@ -84,6 +86,89 @@ std::string ToLower(std::string s) {
   for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
   return s;
 }
+
+#if !defined(COD3_MP)
+// [claude-9b-think] 2026-10-28 v2 UNTESTED (FINDINGS-RELOAD-CRASH; s159: v1 fired at the main menu and restarted in
+// a loop). Call of Duty 3 loads one campaign mission per run: the end of a mission runs `reboot` (the title starts
+// again), and a second SV_SpawnServer in one process crashes in the game's own code, whichever level it is. So
+// spmap / map / devmap from this console, cod3_autoexec or the console config, once a level has run in this
+// process, restart the program the game's own way (`reboot`, game/relaunch.h) with that one command as the new
+// instance's first. At a fresh start (the menu) the command goes to the game as before. The game's own command
+// buffer (menus, level scripts, loadgame in place, its reboot) never comes through here.
+
+// When this program started; an instance the guard started isn't restarted by it again this soon (no loop).
+const std::chrono::steady_clock::time_point g_program_start = std::chrono::steady_clock::now();
+constexpr auto kGuardQuiet = std::chrono::seconds(60);
+// The game's thread only (QueueLevelCommand's task): a level command went to the game in this process; the guard
+// asked for the restart (the program is ending).
+bool g_level_command_passed = false;
+bool g_restart_pending = false;
+
+bool IsLevelCommand(const std::vector<std::string>& args) {
+  return args.size() >= 2 && (EqualsNoCase(args[0], "spmap") || EqualsNoCase(args[0], "map") ||
+                              EqualsNoCase(args[0], "devmap"));
+}
+
+// The level command alone for the next instance ("spmap blkbrn"): its name and a map name of letters, digits and _
+// only, so nothing else (another command, a '|' or ';' the new instance's autoexec would split) goes along. Empty
+// when the map name isn't one.
+std::string StartupLine(const std::vector<std::string>& args) {
+  const std::string& map = args[1];
+  if (map.empty() || map.size() > 64) return {};
+  for (const char c : map)
+    if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_') return {};
+  return ToLower(args[0]) + " " + map;
+}
+
+// The game's server flag: sv_running (its cvar_t* at kSvRunningPtr, ->integer). Only SV_SpawnServer sets it and
+// only a server shutdown clears it; the front end runs no server, so it is 0 there. -1 before Com_Init made it.
+int32_t SvRunning(uint8_t* base) {
+  const uint32_t var = guest::ReadU32(base, addr::crossref::kSvRunningPtr);
+  return var ? guest::ReadS32(base, var + addr::cvar::kInteger) : -1;
+}
+
+// Decided on the game's thread at its next frame, where the game's state is read.
+void QueueLevelCommand(const std::vector<std::string>& args, const std::string& cmd) {
+  Engine::Get().QueueGuestTask([args, cmd](PPCContext& ctx, uint8_t* base) {
+    if (g_restart_pending) {
+      GameConsole::Get().Print(ConsoleChannel::kError,
+                               "^3Already restarting for an earlier level command; '" + cmd + "' is not run.\n");
+      REXLOG_INFO("cod3: level command '{}' not run: already restarting for an earlier one", cmd);
+      return;
+    }
+    const int32_t running = SvRunning(base);
+    if (running <= 0 && !g_level_command_passed) {
+      g_level_command_passed = true;  // the first level of this process: to the game, as before
+      REXLOG_INFO("cod3: level command '{}' to the game (sv_running {}, no level yet in this process)", cmd,
+                  running);
+      Engine::CbufAddText(ctx, base, cmd + "\n");
+      return;
+    }
+    const std::string line = StartupLine(args);
+    const bool quiet =
+        StartedByLevelGuard() && std::chrono::steady_clock::now() - g_program_start < kGuardQuiet;
+    if (line.empty() || quiet || !ProgramInstalled(Program::kCampaign)) {
+      const char* why = line.empty() ? "its map name can't be carried to a new instance"
+                        : quiet      ? "this instance was just started for a level command (no restart loop)"
+                                     : "this program can't start itself again";
+      GameConsole::Get().Print(ConsoleChannel::kError, "^1" + cmd +
+                                                           ": the game loads one mission per run; use the menu, "
+                                                           "or try again in a minute (" + why + ").\n");
+      REXLOG_WARN("cod3: refused level command '{}' (sv_running {}, a level already ran in this process): {}", cmd,
+                  running, why);
+      return;
+    }
+    g_restart_pending = true;
+    SetStartupCommand(line);
+    GameConsole::Get().Print(ConsoleChannel::kSystem,
+                             "^3The game loads one mission per run: restarting into it (" + line + ").\n");
+    REXLOG_INFO("cod3: level command '{}' (sv_running {}, a level already ran in this process): the game loads one "
+                "mission per run, so the program restarts with '{}' first (reboot)",
+                cmd, running, line);
+    Engine::CbufAddText(ctx, base, "reboot\n");
+  });
+}
+#endif
 
 // Q3 tokenizer subset: whitespace separated, "quoted strings" kept whole.
 std::vector<std::string> Tokenize(std::string_view s) {
@@ -399,6 +484,14 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
         engine.SetArchived(args[1], value);
       }
     }
+#if !defined(COD3_MP)
+    // [claude-9b-think] v2 UNTESTED: a level command once a campaign level has run in this process restarts the
+    // program into it (QueueLevelCommand above); decided on the game's thread.
+    if (IsLevelCommand(args)) {
+      QueueLevelCommand(args, cmd);
+      continue;
+    }
+#endif
     engine.QueueCommand(cmd);
   }
   engine.RequestSnapshot();

@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 
 namespace cod3 {
 
@@ -75,5 +76,17 @@ bool Relaunch(const std::filesystem::path& userdata_dir);
 // cod3_launch_data back to the game, then deletes the file. Only
 // <userdata_dir>/launch_data.bin is accepted, and at most the console's 3 KB.
 void RestoreLaunchData(const std::filesystem::path& userdata_dir);
+
+// [claude-9b-think] 2026-10-28 v2 UNTESTED: a level command for the next instance ("spmap blkbrn"), which the
+// next Relaunch passes on as its --cod3_autoexec, with --cod3_relaunch_by_level_guard=true (the old command line's
+// one-off arguments, its --cod3_autoexec among them, are left out as before). The console's level commands, once a
+// campaign level has run in this process, use it (ui/game_console.cpp): the game loads one mission per run (it
+// restarts between missions: `reboot`), so `spmap blkbrn` there becomes the game's own `reboot` with `spmap blkbrn`
+// as the new instance's first command. Any thread; an empty line clears it.
+void SetStartupCommand(const std::string& line);
+
+// [claude-9b-think] v2: this instance was started by that (--cod3_relaunch_by_level_guard): the console's guard
+// doesn't restart it again in its first minute (no restart loop).
+bool StartedByLevelGuard();
 
 }  // namespace cod3

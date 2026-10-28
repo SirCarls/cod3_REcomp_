@@ -6,15 +6,18 @@
 #include <array>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>  // [claude-9b] getenv, ToolVersion
 #include <cstring>  // [acct2-main] strlen
 #include <ctime>
 #include <deque>
 #include <fstream>
+#include <iterator>  // [claude-9b] istreambuf_iterator, ToolVersion
 #include <mutex>
 #include <thread>
 #include <vector>
 
 #include <rex/cvar.h>
+#include <rex/filesystem.h>  // [claude-9b] GetExecutableFolder, ToolVersion
 #include <rex/logging.h>
 #include <rex/version.h>
 
@@ -149,6 +152,35 @@ Detail GetDetail() {
   return Detail::kNormal;
 }
 
+// [claude-9b] 2026-10-27 the setup tool version (owner 18:31 "please add a version number to the top right corner",
+// 18:33 "make it shit out it's version number when making logs so we can keep track of problems"). The game folder
+// is the one OnConfigurePaths picks: next to the AppImage, the program's folder or the one above it (bin/).
+std::string ToolVersion() {
+  static const std::string version = [] {
+    std::vector<std::filesystem::path> dirs;
+    if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage)
+      dirs.push_back(std::filesystem::path(appimage).parent_path());
+    const auto exe_dir = rex::filesystem::GetExecutableFolder();
+    dirs.push_back(exe_dir);
+    dirs.push_back(exe_dir.parent_path());
+    for (const auto& dir : dirs) {
+      std::ifstream in(dir / "cod3_waw.json");
+      if (!in) continue;
+      const std::string json((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      const size_t key = json.find("\"tool_version\"");
+      if (key == std::string::npos) continue;
+      const size_t colon = json.find(':', key);
+      const size_t open = colon == std::string::npos ? colon : json.find('"', colon + 1);
+      const size_t close = open == std::string::npos ? open : json.find('"', open + 1);
+      if (close == std::string::npos || close - open > 32) continue;
+      std::string v = json.substr(open + 1, close - open - 1);
+      if (!v.empty()) return v;
+    }
+    return std::string();
+  }();
+  return version;
+}
+
 std::string SettingsSummary() {
   const RenderPlan& plan = GetRenderPlan();
   std::string s;
@@ -198,9 +230,11 @@ void Start(const std::filesystem::path& logs_dir) {
       if (Verbose()) REXLOG_INFO("cod3: setting {} = {}", n, value);
     });
   }
-  REXLOG_INFO("cod3: ---- session ---- {}; game built {} {}; {}; {} CPU threads",
-              REXGLUE_BUILD_STAMP, __DATE__, __TIME__, OsSummary(),
-              std::max(1u, std::thread::hardware_concurrency()));
+  // [claude-9b] 2026-10-27 the setup tool version first (owner 18:33).
+  const std::string tool = ToolVersion();
+  REXLOG_INFO("cod3: ---- session ---- setup tool {}; {}; game built {} {}; {}; {} CPU threads",
+              tool.empty() ? std::string("unknown (not built by the setup tool)") : tool, REXGLUE_BUILD_STAMP,
+              __DATE__, __TIME__, OsSummary(), std::max(1u, std::thread::hardware_concurrency()));
   std::string summary = SettingsSummary();
   size_t start = 0;
   while (start < summary.size()) {
@@ -419,6 +453,9 @@ std::filesystem::path WriteReport() {
   std::ofstream out(path, std::ios::trunc);
   if (!out) return {};
   out << "Call of Duty 3 (recomp) report\n";
+  // [claude-9b] 2026-10-27 the setup tool version (owner 18:33).
+  out << "Setup tool " << (ToolVersion().empty() ? std::string("unknown (not built by the setup tool)") : ToolVersion())
+      << "\n";
   out << REXGLUE_BUILD_STAMP << "; game built " << __DATE__ << " " << __TIME__ << "\n";
   out << OsSummary() << "; " << std::max(1u, std::thread::hardware_concurrency())
       << " CPU threads\n\n";

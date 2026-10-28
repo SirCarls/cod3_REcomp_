@@ -39,6 +39,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/engine.cpp
     ${COD3_SRC}/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
     ${COD3_SRC}/game/coronas.cpp  # [claude-9b] light coronas fade at the same speed at any frame rate (cod3_fix_corona_fade)
+    ${COD3_SRC}/game/muzzle_light.cpp  # [claude-9b-think] muzzle-flash lights held for a time, not one drawn frame (cod3_muzzle_light_ms)
     ${COD3_SRC}/game/fov.cpp
     ${COD3_SRC}/game/frame_rate.cpp
     ${COD3_SRC}/game/function_profiler.cpp

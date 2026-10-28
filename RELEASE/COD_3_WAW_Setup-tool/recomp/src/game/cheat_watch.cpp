@@ -8,6 +8,9 @@
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#if __has_include(<rex/graphics/gpu_stats.h>)
+#include <rex/graphics/gpu_stats.h>  // [claude-9b] SDK 0149: HoldSlowPresentsFor
+#endif
 
 #include "game/addresses.h"
 #include "game/cheat_guard.h"
@@ -25,6 +28,16 @@
 
 REXCVAR_DEFINE_BOOL(cod3_debug_cheats, false, "cod3",
                     "Log console dvar changes and cheat commands as the watermark sees them");
+
+// [claude-9b] SDK 0149: the first frame after a level loads makes most of the
+// level's textures at once. Frame captures, mp_merv 4 players: without the
+// hold, a torn frame and a black frame with garbage stripes in the first 0.4 s;
+// with it, the loading screen stays ~0.45 s longer and no broken frame shows.
+REXCVAR_DEFINE_BOOL(cod3_level_start_hold, true, "cod3/Display",
+                    "Just after a level loads, don't show a frame that took over 50 ms (the first one "
+                    "makes most of the level's textures): the loading picture stays a moment longer "
+                    "and the level appears without a jump or a broken frame. For 2 seconds after "
+                    "each load (SDK patch 0149)");
 
 namespace cod3 {
 
@@ -282,6 +295,11 @@ REX_HOOK_RAW(SV_SpawnServer) {
   cod3::diag::LevelLoadBegin(cod3::guest::ReadString(base, ctx.r3.u32, 64));
   __imp__SV_SpawnServer(ctx, base);
   cod3::diag::LevelLoadEnd();
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 10
+  // [claude-9b] SDK 0149: the level's first frames, if slow, aren't shown (the
+  // SDK logs each one held).
+  if (REXCVAR_GET(cod3_level_start_hold)) rex::graphics::stats::HoldSlowPresentsFor(2000, 50);
+#endif
   cod3::settings::NoteLevelStart();  // the player's settings over the profile's (game/settings_sync.h)
   cod3::watchdog::Mark("SV_SpawnServer returned (the level is loaded)");
 }

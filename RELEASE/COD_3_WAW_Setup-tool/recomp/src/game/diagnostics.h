@@ -57,4 +57,9 @@ std::filesystem::path LogsDir();
 // The settings summary used by the header and the report.
 std::string SettingsSummary();
 
+// [claude-9b] 2026-10-27 (owner 18:31 / 18:33): the setup tool version this game was built with ("2.22.0"), from
+// the "tool_version" the setup tool writes into cod3_waw.json next to assets/ and userdata/ at every build; empty
+// when the game wasn't built by the setup tool. Read once. In the log's session line, the report and the HUD label.
+std::string ToolVersion();
+
 }  // namespace cod3::diag

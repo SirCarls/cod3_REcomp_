@@ -32,6 +32,15 @@
 // The drawn angles (+128, 0x82438B68) the same way when the game leaves them as the update set them
 // (vehicles turning, soldiers), and in a vehicle the view's angles (cod3_server_smooth_view). 0 turns
 // it all off: one update a frame with the frame's time, as the game does.
+// [claude-9b-think] 2026-10-27 UNTESTED Not every entity is drawn from +112 / +128. CG_AddCEntity (its switch) picks a
+// draw by the entity's type (byte +0) and each fills the entity's scene node (+548, made by 0x824721C8; the refEntity
+// at node +8: axis node +28 / +40 / +52, origin node +68) that the renderer draws (0x8242E450; a vehicle's model by
+// 0x8242CB68, its bones relative to that matrix). Types 0, 2, 3, 4, 5, 10, 11, 13 (and 7 when flagged) take +112 / +128;
+// type 14 (a vehicle: 0x82555668 sets it with the vehicle's data at +540) and 15 take the server's +336 / +352
+// (0x82442338), and type 1 (players and soldiers, 0x8244B610) its +336 with its own +352, or the +352 of the vehicle it
+// rides (+16 bit 0x00100000, the vehicle's handle at +432). So vehicles and the people on them were drawn at the last
+// update's pose in every frame whatever the smoothing did: cod3_server_smooth_body (PlaceVehicleBody and
+// PlaceRiderBody below).
 
 #include "game/server_step.h"
 
@@ -52,6 +61,7 @@
 #include <rex/logging.h>
 
 #include "game/guest.h"
+#include "game/movement/step_view.h"  // [claude-9b] the aim and lean drawn between steps
 
 // [claude-9b] 2026-10-26 23:20: off by default again (owner 23:16: "People and various other entities
 // are flickering"). Above 60 fps, frames without an update drew fewer things (bench serverhz1: 3228
@@ -99,6 +109,71 @@ REXCVAR_DEFINE_BOOL(cod3_server_smooth_view, true, "cod3/Game",
                     "With cod3_server_hz and cod3_server_smooth, in a vehicle (a tank's turret, a car, a "
                     "bike) the view turns smoothly between the game's updates, as the vehicle is drawn; "
                     "off: it turns in steps of the update rate (judder above it)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [claude-9b-think] 2026-10-27 UNTESTED The first-person view on a vehicle the player drives or rides (owner 09:56:
+// nightdrop's jeep, the driver's seat, ~200 fps: the world and the jeep's inside judder). 0x824505E8 places the camera
+// at the seat as the last update left it, so the camera jumped once an update while the jeep is drawn between its last
+// two updates (one update behind at most, CG_CalcEntityLerpPositions' hook below). SmoothView (movement/hooks_sp.cpp)
+// tried the movement steps' offset first: in a vehicle Pmove does not move the player, so it was a zero offset that
+// still counted, and the update offset (PlayerViewOffset) was never reached. Now on a ridden vehicle the camera is put
+// on the vehicle as it is drawn: the vehicle's own server origin and angles at the last two updates (kept after each
+// update, as AdvanceView does), the camera moved and turned with it by Back(), the ridden vehicle drawn from the same
+// pose; a view the player turns (free look) is turned back by the part of the update's turn not drawn yet. The tank's
+// turret camera (mode 4) and third person are left as before.
+// [claude-9b] 2026-10-27 11:55 it was off by default until it reached the picture; 14:55 on again: with
+// cod3_server_smooth_body 1 (the vehicle's scene node on the same pose) claude-9b-test's frame captures of the hostage
+// ride show the interior still (0.6-1.0 px a frame median, no 60 Hz pattern; body 0: +90/-45/-45 px).
+REXCVAR_DEFINE_INT32(cod3_server_smooth_ride, 1, "cod3/Game",
+                     "With cod3_server_hz and cod3_server_smooth, in first person on a vehicle the player drives or "
+                     "rides (a jeep, a car, a bike) the camera stays on the vehicle as it is drawn between the game's "
+                     "updates, and a view the player turns (free look) turns with it. 0: off (the camera moves in "
+                     "steps of the update rate); 1: on, the free look turned by the view's turn in the update")
+    .range(0, 1)  // [claude-9b-think] 2 (the vehicle's yaw alone) dropped: ride4 found it uneven
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [claude-9b-think] 2026-10-27 UNTESTED (claude-9b-test: the hostage level's ride runs in camera mode 8, where the
+// ride did nothing). The vehicle cameras of 0x824505E8 (mode from 0x82447D48) are built from the ridden vehicle's
+// server pose, its origin (+336) and angles (+352), as the game left them in the update: 2 / 3 the driver's own and
+// third-person views (0x8244FC00 / 0x82450088, the angles +352), 6 / 7 / 8 / 13 a seat's tag (0x824457F0: the tag's
+// world matrix by 0x8254EC98 -> 0x8254D2A8 = AnglesToAxis(+352) at +336 with the update's bones; 8 a passenger's seat,
+// 6 the seat after the driver's), 12 the seat the update put the player in (ps origin). The ride moves and turns each
+// of these with the vehicle as it is drawn. Bit n: camera mode n. The default leaves out the turrets (4, 5: the view
+// angles there are drawn between updates already, cod3_server_smooth_view) and third person off a vehicle (1).
+REXCVAR_DEFINE_INT32(cod3_server_smooth_ride_cams, 12749,  // modes 0, 2, 3, 6, 7, 8, 12, 13
+                     "cod3/Game",
+                     "With cod3_server_smooth_ride, the camera modes of the game's view setup it applies to, one bit "
+                     "each (bit n: mode n; 0 the eye, 2/3 a driver's views, 6/7/8/13 a seat's camera, 12 linked to a "
+                     "vehicle; 4/5 the turrets are left out)")
+    .range(0, (1 << 23) - 1)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [claude-9b-think] 2026-10-27 UNTESTED ride6 (claude-9b-test's pictures of the hostage ride: the jeep's inside jumped
+// once an update with the ride on as with it off). The camera is placed on the ride's pose (RideViewOffset); the
+// vehicle was drawn from that pose only where the game draws it at its update position (a plain copy of +336 / +32),
+// and otherwise by whatever drew it (the game's own placing, or the other smoothing). On: the ridden vehicle is drawn
+// from the camera's pose whatever its trajectory type and whatever the game drew, so the two agree by construction.
+REXCVAR_DEFINE_BOOL(cod3_server_smooth_ride_vehicle, true, "cod3/Game",
+                    "With cod3_server_smooth_ride, the vehicle the player rides is drawn from the same pose the "
+                    "camera is placed on, whatever way the game itself draws it, so its inside stays still on the "
+                    "screen; off: only where the game draws it at its update position")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [claude-9b-think] 2026-10-27 UNTESTED ride9 (claude-9b-test's ride8, the hostage ride at 180 fps: the trace passed,
+// the camera on the ride's pose, but the frame captures showed the jeep's inside +90 / -45 / -45 px each 60 Hz cycle,
+// ride 0 as 1). The renderer draws a vehicle where its scene node says, and the vehicles' draw fills that from the
+// server's origin and angles (+336 / +352, see the note at the top), never from the drawn +112 / +128 that the ride and
+// the other smoothing set: the body stayed at the update's pose while the camera moved between updates. Now the node of
+// a vehicle (and of anyone riding one) is moved after the game filled it, by the vehicle's pose between its last two
+// updates (the ride's pose for the ridden one with cod3_server_smooth_ride, the same pose the camera is on). The node is
+// the game's per-entity draw record, filled again by the next frame's draw; nothing of the game's own state is changed.
+REXCVAR_DEFINE_INT32(cod3_server_smooth_body, 1, "cod3/Game",
+                     "With cod3_server_hz and cod3_server_smooth, where vehicles and the people the game draws at "
+                     "their update position are drawn. 0: at the last game update's pose, as the game does (they move "
+                     "in steps of the update rate); 1: vehicles and the people riding them between the vehicle's last "
+                     "two updates, the ridden one on the camera's pose; 2: also soldiers and other players between "
+                     "their own last two updates")
+    .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [claude-9b] 2026-10-27
@@ -183,6 +258,25 @@ constexpr uint32_t kEntVehicleInfo = 540;    // a vehicle's own data (0x82447D48
 constexpr uint32_t kClientViewAngles = 172;  // the view's angles: 0x824505E8 places the camera by them
 constexpr uint32_t kClientVehicle = 1148;    // the handle of the vehicle the player rides
 constexpr float kMaxSmoothedTurn = 90.0f;    // more in one update (degrees): a cut, not smoothed
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride
+constexpr uint32_t kEntAnglesPrev = 72;      // the angles' trajectory base: 0x82438B68 blends from it
+constexpr uint32_t kEntAnglesNow = 84;       // to these by cg +2800 (the update's angles; checked in the trace)
+// [claude-9b-think] 2026-10-27 the entity's server angles (r.currentAngles, pitch / yaw / roll at +352 / +356 / +360):
+// 0x8254D2A8 places a tag by AnglesToAxis(+352) at the origin +336, and the vehicle cameras read them (0x8244F8E0
+// +356 / +360). The ride's angles, so the camera and the drawn vehicle turn as the game's own cameras see it. (The
+// ride read +84 first: claude-9b-test's hostage ride had 0 there in every frame, and the update's yaw at +76, the
+// vector at +72, which 0x82438B68 draws with cg +2800 at 0.)
+constexpr uint32_t kEntServerAngles = 352;
+constexpr uint32_t kClientOrigin = 0;        // the playerState's origin (the seat, in a vehicle)
+constexpr uint32_t kClientDeltaAngles = 88;  // delta_angles: whole short angles in ints
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body: the scene node the renderer draws an entity from.
+constexpr uint32_t kEntSceneNode = 548;      // made by 0x824721C8 (260 bytes); its refEntity is at node +8
+constexpr uint32_t kNodeLightOrigin = 16;    // the lighting origin (the origin raised a little)
+constexpr uint32_t kNodeAxis = 28;           // forward, left, up (3 x vec3, as AnglesToAxis 0x82532B18)
+constexpr uint32_t kNodeOrigin = 68;         // where the model is drawn (0x8242E450's matrix: axis rows, then this)
+constexpr uint32_t kNodeOldOrigin = 80;      // a second copy of the origin
+constexpr uint32_t kEntOnVehicleFlag = 0x00100000;  // flags (+16): rides a vehicle (0x8244B610 turns it by the vehicle's)
+constexpr uint32_t kEntVehicleRidden = 432;  // its handle (as the entity handles: index 14 bits, generation above)
 
 // [claude-9b] 2026-10-27 (owner 10-27 00:14: "start on the 60hz. This is priority one").
 // The server frame's milliseconds: SV_Frame stores its r3 at +160 (and 0 at +164) on every path, and
@@ -255,6 +349,65 @@ struct ViewHistory {
 };
 ViewHistory g_view;
 
+// [claude-9b-think] 2026-10-27 UNTESTED The vehicle the player rides at the last two updates (cod3_server_smooth_ride),
+// kept after each update: its server origin (+336) and angles (+84), the turn the update gave the player's view, and
+// how far the update moved the playerState's origin (the seat; the trace only).
+struct RideHistory {
+  uint64_t update = 0;
+  bool have = false;   // cur is the vehicle's at `update`
+  bool valid = false;  // prev and cur are of two updates in a row, near enough to draw between
+  uint32_t ent = 0;
+  int32_t number = -1;
+  float origin_prev[3] = {}, origin_cur[3] = {};
+  float angles_prev[3] = {}, angles_cur[3] = {};
+  float view_turn[3] = {};   // the view angles' turn in the last update (degrees)
+  float delta_turn[3] = {};  // delta_angles' turn in it (degrees; the trace)
+  float seat_jump[3] = {};   // the playerState origin's move in it
+};
+RideHistory g_ride;
+// The player's view angles, delta_angles and origin before the update running now.
+struct RideBefore {
+  bool have = false;
+  float view[3] = {};
+  int32_t delta[3] = {};
+  float origin[3] = {};
+};
+RideBefore g_ride_before;
+// cod3_debug_view_trace: what the ride did this frame (-1 riding, nothing moved; 0 not riding; 1 moved), the camera's
+// offset and the vehicle's drawn yaw.
+int g_ride_trace_state = 0;
+float g_ride_trace_off[3] = {};
+float g_ride_trace_yaw = 0.0f;
+bool g_ride_trace_drawn = false;  // the ridden vehicle was drawn from the ride's pose
+bool g_ride_trace_angles_ok = false;  // [claude-9b-think] and its angles too (RideDrawVehicle's check)
+int g_ride_trace_draw_why = 5;  // [claude-9b-think] for the ride's vehicle: 0 drawn, 2 not ridden, 3 no pose, 4 drawn
+                                // moved; 5 not called for it (smoothing off); 6 drawn over the game's own place
+// [claude-9b-think] 2026-10-27 UNTESTED ride6, cod3_debug_view_trace: the picture's two sides of the ridden vehicle.
+float g_ride_trace_scam[3] = {};    // the camera when the vehicle was placed (inside RE_RenderScene: the scene's)
+bool g_ride_trace_scam_have = false;
+int g_ride_trace_vpath = -1;        // how it was placed: 0 the game's, 1 the other smoothing, 2 the ride; -1 not
+float g_ride_trace_b308 = 0.0f;     // how far 0x82448308 moved the camera after SmoothView
+uint32_t g_ride_trace_v286 = 0;     // its view's +286 flags (bit 0: the view follows a bone, 0x824411D8)
+float g_ride_trace_rel_last[3] = {};  // the last frame's camera in the vehicle's drawn frame, for its step
+bool g_ride_trace_rel_have = false;
+// [claude-9b-think] 2026-10-27 UNTESTED ride9, cod3_debug_view_trace: the ridden vehicle's scene node this frame (body:
+// -1 not drawn by the vehicles' draw, 0 left at the update's pose, 1 moved to its own pose between updates, 2 to the
+// ride's pose), and the camera in the node's frame last frame (the step on the screen, as the renderer draws it).
+int g_ride_trace_body = -1;
+float g_ride_trace_nrel_last[3] = {};
+bool g_ride_trace_nrel_have = false;
+
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body: an entity's server origin (+336) and angles (+352) at
+// its last two updates, kept by its first draw after each update.
+struct BodyHistory {
+  int32_t number = -1;
+  uint64_t update = 0;
+  bool valid = false;
+  float origin_prev[3] = {}, origin_cur[3] = {};
+  float angles_prev[3] = {}, angles_cur[3] = {};
+};
+std::unordered_map<uint32_t, BodyHistory> g_body;  // by entity address
+
 // Drawn origins changed this frame, to put back before the next server frame.
 struct Saved {
   uint32_t ent;
@@ -267,6 +420,7 @@ std::vector<Saved> g_saved_angles;  // [claude-9b] the same for the drawn angles
 // The debug log.
 struct Counts {
   int frames = 0, updates = 0, cg_time_moved = 0, smoothed = 0, redrawn = 0, turned = 0, views = 0;
+  int bodies = 0;  // [claude-9b-think] scene nodes moved by cod3_server_smooth_body
   int32_t last_cg_time = 0;
   int64_t since = 0;
 };
@@ -355,7 +509,6 @@ struct CameraCounts {
 CameraCounts g_camera[2];
 float g_cam_last[6] = {};
 bool g_cam_have = false;
-int g_cam_kind = -1;
 uint32_t g_cam_mode = 0;  // the last mode 0x82447D48 returned
 float AngleDiff(float a, float b) {
   float d = std::fmod(a - b, 360.0f);
@@ -372,8 +525,10 @@ void CountCamera(uint8_t* base) {
     now[i] = g::ReadF32(base, cg + kCgViewOrigin + 4 * i);
     now[3 + i] = g::ReadF32(base, cg + kCgViewAngles + 4 * i);
   }
-  if (g_cam_have && g_cam_kind >= 0) {
-    CameraCounts& c = g_camera[g_cam_kind];
+  if (g_cam_have) {
+    // The move into the last drawn frame, by that frame's kind: g_kind isn't updated yet. (It used the
+    // kind saved one call earlier, so each move was counted under the frame before's kind.)
+    CameraCounts& c = g_camera[g_kind];
     const float dx = now[0] - g_cam_last[0], dy = now[1] - g_cam_last[1], dz = now[2] - g_cam_last[2];
     const float moved = std::sqrt(dx * dx + dy * dy + dz * dz);
     const float turned = AngleDiff(now[3], g_cam_last[3]) + AngleDiff(now[4], g_cam_last[4]);
@@ -388,7 +543,6 @@ void CountCamera(uint8_t* base) {
   }
   for (int i = 0; i < 6; ++i) g_cam_last[i] = now[i];
   g_cam_have = true;
-  g_cam_kind = g_kind;
 }
 
 
@@ -460,6 +614,7 @@ void PutBackOne(uint8_t* base, const Saved& s, uint32_t at) {
   if (Same(now, s.drawn)) WriteVec(base, at, s.origin);
 }
 void PutBackDrawn(uint8_t* base) {
+  cod3::movement::EndDrawnStepValues(base);  // [claude-9b] 2026-10-27 the aim and lean (movement/hooks_sp.cpp)
   for (const Saved& s : g_saved) PutBackOne(base, s, s.ent + kEntDrawnOrigin);
   g_saved.clear();
   for (const Saved& s : g_saved_angles) PutBackOne(base, s, s.ent + kEntDrawnAngles);
@@ -470,6 +625,9 @@ void Forget() {
   g_history.clear();
   g_player = History{};
   g_view = ViewHistory{};
+  g_ride = RideHistory{};         // [claude-9b-think]
+  g_ride_before = RideBefore{};
+  g_body.clear();                 // [claude-9b-think] cod3_server_smooth_body
   g_saved.clear();
   g_saved_angles.clear();
 }
@@ -503,15 +661,17 @@ uint32_t PlayerClient(uint8_t* base) {
 
 // True while the player rides a vehicle: the client's vehicle handle names a live entity with a
 // vehicle's data, as 0x82447D48 tests before it picks a vehicle's camera.
-bool RidesVehicle(uint8_t* base, uint32_t client) {
+// [claude-9b-think] 2026-10-27 UNTESTED the test as before, giving the vehicle (0: none).
+uint32_t RiddenVehicle(uint8_t* base, uint32_t client) {
   const uint32_t h = g::ReadU32(base, client + kClientVehicle);
   const uint32_t index = h & 0x3FFF;
-  if (index >= 4096) return false;
+  if (index >= 4096) return 0;
   const uint32_t slot = kEntityHandles + 8 * index;
-  if (g::ReadU32(base, slot + 4) != (h >> 14)) return false;
+  if (g::ReadU32(base, slot + 4) != (h >> 14)) return 0;
   const uint32_t ent = g::ReadU32(base, slot);
-  return ValidGuest(ent) && ValidGuest(g::ReadU32(base, ent + kEntVehicleInfo));
+  return ValidGuest(ent) && ValidGuest(g::ReadU32(base, ent + kEntVehicleInfo)) ? ent : 0;
 }
+bool RidesVehicle(uint8_t* base, uint32_t client) { return RiddenVehicle(base, client) != 0; }
 
 // After an update: the player's view angles as it left them.
 void AdvanceView(uint8_t* base) {
@@ -578,6 +738,424 @@ void SmoothDrawnAngles(uint8_t* base, uint32_t ent, History& h, float back) {
   ++g_counts.turned;
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride: the ridden vehicle and its pose at the last two
+// updates. The ride is on while the setting is (with cod3_server_hz and cod3_server_smooth).
+bool RideOn() {
+  return g_clock.hz > 0 && REXCVAR_GET(cod3_server_smooth) && REXCVAR_GET(cod3_server_smooth_ride) > 0;
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED A camera mode of 0x82447D48 the ride applies to (cod3_server_smooth_ride_cams).
+bool RideCameraMode(uint32_t mode) {
+  return mode < 23 && ((uint32_t(REXCVAR_GET(cod3_server_smooth_ride_cams)) >> mode) & 1u) != 0;
+}
+
+// Before an update: the player's view angles, delta_angles and origin, for the turn and the move the update gives them.
+void RideBeforeUpdate(uint8_t* base) {
+  g_ride_before.have = false;
+  const uint32_t client = PlayerClient(base);
+  // [claude-9b-think] kept with the ride off too (cod3_debug_view_trace compares 0 with 1); used only while it is on.
+  if (!client || g_clock.hz <= 0 || !RidesVehicle(base, client)) return;
+  ReadVec(base, client + kClientViewAngles, g_ride_before.view);
+  for (int i = 0; i < 3; ++i) g_ride_before.delta[i] = g::ReadS32(base, client + kClientDeltaAngles + 4 * i);
+  ReadVec(base, client + kClientOrigin, g_ride_before.origin);
+  g_ride_before.have = true;
+}
+
+// After an update (next to AdvanceView): the ridden vehicle's origin and angles as the update left them.
+void AdvanceRide(uint8_t* base) {
+  const uint32_t client = PlayerClient(base);
+  const uint32_t veh = client && g_clock.hz > 0 ? RiddenVehicle(base, client) : 0;  // [claude-9b-think] any setting
+  if (!veh) {
+    g_ride.have = g_ride.valid = false;
+    g_ride.ent = 0;
+    g_ride_before.have = false;
+    return;
+  }
+  float origin[3], angles[3];
+  ReadVec(base, veh + kEntServerOrigin, origin);
+  ReadVec(base, veh + kEntServerAngles, angles);  // [claude-9b-think] was +84 (the client's blend end)
+  const int32_t number = g::ReadS32(base, veh + kEntNumber);
+  const bool next = g_ride.have && g_ride.ent == veh && g_ride.number == number && g_ride.update + 1 == g_clock.updates;
+  for (int i = 0; i < 3; ++i) {
+    g_ride.origin_prev[i] = next ? g_ride.origin_cur[i] : origin[i];
+    g_ride.angles_prev[i] = next ? g_ride.angles_cur[i] : angles[i];
+    g_ride.origin_cur[i] = origin[i];
+    g_ride.angles_cur[i] = angles[i];
+  }
+  bool close_enough = Dist2(g_ride.origin_prev, g_ride.origin_cur) < kMaxSmoothedMove * kMaxSmoothedMove;
+  for (int i = 0; i < 3; ++i)
+    if (std::fabs(Turn(g_ride.angles_prev[i], g_ride.angles_cur[i])) >= kMaxSmoothedTurn) close_enough = false;
+  // The view's turn in the update: its angles' own turn, or (where the update set only delta_angles, which the
+  // frame's usercmd then adds to the view before the frame is drawn) delta_angles' turn.
+  for (int i = 0; i < 3; ++i) g_ride.view_turn[i] = g_ride.delta_turn[i] = g_ride.seat_jump[i] = 0.0f;
+  if (g_ride_before.have && next) {
+    float view[3], seat[3];
+    ReadVec(base, client + kClientViewAngles, view);
+    ReadVec(base, client + kClientOrigin, seat);
+    for (int i = 0; i < 3; ++i) {
+      const int32_t delta = g::ReadS32(base, client + kClientDeltaAngles + 4 * i);
+      const int16_t dd = int16_t(uint16_t(uint32_t(delta - g_ride_before.delta[i])));
+      g_ride.delta_turn[i] = float(dd) * (360.0f / 65536.0f);
+      const float turn = Turn(g_ride_before.view[i], view[i]);
+      g_ride.view_turn[i] = turn != 0.0f ? turn : g_ride.delta_turn[i];
+      if (std::fabs(g_ride.view_turn[i]) >= kMaxSmoothedTurn) g_ride.view_turn[i] = 0.0f;  // a cut
+      g_ride.seat_jump[i] = seat[i] - g_ride_before.origin[i];
+    }
+  }
+  g_ride_before.have = false;
+  g_ride.ent = veh;
+  g_ride.number = number;
+  g_ride.update = g_clock.updates;
+  g_ride.have = true;
+  g_ride.valid = next && close_enough;
+}
+
+// The ridden vehicle's pose to draw this frame: between its last two updates by Back(), as the other moving things.
+// False when it isn't the vehicle of the last update's ride or the game moved it since the update.
+bool RideDrawnPose(uint8_t* base, uint32_t veh, float origin[3], float angles[3]) {
+  if (!RideOn() || !g_ride.valid || g_ride.ent != veh || g_ride.update != g_clock.updates) return false;
+  float now[3];
+  ReadVec(base, veh + kEntServerOrigin, now);
+  if (!Same(now, g_ride.origin_cur)) return false;
+  const float back = Back();
+  for (int i = 0; i < 3; ++i) {
+    origin[i] = g_ride.origin_cur[i] + (g_ride.origin_prev[i] - g_ride.origin_cur[i]) * back;
+    angles[i] = g_ride.angles_cur[i] - Turn(g_ride.angles_prev[i], g_ride.angles_cur[i]) * back;
+  }
+  return true;
+}
+
+// Forward, left and up of angles (pitch, yaw, roll in degrees), as the game's AnglesToAxis.
+void AnglesToAxis(const float a[3], float axis[3][3]) {
+  constexpr float kRad = 3.14159265358979f / 180.0f;
+  const float sp = std::sin(a[0] * kRad), cp = std::cos(a[0] * kRad);
+  const float sy = std::sin(a[1] * kRad), cy = std::cos(a[1] * kRad);
+  const float sr = std::sin(a[2] * kRad), cr = std::cos(a[2] * kRad);
+  axis[0][0] = cp * cy;                 axis[0][1] = cp * sy;                 axis[0][2] = -sp;
+  axis[1][0] = sr * sp * cy - cr * sy;  axis[1][1] = sr * sp * sy + cr * cy;  axis[1][2] = sr * cp;
+  axis[2][0] = cr * sp * cy + sr * sy;  axis[2][1] = cr * sp * sy - sr * cy;  axis[2][2] = cr * cp;
+}
+
+// The view angles to draw on a ridden vehicle when ViewAnglesToDraw leaves them (the player turns the view every
+// frame): the game's angles turned back by the part of the update's turn not drawn yet, so the view turns with the
+// vehicle as it is drawn and the player's own turning is kept: the view's own turn in the update. [claude-9b-think]
+// (Setting 2, the vehicle's yaw turn alone, is dropped: claude-9b-test's ride4 found its view turn uneven, the
+// update frames 1.5-2.1x the others; the view's measured turn is all of what the update did to it.)
+bool RideViewAngles(uint8_t* base, uint32_t& at, float now[3], float out[3]) {
+  if (!RideOn() || !REXCVAR_GET(cod3_server_smooth_view)) return false;
+  const uint32_t client = PlayerClient(base);
+  // [claude-9b-think] the last frame's camera mode (this frame's is picked inside 0x824505E8): the ride's modes only.
+  if (!client || !RideCameraMode(g_cam_mode) || RiddenVehicle(base, client) != g_ride.ent) return false;
+  if (!g_ride.valid || g_ride.update != g_clock.updates) return false;
+  float turn[3] = {0.0f, 0.0f, 0.0f};
+  for (int i = 0; i < 3; ++i) turn[i] = g_ride.view_turn[i];
+  if (turn[0] == 0.0f && turn[1] == 0.0f && turn[2] == 0.0f) return false;
+  const float back = Back();
+  if (back <= 0.0f) return false;
+  at = client + kClientViewAngles;
+  ReadVec(base, at, now);
+  for (int i = 0; i < 3; ++i) out[i] = now[i] - turn[i] * back;
+  return true;
+}
+
+// The ridden vehicle drawn from the ride's pose (CG_CalcEntityLerpPositions' hook), so it and the camera agree;
+// false to leave it to the other smoothing.
+// [claude-9b-think] 2026-10-27 ride4 had drawn 0 in every frame: the hook called it for TR_INTERPOLATE only (the
+// hostage ride's vehicle is most likely drawn at its base, +32: the trace's ptype says), and it left a vehicle the game
+// drew anywhere but at its update position. Where the other smoothing draws it, that is the same blend of the same
+// values (its base is its origin at each update, its drawn angles the update's, y352 = y72), so this makes the two
+// agree by construction; where the game places it itself, only this does. g_ride_trace_draw_why: why not.
+// [claude-9b-think] 2026-10-27 UNTESTED ride6: called before the hook's trajectory-type test, so for any type; where
+// the game drew it somewhere else than its update position, drawn from the ride's pose anyway with
+// cod3_server_smooth_ride_vehicle (reason 6), since the camera is placed on that pose.
+// [claude-9b-think] 2026-10-27 ride9: a vehicle (type 14) is not drawn from what this writes (+112 / +128): its draw
+// takes +336 / +352 (0x82442338), which is why ride8's pictures kept the body at the update's pose although the trace
+// (made from +112) passed. The body is placed by cod3_server_smooth_body (PlaceVehicleBody); this is kept for whatever
+// else reads the drawn origin.
+bool RideDrawVehicle(uint8_t* base, uint32_t ent, int32_t pos_type) {
+  if (!RideOn() || ent != g_ride.ent) return false;  // (no reason set: the hook calls this for every thing drawn)
+  const bool stationary = pos_type == kTrStationary;
+  const uint32_t client = PlayerClient(base);
+  if (!client || RiddenVehicle(base, client) != ent) return g_ride_trace_draw_why = 2, false;
+  float origin[3], angles[3];
+  if (!RideDrawnPose(base, ent, origin, angles)) return g_ride_trace_draw_why = 3, false;
+  float drawn[3], now[3];
+  ReadVec(base, ent + kEntDrawnOrigin, drawn);
+  ReadVec(base, ent + (stationary ? kEntTrBase : kEntServerOrigin), now);
+  // Not the plain copy the game makes: left (as the other smoothing does) with cod3_server_smooth_ride_vehicle off.
+  if (!Same(drawn, now)) {
+    if (!REXCVAR_GET(cod3_server_smooth_ride_vehicle)) return g_ride_trace_draw_why = 4, false;
+    g_ride_trace_draw_why = 6;
+  } else {
+    g_ride_trace_draw_why = 0;
+  }
+  g_saved.push_back(Saved{ent, {drawn[0], drawn[1], drawn[2]}, {origin[0], origin[1], origin[2]}});
+  WriteVec(base, ent + kEntDrawnOrigin, origin);
+  float game_angles[3];
+  ReadVec(base, ent + kEntDrawnAngles, game_angles);
+  // [claude-9b-think] 2026-10-27 Only while the game draws it at (about) the ride's angles of the last update: the
+  // ride read +84 at first, which is 0 for the hostage level's vehicle (claude-9b-test), and would have drawn it at
+  // yaw 0. Its drawn angles are 0x82438B68's blend of +72 (pitch +72, yaw +76, roll +80: the update's) toward +84 by
+  // cg +2800, 0 in the campaign; the ride's are the server's +352, the same values at the update.
+  bool angles_ok = true;
+  for (int i = 0; i < 3; ++i)
+    if (std::fabs(Turn(game_angles[i], g_ride.angles_cur[i])) >
+        std::fabs(Turn(g_ride.angles_prev[i], g_ride.angles_cur[i])) + 1.0f)
+      angles_ok = false;
+  if (angles_ok) {
+    g_saved_angles.push_back(
+        Saved{ent, {game_angles[0], game_angles[1], game_angles[2]}, {angles[0], angles[1], angles[2]}});
+    WriteVec(base, ent + kEntDrawnAngles, angles);
+  } else {  // [claude-9b-think] the drawn angles as for any other moving thing (the hook's own path)
+    History& h = g_history[ent];
+    const int32_t number = g::ReadS32(base, ent + kEntNumber);
+    if (h.number != number) {
+      h = History{};
+      h.number = number;
+    }
+    SmoothDrawnAngles(base, ent, h, Back());
+  }
+  g::WriteU32(base, ent + kEntFlags, g::ReadU32(base, ent + kEntFlags) | kMovedFlag);
+  g_ride_trace_drawn = true;
+  g_ride_trace_angles_ok = angles_ok;
+  g_ride_trace_yaw = angles_ok ? angles[1] : game_angles[1];
+  ++g_counts.smoothed;
+  return true;
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED Angles (pitch, yaw, roll) of an axis (forward, left, up), each the nearest to
+// `near_to`'s (AnglesToAxis' inverse).
+void AxisToAngles(const float axis[3][3], const float near_to[3], float out[3]) {
+  constexpr float kDeg = 180.0f / 3.14159265358979f;
+  const float* f = axis[0];
+  const float yaw = std::atan2(f[1], f[0]);
+  const float pitch = std::atan2(-f[2], std::sqrt(f[0] * f[0] + f[1] * f[1]));
+  const float sp = std::sin(pitch), cp = std::cos(pitch), sy = std::sin(yaw), cy = std::cos(yaw);
+  const float left0[3] = {-sy, cy, 0.0f}, up0[3] = {sp * cy, sp * sy, cp};
+  const float* l = axis[1];
+  const float roll = std::atan2(l[0] * up0[0] + l[1] * up0[1] + l[2] * up0[2], l[0] * left0[0] + l[1] * left0[1]);
+  const float a[3] = {pitch * kDeg, yaw * kDeg, roll * kDeg};
+  for (int i = 0; i < 3; ++i) out[i] = near_to[i] + Turn(near_to[i], a[i]);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED After 0x824505E8 on a ridden vehicle: a camera turned by the vehicle's pose of
+// the update (a seat's tag, 0x824457F0 without free look; a driver's view by the vehicle's angles) is turned as the
+// vehicle is drawn, its angles (cg +4544) and its axis (+4496 forward, +4508 left, +4520 up, from the angles at the
+// end of 0x824505E8). A camera turned by the player's view angles (the eye, the seat, free look: those are drawn
+// between updates by ViewAnglesToDraw / RideViewAngles) is left. Its place moves in SmoothView (RideViewOffset).
+constexpr uint32_t kCgViewAxis = 4496;  // forward, left, up (3 x vec3)
+// The player's entity +916: non-zero, the seat camera follows the view angles (0x824457F0 tests it for zero).
+// [claude-9b-think] ride4: a pointer (0xAA344D30), set in every frame of the hostage ride: that seat's camera takes the
+// player's view angles (RideViewAngles draws those between updates), so this turn rightly does nothing there.
+constexpr uint32_t kEntSeatFreeLook = 916;
+bool g_ride_trace_turned = false;      // cod3_debug_view_trace
+// The seat cameras (0x824457F0): 6 / 13 the first seat tag, 7 the same raised, 8 a passenger's tag. The driver's
+// views (2, 3) are not turned here until a trace shows where their angles come from (the trace's cam / view yaw).
+bool TagCameraMode(uint32_t mode) { return mode == 6 || mode == 7 || mode == 8 || mode == 13; }
+void RideTurnCamera(uint8_t* base) {
+  g_ride_trace_turned = false;
+  if (!RideOn() || !RideCameraMode(g_cam_mode) || !TagCameraMode(g_cam_mode)) return;
+  const uint32_t client = PlayerClient(base);
+  const uint32_t veh = client ? RiddenVehicle(base, client) : 0;
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  if (!veh || local > 3) return;
+  // 0x824457F0 takes the player's view angles instead of the tag's when the player's entity +916 is set (a seat
+  // that lets the player look around): those are drawn between updates already (RideViewAngles).
+  const uint32_t player = PlayerEntity(base);
+  if (!ValidGuest(player) || g::ReadU32(base, player + kEntSeatFreeLook) != 0) return;
+  const uint32_t cg = kCgBase + local * kCgSize;
+  float cam_angles[3], view[3];
+  ReadVec(base, cg + kCgViewAngles, cam_angles);
+  ReadVec(base, client + kClientViewAngles, view);
+  bool from_view = true;
+  for (int i = 0; i < 3; ++i)
+    if (std::fabs(Turn(view[i], cam_angles[i])) > 0.01f) from_view = false;
+  if (from_view) return;
+  float origin[3], angles[3];
+  if (!RideDrawnPose(base, veh, origin, angles)) return;
+  float cur_axis[3][3], drawn_axis[3][3], cam_axis[3][3], out_axis[3][3];
+  AnglesToAxis(g_ride.angles_cur, cur_axis);
+  AnglesToAxis(angles, drawn_axis);
+  for (int a = 0; a < 3; ++a) ReadVec(base, cg + kCgViewAxis + 12 * a, cam_axis[a]);
+  // Each axis vector in the vehicle's frame of the update, put back out in the frame it is drawn in.
+  for (int a = 0; a < 3; ++a) {
+    float local_v[3];
+    for (int i = 0; i < 3; ++i)
+      local_v[i] = cur_axis[i][0] * cam_axis[a][0] + cur_axis[i][1] * cam_axis[a][1] + cur_axis[i][2] * cam_axis[a][2];
+    for (int k = 0; k < 3; ++k)
+      out_axis[a][k] = local_v[0] * drawn_axis[0][k] + local_v[1] * drawn_axis[1][k] + local_v[2] * drawn_axis[2][k];
+  }
+  float out[3];
+  AxisToAngles(out_axis, cam_angles, out);
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(out[i]) || std::fabs(Turn(cam_angles[i], out[i])) >= kMaxSmoothedTurn) return;
+  for (int a = 0; a < 3; ++a)
+    for (int k = 0; k < 3; ++k)
+      if (!std::isfinite(out_axis[a][k])) return;
+  WriteVec(base, cg + kCgViewAngles, out);
+  for (int a = 0; a < 3; ++a) WriteVec(base, cg + kCgViewAxis + 12 * a, out_axis[a]);
+  g_ride_trace_turned = true;
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body (see the setting and the note at the top of the file).
+int BodySetting() {
+  if (g_clock.hz <= 0 || !REXCVAR_GET(cod3_server_smooth)) return 0;
+  return REXCVAR_GET(cod3_server_smooth_body);
+}
+
+// An entity handle's entity (0: none), as RiddenVehicle and the game's draws read them.
+uint32_t EntityOfHandle(uint8_t* base, uint32_t h) {
+  const uint32_t index = h & 0x3FFF;
+  if (index >= 4096) return 0;
+  const uint32_t slot = kEntityHandles + 8 * index;
+  if (g::ReadU32(base, slot + 4) != (h >> 14)) return 0;
+  const uint32_t ent = g::ReadU32(base, slot);
+  return ValidGuest(ent) ? ent : 0;
+}
+
+// Where an entity the game draws at its server pose is drawn this frame. `cur` its server origin (+336) and angles
+// (+352), which the game's draw filled its scene node from; `out` the pose to draw. 2: the ride's pose (the ridden
+// vehicle with cod3_server_smooth_ride: the pose the camera is placed on); 1: between its last two updates by Back(), as
+// the other moving things; 0: leave it (no update before, nothing moved, a cut, or the game moved it since the update).
+int BodyPose(uint8_t* base, uint32_t ent, float cur_o[3], float cur_a[3], float out_o[3], float out_a[3]) {
+  float now_o[3], now_a[3];
+  ReadVec(base, ent + kEntServerOrigin, now_o);
+  ReadVec(base, ent + kEntServerAngles, now_a);
+  const int32_t number = g::ReadS32(base, ent + kEntNumber);
+  BodyHistory& h = g_body[ent];
+  if (h.number != number) {  // another entity in this slot now
+    h = BodyHistory{};
+    h.number = number;
+  }
+  if (!h.valid || h.update != g_clock.updates) {  // the first draw since an update: that update's pose
+    const bool next = h.valid && h.update + 1 == g_clock.updates;
+    for (int i = 0; i < 3; ++i) {
+      h.origin_prev[i] = next ? h.origin_cur[i] : now_o[i];
+      h.angles_prev[i] = next ? h.angles_cur[i] : now_a[i];
+      h.origin_cur[i] = now_o[i];
+      h.angles_cur[i] = now_a[i];
+    }
+    h.update = g_clock.updates;
+    h.valid = true;
+  } else if (!Same(now_o, h.origin_cur) || !Same(now_a, h.angles_cur)) {  // moved by the game since: its own place
+    for (int i = 0; i < 3; ++i) {
+      h.origin_prev[i] = h.origin_cur[i] = now_o[i];
+      h.angles_prev[i] = h.angles_cur[i] = now_a[i];
+    }
+    return 0;
+  }
+  for (int i = 0; i < 3; ++i) {
+    cur_o[i] = now_o[i];
+    cur_a[i] = now_a[i];
+  }
+  if (RideOn() && ent == g_ride.ent && Same(now_a, g_ride.angles_cur) && RideDrawnPose(base, ent, out_o, out_a))
+    return 2;
+  const float back = Back();
+  if (back <= 0.0f || (Same(h.origin_prev, h.origin_cur) && Same(h.angles_prev, h.angles_cur))) return 0;
+  if (Dist2(h.origin_prev, h.origin_cur) >= kMaxSmoothedMove * kMaxSmoothedMove) return 0;
+  if (!BlendAngles(h.angles_prev, h.angles_cur, back, out_a)) return 0;
+  for (int i = 0; i < 3; ++i) out_o[i] = h.origin_cur[i] + (h.origin_prev[i] - h.origin_cur[i]) * back;
+  return 1;
+}
+
+// A body's move from one pose (origin, angles) to another: a point p goes to `to` + d (p - `from`), a direction v to d v.
+struct BodyMove {
+  float from[3], to[3];
+  float d[3][3];
+};
+void MakeBodyMove(const float from_o[3], const float from_a[3], const float to_o[3], const float to_a[3], BodyMove& m) {
+  float fa[3][3], ta[3][3];
+  AnglesToAxis(from_a, fa);
+  AnglesToAxis(to_a, ta);
+  // A vector's parts along the old axes (fa v) put back out along the new ones: d = ta^T fa.
+  for (int r = 0; r < 3; ++r)
+    for (int c = 0; c < 3; ++c) m.d[r][c] = ta[0][r] * fa[0][c] + ta[1][r] * fa[1][c] + ta[2][r] * fa[2][c];
+  for (int i = 0; i < 3; ++i) {
+    m.from[i] = from_o[i];
+    m.to[i] = to_o[i];
+  }
+}
+void TurnBy(const BodyMove& m, const float v[3], float out[3]) {
+  for (int r = 0; r < 3; ++r) out[r] = m.d[r][0] * v[0] + m.d[r][1] * v[1] + m.d[r][2] * v[2];
+}
+void MoveBy(const BodyMove& m, const float p[3], float out[3]) {
+  const float rel[3] = {p[0] - m.from[0], p[1] - m.from[1], p[2] - m.from[2]};
+  TurnBy(m, rel, out);
+  for (int i = 0; i < 3; ++i) out[i] += m.to[i];
+}
+
+// Moves a scene node the game's draw just filled (its origins and axis); false when something isn't a number.
+bool MoveNode(uint8_t* base, uint32_t node, const BodyMove& m) {
+  float in[6][3], out[6][3];
+  ReadVec(base, node + kNodeLightOrigin, in[0]);
+  ReadVec(base, node + kNodeOrigin, in[1]);
+  ReadVec(base, node + kNodeOldOrigin, in[2]);
+  for (int a = 0; a < 3; ++a) ReadVec(base, node + kNodeAxis + 12 * a, in[3 + a]);
+  for (int k = 0; k < 3; ++k) MoveBy(m, in[k], out[k]);
+  for (int a = 0; a < 3; ++a) TurnBy(m, in[3 + a], out[3 + a]);
+  for (const auto& v : out)
+    for (float f : v)
+      if (!std::isfinite(f)) return false;
+  WriteVec(base, node + kNodeLightOrigin, out[0]);
+  WriteVec(base, node + kNodeOrigin, out[1]);
+  WriteVec(base, node + kNodeOldOrigin, out[2]);
+  for (int a = 0; a < 3; ++a) WriteVec(base, node + kNodeAxis + 12 * a, out[3 + a]);
+  return true;
+}
+
+// The entity's scene node when the game's draw has just filled it from the server origin (its origin is a copy of
+// +336); 0 otherwise (the draw left it out this frame, or it isn't the draw this assumes).
+uint32_t FilledNode(uint8_t* base, uint32_t ent) {
+  const uint32_t node = g::ReadU32(base, ent + kEntSceneNode);
+  if (!ValidGuest(node)) return 0;
+  float node_o[3], server_o[3];
+  ReadVec(base, node + kNodeOrigin, node_o);
+  ReadVec(base, ent + kEntServerOrigin, server_o);
+  return Same(node_o, server_o) ? node : 0;
+}
+
+// After the vehicles' draw (0x82442338, types 14 and 15): the vehicle's node moved to the pose to draw. Returns how
+// (BodyPose), 0 when left.
+int PlaceVehicleBody(uint8_t* base, uint32_t ent) {
+  if (BodySetting() < 1 || !ValidGuest(ent)) return 0;
+  const uint32_t node = FilledNode(base, ent);
+  if (!node) return 0;
+  float cur_o[3], cur_a[3], out_o[3], out_a[3];
+  const int how = BodyPose(base, ent, cur_o, cur_a, out_o, out_a);
+  if (!how) return 0;
+  BodyMove m;
+  MakeBodyMove(cur_o, cur_a, out_o, out_a, m);
+  if (!MoveNode(base, node, m)) return 0;
+  ++g_counts.bodies;
+  return how;
+}
+
+// After the people's draw (0x8244B610, type 1): one riding a vehicle (turned by the vehicle's +352 there) moved with the
+// vehicle as it is drawn; with setting 2 anyone else (not the player) between their own last two updates.
+int PlaceRiderBody(uint8_t* base, uint32_t ent) {
+  const int setting = BodySetting();
+  if (setting < 1 || !ValidGuest(ent)) return 0;
+  const uint32_t node = FilledNode(base, ent);
+  if (!node) return 0;
+  float cur_o[3], cur_a[3], out_o[3], out_a[3];
+  int how = 0;
+  if (g::ReadU32(base, ent + kEntFlags) & kEntOnVehicleFlag) {
+    const uint32_t veh = EntityOfHandle(base, g::ReadU32(base, ent + kEntVehicleRidden));
+    if (!veh || veh == ent) return 0;
+    how = BodyPose(base, veh, cur_o, cur_a, out_o, out_a);
+  } else {
+    // The player's draw sets its +352 from the view (0x8244B610) and is seldom drawn (third person): left.
+    if (setting < 2 || ent == PlayerEntity(base)) return 0;
+    how = BodyPose(base, ent, cur_o, cur_a, out_o, out_a);
+  }
+  if (!how) return 0;
+  BodyMove m;
+  MakeBodyMove(cur_o, cur_a, out_o, out_a, m);
+  if (!MoveNode(base, node, m)) return 0;
+  ++g_counts.bodies;
+  return how;
+}
+
 void DebugLog(uint8_t* base) {
   if (!REXCVAR_GET(cod3_debug_server_step)) return;
   ++g_counts.frames;
@@ -588,9 +1166,10 @@ void DebugLog(uint8_t* base) {
   REXLOG_INFO("cod3: server step: {} game updates of 1/{} s in {} frames over {} ms; the client game's "
               "time moved in {} frames; {} things drawn between updates, {} turned between them; {} frames "
               "without an update drew the animated models again; {} frames drew the view in a vehicle "
-              "between updates",
+              "between updates; {} vehicles and people on them drawn between updates (cod3_server_smooth_body)",
               g_counts.updates, g_clock.hz, g_counts.frames, g_clock.time - g_counts.since,
-              g_counts.cg_time_moved, g_counts.smoothed, g_counts.turned, g_counts.redrawn, g_counts.views);
+              g_counts.cg_time_moved, g_counts.smoothed, g_counts.turned, g_counts.redrawn, g_counts.views,
+              g_counts.bodies);
   // [claude-9b] the two kinds of frames side by side, as averages a frame.
   for (int k = 1; k >= 0; --k) {
     const DrawCounts& d = g_draw[k];
@@ -639,7 +1218,7 @@ void DebugLog(uint8_t* base) {
   g_camera[1] = CameraCounts{};
   g_counts.since = g_clock.time;
   g_counts.frames = g_counts.updates = g_counts.cg_time_moved = g_counts.smoothed = g_counts.redrawn = 0;
-  g_counts.turned = g_counts.views = 0;
+  g_counts.turned = g_counts.views = g_counts.bodies = 0;
 }
 
 }  // namespace
@@ -660,6 +1239,45 @@ bool PlayerViewOffset(uint8_t* base, float out[3]) {
   const float back = Back();
   for (int i = 0; i < 3; ++i) out[i] = (g_player.prev[i] - g_player.cur[i]) * back;
   return back > 0.0f;
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride (see the setting).
+int RideViewOffset(uint8_t* base, const float cam[3], float out[3]) {
+  g_ride_trace_state = 0;
+  if (!RideOn()) return 0;
+  const uint32_t client = PlayerClient(base);
+  const uint32_t veh = client ? RiddenVehicle(base, client) : 0;
+  if (!veh) return 0;
+  // [claude-9b-think] the vehicle cameras (cod3_server_smooth_ride_cams); the turrets' (4, 5) and third person as
+  // before.
+  if (!RideCameraMode(g_cam_mode)) return 0;
+  g_ride_trace_state = -1;
+  float origin[3], angles[3];
+  if (!RideDrawnPose(base, veh, origin, angles)) return -1;
+  // The camera as the game placed it, relative to the vehicle at the last update, put on the vehicle as drawn.
+  float cur_axis[3][3], drawn_axis[3][3];
+  AnglesToAxis(g_ride.angles_cur, cur_axis);
+  AnglesToAxis(angles, drawn_axis);
+  float rel[3], local[3];
+  for (int i = 0; i < 3; ++i) rel[i] = cam[i] - g_ride.origin_cur[i];
+  for (int i = 0; i < 3; ++i) local[i] = cur_axis[i][0] * rel[0] + cur_axis[i][1] * rel[1] + cur_axis[i][2] * rel[2];
+  float len2 = 0.0f;
+  for (int k = 0; k < 3; ++k) {
+    const float placed = origin[k] + local[0] * drawn_axis[0][k] + local[1] * drawn_axis[1][k] + local[2] * drawn_axis[2][k];
+    out[k] = placed - cam[k];
+    if (!std::isfinite(out[k])) return -1;
+    len2 += out[k] * out[k];
+  }
+  if (len2 >= kMaxSmoothedMove * kMaxSmoothedMove) return -1;
+  for (int i = 0; i < 3; ++i) g_ride_trace_off[i] = out[i];
+  g_ride_trace_state = 1;
+  return 1;
+}
+
+bool PlayerRides(uint8_t* base) {
+  if (!RideOn()) return false;
+  const uint32_t client = PlayerClient(base);
+  return client && RidesVehicle(base, client);
 }
 
 }  // namespace cod3::server_step
@@ -798,6 +1416,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
                                                       : TickEnd(g_clock.tick + 1, hz) - TickEnd(g_clock.tick, hz));
     const uint32_t level_time = g::ReadU32(base, kLevelTime);
     g_skip_send = !long_frame && i + 1 < n;  // only the frame's last update sends the snapshots
+    RideBeforeUpdate(base);  // [claude-9b-think] cod3_server_smooth_ride
     if (systems) RunSystems(ctx, base, tick_msec);
     ctx.r3.s64 = tick_msec;
     g_game_armed = false;
@@ -819,6 +1438,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
       Advance(g_player, now);
     }
     AdvanceView(base);  // [claude-9b] cod3_server_smooth_view
+    AdvanceRide(base);  // [claude-9b-think] cod3_server_smooth_ride
   }
   if (n == 0 && g_game_armed && REXCVAR_GET(cod3_server_step_draw)) {
     // [claude-9b] no update this frame: its animated models ready to draw (cod3_server_step_draw).
@@ -929,13 +1549,17 @@ void TraceCamera(uint8_t* base) {
 REX_HOOK_RAW(sub_824505E8) {
   uint32_t at = 0;
   float now[3], draw[3];
-  if (!ViewAnglesToDraw(base, at, now, draw)) {
+  // [claude-9b-think] 2026-10-27 UNTESTED on a ridden vehicle with the view turned every frame (free look), the view
+  // turned back by the update's turn not drawn yet (cod3_server_smooth_ride; the tank's turret keeps the first).
+  if (!ViewAnglesToDraw(base, at, now, draw) && !RideViewAngles(base, at, now, draw)) {
     __imp__sub_824505E8(ctx, base);
+    RideTurnCamera(base);  // [claude-9b-think] a vehicle camera turned by the vehicle's pose
     TraceCamera(base);
     return;
   }
   WriteVec(base, at, draw);
   __imp__sub_824505E8(ctx, base);
+  RideTurnCamera(base);  // [claude-9b-think] before the view angles go back: it compares the camera with them
   float after[3];
   ReadVec(base, at, after);
   if (Same(after, draw)) WriteVec(base, at, now);  // unless the camera code set them itself
@@ -1173,6 +1797,21 @@ REX_HOOK_RAW(CG_CalcEntityLerpPositions) {
     if (g::ReadS32(base, ent + kEntPosType) == kTrInterpolate) ++g_draw[g_kind].lerp_interp;
   }
   if (g_clock.hz <= 0 || !REXCVAR_GET(cod3_server_smooth) || !ValidGuest(ent)) return;
+  // [claude-9b-think] 2026-10-27 UNTESTED ride6: the ridden vehicle first, whatever its trajectory type; the trace
+  // keeps the camera the scene was copied with (RE_RenderScene copies the refdef before it places the entities).
+  const bool ridden = RideOn() && ent == g_ride.ent && ent != PlayerEntity(base);
+  if (ridden) {
+    const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+    if (client <= 3) {
+      ReadVec(base, kCgBase + client * kCgSize + kCgViewOrigin, g_ride_trace_scam);
+      g_ride_trace_scam_have = true;
+    }
+    g_ride_trace_vpath = 0;
+    if (RideDrawVehicle(base, ent, g::ReadS32(base, ent + kEntPosType))) {
+      g_ride_trace_vpath = 2;
+      return;
+    }
+  }
   // [claude-9b] 2026-10-27 TR_STATIONARY too (cod3_server_smooth_stationary): drawn at its base, which the
   // game moves in its updates for parts carried by something that moves (a tank's turret and hatches,
   // things linked to a vehicle or a mover). Only TR_INTERPOLATE things (the vehicle itself) were drawn
@@ -1206,6 +1845,7 @@ REX_HOOK_RAW(CG_CalcEntityLerpPositions) {
   WriteVec(base, ent + kEntDrawnOrigin, drawn);
   g::WriteU32(base, ent + kEntFlags, g::ReadU32(base, ent + kEntFlags) | kMovedFlag);
   ++g_counts.smoothed;
+  if (ridden) g_ride_trace_vpath = 1;  // [claude-9b-think] ride6
 }
 
 // [claude-9b] 2026-10-27 Counting hooks for cod3_debug_server_step (they only count, and only with it
@@ -1232,7 +1872,10 @@ void TraceFrame(uint8_t* base, int32_t cg_time) {
   float o[3], v[3], e[3], cam[3];
   ReadVec(base, ps + 0, o);
   ReadVec(base, ps + 16, v);
-  if (v[0] * v[0] + v[1] * v[1] < 1.0f) return;  // not moving
+  // [claude-9b-think] on a vehicle the playerState's velocity may stay 0: the vehicle's move counts too.
+  // [claude-9b-think] every frame while riding (any cod3_server_smooth_ride, so 0 and 1 compare).
+  const uint32_t veh = RiddenVehicle(base, ps);
+  if (v[0] * v[0] + v[1] * v[1] < 1.0f && !veh) return;  // not moving
   ReadVec(base, PlayerEntity(base) + kEntServerOrigin, e);
   ReadVec(base, kCgBase + client * kCgSize + kCgViewOrigin, cam);
   ++logged;
@@ -1242,6 +1885,81 @@ void TraceFrame(uint8_t* base, int32_t cg_time) {
               g::ReadS32(base, ps + 32), o[0], o[1], o[2], e[0], e[1], e[2], g_trace_cam[0], g_trace_cam[1],
               g_trace_cam[2], cam[0], cam[1], cam[2], g_trace_sv, g::ReadS32(base, kLevelTime), g_trace_lead,
               g_clock.tick);
+  // [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride: one more line a frame on a vehicle. mode: the
+  // camera's (0x82447D48); ride: -1 riding, nothing moved, 0 not used, 1 moved by off; drawn: the vehicle drawn from
+  // the ride's pose (its yaw dyaw); dP: the vehicle's move in the last update; seat: the playerState origin's;
+  // vturn / dturn: the view's and delta_angles' turn in it; y72 / y84 / y352: the yaw (second float) of the vectors at
+  // +72 (+76), +84 (+88) and +352 (+356): the client's blend ends and the server's angles; aok: the drawn angles set;
+  // p352 / r352 the server's pitch and roll; set: cod3_server_smooth_ride; fl: the seat's free look (entity +916).
+// [claude-9b-think] ride6: scam: the camera the scene was drawn with (as the vehicle was placed); vd: the vehicle's
+// drawn origin; loc: the scene's camera in the vehicle's drawn frame (forward, left, up), and lstep its change since
+// the last frame (0 when the inside stays still on the screen); vpath: how the vehicle was placed (0 the game's own,
+// 1 the other smoothing, 2 the ride's pose, -1 not this frame); b308: how far 0x82448308 moved the camera after
+// SmoothView; v286: its view's +286 flags.
+  if (veh) {
+    float a72[3], a84[3], a352[3];
+    ReadVec(base, veh + kEntAnglesPrev, a72);
+    ReadVec(base, veh + kEntAnglesNow, a84);
+    ReadVec(base, veh + kEntServerAngles, a352);
+    // [claude-9b-think] ride6: the drawn origin and angles are still this frame's here (PutBackDrawn runs before the
+    // next frame's usercmd).
+    float vd[3], vang[3], vaxis[3][3], loc[3] = {0.0f, 0.0f, 0.0f};
+    ReadVec(base, veh + kEntDrawnOrigin, vd);
+    ReadVec(base, veh + kEntDrawnAngles, vang);
+    AnglesToAxis(vang, vaxis);
+    float lstep = -1.0f;
+    if (g_ride_trace_scam_have) {
+      float rel[3];
+      for (int i = 0; i < 3; ++i) rel[i] = g_ride_trace_scam[i] - vd[i];
+      for (int a = 0; a < 3; ++a) loc[a] = vaxis[a][0] * rel[0] + vaxis[a][1] * rel[1] + vaxis[a][2] * rel[2];
+      if (g_ride_trace_rel_have) lstep = std::sqrt(Dist2(loc, g_ride_trace_rel_last));
+      for (int i = 0; i < 3; ++i) g_ride_trace_rel_last[i] = loc[i];
+      g_ride_trace_rel_have = true;
+    }
+    REXLOG_INFO("cod3: view trace {} ride mode {} ride {} back {:.3f} valid {} drawn {} dyaw {:.3f} off {:.2f} {:.2f} "
+                "{:.2f} dP {:.2f} {:.2f} {:.2f} seat {:.2f} {:.2f} {:.2f} vturn {:.3f} {:.3f} {:.3f} dturn {:.3f} "
+                "{:.3f} {:.3f} yaw prev {:.3f} cur {:.3f} y72 {:.3f} y84 {:.3f} view {:.3f} {:.3f} y352 {:.3f} "
+                "turned {} pview {:.3f} {:.3f} aok {} p352 {:.3f} r352 {:.3f} set {} fl {:08X} dwhy {} ptype {} "
+                "scam {:.2f} {:.2f} {:.2f} vd {:.2f} {:.2f} {:.2f} loc {:.2f} {:.2f} {:.2f} lstep {:.3f} vpath {} "
+                "b308 {:.3f} v286 {:04X}",
+                logged, g_cam_mode, g_ride_trace_state, Back(), g_ride.valid ? 1 : 0, g_ride_trace_drawn ? 1 : 0,
+                g_ride_trace_yaw, g_ride_trace_off[0], g_ride_trace_off[1], g_ride_trace_off[2],
+                g_ride.origin_cur[0] - g_ride.origin_prev[0], g_ride.origin_cur[1] - g_ride.origin_prev[1],
+                g_ride.origin_cur[2] - g_ride.origin_prev[2], g_ride.seat_jump[0], g_ride.seat_jump[1],
+                g_ride.seat_jump[2], g_ride.view_turn[0], g_ride.view_turn[1], g_ride.view_turn[2],
+                g_ride.delta_turn[0], g_ride.delta_turn[1], g_ride.delta_turn[2], g_ride.angles_prev[1],
+                g_ride.angles_cur[1], a72[1], a84[1], g::ReadF32(base, kCgBase + client * kCgSize + kCgViewAngles),
+                g::ReadF32(base, kCgBase + client * kCgSize + kCgViewAngles + 4),
+                a352[1], g_ride_trace_turned ? 1 : 0,  // [claude-9b-think]
+                g::ReadF32(base, ps + kClientViewAngles), g::ReadF32(base, ps + kClientViewAngles + 4),
+                g_ride_trace_angles_ok ? 1 : 0, a352[0], a352[2], REXCVAR_GET(cod3_server_smooth_ride),
+                g::ReadU32(base, PlayerEntity(base) + kEntSeatFreeLook), g_ride_trace_draw_why,
+                g::ReadS32(base, veh + kEntPosType),  // [claude-9b-think] why the vehicle wasn't drawn by the ride
+                g_ride_trace_scam[0], g_ride_trace_scam[1], g_ride_trace_scam[2], vd[0], vd[1], vd[2], loc[0], loc[1],
+                loc[2], lstep, g_ride_trace_vpath, g_ride_trace_b308, g_ride_trace_v286);
+    // [claude-9b-think] 2026-10-27 UNTESTED ride9: the same camera in the frame the renderer draws the vehicle in (its
+    // scene node), which loc above (the drawn +112 / +128) is not for a vehicle: etype the entity's type (14 a vehicle),
+    // body how its node was placed (g_ride_trace_body), nd the node's origin, nloc the camera in the node's frame and
+    // nlstep its change since the last frame (the inside's move on the screen; ~0 when it stays still).
+    float nd[3] = {0.0f, 0.0f, 0.0f}, nloc[3] = {0.0f, 0.0f, 0.0f};
+    float nlstep = -1.0f;
+    const uint32_t node = g::ReadU32(base, veh + kEntSceneNode);
+    if (ValidGuest(node) && g_ride_trace_scam_have) {
+      float naxis[3][3], rel[3];
+      ReadVec(base, node + kNodeOrigin, nd);
+      for (int a = 0; a < 3; ++a) ReadVec(base, node + kNodeAxis + 12 * a, naxis[a]);
+      for (int i = 0; i < 3; ++i) rel[i] = g_ride_trace_scam[i] - nd[i];
+      for (int a = 0; a < 3; ++a) nloc[a] = naxis[a][0] * rel[0] + naxis[a][1] * rel[1] + naxis[a][2] * rel[2];
+      if (g_ride_trace_nrel_have) nlstep = std::sqrt(Dist2(nloc, g_ride_trace_nrel_last));
+      for (int i = 0; i < 3; ++i) g_ride_trace_nrel_last[i] = nloc[i];
+      g_ride_trace_nrel_have = true;
+    }
+    REXLOG_INFO("cod3: view trace {} body etype {} body {} set {} nd {:.2f} {:.2f} {:.2f} nloc {:.2f} {:.2f} {:.2f} "
+                "nlstep {:.3f}",
+                logged, g::ReadU8(base, veh), g_ride_trace_body, REXCVAR_GET(cod3_server_smooth_body), nd[0], nd[1],
+                nd[2], nloc[0], nloc[1], nloc[2], nlstep);
+  }
+  for (int i = 0; i < 3; ++i) g_ride_trace_off[i] = 0.0f;
 }
 }  // namespace
 
@@ -1266,8 +1984,39 @@ REX_HOOK_RAW(CG_DrawActiveFrame) {
     if (t != g_last_cg_time) ++d.cg_time_moved;
     g_last_cg_time = t;
   }
+  g_ride_trace_drawn = false;  // [claude-9b-think] cod3_debug_view_trace: set again by this frame's draw
+  g_ride_trace_draw_why = 5;
+  g_ride_trace_scam_have = false;  // [claude-9b-think] ride6
+  g_ride_trace_vpath = -1;
+  g_ride_trace_b308 = 0.0f;
+  g_ride_trace_v286 = 0;
+  g_ride_trace_body = -1;  // [claude-9b-think] ride9
   __imp__CG_DrawActiveFrame(ctx, base);
+  cod3::movement::EndDrawnStepValues(base);  // [claude-9b] the game's aim and lean back after the client game's frame
   TraceFrame(base, out);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED ride6, cod3_debug_view_trace only: 0x82448308(view), the last camera step of
+// CG_DrawActiveFrame before the scene (after CG_CalcViewValues and SmoothView, after the gun is placed): it calls the
+// view's bone follow 0x824411D8 (view +286 bit 0: the camera's origin and angles turned by a model's bone matrix,
+// model = gclient +132, bone = view +288, or the one kept at view +304), 0x82448268 (a camera blend 0x82447A78 while
+// view +276 < +280, then the axis from the angles) and 0x82432878 (the camera copied into view +48..+88); modes 16 / 18
+// take the camera from elsewhere. The trace gets how far it moved cg +4480.
+REX_EXTERN(__imp__sub_82448308);
+REX_HOOK_RAW(sub_82448308) {
+  const uint32_t view = ctx.r3.u32;
+  const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+  if (REXCVAR_GET(cod3_debug_view_trace) <= 0 || client > 3) {
+    __imp__sub_82448308(ctx, base);
+    return;
+  }
+  const uint32_t cam = kCgBase + client * kCgSize + kCgViewOrigin;
+  float before[3], after[3];
+  ReadVec(base, cam, before);
+  g_ride_trace_v286 = ValidGuest(view) ? g::ReadU16(base, view + 286) : 0;
+  __imp__sub_82448308(ctx, base);
+  ReadVec(base, cam, after);
+  g_ride_trace_b308 = std::sqrt(Dist2(before, after));
 }
 
 // [claude-9b] 2026-10-27 The player's usercmds between updates (owner 10-27 03:03: "Player movement has
@@ -1340,6 +2089,37 @@ REX_HOOK_RAW(CG_AddCEntity) {
     ++d.cents_by_type[g::ReadU8(base, ctx.r3.u32) & 15];
   }
   __imp__CG_AddCEntity(ctx, base);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body: 0x82442338(entity), CG_AddCEntity's draw of types 14
+// and 15 (vehicles): it fills the entity's scene node from the server's origin (+336) and AnglesToAxis(+352) and puts it
+// in the scene (0x8241B748); the vehicle's model is drawn by that matrix (0x8242E450 -> 0x8242CB68). The node is moved
+// after it to the pose the vehicle is drawn at between updates.
+REX_EXTERN(__imp__sub_82442338);
+REX_HOOK_RAW(sub_82442338) {
+  const uint32_t ent = ctx.r3.u32;
+  __imp__sub_82442338(ctx, base);
+  if (ent == 0 || ent != g_ride.ent) {
+    PlaceVehicleBody(base, ent);
+    return;
+  }
+  // The ridden vehicle (cod3_debug_view_trace): how its node was placed, and the scene's camera then (with the ride off
+  // too, so 0 and 1 compare).
+  const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+  if (client <= 3) {
+    ReadVec(base, kCgBase + client * kCgSize + kCgViewOrigin, g_ride_trace_scam);
+    g_ride_trace_scam_have = true;
+  }
+  g_ride_trace_body = PlaceVehicleBody(base, ent);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body: 0x8244B610(entity), CG_AddCEntity's draw of type 1
+// (players and soldiers): the node from the entity's +336 and its +352, or the +352 of the vehicle it rides.
+REX_EXTERN(__imp__sub_8244B610);
+REX_HOOK_RAW(sub_8244B610) {
+  const uint32_t ent = ctx.r3.u32;
+  __imp__sub_8244B610(ctx, base);
+  PlaceRiderBody(base, ent);
 }
 
 // RE_AddRefEntityToScene(refEntity): a model into the renderer's scene.

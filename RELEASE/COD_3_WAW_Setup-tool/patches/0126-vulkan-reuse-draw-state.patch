@@ -1,0 +1,620 @@
+diff --git a/include/rex/graphics/vulkan/command_processor.h b/include/rex/graphics/vulkan/command_processor.h
+--- a/include/rex/graphics/vulkan/command_processor.h
++++ b/include/rex/graphics/vulkan/command_processor.h
+@@ -515,7 +515,30 @@
+   void InvalidateVertexBufferResidencyRange(uint32_t first_vfetch, uint32_t last_vfetch);
+   // [claude-9b] 0125: vulkan_log_state_reuse's counts for a register write
+   // (called before the write stores the value).
++  // [claude-9b] 0126: also notes, for vulkan_reuse_draw_state, a change to a
++  // register the last full draw's state was made from, and which texture
++  // fetch constants changed.
+   void CountRegisterWriteForStateReuse(uint32_t index, uint32_t value);
++  // [claude-9b] 0126: vulkan_reuse_draw_state. A draw that changes nothing
++  // the last full draw's pipeline, render targets, viewport and samplers were
++  // made from is drawn with them (IssueDrawReusingState) instead of making
++  // them again.
++  enum class DrawStateReuse {
++    kDrawn,
++    kFailed,
++    // Not drawn: the full path must draw it.
++    kNotReusable,
++  };
++  bool IsLastDrawStateReusable(xenos::PrimitiveType prim_type, bool major_mode_explicit) const;
++  bool IsPrimitiveProcessingAsLastDraw(
++      const PrimitiveProcessor::ProcessingResult& primitive_processing_result) const;
++  DrawStateReuse IssueDrawReusingState();
++  // vulkan_reuse_draw_state_verify: compares what a full draw made with what
++  // the last draw left, and logs the first differences.
++  void VerifyReusedDrawState(const VulkanShader* pixel_shader, uint32_t used_texture_mask,
++                             reg::RB_DEPTHCONTROL normalized_depth_control,
++                             uint32_t normalized_color_mask,
++                             const draw_util::ViewportInfo& viewport_info);
+   struct ReadbackBuffer {
+     VkBuffer buffers[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+     VkDeviceMemory memories[2] = {VK_NULL_HANDLE, VK_NULL_HANDLE};
+@@ -1028,6 +1051,63 @@
+   uint64_t state_reuse_draws_ = 0;
+   uint64_t state_reuse_draws_unchanged_ = 0;
+   uint64_t state_reuse_log_time_us_ = 0;
++  // [claude-9b] 0126: vulkan_reuse_draw_state and vulkan_reuse_draw_state_verify
++  // as read at start and at every swap, and whether register writes are
++  // tracked (for them or for 0125's log).
++  bool reuse_draw_state_ = false;
++  bool reuse_draw_state_verify_ = false;
++  bool track_draw_state_ = false;
++  // Since the last full draw (reuse_last_): whether a register its state was
++  // made from changed (the same registers as draw_state_changed_), and which
++  // texture fetch constants changed (bit N: fetch constant N; its samplers).
++  bool reuse_state_changed_ = true;
++  uint32_t reuse_textures_changed_ = UINT32_MAX;
++  // What the last full draw made and what it was made from. valid is false
++  // from the start of a full draw until it has drawn.
++  struct ReusedDrawState {
++    bool valid = false;
++    uint64_t submission = 0;
++    const Shader* active_vertex_shader = nullptr;
++    const Shader* active_pixel_shader = nullptr;
++    VulkanShader* vertex_shader = nullptr;
++    // Null for a draw without a pixel shader.
++    VulkanShader* pixel_shader = nullptr;
++    // VGT_DRAW_INITIATOR without num_indices: the primitive type, the index
++    // source and size, and the major mode.
++    uint32_t draw_initiator_low = 0;
++    // As IssueDraw was given it.
++    xenos::PrimitiveType prim_type = xenos::PrimitiveType::kNone;
++    bool major_mode_explicit = false;
++    xenos::PrimitiveType guest_primitive_type = xenos::PrimitiveType::kNone;
++    xenos::PrimitiveType host_primitive_type = xenos::PrimitiveType::kNone;
++    Shader::HostVertexShaderType host_vertex_shader_type = Shader::HostVertexShaderType::kVertex;
++    xenos::TessellationMode tessellation_mode = xenos::TessellationMode::kDiscrete;
++    bool host_primitive_reset_enabled = false;
++    bool primitive_polygonal = false;
++    uint32_t normalized_depth_control = 0;
++    uint32_t normalized_color_mask = 0;
++    uint32_t used_texture_mask = 0;
++    uint32_t draw_resolution_scale_x = 1;
++    uint32_t draw_resolution_scale_y = 1;
++    VkPipeline pipeline = VK_NULL_HANDLE;
++    const PipelineLayout* pipeline_layout = nullptr;
++    VkRenderPass render_pass = VK_NULL_HANDLE;
++    const VulkanRenderTargetCache::Framebuffer* framebuffer = nullptr;
++    draw_util::ViewportInfo viewport_info = {};
++    // Only kept with vulkan_reuse_draw_state_verify.
++    std::vector<VkSampler> samplers_vertex;
++    std::vector<VkSampler> samplers_pixel;
++  };
++  ReusedDrawState reuse_last_;
++  // For the line every 10 seconds.
++  uint64_t reuse_frames_ = 0;
++  uint64_t reuse_draws_ = 0;
++  uint64_t reuse_draws_reused_ = 0;
++  uint64_t reuse_draws_fallback_ = 0;
++  uint64_t reuse_verify_checked_ = 0;
++  uint64_t reuse_verify_mismatches_ = 0;
++  uint64_t reuse_verify_logged_ = 0;
++  uint64_t reuse_log_time_us_ = 0;
+   VkDescriptorSet current_graphics_descriptor_sets_[SpirvShaderTranslator::kDescriptorSetCount];
+   // Whether descriptor sets in current_graphics_descriptor_sets_ point to
+   // up-to-date data.
+diff --git a/src/graphics/vulkan/command_processor.cpp b/src/graphics/vulkan/command_processor.cpp
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -88,6 +88,22 @@
+                     "state could save). Off: nothing counted. Applies from the next frame")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// [claude-9b] 0126: draw without making the state again when nothing it was
++// made from changed.
++REXCVAR_DEFINE_BOOL(vulkan_reuse_draw_state, true, "GPU/Vulkan",
++                    "Vulkan: a draw that changes neither shader, nor any context register "
++                    "(other than its index range), nor a fetch constant of a texture it uses "
++                    "since the last full draw reuses that draw's pipeline, render targets, "
++                    "viewport and samplers instead of making them again (same submission "
++                    "only). Applies from the next frame")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(vulkan_reuse_draw_state_verify, false, "GPU/Vulkan",
++                    "Vulkan: for a test. Draws every draw the full way, and for each draw that "
++                    "vulkan_reuse_draw_state would have drawn with the last draw's state, "
++                    "compares the two and logs the first 16 differences, with a count every 10 "
++                    "seconds. Applies from the next frame")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ // Legacy backend compatibility aliases for shared readback controls.
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+@@ -873,6 +889,13 @@
+   constants_dynamic_offsets_ = REXCVAR_GET(vulkan_dynamic_constant_offsets);
+   skip_unchanged_fetch_constants_ = REXCVAR_GET(vulkan_skip_unchanged_fetch_constants);
+   log_state_reuse_ = REXCVAR_GET(vulkan_log_state_reuse);
++  // [claude-9b] 0126
++  reuse_draw_state_ = REXCVAR_GET(vulkan_reuse_draw_state);
++  reuse_draw_state_verify_ = REXCVAR_GET(vulkan_reuse_draw_state_verify);
++  track_draw_state_ = log_state_reuse_ || reuse_draw_state_ || reuse_draw_state_verify_;
++  reuse_state_changed_ = true;
++  reuse_textures_changed_ = UINT32_MAX;
++  reuse_last_.valid = false;
+   // 16384 is bigger than any single uniform buffer that Xenia needs, but is the
+   // minimum maxUniformBufferRange, thus the safe minimum amount.
+   uniform_buffer_pool_ = std::make_unique<ui::vulkan::VulkanUploadBufferPool>(
+@@ -2213,7 +2236,8 @@
+                                   index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+                                   index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5 &&
+                                   register_file_->values[index] == value;
+-  if (log_state_reuse_) {
++  // [claude-9b] 0126: also for vulkan_reuse_draw_state and its verify.
++  if (track_draw_state_) {
+     CountRegisterWriteForStateReuse(index, value);
+   }
+   CommandProcessor::WriteRegister(index, value);
+@@ -2260,13 +2284,21 @@
+ void VulkanCommandProcessor::CountRegisterWriteForStateReuse(uint32_t index, uint32_t value) {
+   if (index >= XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 &&
+       index <= XE_GPU_REG_SHADER_CONSTANT_FETCH_31_5) {
+-    ++state_reuse_fetch_dwords_;
+-    if (register_file_->values[index] == value) {
+-      ++state_reuse_fetch_dwords_unchanged_;
++    bool fetch_dword_unchanged = register_file_->values[index] == value;
++    if (log_state_reuse_) {
++      ++state_reuse_fetch_dwords_;
++      if (fetch_dword_unchanged) {
++        ++state_reuse_fetch_dwords_unchanged_;
++      }
++    }
++    if (!fetch_dword_unchanged) {
++      // [claude-9b] 0126: its texture fetch constant (6 dwords each) changed.
++      reuse_textures_changed_ |= UINT32_C(1)
++                                 << ((index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0) / 6);
+     }
+     return;
+   }
+-  if (draw_state_changed_ || index < XE_GPU_REG_RB_SURFACE_INFO ||
++  if ((draw_state_changed_ && reuse_state_changed_) || index < XE_GPU_REG_RB_SURFACE_INFO ||
+       index >= XE_GPU_REG_SHADER_CONSTANT_000_X || register_file_->values[index] == value) {
+     return;
+   }
+@@ -2284,6 +2316,7 @@
+       return;
+     default:
+       draw_state_changed_ = true;
++      reuse_state_changed_ = true;  // [claude-9b] 0126
+       return;
+   }
+ }
+@@ -2389,6 +2422,7 @@
+         uint32_t vfetch_index = fetch_dword / 2;
+         vertex_fetches_changed[vfetch_index >> 6] |= uint64_t(1) << (vfetch_index & 63);
+       }
++      reuse_textures_changed_ |= textures_changed;  // [claude-9b] 0126
+       if (!textures_changed) {
+         // Every fetch constant dword is part of a texture fetch constant, so
+         // nothing changed.
+@@ -2419,6 +2453,15 @@
+         ~(UINT32_C(1) << SpirvShaderTranslator::kConstantBufferFetch);
+     uint32_t first_fetch_dword = start_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
+     uint32_t last_fetch_dword = end_index - XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0;
++    {
++      // [claude-9b] 0126: every texture fetch constant in the range counts as
++      // changed (they were not compared).
++      uint32_t first_texture = first_fetch_dword / 6;
++      uint32_t last_texture = last_fetch_dword / 6;
++      uint32_t up_to_last =
++          last_texture >= 31 ? UINT32_MAX : (UINT32_C(1) << (last_texture + 1)) - 1;
++      reuse_textures_changed_ |= up_to_last & ~((UINT32_C(1) << first_texture) - 1);
++    }
+     if (texture_cache_) {
+       texture_cache_->TextureFetchConstantsWritten(first_fetch_dword / 6, last_fetch_dword / 6);
+     }
+@@ -2494,6 +2537,57 @@
+   }
+   log_state_reuse_ = REXCVAR_GET(vulkan_log_state_reuse);
+   draw_state_changed_ = true;
++  // [claude-9b] 0126: vulkan_reuse_draw_state's line every 10 seconds, the
++  // settings as of this swap, and every frame's first draw drawn in full.
++  if (reuse_draw_state_ || reuse_draw_state_verify_) {
++    ++reuse_frames_;
++    uint64_t now_us = uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                                   std::chrono::steady_clock::now().time_since_epoch())
++                                   .count());
++    if (!reuse_log_time_us_) {
++      reuse_log_time_us_ = now_us;
++    } else if (now_us - reuse_log_time_us_ >= 10000000) {
++      double frames = double(reuse_frames_);
++      double draws = reuse_draws_ ? double(reuse_draws_) : 1.0;
++      REXGPU_INFO(
++          "Vulkan draw state reuse over {} frames: {:.0f} draws a frame, {:.1f}% drawn with "
++          "the last draw's state (with draws that had nothing to draw), {} passed the check but "
++          "fell back to the full way; verify: {} draws compared ({:.1f}%), {} with a difference",
++          reuse_frames_, double(reuse_draws_) / frames, 100.0 * double(reuse_draws_reused_) / draws,
++          reuse_draws_fallback_, reuse_verify_checked_,
++          100.0 * double(reuse_verify_checked_) / draws, reuse_verify_mismatches_);
++      reuse_frames_ = 0;
++      reuse_draws_ = 0;
++      reuse_draws_reused_ = 0;
++      reuse_draws_fallback_ = 0;
++      reuse_verify_checked_ = 0;
++      reuse_verify_mismatches_ = 0;
++      reuse_log_time_us_ = now_us;
++    }
++  }
++  {
++    bool was_on = reuse_draw_state_ || reuse_draw_state_verify_;
++    bool verify_was_on = reuse_draw_state_verify_;
++    reuse_draw_state_ = REXCVAR_GET(vulkan_reuse_draw_state);
++    reuse_draw_state_verify_ = REXCVAR_GET(vulkan_reuse_draw_state_verify);
++    if (!was_on && (reuse_draw_state_ || reuse_draw_state_verify_)) {
++      // Turned on: a new count, not one mixed with an earlier period.
++      reuse_frames_ = 0;
++      reuse_draws_ = 0;
++      reuse_draws_reused_ = 0;
++      reuse_draws_fallback_ = 0;
++      reuse_verify_checked_ = 0;
++      reuse_verify_mismatches_ = 0;
++      reuse_log_time_us_ = 0;
++    }
++    if (!verify_was_on && reuse_draw_state_verify_) {
++      reuse_verify_logged_ = 0;  // the first 16 differences of this verify
++    }
++  }
++  track_draw_state_ = log_state_reuse_ || reuse_draw_state_ || reuse_draw_state_verify_;
++  reuse_state_changed_ = true;
++  reuse_textures_changed_ = UINT32_MAX;
++  reuse_last_.valid = false;
+ 
+   if (!graphics_system_)
+     return;
+@@ -3847,6 +3941,10 @@
+     // Special copy handling.
+     stats::Add(stats::Counter::kResolves);
+     draw_state_changed_ = true;  // [claude-9b] 0125
++    // [claude-9b] 0126: a resolve changes the render targets (a clear, the
++    // EDRAM it reads) and binds its own pipelines.
++    reuse_state_changed_ = true;
++    reuse_last_.valid = false;
+     return IssueCopy();
+   }
+   stats::Add(stats::Counter::kDraws);
+@@ -3862,6 +3960,28 @@
+     last_draw_vertex_shader_ = active_vertex_shader();
+     last_draw_pixel_shader_ = active_pixel_shader();
+   }
++  // [claude-9b] 0126: draw with the last full draw's state if nothing it was
++  // made from changed; with verify, draw in full and compare at the end.
++  bool reuse_candidate = false;
++  if (reuse_draw_state_ || reuse_draw_state_verify_) {
++    ++reuse_draws_;
++    reuse_candidate = IsLastDrawStateReusable(prim_type, major_mode_explicit);
++    if (reuse_candidate && !reuse_draw_state_verify_) {
++      switch (IssueDrawReusingState()) {
++        case DrawStateReuse::kDrawn:
++          ++reuse_draws_reused_;
++          return true;
++        case DrawStateReuse::kFailed:
++          return false;
++        case DrawStateReuse::kNotReusable:
++          ++reuse_draws_fallback_;
++          reuse_candidate = false;
++          break;
++      }
++    }
++  }
++  // Set again once this draw has drawn (its data stays for verify).
++  reuse_last_.valid = false;
+ 
+   bool surface_pitch_is_zero = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch == 0;
+ 
+@@ -4418,6 +4538,56 @@
+                                               0, 0, 0);
+   }
+ 
++  // [claude-9b] 0126: compare with the last draw (verify), then keep this
++  // draw's state for the draws after it (not a memory export draw's).
++  if (reuse_draw_state_ || reuse_draw_state_verify_) {
++    if (reuse_candidate && reuse_draw_state_verify_ &&
++        IsPrimitiveProcessingAsLastDraw(primitive_processing_result)) {
++      VerifyReusedDrawState(pixel_shader, used_texture_mask, normalized_depth_control,
++                            normalized_color_mask, viewport_info);
++    }
++    if (!memexport_writes_possible) {
++      ReusedDrawState& last = reuse_last_;
++      last.submission = GetCurrentSubmission();
++      last.active_vertex_shader = active_vertex_shader();
++      last.active_pixel_shader = active_pixel_shader();
++      last.vertex_shader = vertex_shader;
++      last.pixel_shader = pixel_shader;
++      last.draw_initiator_low = vgt_draw_initiator.value & 0xFFFF;
++      last.prim_type = prim_type;
++      last.major_mode_explicit = major_mode_explicit;
++      last.guest_primitive_type = primitive_processing_result.guest_primitive_type;
++      last.host_primitive_type = primitive_processing_result.host_primitive_type;
++      last.host_vertex_shader_type = primitive_processing_result.host_vertex_shader_type;
++      last.tessellation_mode = primitive_processing_result.tessellation_mode;
++      last.host_primitive_reset_enabled = primitive_processing_result.host_primitive_reset_enabled;
++      last.primitive_polygonal = primitive_polygonal;
++      last.normalized_depth_control = normalized_depth_control.value;
++      last.normalized_color_mask = normalized_color_mask;
++      last.used_texture_mask = used_texture_mask;
++      last.draw_resolution_scale_x = draw_resolution_scale_x;
++      last.draw_resolution_scale_y = draw_resolution_scale_y;
++      last.pipeline = current_guest_graphics_pipeline_;
++      last.pipeline_layout = current_guest_graphics_pipeline_layout_;
++      last.render_pass = render_target_cache_->last_update_render_pass();
++      last.framebuffer = render_target_cache_->last_update_framebuffer();
++      last.viewport_info = viewport_info;
++      if (reuse_draw_state_verify_) {
++        last.samplers_vertex.clear();
++        for (const auto& sampler : current_samplers_vertex_) {
++          last.samplers_vertex.push_back(sampler.second);
++        }
++        last.samplers_pixel.clear();
++        for (const auto& sampler : current_samplers_pixel_) {
++          last.samplers_pixel.push_back(sampler.second);
++        }
++      }
++      last.valid = true;
++      reuse_state_changed_ = false;
++      reuse_textures_changed_ = 0;
++    }
++  }
++
+   // Invalidate textures in memexported memory and watch for changes.
+   if (!memexport_ranges_.empty()) {
+     for (const draw_util::MemExportRange& memexport_range : memexport_ranges_) {
+@@ -4450,6 +4620,258 @@
+   return true;
+ }
+ 
++// [claude-9b] 0126: vulkan_reuse_draw_state.
++bool VulkanCommandProcessor::IsLastDrawStateReusable(xenos::PrimitiveType prim_type,
++                                                     bool major_mode_explicit) const {
++  const ReusedDrawState& last = reuse_last_;
++  if (!last.valid || reuse_state_changed_ || !submission_open_ ||
++      GetCurrentSubmission() != last.submission) {
++    return false;
++  }
++  if (active_vertex_shader() != last.active_vertex_shader ||
++      active_pixel_shader() != last.active_pixel_shader) {
++    return false;
++  }
++  // The primitive type, index source and size and major mode (the shader
++  // modifications and the pipeline depend on them); not the index count.
++  uint32_t draw_initiator_low = register_file_->values[XE_GPU_REG_VGT_DRAW_INITIATOR] & 0xFFFF;
++  if (draw_initiator_low != last.draw_initiator_low ||
++      prim_type != last.prim_type ||
++      major_mode_explicit != last.major_mode_explicit) {
++    return false;
++  }
++  // With clipping off, the render target update's height estimate may come from the vertices
++  // (execute_unclipped_draw_vs_on_cpu), which aren't tracked: always the full path.
++  if (register_file_->Get<reg::PA_CL_CLIP_CNTL>().clip_disable) {
++    return false;
++  }
++  // The samplers of the textures used were made from their fetch constants.
++  if (reuse_textures_changed_ & last.used_texture_mask) {
++    return false;
++  }
++  if (texture_cache_->draw_resolution_scale_x() != last.draw_resolution_scale_x ||
++      texture_cache_->draw_resolution_scale_y() != last.draw_resolution_scale_y) {
++    return false;
++  }
++  // Still bound: nothing else (a resolve, a render target transfer, the
++  // presenter) bound its own pipeline or changed the render targets since.
++  if (current_guest_graphics_pipeline_ != last.pipeline ||
++      current_guest_graphics_pipeline_layout_ != last.pipeline_layout ||
++      render_target_cache_->last_update_render_pass() != last.render_pass ||
++      render_target_cache_->last_update_framebuffer() != last.framebuffer) {
++    return false;
++  }
++  return true;
++}
++
++bool VulkanCommandProcessor::IsPrimitiveProcessingAsLastDraw(
++    const PrimitiveProcessor::ProcessingResult& primitive_processing_result) const {
++  const ReusedDrawState& last = reuse_last_;
++  return primitive_processing_result.guest_primitive_type == last.guest_primitive_type &&
++         primitive_processing_result.host_primitive_type == last.host_primitive_type &&
++         primitive_processing_result.host_vertex_shader_type == last.host_vertex_shader_type &&
++         primitive_processing_result.tessellation_mode == last.tessellation_mode &&
++         primitive_processing_result.host_primitive_reset_enabled ==
++             last.host_primitive_reset_enabled;
++}
++
++VulkanCommandProcessor::DrawStateReuse VulkanCommandProcessor::IssueDrawReusingState() {
++  const RegisterFile& regs = *register_file_;
++  const ReusedDrawState& last = reuse_last_;
++  const ui::vulkan::VulkanDevice::Properties& device_properties = GetVulkanDevice()->properties();
++
++  // The full path reports a failure here.
++  if (!BeginSubmission(true)) {
++    return DrawStateReuse::kNotReusable;
++  }
++  if (GetCurrentSubmission() != last.submission ||
++      current_guest_graphics_pipeline_ != last.pipeline ||
++      current_guest_graphics_pipeline_layout_ != last.pipeline_layout) {
++    return DrawStateReuse::kNotReusable;
++  }
++
++  // The index buffer is the draw's own. The last draw wasn't a memory export
++  // one, and with the same shaders neither is this one.
++  memexport_ranges_.clear();
++  PrimitiveProcessor::ProcessingResult primitive_processing_result;
++  if (!primitive_processor_->Process(primitive_processing_result)) {
++    return DrawStateReuse::kNotReusable;
++  }
++  if (!primitive_processing_result.host_draw_vertex_count) {
++    // Nothing to draw (as in the full path).
++    return DrawStateReuse::kDrawn;
++  }
++  if (!IsPrimitiveProcessingAsLastDraw(primitive_processing_result)) {
++    return DrawStateReuse::kNotReusable;
++  }
++
++  SetGpuSection(GpuSection::kDraws);
++
++  // Textures every draw: their contents may have changed (the same samplers,
++  // already used in this submission, stay in current_samplers_vertex_ and
++  // current_samplers_pixel_).
++  texture_cache_->RequestTextures(last.used_texture_mask);
++  if (current_guest_graphics_pipeline_ != last.pipeline ||
++      current_guest_graphics_pipeline_layout_ != last.pipeline_layout) {
++    // Loading a texture bound another graphics pipeline.
++    return DrawStateReuse::kNotReusable;
++  }
++
++  reg::RB_DEPTHCONTROL normalized_depth_control;
++  normalized_depth_control.value = last.normalized_depth_control;
++  UpdateDynamicState(last.viewport_info, last.primitive_polygonal, normalized_depth_control);
++
++  auto vgt_draw_initiator = regs.Get<reg::VGT_DRAW_INITIATOR>();
++  bool shader_32bit_index_dma =
++      !device_properties.fullDrawIndexUint32 &&
++      primitive_processing_result.index_buffer_type ==
++          PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA &&
++      vgt_draw_initiator.index_size == xenos::IndexFormat::kInt32 &&
++      primitive_processing_result.host_vertex_shader_type == Shader::HostVertexShaderType::kVertex;
++
++  UpdateSystemConstantValues(last.primitive_polygonal, primitive_processing_result,
++                             shader_32bit_index_dma, 0, last.viewport_info, last.used_texture_mask,
++                             normalized_depth_control, last.normalized_color_mask);
++  if (!UpdateBindings(last.vertex_shader, last.pixel_shader)) {
++    REXGPU_ERROR("Vulkan IssueDraw (reusing the last draw's state) failed at update_bindings");
++    return DrawStateReuse::kFailed;
++  }
++
++  // Vertex buffers, as in the full path (a fetch constant that isn't a valid
++  // vertex one is left to the full path, which reports it).
++  const Shader::ConstantRegisterMap& constant_map_vertex =
++      last.vertex_shader->constant_register_map();
++  for (uint32_t i = 0; i < rex::countof(constant_map_vertex.vertex_fetch_bitmap); ++i) {
++    uint32_t vfetch_bits_remaining = constant_map_vertex.vertex_fetch_bitmap[i];
++    uint32_t j;
++    while (FindFirstSetBit(vfetch_bits_remaining, &j)) {
++      vfetch_bits_remaining &= ~(uint32_t(1) << j);
++      uint32_t vfetch_index = i * 32 + j;
++      uint64_t vfetch_bit = uint64_t(1) << (vfetch_index & 63);
++      if (vertex_buffers_in_sync_[vfetch_index >> 6] & vfetch_bit) {
++        continue;
++      }
++      xenos::xe_gpu_vertex_fetch_t vfetch_constant = regs.GetVertexFetch(vfetch_index);
++      if (vfetch_constant.type != xenos::FetchConstantType::kVertex &&
++          !(vfetch_constant.type == xenos::FetchConstantType::kInvalidVertex &&
++            REXCVAR_GET(gpu_allow_invalid_fetch_constants))) {
++        return DrawStateReuse::kNotReusable;
++      }
++      VertexBufferState& state = vertex_buffer_states_[vfetch_index];
++      if (state.address == vfetch_constant.address && state.size == vfetch_constant.size) {
++        vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
++        continue;
++      }
++      if (!shared_memory_->RequestRange(vfetch_constant.address << 2, vfetch_constant.size << 2)) {
++        return DrawStateReuse::kNotReusable;
++      }
++      state.address = vfetch_constant.address;
++      state.size = vfetch_constant.size;
++      vertex_buffers_in_sync_[vfetch_index >> 6] |= vfetch_bit;
++    }
++  }
++
++  shared_memory_->Use(VulkanSharedMemory::Usage::kRead);
++
++  SubmitBarriersAndEnterRenderTargetCacheRenderPass(
++      render_target_cache_->last_update_render_pass(),
++      render_target_cache_->last_update_framebuffer());
++
++  if (primitive_processing_result.index_buffer_type ==
++          PrimitiveProcessor::ProcessedIndexBufferType::kNone ||
++      shader_32bit_index_dma) {
++    deferred_command_buffer_.CmdVkDraw(primitive_processing_result.host_draw_vertex_count, 1, 0, 0);
++    return DrawStateReuse::kDrawn;
++  }
++  std::pair<VkBuffer, VkDeviceSize> index_buffer;
++  switch (primitive_processing_result.index_buffer_type) {
++    case PrimitiveProcessor::ProcessedIndexBufferType::kGuestDMA:
++      index_buffer.first = shared_memory_->buffer();
++      index_buffer.second = primitive_processing_result.guest_index_base;
++      break;
++    case PrimitiveProcessor::ProcessedIndexBufferType::kHostConverted:
++      index_buffer = primitive_processor_->GetConvertedIndexBuffer(
++          primitive_processing_result.host_index_buffer_handle);
++      break;
++    case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForAuto:
++    case PrimitiveProcessor::ProcessedIndexBufferType::kHostBuiltinForDMA:
++      index_buffer = primitive_processor_->GetBuiltinIndexBuffer(
++          primitive_processing_result.host_index_buffer_handle);
++      break;
++    default:
++      REXGPU_ERROR(
++          "Vulkan IssueDraw (reusing the last draw's state): unexpected index buffer type {}",
++          uint32_t(primitive_processing_result.index_buffer_type));
++      return DrawStateReuse::kFailed;
++  }
++  deferred_command_buffer_.CmdVkBindIndexBuffer(
++      index_buffer.first, index_buffer.second,
++      primitive_processing_result.host_index_format == xenos::IndexFormat::kInt16
++          ? VK_INDEX_TYPE_UINT16
++          : VK_INDEX_TYPE_UINT32);
++  deferred_command_buffer_.CmdVkDrawIndexed(primitive_processing_result.host_draw_vertex_count, 1,
++                                            0, 0, 0);
++  return DrawStateReuse::kDrawn;
++}
++
++void VulkanCommandProcessor::VerifyReusedDrawState(const VulkanShader* pixel_shader,
++                                                   uint32_t used_texture_mask,
++                                                   reg::RB_DEPTHCONTROL normalized_depth_control,
++                                                   uint32_t normalized_color_mask,
++                                                   const draw_util::ViewportInfo& viewport_info) {
++  const ReusedDrawState& last = reuse_last_;
++  auto samplers_match =
++      [](const std::vector<std::pair<VulkanTextureCache::SamplerParameters, VkSampler>>& current,
++         const std::vector<VkSampler>& kept) {
++        if (current.size() != kept.size()) {
++          return false;
++        }
++        for (size_t i = 0; i < kept.size(); ++i) {
++          if (current[i].second != kept[i]) {
++            return false;
++          }
++        }
++        return true;
++      };
++  ++reuse_verify_checked_;
++  const char* difference = nullptr;
++  if (pixel_shader != last.pixel_shader) {
++    difference = "pixel shader in use";
++  } else if (used_texture_mask != last.used_texture_mask) {
++    difference = "textures used";
++  } else if (normalized_depth_control.value != last.normalized_depth_control) {
++    difference = "depth control";
++  } else if (normalized_color_mask != last.normalized_color_mask) {
++    difference = "color mask";
++  } else if (current_guest_graphics_pipeline_ != last.pipeline) {
++    difference = "pipeline";
++  } else if (current_guest_graphics_pipeline_layout_ != last.pipeline_layout) {
++    difference = "pipeline layout";
++  } else if (render_target_cache_->last_update_render_pass() != last.render_pass) {
++    difference = "render pass";
++  } else if (render_target_cache_->last_update_framebuffer() != last.framebuffer) {
++    difference = "framebuffer";
++  } else if (std::memcmp(&viewport_info, &last.viewport_info, sizeof(viewport_info))) {
++    difference = "viewport";
++  } else if (!samplers_match(current_samplers_vertex_, last.samplers_vertex)) {
++    difference = "vertex shader samplers";
++  } else if (!samplers_match(current_samplers_pixel_, last.samplers_pixel)) {
++    difference = "pixel shader samplers";
++  }
++  if (!difference) {
++    return;
++  }
++  ++reuse_verify_mismatches_;
++  if (reuse_verify_logged_ < 16) {
++    ++reuse_verify_logged_;
++    REXGPU_WARN(
++        "Vulkan draw state reuse verify: the {} differs from the last draw's (vertex shader "
++        "{:016X}, pixel shader {:016X}); reusing would have drawn this draw wrong",
++        difference, last.vertex_shader ? last.vertex_shader->ucode_data_hash() : 0,
++        last.pixel_shader ? last.pixel_shader->ucode_data_hash() : 0);
++  }
++}
++
+ bool VulkanCommandProcessor::IssueDraw_MemexportReadbackFullPath(uint32_t total_size) {
+   if (!total_size || memexport_ranges_.empty()) {
+     return true;

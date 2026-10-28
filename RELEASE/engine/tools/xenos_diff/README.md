@@ -61,7 +61,7 @@ through the SPIR-V translator, not the interpreter, so neither changed what the 
 ## Building and running it (on the PC, through `rea-build`)
 
 ```
-SDK=/mnt/10TB_Linux_Prt3/COD3-rea-work/build/rexglue-sdk      # built and installed
+SDK=<the SDK's folder>                                          # built and installed
 OUT=<a folder>   SDK=$SDK sh interp/build.sh                    # libxe_interp.a (g++ 13, C++23)
 XE_INTERP_DIR=<that folder> XE_RUNTIME_LIB=$SDK/out/install/linux-amd64/lib \
     cargo build --offline --release                             # needs naga 29.0.4 (vendored)

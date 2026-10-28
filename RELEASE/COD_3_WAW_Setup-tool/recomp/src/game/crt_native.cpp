@@ -68,6 +68,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <rex/cvar.h>
@@ -83,6 +84,14 @@ REXCVAR_DEFINE_BOOL(cod3_native_crt, true, "cod3/Performance",
                     "memchr, strcspn, _strlwr, _strupr) run as native code where that does "
                     "exactly what the game's own code does (checked at start; off: the "
                     "translated Xbox 360 code)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [claude-9b-think] 2026-10-27 UNTESTED (FINDINGS-FRAME-CALLS): the per-call counters and their log line
+// only on request. claude-9b-test's s138 profile (mp_merv, 4 players moving): Use() and Mine() were 0.6% of
+// the game's main thread (~25 us a frame), mostly the setting read on every call and the thread-local
+// counters; the counts are only ever read by the log line.
+REXCVAR_DEFINE_BOOL(cod3_native_crt_counts, false, "cod3/Performance",
+                    "Count the native C runtime calls (cod3_native_crt) and log the counts a minute after "
+                    "the start check and then every 10 minutes (off: nothing is counted)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__memcpy_guest);   // 0x8234F460
@@ -661,14 +670,34 @@ void MaybeReport() {
   Report();
 }
 
+// [claude-9b-think] UNTESTED: cod3_native_crt and cod3_native_crt_counts as last set (WatchSettings, from
+// the start check on), so the hooks read an atomic instead of a setting on every call.
+std::atomic<bool> g_native_on{true};
+std::atomic<bool> g_counting{false};
+std::once_flag g_watch_once;
+
+void WatchSettings() {
+  g_native_on.store(REXCVAR_GET(cod3_native_crt), std::memory_order_relaxed);
+  g_counting.store(REXCVAR_GET(cod3_native_crt_counts), std::memory_order_relaxed);
+  rex::cvar::RegisterChangeCallback("cod3_native_crt", [](std::string_view, std::string_view) {
+    g_native_on.store(REXCVAR_GET(cod3_native_crt), std::memory_order_relaxed);
+  });
+  rex::cvar::RegisterChangeCallback("cod3_native_crt_counts", [](std::string_view, std::string_view) {
+    g_counting.store(REXCVAR_GET(cod3_native_crt_counts), std::memory_order_relaxed);
+  });
+}
+
 inline void CountNative(Fn f, uint32_t n) {
+  if (!g_counting.load(std::memory_order_relaxed)) return;  // [claude-9b-think]
   Counters& c = Mine();
   Bump(c.native[f], 1);
   Bump(c.bytes[f], n);
   if ((++c.tick & 0x3FFF) == 0) MaybeReport();
 }
 
-inline void CountGuest(Fn f) { Bump(Mine().guest[f], 1); }
+inline void CountGuest(Fn f) {
+  if (g_counting.load(std::memory_order_relaxed)) Bump(Mine().guest[f], 1);  // [claude-9b-think]
+}
 
 // ---------------------------------------------------------------------------
 // Self-check
@@ -1326,9 +1355,14 @@ bool EnsureChecked(PPCContext& ctx, uint8_t* base) {
 }
 
 inline bool Use(Fn f, PPCContext& ctx, uint8_t* base) {
-  if (!REXCVAR_GET(cod3_native_crt)) return false;
-  if (g_check_state.load(std::memory_order_acquire) != 2 && !EnsureChecked(ctx, base))
-    return false;
+  // [claude-9b-think] UNTESTED: until the start check has run, the setting itself (as before); from then on
+  // the copy WatchSettings keeps.
+  if (g_check_state.load(std::memory_order_acquire) != 2) {
+    if (!REXCVAR_GET(cod3_native_crt)) return false;
+    std::call_once(g_watch_once, WatchSettings);
+    if (!EnsureChecked(ctx, base)) return false;
+  }
+  if (!g_native_on.load(std::memory_order_relaxed)) return false;
   return g_fn_ok[f].load(std::memory_order_relaxed);
 }
 

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <mutex>
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -96,6 +97,42 @@ void PosixStart(unsigned lo, unsigned hi) {
   std::fprintf(stderr, "cod3: a script fiber's entry returned\n");
   std::abort();
 }
+
+// [claude-9b-think] 2026-10-27 UNTESTED (FINDINGS-FRAME-CALLS): the stacks of destroyed fibers, kept for the
+// next Create instead of munmap now and mmap + mprotect then. claude-9b-test's s138 profile (mp_merv, 4 players
+// moving): mmap, munmap, makecontext and the guard page's mprotect from Create / Destroy were about 1.6% of the
+// game's main thread (~66 us a frame); multiplayer's scripts start and end many short threads. A kept stack
+// keeps its guard page and the pages it has touched (MAP_NORESERVE: only those use memory), at most
+// kKeptStacks of them; more go back to the system as before. Script threads run on the game's main thread
+// only, but Destroy comes from the thread object's destructor, so the list has a lock (never contended).
+constexpr size_t kKeptStacks = 64;
+struct KeptStack {
+  void* mem;
+  size_t size;
+};
+std::mutex g_kept_mutex;
+KeptStack g_kept[kKeptStacks];
+size_t g_kept_count = 0;
+
+// A kept stack of `size` bytes (guard page included), or nullptr.
+void* TakeKeptStack(size_t size) {
+  std::lock_guard<std::mutex> lock(g_kept_mutex);
+  for (size_t i = g_kept_count; i-- > 0;) {
+    if (g_kept[i].size != size) continue;
+    void* mem = g_kept[i].mem;
+    g_kept[i] = g_kept[--g_kept_count];
+    return mem;
+  }
+  return nullptr;
+}
+
+// True if the stack was kept (not unmapped).
+bool KeepStack(void* mem, size_t size) {
+  std::lock_guard<std::mutex> lock(g_kept_mutex);
+  if (g_kept_count == kKeptStacks) return false;
+  g_kept[g_kept_count++] = {mem, size};
+  return true;
+}
 }  // namespace
 
 ScriptFiber* ScriptFiber::ForCurrentThread() {
@@ -108,16 +145,20 @@ ScriptFiber* ScriptFiber::ForCurrentThread() {
 ScriptFiber* ScriptFiber::Create(Entry entry, void* arg, size_t stack_reserve) {
   const size_t page = size_t(sysconf(_SC_PAGESIZE));
   const size_t size = (stack_reserve + page - 1) / page * page + page;  // + guard page
-  // MAP_NORESERVE: pages are only backed once the fiber actually uses them.
-  void* mem = mmap(nullptr, size, PROT_READ | PROT_WRITE,
-                   MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
+  // [claude-9b-think] UNTESTED: a stack kept from a destroyed fiber first (its guard page is still set).
+  void* mem = TakeKeptStack(size);
+  if (!mem) {
+    // MAP_NORESERVE: pages are only backed once the fiber actually uses them.
+    mem = mmap(nullptr, size, PROT_READ | PROT_WRITE,
+               MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE
 #ifdef MAP_STACK
-                       | MAP_STACK
+                   | MAP_STACK
 #endif
-                   ,
-                   -1, 0);
-  if (mem == MAP_FAILED) return nullptr;
-  mprotect(mem, page, PROT_NONE);  // stacks grow down: overflow hits the guard
+               ,
+               -1, 0);
+    if (mem == MAP_FAILED) return nullptr;
+    mprotect(mem, page, PROT_NONE);  // stacks grow down: overflow hits the guard
+  }
 
   auto* f = new ScriptFiber();
   f->impl_ = new Impl();
@@ -142,7 +183,9 @@ void ScriptFiber::Switch(ScriptFiber* from, ScriptFiber* to) {
 
 void ScriptFiber::Destroy(ScriptFiber* fiber) {
   if (!fiber) return;
-  if (fiber->impl_->stack) munmap(fiber->impl_->stack, fiber->impl_->stack_size);
+  // [claude-9b-think] UNTESTED: kept for the next Create while there is room (see KeepStack).
+  if (fiber->impl_->stack && !KeepStack(fiber->impl_->stack, fiber->impl_->stack_size))
+    munmap(fiber->impl_->stack, fiber->impl_->stack_size);
   delete fiber->impl_;
   delete fiber;
 }

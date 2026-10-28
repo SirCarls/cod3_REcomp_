@@ -77,6 +77,11 @@ REXCVAR_DECLARE(bool, cod3_invert_mouse);
 // ---------------------------------------------------------------------------
 REXCVAR_DEFINE_BOOL(cod3_crosshair, false, "cod3/Crosshair",
                     "Replace the game's crosshair with a customizable one");
+// [claude-9b] 2026-10-27 owner 18:31: "please add a version number to the top right corner with toggle on/off.
+// Shouldn't be intrusive."
+REXCVAR_DEFINE_BOOL(cod3_show_version, true, "cod3/Interface",
+                    "Show the setup tool version this game was built with, small and faint in the top right corner")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [claude-9b] 2026-10-27 tests: each view's custom crosshair in the log once a second (screenshots don't show it)
 REXCVAR_DEFINE_BOOL(cod3_debug_crosshair, false, "cod3",
                     "Log once a second where each view's custom crosshair is drawn, its size and alpha (tests)")
@@ -336,6 +341,36 @@ static void DrawCrosshairPreviewShape(ImDrawList* dl, ImVec2 c, float scale) {
 // cg_drawFPS: top-right corner, like World at War.
 //   1 frame rate, 2 + slowest / fastest over the last half second,
 //   3 + average / longest frame time and the limit.
+// [claude-9b] 2026-10-27 the version label's height when it is shown (cod3_show_version): the frame rate and the
+// frame cost lines start that much lower, so the label stays the top right corner's first line.
+static float g_top_right_offset = 0.0f;
+
+// [claude-9b] 2026-10-27 The setup tool version the game was built with (game/diagnostics.h ToolVersion, the same
+// as the log's session line). A game built some other way shows the date it was compiled.
+static const std::string& VersionText() {
+  static const std::string text = [] {
+    const std::string v = cod3::diag::ToolVersion();
+    return v.empty() ? std::string("build ") + __DATE__ : "v" + v;
+  }();
+  return text;
+}
+
+// [claude-9b] 2026-10-27 cod3_show_version: the version in the top right corner, small and faint, with a soft
+// shadow so it reads on bright and dark pictures. Returns the height it takes (0 when hidden).
+static float DrawVersionLabel(ImGuiIO& io) {
+  if (!REXCVAR_GET(cod3_show_version)) return 0.0f;
+  const std::string& text = VersionText();
+  const float size = std::max(10.0f, 13.0f * io.DisplaySize.y / 1080.0f);
+  ImFont* font = FontFor(size);
+  const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
+  const float margin = std::floor(12.0f * io.DisplaySize.y / 1080.0f);
+  const ImVec2 pos(std::floor(io.DisplaySize.x - ext.x - margin), std::floor(margin * 0.5f));
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  dl->AddText(font, size, ImVec2(pos.x + 1, pos.y + 1), IM_COL32(0, 0, 0, 90), text.c_str());
+  dl->AddText(font, size, pos, IM_COL32(255, 255, 255, 105), text.c_str());
+  return std::max(0.0f, std::floor(pos.y + ext.y + 2.0f - margin));  // the frame rate starts below the label
+}
+
 static void DrawFpsCounter(ImGuiIO& io, int mode) {
   const auto st = cod3::FrameRate::Get().Stats();
   if (!st.valid) return;
@@ -365,7 +400,7 @@ static void DrawFpsCounter(ImGuiIO& io, int mode) {
   ImFont* font = FontFor(size);
   const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
   const float margin = std::floor(12.0f * io.DisplaySize.y / 1080.0f);
-  const ImVec2 pos(std::floor(io.DisplaySize.x - ext.x - margin), margin);
+  const ImVec2 pos(std::floor(io.DisplaySize.x - ext.x - margin), margin + g_top_right_offset);  // [claude-9b]
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   dl->AddText(font, size, ImVec2(pos.x + 1, pos.y + 1), IM_COL32(0, 0, 0, 200), text);
   dl->AddText(font, size, pos, col, text);
@@ -413,7 +448,7 @@ static void DrawPerfOverlay(ImGuiIO& io) {
   const float size = std::max(12.0f, 16.0f * io.DisplaySize.y / 1080.0f);
   ImFont* font = FontFor(size);
   const float margin = std::floor(12.0f * io.DisplaySize.y / 1080.0f);
-  float y = margin + std::max(13.0f, 20.0f * io.DisplaySize.y / 1080.0f) + 6.0f;
+  float y = margin + g_top_right_offset + std::max(13.0f, 20.0f * io.DisplaySize.y / 1080.0f) + 6.0f;  // [claude-9b]
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   for (int i = 0; i < n; ++i) {
     const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, lines[i]);
@@ -629,6 +664,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
         ImVec2(0, 0), io.DisplaySize, IM_COL32(0, 0, 0, static_cast<int>(cover * 255)));
   }
   if (const float a = cod3::CutsceneSkip::Get().PromptAlpha(); a > 0.0f) DrawSkipPrompt(io, a);
+  g_top_right_offset = DrawVersionLabel(io);  // [claude-9b] cod3_show_version, above the frame rate
   if (const int mode = cod3::Engine::Get().draw_fps(); mode > 0) DrawFpsCounter(io, mode);
   if (REXCVAR_GET(cod3_perf_overlay)) DrawPerfOverlay(io);
   DrawMenuCrosshairPreview(io);  // [claude-9b] the AIM page's preview (menus only)
@@ -2466,7 +2502,7 @@ void SettingsWindow::DrawPerformance() {
 // cg_fov, cg_fovScale): userdata/cod3_config.cfg.
 void SettingsWindow::DrawInterface() {
   if (ResetButton("reset_interface", "interface settings")) {
-    ResetSettings({"cod3_ui_theme", "cod3_ui_text_size", "cod3_ui_opacity"});
+    ResetSettings({"cod3_ui_theme", "cod3_ui_text_size", "cod3_ui_opacity", "cod3_show_version"});
     dirty_ = true;
   }
   Section("Look");
@@ -2503,6 +2539,11 @@ void SettingsWindow::DrawInterface() {
     }
     Help("Lower it to see the game behind this window while you change settings.");
   }
+  // [claude-9b] 2026-10-27 owner 18:31 (the version in the top right corner, with a toggle).
+  dirty_ |= CvarCheckbox("Show the version number (top right)", "cod3_show_version", &restart_needed_);
+  ImGui::TextDisabled("This game: %s.", VersionText().c_str());
+  Help("The setup tool version this game was built with, small and faint in the top right corner. The log and "
+       "every report also start with it, so a problem can be matched to its version.");
 }
 
 // F2 > Console: the ~ console itself, the problems logged this session

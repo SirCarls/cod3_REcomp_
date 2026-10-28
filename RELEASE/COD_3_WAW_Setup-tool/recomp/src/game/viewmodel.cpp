@@ -37,6 +37,13 @@ REXCVAR_DEFINE_INT32(cod3_viewmodel_presetpos, 0, "cod3/Game",
 REXCVAR_DEFINE_BOOL(cod3_debug_viewmodel, false, "cod3",
                     "Log the weapon offset, how far the weapon is up to the sights and the gun's origin "
                     "twice a second while an offset is set");
+// [claude-9b] 2026-10-27 (owner 09:56: "aiming down sights seems like it's jittery with the 60hz patch"; 10:13:
+// "the ADS jutter needs fixing ASAP"): one line a drawn frame while aiming or moving, for this many frames: what the
+// gun is placed from and where it ends up, beside the camera, to see which of them moves in steps.
+REXCVAR_DEFINE_INT32(cod3_debug_ads_trace, 0, "cod3",
+                     "Log the gun, the camera and the player's position in every drawn frame while aiming "
+                     "or moving, for this many frames (0: off; campaign)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -115,6 +122,46 @@ void LogWhenChanged(const cod3::viewmodel::Offsets& o) {
               o.x, o.y, o.z, cod3::viewmodel::PresetName(preset));
 }
 
+// [claude-9b] 2026-10-27 cod3_debug_ads_trace: after the gun is placed (r3 = its refEntity: axes +20, origin +60).
+// The camera is cg's refdef (cg = 0x82A98D90 + client x 5840: fov +4472, origin +4480, axes +4496) after the
+// movement's smoothing (CG_CalcViewValues' hook runs before the gun is placed); the player's playerState origin
+// and velocity are the gclient's +0 and +16; +80 and +140 feed the gun's offset (0x82440AA8), as do cg +4596 / +4600.
+void AdsTrace(uint8_t* base, uint32_t gun, uint32_t client) {
+  static int logged = 0, last_setting = 0;
+  static auto last = std::chrono::steady_clock::time_point{};
+  const int setting = REXCVAR_GET(cod3_debug_ads_trace);
+  if (setting != last_setting) {
+    logged = 0;
+    last_setting = setting;
+  }
+  if (cod3::kMultiplayer || setting <= 0 || logged >= setting || client > 3 || !Readable(gun)) return;
+  const uint32_t list = ReadU32(base, kEntityList);
+  if (!Readable(list)) return;
+  const uint32_t entity = ReadU32(base, list + 4 * (client + 1));
+  if (!Readable(entity)) return;
+  const uint32_t ps = ReadU32(base, entity + kEntityClient);
+  if (!Readable(ps)) return;
+  const float aim = ReadF32(base, ps + kWeaponPosFrac);
+  const float vx = ReadF32(base, ps + 16), vy = ReadF32(base, ps + 20);
+  if (!(aim > 0.01f) && vx * vx + vy * vy < 1.0f) return;  // neither aiming nor moving
+  const uint32_t cg = 0x82A98D90u + client * 5840u;
+  const auto now = std::chrono::steady_clock::now();
+  const long long dt_us =
+      last.time_since_epoch().count() ? std::chrono::duration_cast<std::chrono::microseconds>(now - last).count() : 0;
+  last = now;
+  ++logged;
+  REXLOG_INFO("cod3: ads trace {} dt {} aim {:.4f} f80 {:.4f} ps {:.3f} {:.3f} {:.3f} vel {:.1f} {:.1f} cam {:.3f} {:.3f} "
+              "{:.3f} fwd {:.5f} {:.5f} {:.5f} fov {:.3f} {:.3f} gun {:.3f} {:.3f} {:.3f} gfwd {:.5f} {:.5f} {:.5f} "
+              "c4596 {:.4f} c4600 {:.4f} bob {} phase {:.4f} speed {:.2f} yaw {:.4f} pitch {:.4f}",
+              logged, dt_us, aim, ReadF32(base, ps + 80), ReadF32(base, ps + 0), ReadF32(base, ps + 4),
+              ReadF32(base, ps + 8), vx, vy, ReadF32(base, cg + 4480), ReadF32(base, cg + 4484), ReadF32(base, cg + 4488),
+              ReadF32(base, cg + 4496), ReadF32(base, cg + 4500), ReadF32(base, cg + 4504), ReadF32(base, cg + 4472),
+              ReadF32(base, cg + 4476), ReadF32(base, gun + 60), ReadF32(base, gun + 64), ReadF32(base, gun + 68),
+              ReadF32(base, gun + 20), ReadF32(base, gun + 24), ReadF32(base, gun + 28), ReadF32(base, cg + 4596),
+              ReadF32(base, cg + 4600), ReadU32(base, ps + 40) & 0xFFu, ReadF32(base, cg + 5804),
+              ReadF32(base, cg + 5808), ReadF32(base, cg + 4548), ReadF32(base, cg + 4544));
+}
+
 // [claude-9b] 2026-10-27 The gun mirrored to the left hand: its left axis (refEntity + 32) turned around, and its
 // scene marked for the turned culling (game/viewmodel_flip.cpp).
 constexpr uint32_t kGunLeftAxis = 32;
@@ -150,6 +197,7 @@ REX_HOOK_RAW(sub_82445118) {
     if (g_logged_once) LogWhenChanged(o);
     __imp__sub_82445118(ctx, base);
     if (flip) Mirror(base, gun, client);
+    AdsTrace(base, gun, client);  // [claude-9b]
     return;
   }
   LogWhenChanged(o);
@@ -165,6 +213,7 @@ REX_HOOK_RAW(sub_82445118) {
   WriteF32(base, y, game_y);
   WriteF32(base, z, game_z);
   if (flip) Mirror(base, gun, client);
+  AdsTrace(base, gun, client);  // [claude-9b]
   if (REXCVAR_GET(cod3_debug_viewmodel)) {
     static auto next = std::chrono::steady_clock::time_point{};
     const auto now = std::chrono::steady_clock::now();

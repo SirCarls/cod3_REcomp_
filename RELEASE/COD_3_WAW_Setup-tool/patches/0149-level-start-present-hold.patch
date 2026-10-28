@@ -1,0 +1,158 @@
+[claude-9b] Released in setup tool 2.23.0 (2026-10-28), tested by claude-9b-test in s157 (run G) and s157c3 (mp_merv
+4 players: the broken first frames gone). The game's side is in recomp/src/game/cheat_watch.cpp (cod3_level_start_hold,
+on). The text below and the "UNTESTED" marks in the code comments are from the draft.
+[claude-9b-think] 2026-10-27 draft. SDK patch 0149: hold slow presents just after a level
+loads (the game's side: level-start-hold-game.UNTESTED.diff, cod3_level_start_hold, default off). Owner 19:31:
+"optimizting in-game performance and reducing/eliminating hitching is priority #1".
+
+Why (the owner's play today): the first frame after "loaded in" makes most of the level's textures, uploads and
+render targets on the GPU thread: saint_lo 95.9 ms (273 textures made 44.1 ms, 65 MB uploaded 20.0 ms, resolves
+17.8 ms), nightdrop 121.8 ms (307 made 56.9 ms, 72 MB 23.3 ms, resolves 23.2 ms), mp_hosta 58.4 ms (217 made
+36.6 ms). The loading picture is up until that frame is presented anyway; what can be seen is the step between
+the first two shown frames: the game's next frame moves that whole time at once, often during the level's fade
+from black.
+
+What it does:
+  - gpu_stats (REX_GRAPHICS_STATS_VERSION 10): HoldSlowPresentsFor(window_ms, slow_ms), called by the game at a
+    level's load end; HoldThisPresent(), called by each backend's IssueSwap once a swap (the GPU thread): it
+    keeps the time of the swap, and inside the window returns the time since the previous swap when that is
+    over slow_ms (the picture is then held, counted); PresentsHeld(), the total.
+  - Vulkan and D3D12 IssueSwap, right after the swap's BeginSubmission: a held picture ends the submission
+    without presenting (Vulkan's own path for a frame that used placeholders, command_processor.cpp 2606-2620;
+    D3D12 ends a frame without presenting the same way, its line 2265-2267), and logs one line:
+      "Presentation held at a level's start: a 95.9 ms frame not shown (1 so far)"
+    The picture before it stays (the loading screen or black); the first one shown is the next, normal frame.
+    The frame's commands are submitted as usual; the game's own timing is unchanged (so hitch-counts' "since
+    the level loaded" still counts the slow first frame: it measures the game thread).
+  - A run of slow frames in the window is held too (at most the window, 2 s with the game's call); a swap
+    after a stall (no swaps for a while) is held once.
+Not changed: what the first frame does (making the textures earlier would need to know which ones; no cheap
+version), map_restart (checkpoint restarts: not measured; the game diff calls it at SV_SpawnServer only).
+
+Test (s157 or later; game diff applied; FINDINGS-HITCHES): saint_lo and nightdrop from the menu, and one MP map,
+each with --cod3_level_start_hold=false and =true. Capture the first second after the level appears (a screen
+recording at 60 fps or more, or REA's capture tool), and read the log: per level start, 1-2 "Presentation
+held at a level's start" lines with =true, none with =false, none during play. Expect: with =true no jump
+between the first two frames shown; the level appears about one slow frame later than the loading screen
+would otherwise have been replaced (the same moment the slow frame would have been shown).
+
+Bases (rexglue-sdk as in COD3-rea-work/build, the owner's build of 2026-10-27):
+  include/rex/graphics/gpu_stats.h            3eba20e27072ecad29191dc8fbcf88f5
+  src/core/gpu_stats.cpp                      648147be27e2b751384e106f2edd1199
+  src/graphics/vulkan/command_processor.cpp   dd12339da8ce3dfb19ad8c2762003826
+  src/graphics/d3d12/command_processor.cpp    585a18a605a1f7f2e9d71fa577521254
+Independent of 0144-0148: the Vulkan hunk sits just before 0145's (its trailing context, lines 2605-2607, is
+unchanged by 0145), so either applies first with offsets.
+
+--- a/include/rex/graphics/gpu_stats.h
++++ b/include/rex/graphics/gpu_stats.h
+@@ -30,8 +30,9 @@
+ // for every draw (texture requests, uploads and creates, resolves, render
+ // target updates, pipeline configuration) read the clock only while a reader
+ // has turned them on.
++// 10: HoldSlowPresentsFor, HoldThisPresent and PresentsHeld (SDK patch 0149).
+ // A game built against any version can test this to know which counters exist.
+-#define REX_GRAPHICS_STATS_VERSION 9
++#define REX_GRAPHICS_STATS_VERSION 10
+
+ namespace rex::graphics::stats {
+
+@@ -185,4 +186,17 @@
+   uint64_t start_us_;
+ };
+
++// [claude-9b-think] 2026-10-27 0149 UNTESTED: slow presents held just after a level loads. The first
++// frame of a level makes most of its textures, uploads and render targets at once (95-122 ms in the
++// owner's campaign play, 58 ms in multiplayer), so the game's next frame steps that much time at once.
++// For window_ms from the call, a swap that comes more than slow_ms after the previous one isn't
++// presented: the picture before it stays (the loading screen, or black) and the first one shown is
++// the next, normal frame. window_ms 0 ends the window. Any thread (the game's, at a level's load end).
++void HoldSlowPresentsFor(uint32_t window_ms, uint32_t slow_ms);
++// For the backends' IssueSwap, once a swap (the GPU thread): the time since the previous swap in
++// microseconds when this swap's picture is to be held (counted), otherwise 0.
++uint64_t HoldThisPresent();
++// The pictures held so far.
++uint64_t PresentsHeld();
++
+ }  // namespace rex::graphics::stats
+--- a/src/core/gpu_stats.cpp
++++ b/src/core/gpu_stats.cpp
+@@ -30,6 +30,12 @@
+ std::atomic<uint64_t> g_counters[size_t(Counter::kCount)];
+ // [claude-9b] ScopedDetailMicros times only while this is set (SetDetailTimers).
+ std::atomic<bool> g_detail_timers{false};
++// [claude-9b-think] 0149: the present hold (HoldSlowPresentsFor): until when, from what time
++// between swaps, the last swap's time, and the pictures held.
++std::atomic<uint64_t> g_hold_until_us{0};
++std::atomic<uint64_t> g_hold_slow_us{0};
++std::atomic<uint64_t> g_last_swap_us{0};
++std::atomic<uint64_t> g_presents_held{0};
+
+ uint64_t SteadyMicros() {
+   return uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+@@ -193,4 +199,29 @@
+
+ void AddTimeSince(Counter counter, uint64_t start_us) { Add(counter, Since(start_us)); }
+
++// [claude-9b-think] 0149 UNTESTED: see gpu_stats.h. steady_clock: once a swap, the time-stamp
++// counter isn't needed.
++void HoldSlowPresentsFor(uint32_t window_ms, uint32_t slow_ms) {
++  g_hold_slow_us.store(uint64_t(slow_ms) * 1000, std::memory_order_relaxed);
++  g_hold_until_us.store(window_ms ? SteadyMicros() + uint64_t(window_ms) * 1000 : 0,
++                        std::memory_order_release);
++}
++
++uint64_t HoldThisPresent() {
++  const uint64_t now = SteadyMicros();
++  const uint64_t last = g_last_swap_us.exchange(now, std::memory_order_relaxed);
++  const uint64_t until = g_hold_until_us.load(std::memory_order_acquire);
++  if (!until || now >= until || !last || now <= last) {
++    return 0;
++  }
++  const uint64_t interval = now - last;
++  if (interval <= g_hold_slow_us.load(std::memory_order_relaxed)) {
++    return 0;
++  }
++  g_presents_held.fetch_add(1, std::memory_order_relaxed);
++  return interval;
++}
++
++uint64_t PresentsHeld() { return g_presents_held.load(std::memory_order_relaxed); }
++
+ }  // namespace rex::graphics::stats
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -2602,6 +2602,15 @@
+     REXGPU_ERROR("XELOG_GPU PRESENT: BeginSubmission FAILED");
+     return;
+   }
++  // [claude-9b-think] 0149 UNTESTED: a slow frame just after a level loaded (stats::HoldSlowPresentsFor)
++  // isn't shown: the picture before it stays, and the first one shown is the next, normal frame. Its
++  // commands are submitted as usual.
++  if (const uint64_t held_us = stats::HoldThisPresent()) {
++    REXGPU_INFO("Presentation held at a level's start: a {:.1f} ms frame not shown ({} so far)",
++                double(held_us) / 1000.0, stats::PresentsHeld());
++    EndSubmission(true);
++    return;
++  }
+
+   bool skip_present_due_async_placeholder = REXCVAR_GET(async_shader_compilation) &&
+                                             REXCVAR_GET(vulkan_async_skip_incomplete_frames) &&
+--- a/src/graphics/d3d12/command_processor.cpp
++++ b/src/graphics/d3d12/command_processor.cpp
+@@ -1921,6 +1921,15 @@
+     REXGPU_ERROR("IssueSwap: BeginSubmission failed");
+     return;
+   }
++  // [claude-9b-think] 0149 UNTESTED: as in the Vulkan backend: a slow frame just after a level loaded
++  // (stats::HoldSlowPresentsFor) isn't shown; the frame ends without presenting, as at the end of this
++  // function when the presenter didn't take the picture.
++  if (const uint64_t held_us = stats::HoldThisPresent()) {
++    REXGPU_INFO("Presentation held at a level's start: a {:.1f} ms frame not shown ({} so far)",
++                double(held_us) / 1000.0, stats::PresentsHeld());
++    EndSubmission(true);
++    return;
++  }
+
+   // Obtain the actual swap source texture size (resolution-scaled if it's a
+   // resolve destination, or not otherwise).

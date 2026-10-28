@@ -66,6 +66,7 @@
 #include "game/movement/sprint_input.h"
 #include "game/protected_dvars.h"
 #include "game/server_step.h"  // [acct2-main] the camera on a vehicle
+#include "game/movement/step_view.h"  // [claude-9b] EndDrawnStepValues
 
 // Pmove, the game's own (hooked below); RunCod4Steps calls it too.
 REX_EXTERN(__imp__sub_82496978);
@@ -74,6 +75,16 @@ REX_EXTERN(__imp__sub_82496978);
 REXCVAR_DEFINE_BOOL(cod3_move_stairs_view, true, "cod3",
                     "Walking up or down stairs above 60 fps: the camera eases each stair step once, as the game does; "
                     "off: the step between movement steps is eased a second time (a dip of about a stair's height)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [claude-9b] 2026-10-27 (owner 10:13: "the ADS jutter needs fixing ASAP")
+REXCVAR_DEFINE_BOOL(cod3_move_bob_smooth, true, "cod3",
+                    "Above 60 fps: the view's and the weapon's bob move in every frame (between the movement steps, as "
+                    "the camera does); off: they move only in the movement steps (jitter, most visible aiming down the "
+                    "sights while moving)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(cod3_move_aim_smooth, true, "cod3",
+                    "Above 60 fps: raising the weapon to the sights (its travel and the zoom) and leaning move in every "
+                    "frame (between the movement steps, as the camera does); off: only in the movement steps")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
@@ -280,8 +291,31 @@ void UpdateViewAngles(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, 
   g::WriteU32(base, P.pm, saved_pm);
 }
 
-void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], int start_time, int steps,
-                   int step_ms, int final_time);  // [claude-9b] below
+// [claude-9b] 2026-10-27 What the drawn frame reads raw from the playerState besides the origin, which also changes
+// only in movement steps (owner 10:13: "the ADS jutter needs fixing ASAP"; claude-9b-think FINDINGS-ADS.md): the bob
+// cycle (+40, its low byte: the view's and the gun's bob phase, 0x824345D8 -> cg +5804), the speed across the ground
+// (velocity +16 / +20: the bob's size and the gun's run offset, cg +5808), how far the weapon is up to the sights
+// (+140: the gun's travel and the zoom, CG_GetViewFov) and the lean (+80).
+constexpr uint32_t kPsBobCycle = 40;
+constexpr uint32_t kPsLean = 80;
+struct StepVals {
+  uint32_t bob = 0;
+  float speed = 0.0f;
+  float aim = 0.0f;
+  float lean = 0.0f;
+};
+StepVals ReadStepVals(uint8_t* base, uint32_t ps) {
+  StepVals v;
+  v.bob = g::ReadU32(base, ps + kPsBobCycle) & 0xFFu;
+  const float vx = g::ReadF32(base, ps + P.ps.velocity), vy = g::ReadF32(base, ps + P.ps.velocity + 4);
+  v.speed = std::sqrt(vx * vx + vy * vy);
+  v.aim = g::ReadF32(base, ps + P.ps.binoculars_frac);
+  v.lean = g::ReadF32(base, ps + kPsLean);
+  return v;
+}
+
+void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], const StepVals& pre,
+                   int start_time, int steps, int step_ms, int final_time);  // [claude-9b] below
 
 // Runs the game's Pmove in CoD4 PC's 8 ms steps (its own pmove_fixed loop),
 // the usercmd's time and the time left from the usercmds before. The
@@ -309,6 +343,7 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   g::WriteU32(base, pm + P.pmove.pmove_msec, kStep);
   float before[3];  // [claude-9b] the camera between the steps (StepViewOffset)
   for (int i = 0; i < 3; ++i) before[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
+  const StepVals pre = ReadStepVals(base, ps);  // [claude-9b] the bob, speed, aim and lean too
   g_move.snap = true;
   __imp__sub_82496978(ctx, base);  // no steps: its loop runs none
   g_move.snap = false;
@@ -319,7 +354,7 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
   st.pending = plan.pending_after;
-  Cod4StepsDone(base, ps, client, before, plan.start_time, plan.steps, kStep, final_time);  // [claude-9b]
+  Cod4StepsDone(base, ps, client, before, pre, plan.start_time, plan.steps, kStep, final_time);  // [claude-9b]
 }
 
 // [acct2-main] The fixed movement rate (cod3_move_hz), per client: the last step's positions, to
@@ -333,6 +368,11 @@ struct HzSteps {
   int now = 0;         // the newest usercmd's time
   uint32_t ps = 0;     // the playerState moved
   int32_t ease_time = 0;  // [claude-9b] the game's stair easing time when the last step ran (StepEaseTime)
+  // [claude-9b] 2026-10-27 The last step's other values (StepVals): how far the bob cycle went forward in it (its
+  // byte, so mod 256), and the speed, aim and lean before and after it.
+  float bob_delta = 0.0f;
+  StepVals vals_from;
+  StepVals vals_to;
   // The debug log: steps and usercmds since the last line.
   int log_steps = 0;
   int log_cmds = 0;
@@ -372,6 +412,7 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
   if (final_time - start > max_span) start = final_time - max_span;
 
   float before[3] = {};
+  StepVals pre;  // [claude-9b] the other values before the last step
   int steps = 0, t = start, last_len = 1;
   // Pmove(pm, r4) is called with two arguments (ClientThink_real passes 0 in r4); a call leaves
   // the argument registers changed, so each step gets the caller's again (2026-10-26: without
@@ -383,6 +424,7 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
   };
   for (int end = mv::MoveStepEndAfter(t, hz); end <= final_time; end = mv::MoveStepEndAfter(end, hz)) {
     ReadOrigin(base, ps, before);
+    pre = ReadStepVals(base, ps);  // [claude-9b]
     g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(t));
     g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(end));
     restore_args();
@@ -411,6 +453,10 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
     h.step_end = t;
     h.step_len = std::max(last_len, 1);
     h.ease_time = StepEaseTime(base, client);  // [claude-9b] before this usercmd's events
+    // [claude-9b] 2026-10-27 the bob, speed, aim and lean before and after the last step
+    h.vals_from = pre;
+    h.vals_to = ReadStepVals(base, ps);
+    h.bob_delta = float((h.vals_to.bob - pre.bob) & 0xFFu);
   }
   h.now = final_time;
   h.ps = ps;
@@ -435,8 +481,8 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
 // (StepViewOffset, as for cod3_move_hz's steps: one step behind at most). Run c9b-vt2-cod4-144 with
 // the whole call as one span: the camera lagged and caught up (0.6 then 3.2 units) after each usercmd
 // that ran two steps.
-void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], int start_time, int steps,
-                   int step_ms, int final_time) {
+void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], const StepVals& pre,
+                   int start_time, int steps, int step_ms, int final_time) {
   HzSteps& h = g_hz[client];
   if (steps > 0) {
     ReadOrigin(base, ps, h.to);
@@ -446,6 +492,14 @@ void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3]
     h.step_end = start_time + steps * step_ms;
     h.step_len = std::max(step_ms, 1);
     h.ease_time = StepEaseTime(base, client);  // [claude-9b] before this usercmd's events
+    // [claude-9b] 2026-10-27 the other values, the last step's part of the call's change (as the origin)
+    const float n = static_cast<float>(steps);
+    h.vals_to = ReadStepVals(base, ps);
+    h.vals_from = h.vals_to;
+    h.vals_from.speed = h.vals_to.speed - (h.vals_to.speed - pre.speed) / n;
+    h.vals_from.aim = h.vals_to.aim - (h.vals_to.aim - pre.aim) / n;
+    h.vals_from.lean = h.vals_to.lean - (h.vals_to.lean - pre.lean) / n;
+    h.bob_delta = float((h.vals_to.bob - pre.bob) & 0xFFu) / n;
   }
   h.now = final_time;
   h.ps = ps;
@@ -780,17 +834,141 @@ void SmoothView(uint8_t* base) {
   if (client >= static_cast<uint32_t>(mv::PlayerPreferences::kMaxClients)) return;
   const uint32_t cam = kCgBase + client * kCgSize + kCgRefdefOrigin;
   float off[3];
-  // Walking: the movement steps. Carried by a vehicle (moved in the game's updates, not by the
-  // movement): the same smoothing as the vehicle is drawn with (game/server_step.h).
-  if (!StepViewOffset(base, client, cam, off) && !cod3::server_step::PlayerViewOffset(base, off)) return;
-  for (int i = 0; i < 3; ++i) g::WriteF32(base, cam + 4 * i, g::ReadF32(base, cam + 4 * i) + off[i]);
+  // [claude-9b-think] 2026-10-27 UNTESTED On a ridden vehicle in first person: on the vehicle as it is drawn
+  // (cod3_server_smooth_ride). The movement steps' offset is left out there: Pmove doesn't move a rider, so it was a
+  // zero offset that stopped the update offset below (the jeep's camera jumped once an update).
+  float c[3];
+  for (int i = 0; i < 3; ++i) c[i] = g::ReadF32(base, cam + 4 * i);
+  const int ride = cod3::server_step::RideViewOffset(base, c, off);
+  if (ride < 0) {
+    if (!cod3::server_step::PlayerViewOffset(base, off)) return;
+  } else if (ride == 0) {
+    // Walking: the movement steps. Carried by a vehicle (moved in the game's updates, not by the
+    // movement): the same smoothing as the vehicle is drawn with (game/server_step.h).
+    if (!StepViewOffset(base, client, cam, off) && !cod3::server_step::PlayerViewOffset(base, off)) return;
+  }
+  for (int i = 0; i < 3; ++i) g::WriteF32(base, cam + 4 * i, c[i] + off[i]);
+}
+
+// [claude-9b] 2026-10-27 The rest of what the drawn frame reads from the playerState in steps (owner 10:13: "the ADS
+// jutter needs fixing ASAP"; claude-9b-think FINDINGS-ADS.md 2): drawn between the last step's values by the same part
+// as the camera (StepViewOffset's `back`), so the bob, the gun's travel to the sights, the zoom and the lean move in
+// every frame instead of with the movement steps (60 a second) while the camera moves in every frame.
+constexpr uint32_t kEntityList = 0x82A2AB40;      // *(it) + 4 * (client + 1): the player's entity
+constexpr uint32_t kEntityClient = 528;           // its gclient (the playerState first)
+constexpr uint32_t kCgBobPhase = 5804;            // 0x824345D8: bob cycle byte x kBobPhaseScale + constant
+constexpr uint32_t kCgBobSpeed = 5808;            // 0x824345D8: the speed across the ground
+constexpr uint32_t kBobPhaseScale = 0x8207C944;   // the float 0x824345D8 multiplies the bob cycle by
+constexpr uint32_t kPmFlagsBobSpeedOwn = 0x10;    // pm_flags: 0x824345D8 sets the speed another way
+
+// The local client's playerState as the client game reads it, or 0.
+uint32_t DrawnPlayerState(uint8_t* base, uint32_t client) {
+  const uint32_t list = g::ReadU32(base, kEntityList);
+  if (!ValidGuest(list)) return 0;
+  const uint32_t ent = g::ReadU32(base, list + 4 * (client + 1));
+  if (!ValidGuest(ent)) return 0;
+  const uint32_t ps = g::ReadU32(base, ent + kEntityClient);
+  return ValidGuest(ps) ? ps : 0;
+}
+
+// The part of the last movement step not drawn yet (StepViewOffset's `back`; 0: nothing to draw between), while the
+// playerState is the one moved and where the step left it.
+float StepBack(uint8_t* base, uint32_t client, const HzSteps** out) {
+  if (mv::MoveStepHz() <= 0 || client >= static_cast<uint32_t>(mv::PlayerPreferences::kMaxClients)) return 0.0f;
+  // [claude-9b-think] 2026-10-27 UNTESTED nothing of the steps to draw between on a ridden vehicle: the vehicle's
+  // update sets the speed (and the seat), not the steps (cod3_server_smooth_ride).
+  if (cod3::server_step::PlayerRides(base)) return 0.0f;
+  const HzSteps& h = g_hz[client];
+  if (!h.valid || !ValidGuest(h.ps) || DrawnPlayerState(base, client) != h.ps) return 0.0f;
+  float now[3];
+  ReadOrigin(base, h.ps, now);
+  if (now[0] != h.to[0] || now[1] != h.to[1] || now[2] != h.to[2]) return 0.0f;  // moved since the step
+  const float into = static_cast<float>(h.now - h.step_end) / static_cast<float>(h.step_len);
+  *out = &h;
+  return 1.0f - std::clamp(into, 0.0f, 1.0f);
+}
+
+// The aim and the lean written for the drawn frame (BeginDrawnStepValues), to put back after it.
+struct DrawnWrite {
+  uint32_t at = 0;
+  float game = 0.0f;
+  float drawn = 0.0f;
+};
+DrawnWrite g_drawn_aim, g_drawn_lean;
+
+void PutBackOneDrawn(uint8_t* base, DrawnWrite& w) {
+  if (!w.at) return;
+  if (g::ReadF32(base, w.at) == w.drawn) g::WriteF32(base, w.at, w.game);  // unless the game set it since
+  w.at = 0;
+}
+
+void WriteOneDrawn(uint8_t* base, DrawnWrite& w, uint32_t at, float game_now, float from, float to, float back) {
+  if (game_now != to || from == to) return;  // changed since the step, or nothing to draw between
+  const float drawn = to - (to - from) * back;
+  if (!std::isfinite(drawn) || drawn == to) return;
+  w.at = at;
+  w.game = game_now;
+  w.drawn = drawn;
+  g::WriteF32(base, at, drawn);
+}
+
+void PutBackDrawnStepValues(uint8_t* base) {
+  PutBackOneDrawn(base, g_drawn_aim);
+  PutBackOneDrawn(base, g_drawn_lean);
+}
+
+// Before the client game's view (CG_CalcViewValues): the aim and the lean between the last step's values. The gun,
+// the zoom (CG_GetViewFov) and the crosshair read them during the client game's frame; the game's values go back
+// after it (EndDrawnStepValues, from server_step.cpp) and before any game code runs (its PutBackDrawn).
+void BeginDrawnStepValues(uint8_t* base) {
+  PutBackDrawnStepValues(base);
+  if (!REXCVAR_GET(cod3_move_aim_smooth)) return;
+  const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+  const HzSteps* h = nullptr;
+  const float back = StepBack(base, client, &h);
+  if (back <= 0.0f || !h) return;
+  const uint32_t aim_at = h->ps + P.ps.binoculars_frac, lean_at = h->ps + kPsLean;
+  WriteOneDrawn(base, g_drawn_aim, aim_at, g::ReadF32(base, aim_at), h->vals_from.aim, h->vals_to.aim, back);
+  WriteOneDrawn(base, g_drawn_lean, lean_at, g::ReadF32(base, lean_at), h->vals_from.lean, h->vals_to.lean, back);
 }
 }  // namespace
 
+namespace cod3::movement {
+void EndDrawnStepValues(uint8_t* base) { PutBackDrawnStepValues(base); }
+}  // namespace cod3::movement
+
 REX_EXTERN(__imp__CG_CalcViewValues);
 REX_HOOK_RAW(CG_CalcViewValues) {
+  BeginDrawnStepValues(base);  // [claude-9b]
   __imp__CG_CalcViewValues(ctx, base);
   SmoothView(base);
+}
+
+// [claude-9b] 2026-10-27 0x824345D8: the bob's phase (cg +5804, from the bob cycle byte) and speed (cg +5808, from the
+// velocity), called by the view setup 0x824505E8 before the view and the gun use them. Both changed only in movement
+// steps; drawn between the last step's values as the camera is (StepBack), the phase held back by the part of the
+// step's advance not drawn yet.
+REX_EXTERN(__imp__sub_824345D8);
+REX_HOOK_RAW(sub_824345D8) {
+  __imp__sub_824345D8(ctx, base);
+  if (!REXCVAR_GET(cod3_move_bob_smooth)) return;
+  const uint32_t client = g::ReadU32(base, kActiveLocalClient);
+  const HzSteps* h = nullptr;
+  const float back = StepBack(base, client, &h);
+  if (back <= 0.0f || !h) return;
+  const uint32_t cg = kCgBase + client * kCgSize;
+  if ((g::ReadU32(base, h->ps + kPsBobCycle) & 0xFFu) == h->vals_to.bob && h->bob_delta > 0.0f) {
+    const float scale = g::ReadF32(base, kBobPhaseScale);
+    const float phase = g::ReadF32(base, cg + kCgBobPhase) - scale * h->bob_delta * back;
+    if (std::isfinite(phase)) g::WriteF32(base, cg + kCgBobPhase, phase);
+  }
+  // The speed only while the playerState's is still the step's (a vehicle, a script or a hit can change the velocity
+  // without moving the origin: claude-9b-think's check).
+  if (!(g::ReadU32(base, h->ps + P.ps.pm_flags) & kPmFlagsBobSpeedOwn) &&
+      std::fabs(ReadStepVals(base, h->ps).speed - h->vals_to.speed) < 1e-3f) {
+    const float speed = h->vals_to.speed - (h->vals_to.speed - h->vals_from.speed) * back;
+    if (std::isfinite(speed) && speed >= 0.0f) g::WriteF32(base, cg + kCgBobSpeed, speed);
+  }
 }
 
 // ===========================================================================

@@ -1,0 +1,96 @@
+[claude-9b-think] 2026-10-27 SDK patch 0130 (tested by claude-9b-test in the 2026-10-27 afternoon builds; released in setup
+tool 2.22.0). census::Active / SkipDrawing inlined: they run for every PM4 packet and draw; since 0123 they read a
+cached value, but as calls into gpu_census.cpp (no LTO) they still cost 0.7-0.9% of the GPU emulation thread with
+gpu_census and gpu_skip_drawing both off (claude-9b-test s138: saint_lo and mp_merv 4P, 88 us a frame in 4P); with
+0130 they are gone from the GPU emulation thread's profile.
+Base: rexglue-sdk with 0123-0126 (gpu_census.h 514165dd, gpu_census.cpp c6881dfd). Applies with -p1 in the SDK.
+No behavior change: the same settings, read again at each swap (RefreshSettings), the first read on first use.
+
+diff --git a/include/rex/graphics/gpu_census.h b/include/rex/graphics/gpu_census.h
+--- a/include/rex/graphics/gpu_census.h
++++ b/include/rex/graphics/gpu_census.h
+@@ -25,6 +25,7 @@
+  */
+ #pragma once
+ 
++#include <atomic>
+ #include <cstdint>
+ 
+ namespace rex::graphics {
+@@ -34,10 +35,28 @@
+ 
+ namespace rex::graphics::census {
+ 
++namespace detail {
++// [claude-9b-think] 0130: the two settings as last read (bit 0
++// gpu_census, bit 1 gpu_skip_drawing; kSettingsUnread before the first read),
++// defined in gpu_census.cpp. Active and SkipDrawing run for every packet and
++// draw: here they are a load and a test inlined at each call site, not a call
++// into gpu_census.cpp (0.7-0.9% of the GPU emulation thread with both
++// settings off in claude-9b-test's s138 profiles, 88 us a frame in 4-player
++// split screen).
++inline constexpr uint32_t kSettingsUnread = 0x80;
++extern std::atomic<uint32_t> g_settings;
++// Reads the two settings now and keeps them (only before the first swap).
++uint32_t ReadSettingsNow();
++inline uint32_t Settings() {
++  const uint32_t settings = g_settings.load(std::memory_order_relaxed);
++  return (settings & kSettingsUnread) ? ReadSettingsNow() : settings;
++}
++}  // namespace detail
++
+ // gpu_census or gpu_skip_drawing is on: the calls below count.
+-bool Active();
++inline bool Active() { return detail::Settings() != 0; }
+ // gpu_skip_drawing is on: the command processor issues no draws or resolves.
+-bool SkipDrawing();
++inline bool SkipDrawing() { return (detail::Settings() & 2u) != 0; }
+ // [claude-9b] Active and SkipDrawing answer from the two settings as last read
+ // (they run for every packet and draw); this reads them again. The command
+ // processor calls it at every swap, so a change applies from the next frame.
+diff --git a/src/graphics/gpu_census.cpp b/src/graphics/gpu_census.cpp
+--- a/src/graphics/gpu_census.cpp
++++ b/src/graphics/gpu_census.cpp
+@@ -468,29 +468,27 @@
+ // every packet and draw, and each REXCVAR_GET is a call into a function with a
+ // guarded static (0.9% of the GPU emulation thread in a 4-player split-screen
+ // profile); RefreshSettings reads them again at every swap.
+-constexpr uint32_t kSettingsUnread = 0x80;
+-std::atomic<uint32_t> g_settings{kSettingsUnread};
+-
++// [claude-9b-think] 0130: the stored settings are detail::g_settings
++// (gpu_census.h), so Active and SkipDrawing are inlined where they are called.
+ uint32_t ReadSettings() {
+   return (REXCVAR_GET(gpu_census) ? 1u : 0u) | (REXCVAR_GET(gpu_skip_drawing) ? 2u : 0u);
+ }
+ 
+-uint32_t Settings() {
+-  uint32_t settings = g_settings.load(std::memory_order_relaxed);
+-  if (settings & kSettingsUnread) {
+-    settings = ReadSettings();
+-    g_settings.store(settings, std::memory_order_relaxed);
+-  }
+-  return settings;
+-}
+-
+ }  // namespace
+ 
+-bool Active() { return Settings() != 0; }
++namespace detail {
++
++std::atomic<uint32_t> g_settings{kSettingsUnread};
++
++uint32_t ReadSettingsNow() {
++  const uint32_t settings = ReadSettings();
++  g_settings.store(settings, std::memory_order_relaxed);
++  return settings;
++}
+ 
+-bool SkipDrawing() { return (Settings() & 2u) != 0; }
++}  // namespace detail
+ 
+-void RefreshSettings() { g_settings.store(ReadSettings(), std::memory_order_relaxed); }
++void RefreshSettings() { detail::g_settings.store(ReadSettings(), std::memory_order_relaxed); }
+ 
+ void Type0(uint32_t registers) { S().total.registers += registers; }
+ 

@@ -1,0 +1,452 @@
+[claude-9b] Released in setup tool 2.23.0 (2026-10-28) with its default (off, today's behavior), tested by
+claude-9b-test in s157 (in every scene; on top of 0145's settings it showed no gain, so it stays off). The text below
+and the "UNTESTED" marks in the code comments are from the draft.
+[claude-9b-think] 2026-10-27 draft. SDK patch 0148: Vulkan shader translation off the GPU
+thread, as the D3D12 backend does. On top of 0145 v2 (0145-vulkan-async-pipelines-without-placeholder-v2). Owner
+19:31: "optimizting in-game performance and reducing/eliminating hitching is priority #1".
+
+Why: IssueDraw translates every new shader on the GPU thread while the draw waits (command_processor.cpp
+4116-4126 -> VulkanPipelineCache::EnsureShadersTranslated, pipeline_cache.cpp 1084-1123). In the owner's play
+today that was 1-5 shaders and 0.7-3.8 ms in the in-play slow frames, and 105-107 shaders, 62-73 ms, at each
+resolution-scale switch. With 0145 v2 (no placeholder, no wait at submission ends) translation is the last
+compile work a new shader puts on the GPU thread. The D3D12 backend already translates on its pipeline threads
+(d3d12/pipeline_cache.cpp 972-985, 1086-1104).
+
+What it does:
+  - vulkan_async_shader_translation (default false: as before). On (with async_shader_compilation): a
+    translation not made yet is handed to one "Vulkan Shader Translation" thread with its own
+    SpirvShaderTranslator (the same settings as the GPU thread's, CreateShaderTranslator), and the draw is
+    left out until it is in, the same way as a draw whose pipeline is still being made (0145): IssueDraw
+    marks the frame (frame_used_async_placeholder_pipeline_: not shown with
+    vulkan_async_skip_incomplete_frames) and counts the draw (draws_left_out_for_pipelines_), then returns.
+    The next draw with the shaders goes on to ConfigurePipeline, whose pipeline 0145 makes on the pipeline
+    threads: a new shader costs the GPU thread no compile work at all.
+  - One translation thread, so the translations of a shader are made one after another: the first fills the
+    shader's texture and sampler bindings (SpirvShaderTranslator::PostTranslation, once a shader), and any
+    translation seen as done has its shader's bindings complete.
+  - A translation's state is a new atomic in VulkanTranslation (0 nothing in flight, 1 queued or being
+    translated: only the translation thread touches it; 2 done, not yet seen by the GPU thread). The GPU
+    thread reads the translation only in states 0 and 2 (acquire), so there is no lock per draw: one atomic
+    load per shader per draw, and a lock only to queue.
+  - The binding layout UIDs (the pipeline cache's maps: GPU thread only) are split out of
+    TranslateAnalyzedShader into SetUpBindingLayoutUIDs, called there as before and by the GPU thread when it
+    first sees a translation the thread made (once per shader, EnterBindingLayoutUserUIDSetup).
+  - A translation in flight when the setting is turned off is still finished by the thread (its draws left
+    out until then), so no translation is made on two threads.
+  - The thread stops before the translations are destroyed (draw resolution scale change) and at shutdown;
+    queued translations go back to "nothing in flight" and are asked for again by the next draw. It starts
+    with the pipeline threads (Initialize, CreateDrawResolutionScaleDependentObjects).
+  - Counters in 0145's "Vulkan pipelines" line: "...; shaders: N handed to the translation thread, N
+    translated there (X ms); of the draws left out, N waited for a translation". The GPU thread's own
+    translations stay in the slow-frame line's "N shaders translated (X ms)" (gpu_stats), as before.
+Not changed: the ucode analysis (on the GPU thread, IssueDraw's AnalyzeShaderUcode, before a translation is
+asked for), the shader storage (stored shaders are translated at start as before), D3D12.
+Assumption to check at the build: VulkanTranslation::GetOrCreateShaderModule (its .cpp isn't in the build tree
+copy read here) only creates a VkShaderModule from the translation (thread-safe in Vulkan). A translation with
+no module is treated as failed (RequestShadersTranslated), whatever is_valid says.
+
+Test (s157, after 0145's runs; FINDINGS-HITCHES recipe: cache and driver cache cleared, verbose):
+  B: 0145's B (--vulkan_async_pipeline_placeholders=false --vulkan_async_wait_at_submission=false);
+  E2: B plus --vulkan_async_shader_translation=true;
+  F: E2 plus --vulkan_async_skip_incomplete_frames=false.
+  Expect in E2: slow-frame lines' "N shaders translated" 0 (the thread's count in the "Vulkan pipelines" line
+  instead), the GPU thread's frame time in first-visit scenes down by 0.7-4 ms per new shader burst, holds a
+  little longer (translation, then pipeline). A resolution-scale switch in F2 (1x -> 2x) is the big case
+  (107 shaders: 62-73 ms on the GPU thread today).
+
+Bases: the files after 0145 v2 (on rexglue-sdk as in COD3-rea-work/build: pipeline_cache.h 5b8859c7,
+pipeline_cache.cpp 0fb446ee, command_processor.cpp dd12339d), and include/rex/graphics/vulkan/shader.h
+f9eca8e6341aac010962dd5bc87614c1 (not in 0145). Line numbers are those after 0145 v2.
+
+--- a/include/rex/graphics/vulkan/shader.h
++++ b/include/rex/graphics/vulkan/shader.h
+@@ -28,6 +28,11 @@
+
+     VkShaderModule GetOrCreateShaderModule();
+     VkShaderModule shader_module() const { return shader_module_; }
++
++    // [claude-9b-think] 0148 (VulkanPipelineCache::RequestShadersTranslated): 0 nothing in flight, 1 queued
++    // or being translated on the translation thread (only that thread touches the translation then),
++    // 2 translated there and not yet seen by the GPU thread.
++    std::atomic<uint8_t> async_translation_state{0};
+
+    private:
+     VkShaderModule shader_module_ = VK_NULL_HANDLE;
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -110,6 +110,12 @@
+   // their pipelines were made; a line every vulkan_pipeline_stats_seconds with what the pipelines
+   // made since cost, and on which thread.
+   void NoteSwap(uint64_t draws_left_out, bool frame_had_draws_left_out, bool frame_not_shown);
++  // [claude-9b-think] 0148 UNTESTED: the draw's shaders translated (kReady); a translation being made
++  // on the translation thread (kPending: vulkan_async_shader_translation; the draw is left out, as
++  // for a pipeline being made); a translation that failed (kFailed). GPU thread.
++  enum class ShaderTranslationResult { kReady, kPending, kFailed };
++  ShaderTranslationResult RequestShadersTranslated(VulkanShader::VulkanTranslation* vertex_shader,
++                                                   VulkanShader::VulkanTranslation* pixel_shader);
+
+  private:
+   REXPACKEDSTRUCT(ShaderStoredHeader, {
+@@ -392,6 +398,13 @@
+   // [claude-9b-think] 0145: EnsurePipelineCreated on the GPU thread, timed and counted (NoteSwap).
+   bool EnsurePipelineCreatedOnGpuThread(const PipelineCreationArguments& creation_arguments,
+                                         VkShaderModule fragment_shader_override, bool placeholder);
++  // [claude-9b-think] 0148: a translator with the GPU thread's settings, the binding layout UIDs part
++  // of TranslateAnalyzedShader, and the translation thread.
++  std::unique_ptr<SpirvShaderTranslator> CreateShaderTranslator();
++  void SetUpBindingLayoutUIDs(VulkanShader& shader);
++  void StartTranslationThread();
++  void StopTranslationThread();
++  void TranslationThread();
+   void ProcessDeferredPipelineDestructions(bool force_all);
+
+   VulkanCommandProcessor& command_processor_;
+@@ -510,12 +523,28 @@
+     uint64_t frames_with_draws_left_out = 0;
+     uint64_t frames_not_shown = 0;
+     uint64_t longest_hold_micros = 0;  // the picture unchanged (frames not shown in a row)
++    uint64_t translations_queued = 0;        // 0148: handed to the translation thread
++    uint64_t draws_waiting_translation = 0;  // 0148: of draws_left_out, waiting for a translation
+   };
+   CreationCounts creation_counts_;
+   uint64_t creation_counts_log_time_us_ = 0;
+   uint64_t not_shown_since_us_ = 0;
+   std::atomic<uint64_t> thread_created_{0};
+   std::atomic<uint64_t> thread_created_micros_{0};
++
++  // [claude-9b-think] 0148 UNTESTED: shader translation off the GPU thread
++  // (vulkan_async_shader_translation): one thread with its own translator, so the translations of a
++  // shader are made one after another. A translation's state is
++  // VulkanTranslation::async_translation_state; translations_in_flight_ counts those in state 1.
++  std::mutex translation_lock_;
++  std::condition_variable translation_cond_;
++  std::deque<VulkanShader::VulkanTranslation*> translation_queue_;
++  bool translation_thread_shutdown_ = false;
++  std::unique_ptr<SpirvShaderTranslator> translation_thread_translator_;
++  std::unique_ptr<rex::thread::Thread> translation_thread_;
++  std::atomic<uint32_t> translations_in_flight_{0};
++  std::atomic<uint64_t> thread_translated_{0};
++  std::atomic<uint64_t> thread_translated_micros_{0};
+ };
+
+ }  // namespace rex::graphics::vulkan
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -92,6 +92,15 @@
+                      "pipeline threads, the draws left out meanwhile (0 = off; SDK patch 0145)")
+     .range(0, 3600)
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++// [claude-9b-think] 2026-10-27 0148 UNTESTED (owner 19:31: hitching is priority #1): shader translation
++// off the GPU thread, as the D3D12 backend does.
++REXCVAR_DEFINE_BOOL(vulkan_async_shader_translation, false, "GPU/Vulkan",
++                    "With async_shader_compilation: translate new shaders on a thread of their own "
++                    "instead of on the GPU thread while the draw waits; the draws that need one are "
++                    "left out until it is in, as for a pipeline being made (SDK patch 0148). Off: as "
++                    "before")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+ namespace rex::graphics::vulkan {
+
+@@ -345,6 +354,7 @@
+   }
+
+   StartCreationThreads();
++  StartTranslationThread();  // [claude-9b-think] 0148
+
+   return true;
+ }
+@@ -355,12 +365,8 @@
+   bool edram_fragment_shader_interlock =
+       render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock;
+
+-  shader_translator_ = std::make_unique<SpirvShaderTranslator>(
+-      SpirvShaderTranslator::Features(vulkan_device),
+-      render_target_cache_.msaa_2x_attachments_supported(),
+-      render_target_cache_.msaa_2x_no_attachments_supported(), edram_fragment_shader_interlock,
+-      render_target_cache_.draw_resolution_scale_x(),
+-      render_target_cache_.draw_resolution_scale_y());
++  // [claude-9b-think] 0148: the same settings as the translation thread's translator.
++  shader_translator_ = CreateShaderTranslator();
+
+   if (edram_fragment_shader_interlock) {
+     std::vector<uint8_t> depth_only_fragment_shader_code =
+@@ -900,6 +906,8 @@
+   // position and resolved texture coordinate scaling, fragment shader interlock
+   // EDRAM addressing) and thus into the pipelines, and neither is keyed by the
+   // scale, so all of them are destroyed and recreated on demand.
++  // [claude-9b-think] 0148: the translation thread first: the translations are destroyed below.
++  StopTranslationThread();
+   StopCreationThreads();
+   DestroyAllPipelines();
+
+@@ -936,12 +944,14 @@
+   if (!CreateTranslatorAndInternalShaders()) {
+     return false;
+   }
+   StartCreationThreads();
++  StartTranslationThread();  // [claude-9b-think] 0148
+   return true;
+ }
+
+ void VulkanPipelineCache::Shutdown() {
+   StopCreationThreads();
++  StopTranslationThread();  // [claude-9b-think] 0148
+
+   ShutdownShaderStorage();
+
+@@ -1167,6 +1177,160 @@
+   }
+   return true;
+ }
++
++// [claude-9b-think] 0148 UNTESTED: shader translation off the GPU thread. The states of
++// VulkanTranslation::async_translation_state.
++namespace {
++constexpr uint8_t kTranslationIdle = 0;
++constexpr uint8_t kTranslationInFlight = 1;
++constexpr uint8_t kTranslationDone = 2;
++}  // namespace
++
++VulkanPipelineCache::ShaderTranslationResult VulkanPipelineCache::RequestShadersTranslated(
++    VulkanShader::VulkanTranslation* vertex_shader, VulkanShader::VulkanTranslation* pixel_shader) {
++  const bool async = REXCVAR_GET(vulkan_async_shader_translation) &&
++                     REXCVAR_GET(async_shader_compilation) && translation_thread_ != nullptr;
++  bool in_flight = false;
++  bool queued = false;
++  bool untranslated = false;
++  for (VulkanShader::VulkanTranslation* translation : {vertex_shader, pixel_shader}) {
++    if (!translation) {
++      continue;
++    }
++    uint8_t state = translation->async_translation_state.load(std::memory_order_acquire);
++    if (state == kTranslationDone) {
++      // Made on the translation thread (its writes seen through the acquire load): the shader's
++      // binding layout UIDs are this thread's to set up, once per shader.
++      if (translation->is_valid() && translation->shader_module() != VK_NULL_HANDLE) {
++        SetUpBindingLayoutUIDs(static_cast<VulkanShader&>(translation->shader()));
++      }
++      translation->async_translation_state.store(kTranslationIdle, std::memory_order_relaxed);
++      state = kTranslationIdle;
++    }
++    if (state == kTranslationInFlight) {
++      // Also when the setting was turned off since: the translation thread finishes it.
++      in_flight = true;
++      continue;
++    }
++    if (translation->is_translated()) {
++      continue;
++    }
++    if (!async) {
++      untranslated = true;
++      continue;
++    }
++    translation->async_translation_state.store(kTranslationInFlight, std::memory_order_relaxed);
++    translations_in_flight_.fetch_add(1, std::memory_order_relaxed);
++    {
++      std::lock_guard<std::mutex> lock(translation_lock_);
++      translation_queue_.push_back(translation);
++    }
++    queued = true;
++    in_flight = true;
++    ++creation_counts_.translations_queued;
++  }
++  if (queued) {
++    translation_cond_.notify_one();
++  }
++  // Off, with translations of other shaders still on the translation thread (just turned off): this
++  // one waits too, so no translation is made here while one may be filling a shader's bindings there.
++  if (untranslated && translations_in_flight_.load(std::memory_order_acquire) != 0) {
++    in_flight = true;
++  }
++  if (in_flight) {
++    ++creation_counts_.draws_waiting_translation;
++    return ShaderTranslationResult::kPending;
++  }
++  if (!async) {
++    // As before: translated here if needed, the draw waiting; the same checks as before.
++    return EnsureShadersTranslated(vertex_shader, pixel_shader) ? ShaderTranslationResult::kReady
++                                                                : ShaderTranslationResult::kFailed;
++  }
++  for (VulkanShader::VulkanTranslation* translation : {vertex_shader, pixel_shader}) {
++    if (translation &&
++        (!translation->is_valid() || translation->shader_module() == VK_NULL_HANDLE)) {
++      return ShaderTranslationResult::kFailed;
++    }
++  }
++  return ShaderTranslationResult::kReady;
++}
++
++std::unique_ptr<SpirvShaderTranslator> VulkanPipelineCache::CreateShaderTranslator() {
++  return std::make_unique<SpirvShaderTranslator>(
++      SpirvShaderTranslator::Features(command_processor_.GetVulkanDevice()),
++      render_target_cache_.msaa_2x_attachments_supported(),
++      render_target_cache_.msaa_2x_no_attachments_supported(),
++      render_target_cache_.GetPath() == RenderTargetCache::Path::kPixelShaderInterlock,
++      render_target_cache_.draw_resolution_scale_x(),
++      render_target_cache_.draw_resolution_scale_y());
++}
++
++void VulkanPipelineCache::StartTranslationThread() {
++  translation_thread_translator_ = CreateShaderTranslator();
++  {
++    std::lock_guard<std::mutex> lock(translation_lock_);
++    translation_thread_shutdown_ = false;
++  }
++  translation_thread_ = rex::thread::Thread::Create({}, [this]() { TranslationThread(); });
++  if (translation_thread_) {
++    translation_thread_->set_name("Vulkan Shader Translation");
++  }
++}
++
++void VulkanPipelineCache::StopTranslationThread() {
++  if (translation_thread_) {
++    {
++      std::lock_guard<std::mutex> lock(translation_lock_);
++      translation_thread_shutdown_ = true;
++    }
++    translation_cond_.notify_all();
++    rex::thread::Wait(translation_thread_.get(), false);
++    translation_thread_.reset();
++  }
++  // Queued and not translated: nothing in flight any more; the next draw asks for them again.
++  std::lock_guard<std::mutex> lock(translation_lock_);
++  for (VulkanShader::VulkanTranslation* translation : translation_queue_) {
++    translation->async_translation_state.store(kTranslationIdle, std::memory_order_relaxed);
++    translations_in_flight_.fetch_sub(1, std::memory_order_relaxed);
++  }
++  translation_queue_.clear();
++  translation_thread_translator_.reset();
++}
++
++void VulkanPipelineCache::TranslationThread() {
++  while (true) {
++    VulkanShader::VulkanTranslation* translation = nullptr;
++    {
++      std::unique_lock<std::mutex> lock(translation_lock_);
++      translation_cond_.wait(
++          lock, [this] { return translation_thread_shutdown_ || !translation_queue_.empty(); });
++      if (translation_thread_shutdown_) {
++        return;
++      }
++      translation = translation_queue_.front();
++      translation_queue_.pop_front();
++    }
++    // The ucode was analyzed on the GPU thread (IssueDraw's AnalyzeShaderUcode) before the
++    // translation was asked for. This thread's own translator; the binding layout UIDs are the GPU
++    // thread's (RequestShadersTranslated, when it sees this one done).
++    const auto start = std::chrono::steady_clock::now();
++    if (!translation_thread_translator_->TranslateAnalyzedShader(*translation)) {
++      REXGPU_ERROR("Shader {:016X} translation failed (translation thread); marking as ignored",
++                   translation->shader().ucode_data_hash());
++    } else {
++      // VK_NULL_HANDLE: seen as a failure by RequestShadersTranslated.
++      translation->GetOrCreateShaderModule();
++    }
++    thread_translated_.fetch_add(1, std::memory_order_relaxed);
++    thread_translated_micros_.fetch_add(
++        uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++                     std::chrono::steady_clock::now() - start)
++                     .count()),
++        std::memory_order_relaxed);
++    translations_in_flight_.fetch_sub(1, std::memory_order_relaxed);
++    translation->async_translation_state.store(kTranslationDone, std::memory_order_release);
++  }
++}
+
+ bool VulkanPipelineCache::ConfigurePipeline(
+     VulkanShader::VulkanTranslation* vertex_shader, VulkanShader::VulkanTranslation* pixel_shader,
+@@ -1426,32 +1590,39 @@
+     counts = CreationCounts();
+     thread_created_.store(0, std::memory_order_relaxed);
+     thread_created_micros_.store(0, std::memory_order_relaxed);
++    thread_translated_.store(0, std::memory_order_relaxed);  // [claude-9b-think] 0148
++    thread_translated_micros_.store(0, std::memory_order_relaxed);
+     creation_counts_log_time_us_ = seconds > 0 ? now_us : 0;
+     return;
+   }
+   if (now_us - creation_counts_log_time_us_ < uint64_t(seconds) * 1000000) {
+     return;
+   }
+   const uint64_t thread_made = thread_created_.exchange(0, std::memory_order_relaxed);
+   const uint64_t thread_micros = thread_created_micros_.exchange(0, std::memory_order_relaxed);
+-  if (counts.gpu_thread || counts.queued || thread_made || counts.draws_left_out ||
+-      counts.frames_not_shown) {
++  // [claude-9b-think] 0148: the translation thread's.
++  const uint64_t translated = thread_translated_.exchange(0, std::memory_order_relaxed);
++  const uint64_t translate_micros = thread_translated_micros_.exchange(0, std::memory_order_relaxed);
++  if (counts.gpu_thread || counts.queued || thread_made || counts.draws_left_out ||
++      counts.frames_not_shown || translated || counts.translations_queued) {
+     REXGPU_INFO(
+         "Vulkan pipelines over {:.1f} s ({} frames): {} made on the GPU thread while the frame "
+         "waited ({} of them placeholders, {} at submission ends; {:.1f} ms, the longest {:.1f} ms); "
+         "submission ends {:.1f} ms making and waiting for pipelines, the longest {:.1f} ms; {} "
+         "handed to the pipeline threads ({} without a placeholder), {} made there ({:.1f} ms); {} "
+         "draws left out while their pipeline was made, in {} frames; {} frames not shown, the "
+-        "longest hold {:.1f} ms",
++        "longest hold {:.1f} ms; shaders: {} handed to the translation thread, {} translated there "
++        "({:.1f} ms); of the draws left out, {} waited for a translation",
+         double(now_us - creation_counts_log_time_us_) / 1e6, counts.frames, counts.gpu_thread,
+         counts.gpu_thread_placeholders, counts.at_submission,
+         double(counts.gpu_thread_micros) / 1000.0,
+         double(counts.gpu_thread_longest_micros) / 1000.0,
+         double(counts.submission_stall_micros) / 1000.0,
+         double(counts.submission_stall_longest_micros) / 1000.0, counts.queued,
+         counts.queued_without_placeholder, thread_made, double(thread_micros) / 1000.0,
+         counts.draws_left_out, counts.frames_with_draws_left_out, counts.frames_not_shown,
+-        double(counts.longest_hold_micros) / 1000.0);
++        double(counts.longest_hold_micros) / 1000.0, counts.translations_queued, translated,
++        double(translate_micros) / 1000.0, counts.draws_waiting_translation);
+   }
+   counts = CreationCounts();
+   creation_counts_log_time_us_ = now_us;
+@@ -1496,6 +1667,15 @@
+   // TODO(Triang3l): Log that the shader has been successfully translated in
+   // common code.
+
++  SetUpBindingLayoutUIDs(shader);
++  return true;
++}
++
++// [claude-9b-think] 0148: the shader's binding layout UIDs (the pipeline cache's maps: the GPU
++// thread), split out of TranslateAnalyzedShader: right after a translation made there, or when the
++// GPU thread first sees one the translation thread made (RequestShadersTranslated). Once per shader
++// (EnterBindingLayoutUserUIDSetup).
++void VulkanPipelineCache::SetUpBindingLayoutUIDs(VulkanShader& shader) {
+   // Set up the texture binding layout.
+   if (shader.EnterBindingLayoutUserUIDSetup()) {
+     // Obtain the unique IDs of the binding layout if there are any texture
+@@ -1544,8 +1724,6 @@
+                   "UID is their count");
+     shader.SetSamplerBindingLayoutUserUID(shader.GetSamplerBindingsAfterTranslation().size());
+   }
+-
+-  return true;
+ }
+
+ void VulkanPipelineCache::WritePipelineRenderTargetDescription(
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4125,9 +4125,20 @@
+         pixel_shader ? static_cast<VulkanShader::VulkanTranslation*>(
+                            pixel_shader->GetOrCreateTranslation(pixel_shader_modification.value))
+                      : nullptr;
+-    if (!pipeline_cache_->EnsureShadersTranslated(vertex_shader_translation,
+-                                                  pixel_shader_translation)) {
++    // [claude-9b-think] 0148 UNTESTED: with vulkan_async_shader_translation, a translation not made
++    // yet goes to the translation thread and the draw is left out until it is in, the same way as a
++    // draw whose pipeline is still being made (0145): the frame is marked (not shown with
++    // vulkan_async_skip_incomplete_frames) and the draw counted.
++    const VulkanPipelineCache::ShaderTranslationResult translation_result =
++        pipeline_cache_->RequestShadersTranslated(vertex_shader_translation,
++                                                  pixel_shader_translation);
++    if (translation_result == VulkanPipelineCache::ShaderTranslationResult::kPending) {
++      frame_used_async_placeholder_pipeline_ = true;
++      ++draws_left_out_for_pipelines_;
++      return true;
++    }
++    if (translation_result != VulkanPipelineCache::ShaderTranslationResult::kReady) {
+       return draw_fail("shader_translation");
+     }
+
+     // Obtain the samplers. Note that the bindings don't depend on the shader

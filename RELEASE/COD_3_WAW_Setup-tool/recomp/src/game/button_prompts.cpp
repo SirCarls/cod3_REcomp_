@@ -81,6 +81,13 @@ REXCVAR_DEFINE_STRING(cod3_glyph_style, "auto", "cod3/Interface",
 REXCVAR_DEFINE_BOOL(cod3_key_caps, true, "cod3/Interface",
                     "Draw the keys in the game's prompts as key caps, like the \"SPACE Skip\" "
                     "prompt's (else the key's name in brackets, [R])");
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 10:27: the key caps fade out a little after their text; stick words and
+// pictures still show with the keyboard and mouse): what the key caps and the stick words do, for a test run.
+REXCVAR_DEFINE_BOOL(cod3_debug_key_caps, false, "cod3",
+                    "Log the key caps' lines as the game draws them (their text's and keys' opacity, the game "
+                    "frame) and as the overlay shows them, and the prompts that still name a stick or show a "
+                    "button picture while keys are shown")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -120,6 +127,10 @@ enum class Device : uint8_t { kKeyboard, kPad };
 std::atomic<Device> g_device{Device::kKeyboard};
 std::atomic<uint32_t> g_kbm_presses{0};
 std::atomic<int64_t> g_kbm_time{0};
+// [claude-9b-think] 2026-10-27 UNTESTED the last mouse motion of any size: with mouse aim through the pad (mnk_mouse)
+// the mouse moves the right stick, and a short flick could take it past the controller test's 16000 before the 24
+// pixels that count as a mouse use (the prompts then showed the controller's pictures with the keyboard and mouse).
+std::atomic<int64_t> g_mouse_move_time{0};
 std::atomic<bool> g_mnk_mode{false};   // the SDK's mnk_mode setting
 std::atomic<bool> g_mouse_aim{false};  // cod3_raw_mouse or mnk_mouse
 std::atomic<uint32_t> g_bind_gen{0};   // + 1 whenever a setting the prompts show changes
@@ -162,6 +173,7 @@ class KeyboardWatch final : public rex::ui::WindowInputListener {
     if (have_last_) cod3::qte::AddPointerMotion(float(e.x() - last_x_), float(e.y() - last_y_));
     last_x_ = e.x(), last_y_ = e.y(), have_last_ = true;
     const int64_t now = NowMs();
+    if (step > 0.0f) g_mouse_move_time.store(now, std::memory_order_relaxed);  // [claude-9b-think]
     if (now - moved_since_ > 500) moved_ = 0.0f, moved_since_ = now;
     moved_ += step;
     if (moved_ >= 24.0f) {
@@ -244,7 +256,10 @@ void WatchPadValues(uint16_t buttons, const uint8_t triggers[2], const int16_t a
   bool pad = (buttons & ~last_buttons) != 0;
   for (int i = 0; i < 2; ++i) pad |= triggers[i] > 30 && last_triggers[i] <= 30;
   // Sticks only from well off center (no drift).
-  for (int i = 0; i < 4; ++i) pad |= std::abs(axes[i]) > 16000 && std::abs(last_axes[i]) <= 16000;
+  for (int i = 0; i < 2; ++i) pad |= std::abs(axes[i]) > 16000 && std::abs(last_axes[i]) <= 16000;
+  // [claude-9b-think] the right stick not while the mouse moves (mouse aim through the pad moves it).
+  const bool mouse_moving = now - g_mouse_move_time.load(std::memory_order_relaxed) < 250;
+  for (int i = 2; i < 4; ++i) pad |= !mouse_moving && std::abs(axes[i]) > 16000 && std::abs(last_axes[i]) <= 16000;
   last_buttons = buttons;
   for (int i = 0; i < 2; ++i) last_triggers[i] = triggers[i];
   for (int i = 0; i < 4; ++i) last_axes[i] = axes[i];
@@ -642,9 +657,26 @@ Mode LayoutMode(uint8_t* base) { return t_set_depth ? t_set_mode : Wanted(base, 
 struct DrawnCaps {
   int64_t ms = 0;  // when the line was drawn
   std::vector<cod3::prompts::KeyCap> caps;
+  // [claude-9b-think] 2026-10-27 UNTESTED the game frame (pc_menu::kFrameCount) it was drawn in, and how many game
+  // frames since its draw before (its cadence: 1 when drawn every frame).
+  uint32_t frame = 0;
+  uint32_t cadence = 1;
 };
 std::mutex g_cap_mutex;
 std::unordered_map<uint32_t, DrawnCaps> g_caps;  // by line
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 10:27: "keycap glyphs aren't fading out in time with their objectives
+// at the same time, It's a little delayed"). A cap stayed on screen for 50 ms of the clock after its line's last draw
+// (CurrentKeyCaps(50)): ten frames at 200 fps at the line's last opacity, and as long for a line laid out again at
+// another address (its old entry stayed beside the new one, the older and more opaque cap on top during a fade). Now
+// a cap shows only while its line was drawn in the game's newest frame or within its own cadence of it.
+std::atomic<uint32_t> g_cap_latest_frame{0};  // the newest game frame a line was drawn in (or the pads read)
+void NoteGameFrame(uint8_t* base) {
+  const uint32_t frame = ReadU32(base, cod3::addr::pc_menu::kFrameCount);
+  uint32_t seen = g_cap_latest_frame.load(std::memory_order_relaxed);
+  while (int32_t(frame - seen) > 0 &&
+         !g_cap_latest_frame.compare_exchange_weak(seen, frame, std::memory_order_relaxed)) {
+  }
+}
 
 // The key names of a line laid out with keys, as the line draw places them:
 // segment 2k is button k (from its x offset to the next segment's), the line
@@ -658,6 +690,8 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, flo
   const uint32_t string = ReadU32(base, line + pm::kLineString);
   DrawnCaps drawn;
   drawn.ms = NowMs();
+  drawn.frame = ReadU32(base, pm::kFrameCount);  // [claude-9b-think]
+  NoteGameFrame(base);
   if (n > 0 && n <= 64 && Valid(segments) && Valid(string)) {
     const std::string text = ReadString(base, string + bp::kStringChars, 512);
     const float x = cod3::guest::ReadF32(base, line + pm::kLineX);
@@ -686,6 +720,20 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, flo
   if (g_caps.size() > 512) {  // lines that went away: forget the old ones
     const int64_t now = drawn.ms;
     std::erase_if(g_caps, [now](const auto& kv) { return now - kv.second.ms > 1000; });
+  }
+  // [claude-9b-think] the line's cadence: game frames since its last draw (1 to 8; a line not drawn for longer starts
+  // again at 1).
+  if (auto it = g_caps.find(line); it != g_caps.end()) {
+    const uint32_t since = drawn.frame - it->second.frame;
+    drawn.cadence = since >= 1 && since <= 8 ? since : 1;
+  }
+  if (REXCVAR_GET(cod3_debug_key_caps)) {
+    static int64_t window = 0;
+    static int lines = 0;
+    if (drawn.ms - window >= 1000) window = drawn.ms, lines = 0;
+    if (lines++ < 30)
+      REXLOG_INFO("cod3: key caps: line {:08X} drawn in game frame {} (every {}), {} caps at opacity {:.3f}", line,
+                  drawn.frame, drawn.cadence, drawn.caps.size(), alpha);
   }
   g_caps[line] = std::move(drawn);
 }
@@ -868,6 +916,104 @@ std::string ViewSwitchKeys(PPCContext& ctx, uint8_t* base, std::string text) {
   text.replace(at, words, press + " " + KeyToken(key));
   return text;
 }
+
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 10:27: "glyphs or hints with right stick or left stick either words or
+// icon are still showing when using keyboard and mouse"). The stick words that come straight from the string tables
+// and not from an "[ACTION]" (button-prompts/NOTES.md, "Stick words that are not [ACTION]s": the battle actions'
+// "Rotate right thumbstick clockwise.", the machine gun mount's "Click and hold the left thumbstick to setup your
+// weapon", "Rotate Left Thumbstick for Yaw", vehicle hints) are words of the text, like the view switch hint above.
+// With keys, English only (other languages keep the game's words, as the stick actions do): a stick's click is the
+// key of its button with the game's own "Press" ("Press and hold [B]"), the left stick the movement keys ([WASD]),
+// the right stick the mouse (with mouse aim; else its keys). The longest wording first; matched without case.
+struct StickPhrase {
+  const char* words;
+  int stick;   // 1 left, 2 right; [claude-9b] 3 both, the right named first; 4 both, the left first
+  int click;   // 0 the stick itself, 1 its click, 2 its click held
+};
+constexpr StickPhrase kStickPhrases[] = {
+    // [claude-9b] 2026-10-27 (claude-9b-test: saint_lo's "Use the right and left sticks to move and look around."
+    // kept its wording): both sticks in one phrase, plural.
+    {"the right and left thumbsticks", 3, 0},      {"the left and right thumbsticks", 4, 0},
+    {"right and left thumbsticks", 3, 0},          {"left and right thumbsticks", 4, 0},
+    {"the right and left sticks", 3, 0},           {"the left and right sticks", 4, 0},
+    {"right and left sticks", 3, 0},               {"left and right sticks", 4, 0},
+    {"both thumbsticks", 4, 0},                    {"both sticks", 4, 0},
+    {"click and hold the left thumbstick", 1, 2},  {"click and hold the right thumbstick", 2, 2},
+    {"click and hold the left stick", 1, 2},       {"click and hold the right stick", 2, 2},
+    {"press and hold the left thumbstick", 1, 2},  {"press and hold the right thumbstick", 2, 2},
+    {"click the left thumbstick", 1, 1},           {"click the right thumbstick", 2, 1},
+    {"click the left stick", 1, 1},                {"click the right stick", 2, 1},
+    {"press the left analog stick", 1, 1},         {"press the right analog stick", 2, 1},
+    {"press the left thumbstick", 1, 1},           {"press the right thumbstick", 2, 1},
+    {"press l3 button", 1, 1},                     {"press r3 button", 2, 1},
+    {"the left thumbstick", 1, 0},                 {"the right thumbstick", 2, 0},
+    {"the left analog stick", 1, 0},               {"the right analog stick", 2, 0},
+    {"the left stick", 1, 0},                      {"the right stick", 2, 0},
+    {"left thumbstick", 1, 0},                     {"right thumbstick", 2, 0},
+    {"left analog stick", 1, 0},                   {"right analog stick", 2, 0},
+    {"left stick", 1, 0},                          {"right stick", 2, 0},
+};
+size_t FindNoCase(const std::string& text, std::string_view words, size_t from) {
+  for (size_t at = from; at + words.size() <= text.size(); ++at) {
+    bool same = true;
+    for (size_t i = 0; same && i < words.size(); ++i)
+      same = std::tolower(uint8_t(text[at + i])) == std::tolower(uint8_t(words[i]));
+    // Whole words only.
+    if (same && (at == 0 || !std::isalpha(uint8_t(text[at - 1]))) &&
+        (at + words.size() == text.size() || !std::isalpha(uint8_t(text[at + words.size()]))))
+      return at;
+  }
+  return std::string::npos;
+}
+bool HasStickWords(const std::string& text) {
+  for (const auto& p : kStickPhrases)
+    if (FindNoCase(text, p.words, 0) != std::string::npos) return true;
+  // [claude-9b] Any other wording that names a stick, so cod3_debug_key_caps lists what the table misses.
+  for (const char* word : {"stick", "sticks", "thumbstick", "thumbsticks"})
+    if (FindNoCase(text, word, 0) != std::string::npos) return true;
+  return false;
+}
+std::string StickPhraseKeys(PPCContext& ctx, uint8_t* base, std::string text) {
+  if (ReadU32(base, bp::kLanguageMode) != 0) return text;
+  const bool mouse = g_mouse_aim.load(std::memory_order_relaxed);
+  for (const auto& p : kStickPhrases) {
+    const std::string_view words = p.words;
+    for (size_t at = FindNoCase(text, words, 0); at != std::string::npos;
+         at = FindNoCase(text, words, at + 1)) {
+      std::string with;
+      if (p.click) {
+        // The stick's button: the port's own action on it first (the left click is +binoculars: [B]), else its keybind.
+        std::string key = cod3::binds::KeyNameForPadKey(base, p.stick == 1 ? 220 : 219);
+        if (key.empty()) key = BindKey(p.stick == 1 ? 10 : 11);
+        if (key.empty()) continue;
+        std::string verb = GameText(ctx, base, p.click == 2 ? "INGAME_PRESS_AND_HOLD" : "INGAME_PRESS");
+        if (verb.empty()) verb = p.click == 2 ? "Press and hold" : "Press";
+        if (std::islower(uint8_t(text[at])) && !verb.empty()) verb[0] = char(std::tolower(uint8_t(verb[0])));
+        with = verb + " " + KeyToken(key);
+      } else if (p.stick >= 3) {  // [claude-9b] both sticks: "the mouse and [WASD]" / "[WASD] and the mouse"
+        const std::string move = FourKeys(kBindMoveUp);
+        const std::string look_keys = FourKeys(kBindLookUp);
+        const std::string look = mouse ? "the mouse" : look_keys.empty() ? "" : KeyToken(look_keys);
+        if (move.empty() || look.empty()) continue;
+        with = p.stick == 3 ? look + " and " + KeyToken(move) : KeyToken(move) + " and " + look;
+        if (at == 0 && std::islower(uint8_t(with[0]))) with[0] = char(std::toupper(uint8_t(with[0])));
+      } else if (p.stick == 1) {
+        const std::string keys = FourKeys(kBindMoveUp);
+        if (keys.empty()) continue;
+        with = KeyToken(keys);
+      } else if (mouse) {
+        with = at == 0 ? "The mouse" : "the mouse";  // "Rotate Right Thumbstick for Yaw" -> "Rotate the mouse for Yaw"
+      } else {
+        const std::string keys = FourKeys(kBindLookUp);
+        if (keys.empty()) continue;
+        with = KeyToken(keys);
+      }
+      text.replace(at, words.size(), with);
+      at += with.size() > 0 ? with.size() - 1 : 0;
+    }
+  }
+  return text;
+}
 #endif
 
 #if !defined(COD3_MP)
@@ -1010,9 +1156,31 @@ void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger,
 std::vector<KeyCap> CurrentKeyCaps(int max_age_ms) {
   std::vector<KeyCap> out;
   const int64_t now = NowMs();
+  // [claude-9b-think] 2026-10-27 UNTESTED also only lines drawn in the game's newest frame, or within their own
+  // cadence of it (g_cap_latest_frame): a line the game stopped drawing loses its caps with the game's next frame.
+  const uint32_t latest = g_cap_latest_frame.load(std::memory_order_relaxed);
+  size_t lines = 0, stale = 0;
+  int64_t oldest_ms = 0;
   std::lock_guard lock(g_cap_mutex);
-  for (const auto& [line, drawn] : g_caps)
-    if (now - drawn.ms <= max_age_ms) out.insert(out.end(), drawn.caps.begin(), drawn.caps.end());
+  for (const auto& [line, drawn] : g_caps) {
+    if (now - drawn.ms > max_age_ms) continue;
+    if (int32_t(latest - drawn.frame) > int32_t(drawn.cadence)) {
+      ++stale;
+      continue;
+    }
+    ++lines;
+    oldest_ms = std::max(oldest_ms, now - drawn.ms);
+    out.insert(out.end(), drawn.caps.begin(), drawn.caps.end());
+  }
+  if (REXCVAR_GET(cod3_debug_key_caps) && (lines || stale)) {
+    static int64_t last = 0;
+    if (now - last >= 250) {
+      last = now;
+      REXLOG_INFO("cod3: key caps: overlay shows {} lines ({} caps), the oldest drawn {} ms ago; {} lines left out "
+                  "(not drawn in the game's newest frame {})",
+                  lines, out.size(), oldest_ms, stale, latest);
+    }
+  }
   return out;
 }
 
@@ -1028,6 +1196,7 @@ REX_HOOK_RAW(sub_82344F98) {
   const uint32_t user = ctx.r3.u32;
   const uint32_t state = ctx.r4.u32;
   __imp__sub_82344F98(ctx, base);
+  if (user == 0) NoteGameFrame(base);  // [claude-9b-think] the key caps' newest game frame, also with no line drawn
   if (user == 0 && ctx.r3.u32 == 0 && Valid(state)) WatchPad(base, state);
   // [rumble] The first controller doesn't vibrate while the keyboard and
   // mouse are in use (after WatchPad, which tells them apart; game/rumble.h).
@@ -1059,6 +1228,14 @@ REX_HOOK_RAW(sub_824C68E0) {
   }
   if (ctx.r3.u32 == 0 || !Valid(out)) return;  // not a button token
   ++t_tokens;
+  // [claude-9b-think] 2026-10-27 UNTESTED a button picture laid out while keys are wanted (a line in the button font
+  // itself, or a layout these hooks don't see): the text, for the owner's "icon" (cod3_debug_key_caps).
+  if (!t_names && REXCVAR_GET(cod3_debug_key_caps) && IsKeys(LayoutMode(base))) {
+    static std::unordered_map<std::string, int> logged;
+    const std::string token = ReadString(base, text, 48);
+    if (logged.size() < 200 && logged[token]++ == 0)
+      REXLOG_INFO("cod3: prompts: a button picture kept with keys: \"{}\" (not laid out by the line layout hook)", token);
+  }
   if (!t_names) return;
   const uint32_t glyph = ReadU32(base, out);
   if (!Valid(glyph)) return;
@@ -1117,6 +1294,7 @@ REX_EXTERN(__imp__sub_824D7D88);
 REX_HOOK_RAW(sub_824D7D88) {
   const uint32_t line = ctx.r3.u32;
   cod3::pcmenu::NoteLineDrawn(base, line, ctx.f3.f64);  // footer prompts can be clicked (pc_menu.h)
+  NoteGameFrame(base);  // [claude-9b-think] any line drawn: the key caps' newest game frame
   bool names;
   Mode mode = Mode::kXbox;
   {
@@ -1183,8 +1361,20 @@ REX_HOOK_RAW(sub_824DE290) {
   // a button), so a later switch lays it out again.
   size_t words = 0;
   if (FindViewSwitch(text, &words) != std::string::npos) ++t_tokens;
-  if (!IsKeys(LayoutMode(base))) return;
-  const std::string out = ViewSwitchKeys(ctx, base, KeyVerbs(ctx, base, text));
+  // [claude-9b-think] 2026-10-27 UNTESTED a text with stick words too (StickPhraseKeys).
+  const bool stick_words = HasStickWords(text);
+  if (stick_words) ++t_tokens;
+  const Mode mode = LayoutMode(base);
+  if (!IsKeys(mode)) return;
+  std::string out = ViewSwitchKeys(ctx, base, KeyVerbs(ctx, base, text));
+  // In play only: the menus' own pages name the controller's sticks (the controls layout).
+  if (stick_words && mode == Mode::kPlayKeys) out = StickPhraseKeys(ctx, base, out);
+  if (REXCVAR_GET(cod3_debug_key_caps) && HasStickWords(out)) {
+    static std::unordered_map<std::string, int> logged;
+    if (logged.size() < 200 && logged[out]++ == 0)
+      REXLOG_INFO("cod3: prompts: stick words left with keys ({}): \"{}\"", mode == Mode::kPlayKeys ? "play" : "menu",
+                  out);
+  }
   if (out != text && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
 }
 #else

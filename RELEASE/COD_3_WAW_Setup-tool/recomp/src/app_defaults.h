@@ -56,6 +56,22 @@ inline constexpr AppDefault kVideoDefaults[] = {
     // copied and uploaded again each frame (10-17 MB a frame); CPU writes are
     // still caught by the write watch either way. Xenia's default is off.
     {"clear_memory_page_state", "false"},
+    // [claude-9b] New shaders without freezes (SDK patch 0145): new pipelines
+    // are built on the pipeline threads only, with no stand-in built first and
+    // no wait for them at each submission; an object that needs one appears a
+    // frame or a few later. Frame captures, empty shader cache, 3 minutes each
+    // (frames over 33 / 50 / 100 ms after the load, before -> after): forest
+    // 25/17/10 -> 4/3/3, nightd 19/17/13 -> 3/3/3, saint_lo 19/17/11 -> 6/4/2,
+    // crssrds 36/29/17 -> 6/4/3, mp_merv 4 players 25/15/10 -> 11/3/2; pipelines
+    // made on the GPU emulation thread -> 0. A build without 0145 skips these
+    // (SetDefault only sets settings that exist).
+    {"vulkan_async_pipeline_placeholders", "false"},
+    {"vulkan_async_wait_at_submission", "false"},
+    {"vulkan_async_depth_only_pipelines", "true"},
+    // The SDK's own: a frame with a draw still waiting for its pipeline is
+    // shown (the object a frame late) instead of held, since a held frame is
+    // itself a freeze (up to 2.9 s at a level start before; none after).
+    {"vulkan_async_skip_incomplete_frames", "false"},
 };
 
 // The value from the tables above, or nullptr.

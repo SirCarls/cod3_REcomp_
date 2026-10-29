@@ -37,6 +37,19 @@ REXCVAR_DEFINE_BOOL(cod3_mouse_game_sensitivity, false, "cod3/Mouse",
                     "Also scale the mouse by the game's Horizontal / Vertical sensitivity rows "
                     "(the controller's). Off: the mouse uses only its own sensitivity");
 
+// [claude-9b-think] 2026-10-29 UNTESTED (owner 11:35: "the way you turn with kbm now has some judder"; his settings:
+// no frame rate limit, 585 fps in the log, a 240 Hz display, tearing allowed). The window thread hands the mouse's
+// motion over in batches, as often as it runs its event loop. Every count was applied at the next usercmd, so above
+// that rate some game frames turned by nothing and the next by a whole batch: an uneven turn in every displayed
+// frame. With this on, each batch is spread over the time since the batch before (at most 8 ms), and a usercmd takes
+// the motion up to "now less one batch interval" (on average, at most 8 ms). Every frame then turns by its own share,
+// at any frame rate. The total turn is unchanged (every count is applied); the cost is up to one batch interval of delay.
+REXCVAR_DEFINE_BOOL(cod3_mouse_resample, false, "cod3/Mouse",
+                    "Even mouse turning at high frame rates: the mouse's motion is spread over the time it arrived in, "
+                    "so every frame turns by its share (up to a few milliseconds later); off: each frame takes what "
+                    "arrived since the last one")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(bool, mnk_mode);
 
 namespace cod3 {
@@ -82,13 +95,27 @@ void MouseLook::SetMouseInverted(bool inverted) {
 void MouseLook::AddDelta(float dx, float dy) {
   qte::AddMouse(dx, dy);  // the cursor of stick battle actions (game/qte_actions.h)
   std::lock_guard lock(mutex_);
-  dx_ += dx;
-  dy_ += dy;
+  if (!REXCVAR_GET(cod3_mouse_resample)) {
+    dx_ += dx;
+    dy_ += dy;
+    return;
+  }
+  // [claude-9b-think] cod3_mouse_resample: this batch covers the time since the one before (at most 8 ms).
+  constexpr int64_t kMaxSpanNs = 8'000'000;
+  const int64_t now = Clock::now().time_since_epoch().count();
+  const int64_t since = last_batch_ns_ ? now - last_batch_ns_ : kMaxSpanNs;
+  if (last_batch_ns_ && since > 0 && since < 4 * kMaxSpanNs)
+    batch_interval_ns_ += (double(since) - batch_interval_ns_) * 0.1;
+  last_batch_ns_ = now;
+  const int64_t span = std::clamp<int64_t>(since, 1, kMaxSpanNs);
+  if (batches_.size() > 256) batches_.pop_front();  // never read for a while: keep the newest
+  batches_.push_back(Batch{now - span, now, dx, dy, 0.0f});
 }
 
 void MouseLook::ClearPending() {
   std::lock_guard lock(mutex_);
   dx_ = dy_ = 0.0f;
+  batches_.clear();  // [claude-9b-think]
 }
 
 bool MouseLook::WantsCapture() const {
@@ -115,6 +142,24 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
     dx = dx_;
     dy = dy_;
     dx_ = dy_ = 0.0f;
+    // [claude-9b-think] cod3_mouse_resample: the motion of the batches up to now less one batch interval, each batch
+    // spread evenly over its own time.
+    const int64_t lag = int64_t(std::clamp(batch_interval_ns_, 0.0, 8'000'000.0));
+    const int64_t until = now - lag;
+    while (!batches_.empty()) {
+      Batch& b = batches_.front();
+      const float upto = b.end_ns <= until ? 1.0f
+                         : b.start_ns >= until
+                             ? 0.0f
+                             : float(double(until - b.start_ns) / double(std::max<int64_t>(b.end_ns - b.start_ns, 1)));
+      if (upto > b.taken) {
+        dx += b.dx * (upto - b.taken);
+        dy += b.dy * (upto - b.taken);
+        b.taken = upto;
+      }
+      if (b.taken < 1.0f) break;
+      batches_.pop_front();
+    }
   }
   // Every count that arrived since the last usercmd is applied, however long
   // that frame took, so the turn doesn't depend on the frame rate. Only

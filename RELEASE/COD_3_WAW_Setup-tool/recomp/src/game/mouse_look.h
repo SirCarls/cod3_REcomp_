@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <deque>  // [claude-9b-think] cod3_mouse_resample
 #include <mutex>
 
 namespace cod3 {
@@ -51,6 +52,16 @@ class MouseLook {
   std::mutex mutex_;
   float dx_ = 0.0f;
   float dy_ = 0.0f;
+  // [claude-9b-think] 2026-10-29 UNTESTED cod3_mouse_resample: each batch of motion the window thread hands over, as
+  // spread over the time since the batch before (mutex_).
+  struct Batch {
+    int64_t start_ns, end_ns;
+    float dx, dy;
+    float taken;  // the share already applied
+  };
+  std::deque<Batch> batches_;
+  int64_t last_batch_ns_ = 0;
+  double batch_interval_ns_ = 0.0;  // the batches' typical spacing (an average)
   std::atomic<int64_t> last_guest_tick_ns_{0};
   std::atomic<float> zoom_ratio_{1.0f};
   std::atomic<bool> game_invert_{false};  // the profile's Invert aim, last seen

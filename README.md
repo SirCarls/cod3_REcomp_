@@ -7,4 +7,6 @@ Do not bug me with issues or features, I'm working on it.
 
 If you have compilation errors please provide log in report.
 
+Tessellation fix sourced/learned from: https://github.com/alekszverr-jpg/cod3pc
+
 To contact me directly use: https://fluxer.gg/jE4iJ1xh

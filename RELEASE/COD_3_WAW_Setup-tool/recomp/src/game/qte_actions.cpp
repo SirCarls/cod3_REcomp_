@@ -1242,3 +1242,85 @@ REX_HOOK_RAW(sub_824C0EB0) {
   }
   __imp__sub_824C0EB0(ctx, base);
 }
+
+// ===========================================================================
+// [claude-9b-think] 2026-10-29 UNTESTED cod3_fix_interact_events: the falaise crane's real fix, generic for every
+// interaction (owner: "we need this game to function at uncapped fps").
+//
+// The good run (ob11, guard v2, 12:17) shows where the drop comes from. After lever_wait_final's press (the
+// ButtonPress step's notify E6DD54A6 at level time 580033), the notifies 5A0A8232 and B613E4A8 (the drop, which the
+// drop audio waits for), then 126EBF27 (+1 s) and 73923DB8 (the minigame's end, +3 s; Battle_Drone stops on it) all
+// come from one place: 0x8250729C, in 0x82507150. InteractState::vfunc_3 calls it with f1 = dt. It fires the current
+// battle action's timed events (up to 5: the definition's +1212 + 76 k names, +1248 times, each once: bit k of
+// state +96) when the event time t lies in [elapsed - dt, elapsed), where elapsed is state +56.
+//
+// Elapsed is advanced elsewhere, by InteractState::vfunc_2 (elapsed += its own f1). The window only tiles when the
+// two run in step with the same dt: at 60 fps, one frame for one game update, they do. Above 60, with the game in
+// 1/60 s updates, their dt and cadence differ (one per drawn frame, the other per update). Then each window covers
+// only part of the time elapsed advanced, and an event in the gap never fires. Its bit stays clear, the level's
+// script waits for it forever, and the crane never drops. It is a matter of luck per event, and the drop chain needs
+// several events in a row.
+//
+// Now each state's window starts at the elapsed time of its previous check: [previous elapsed, elapsed). Every
+// stretch of the state's time is checked exactly once, at any frame rate and any split between frames and updates.
+// f1 for 0x82507150 becomes elapsed - previous. At 60 fps that equals dt (no change), and in a check where elapsed
+// did not move it is 0 (nothing fires twice: the bits stay as they were). A state's first check, a restarted state
+// (elapsed went down) or a gap over 1 s keeps the game's own window.
+// ===========================================================================
+REXCVAR_DEFINE_BOOL(cod3_fix_interact_events, true, "cod3/Game",
+                    "Battle actions and other interactions fire their timed events (the crane's drop, levers, "
+                    "valves ...) at any frame rate: each check covers the time since the last one; off: the game's "
+                    "own window, which can skip an event above 60 fps")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include <limits>
+#include <unordered_map>
+
+namespace cod3::qte {
+namespace {
+constexpr uint32_t kStateElapsed = 56;  // InteractState: its time (s), advanced by vfunc_2
+std::mutex g_event_mutex;
+std::unordered_map<uint32_t, float> g_event_last;  // state -> its elapsed time at its last event check
+std::atomic<uint32_t> g_event_changed{0}, g_event_checks{0};
+std::atomic<int64_t> g_event_log_ns{0};
+}  // namespace
+}  // namespace cod3::qte
+
+// 0x82507150(state, f1 = dt): the state's timed events in [elapsed - dt, elapsed), from InteractState::vfunc_3.
+REX_EXTERN(__imp__sub_82507150);
+REX_HOOK_RAW(sub_82507150) {
+  namespace q = cod3::qte;
+  const uint32_t state = ctx.r3.u32;
+  if (!REXCVAR_GET(cod3_fix_interact_events) || !q::Valid(state)) {
+    __imp__sub_82507150(ctx, base);
+    return;
+  }
+  const float now = cod3::guest::ReadF32(base, state + q::kStateElapsed);
+  float prev = std::numeric_limits<float>::quiet_NaN();
+  {
+    std::lock_guard lock(q::g_event_mutex);
+    if (auto it = q::g_event_last.find(state); it != q::g_event_last.end()) prev = it->second;
+  }
+  q::g_event_checks.fetch_add(1, std::memory_order_relaxed);
+  if (std::isfinite(now) && std::isfinite(prev) && prev <= now && now - prev < 1.0f) {
+    const double window = double(now) - double(prev);
+    if (std::fabs(window - ctx.f1.f64) > 1e-5) q::g_event_changed.fetch_add(1, std::memory_order_relaxed);
+    ctx.f1.f64 = window;
+  }
+  __imp__sub_82507150(ctx, base);
+  {
+    std::lock_guard lock(q::g_event_mutex);
+    if (q::g_event_last.size() > 256) q::g_event_last.clear();  // states that went away
+    q::g_event_last[state] = now;
+  }
+  // Once every 10 s while windows were changed: how many (they differ from the game's above 60 fps).
+  const int64_t now_ns = q::NowNs();
+  if (now_ns - q::g_event_log_ns.load(std::memory_order_relaxed) > 10000 * q::kMs) {
+    q::g_event_log_ns.store(now_ns, std::memory_order_relaxed);
+    const uint32_t changed = q::g_event_changed.exchange(0, std::memory_order_relaxed);
+    const uint32_t checks = q::g_event_checks.exchange(0, std::memory_order_relaxed);
+    if (changed)
+      REXLOG_INFO("cod3: interaction events: {} of {} checks in the last 10 s took the time since the last check "
+                  "(cod3_fix_interact_events)",
+                  changed, checks);
+  }
+}

@@ -1,0 +1,273 @@
+[rexglue-native] SDK 0301, released in setup tool 2.26.0 (2026-11-03; owner 05:46 "sync release", answer
+"Native set, opt-in"). Native render targets: native_render_targets (GPU, default false, read at start).
+Off, nothing changes. On, the Vulkan host render targets keep their own contents (no ownership
+transfers) and start cleared. Tested by rexglue-native-test on the owner's PC: 2026-11-02 N2 first runs
+(saint_lo, forest, front end, cod3mp), N3 4-player bench on 6 maps (dev/agents/rexglue-native/
+N3-BENCH-4P.md, N3-BENCH-4P-r3.md); the exact release set (fork + 0001-0149 + 0300-0302) built and run
+2026-11-03 (dev/agents/rexglue-native/RELEASE-2.26.0.md).
+The text and the diff below are the draft's (dev/agents/rexglue-native/drafts/, md5 2fc82e0d); "UNTESTED"
+and "nothing was compiled or run" describe the draft as it was written.
+
+[rexglue-native] SDK 0301: native render targets (Vulkan host render targets). UNTESTED.
+
+Base: the SDK pin 9c444189 with the 0300 draft (native render-target census) applied.
+Written by rexglue-native-think on 2026-11-02; nothing was compiled or run.
+
+Files (md5 before -> after):
+  include/rex/graphics/pipeline/render_target/cache.h  047bffeaeb009cf72b17320349548c2d -> 942620cc9dcd98b2b3a0903219786bc3
+  src/graphics/pipeline/render_target/cache.cpp        d1be14b58df694b972758049efa3fb9d -> 033cacfe2e99c79a2914d73dd0a709ff
+  include/rex/graphics/vulkan/render_target_cache.h    b9827934f54e9f1c9ade547f4820eee1 -> d1996f9fa450fc3c12dc30efdb63fea4
+  src/graphics/vulkan/render_target_cache.cpp          dd420ba3cdc12479d8014642617e941f -> 06b6f027f98972a7419a9a38557bd566
+
+What it does (every hunk is marked [rexglue-native]):
+- The setting native_render_targets ("GPU", bool, default false, kRequiresRestart) is defined in
+  vulkan/render_target_cache.cpp. It is read once, in VulkanRenderTargetCache::Initialize after
+  InitializeCommon, and only takes effect on the host render-target path. It is read at start, not
+  live, because render targets made without transfers hold nothing the EDRAM emulation could carry
+  on from, and the other way round; the initial clears also only apply to targets created while
+  it's on. The game sets it before the GPU starts, from cod3_renderer native.
+  The base class gets IsNativeRenderTargets() (public) and SetNativeRenderTargets() (protected).
+  D3D12 never sets it.
+- RenderTargetCache::Update: in native mode the transfer lists are dropped, at 0300's
+  native_census_skip_transfers place. Ownership is still recorded, and the census still counts
+  the transfers (as "dropped").
+- PrepareHostRenderTargetsResolveClear: in native mode the transfers are dropped after
+  ChangeOwnership. Choice: only the render targets the resolve names are cleared (in the cleared
+  rectangle), not every image whose recorded range overlaps the cleared tiles. N1 counted 0
+  resolve clears in CoD3, so the simplest correct form was kept; overlap clearing can come later
+  if a game needs it.
+- RenderTargetCache::ClearCache: returns at once in native mode (a native target owns its
+  contents, not tiles). VulkanRenderTargetCache::ClearCache still destroys framebuffers and
+  render passes first.
+- A new Vulkan render target in native mode starts cleared: color 0, depth 1.0, stencil 0.
+  CreateRenderTarget queues it in native_initial_clears_. PerformNativeInitialClears clears each
+  queued target as a whole, with the existing resolve-clear machinery:
+  PerformTransfersAndResolveClears(1, &rt, no transfers, guest clear value, whole rectangle).
+  The guest depth 1.0 is xenos::Float32To20e4(1.0f) << 8 for D24FS8 (0.5 on the host, as resolve
+  clears convert it) and 0xFFFFFF << 8 for D24S8. It is called in VulkanRenderTargetCache::Update
+  before the transfers, and in Resolve right after PrepareHostRenderTargetsResolveClear (which may
+  create targets). It is not done inside CreateRenderTarget, because base Update is still binding
+  the draw's targets there. Shutdown empties the queue before DestroyAllRenderTargets.
+  No new Vulkan function or deferred command was needed: vkCmdClearDepthStencilImage isn't in
+  device_1_0.inc, and adding it would change the layout of VulkanDevice::Functions.
+
+kEdramBaseTilesBits (11) and 0010's 4096-tile EDRAM: no fix needed.
+  RB_COLOR_INFO.color_base and RB_DEPTH_INFO.depth_base are 11-bit fields in registers.h (bit 11 is
+  a separate field that nothing reads). So every base is 0..2047 before it reaches a
+  RenderTargetKey, and the key's 11-bit base_tiles masks nothing. 0010's extra tiles are reached
+  by surfaces extending past tile 2047 (ownership ranges up to 4096), and by resolve areas past
+  it (ResolveEdramInfo base_tiles_bit_11), not by bases. CoD3 at 1920x1080 uses 3264 tiles with
+  both bases below 2048. A guest base with bit 11 set would wrap mod 2048 in both draws and
+  resolves alike, as on the console. Harmless today, and nothing to change for native mode.
+
+--- a/include/rex/graphics/pipeline/render_target/cache.h
++++ b/include/rex/graphics/pipeline/render_target/cache.h
+@@ -163,6 +163,10 @@
+   bool IsDrawResolutionScaled() const {
+     return draw_resolution_scale_x() > 1 || draw_resolution_scale_y() > 1;
+   }
++  // [rexglue-native] SDK 0301: native render targets (set by the implementation
++  // at its Initialize): no ownership transfers, each render target keeps its
++  // own contents as a native one does; ownership is still recorded.
++  bool IsNativeRenderTargets() const { return native_render_targets_; }
+   // For changing the draw resolution scale at runtime: everything sized or
+   // compiled for the scale (the EDRAM buffer, render targets, resolve and
+   // transfer pipelines) is created by the implementation's Initialize, so the
+@@ -494,6 +498,9 @@
+   virtual bool IsHostDepthEncodingDifferent(xenos::DepthRenderTargetFormat format) const = 0;
+ 
+   void ResetAccumulatedRenderTargets() { are_accumulated_render_targets_valid_ = false; }
++  // [rexglue-native] SDK 0301: called by the implementation's Initialize, with
++  // host render targets only (render targets are created while it's on).
++  void SetNativeRenderTargets(bool native) { native_render_targets_ = native; }
+   RenderTarget* const* last_update_accumulated_render_targets() const {
+     assert_true(GetPath() == Path::kHostRenderTargets);
+     return last_update_accumulated_render_targets_;
+@@ -690,6 +697,9 @@
+   // render targets. They are reordered so for one source, all transfers are
+   // consecutive in the array.
+   std::vector<Transfer> last_update_transfers_[1 + xenos::kMaxColorRenderTargets];
++
++  // [rexglue-native] SDK 0301: see IsNativeRenderTargets.
++  bool native_render_targets_ = false;
+ };
+ 
+ }  // namespace rex::graphics
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -450,6 +450,11 @@
+ }
+ 
+ void RenderTargetCache::ClearCache() {
++  // [rexglue-native] SDK 0301: a native render target holds its own contents
++  // whether it owns EDRAM tiles or not, so none is deleted.
++  if (IsNativeRenderTargets()) {
++    return;
++  }
+   // Keep only render targets currently owning any EDRAM data.
+   if (!render_targets_.empty()) {
+     std::unordered_set<RenderTargetKey, RenderTargetKey::Hasher> used_render_targets;
+@@ -818,7 +823,9 @@
+     }
+     native_census::MaybeLog();
+   }
+-  if (native_census::SkipTransfers()) {
++  // [rexglue-native] SDK 0301: native render targets never transfer (ownership
++  // is still recorded above: resolves and clears look up through it).
++  if (native_census::SkipTransfers() || IsNativeRenderTargets()) {
+     for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+       if (native_census::Active()) {
+         native_census::Get().transfers_dropped += last_update_transfers_[i].size();
+@@ -1253,6 +1260,12 @@
+     ChangeOwnership(color_render_target_key, color_clear_start_tiles_base_relative,
+                     color_clear_length_tiles, &color_transfers_out, &clear_rectangle);
+   }
++  // [rexglue-native] SDK 0301: only the render targets the resolve names are
++  // cleared, with nothing transferred into the rest of them.
++  if (IsNativeRenderTargets()) {
++    depth_transfers_out.clear();
++    color_transfers_out.clear();
++  }
+   return true;
+ }
+ 
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -805,6 +805,10 @@
+       const uint64_t* render_target_resolve_clear_values = nullptr,
+       const Transfer::Rectangle* resolve_clear_rectangle = nullptr);
+ 
++  // [rexglue-native] SDK 0301: clears the native render targets created since
++  // the last call (native_initial_clears_) to color 0, depth 1.0, stencil 0.
++  void PerformNativeInitialClears();
++
+   VkPipeline GetDumpPipeline(DumpPipelineKey key);
+   VkPipeline GetDirectResolvePipeline(DirectResolvePipelineKey key);
+   bool TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
+@@ -874,6 +878,10 @@
+   // Temporary storage for Resolve.
+   std::vector<Transfer> clear_transfers_[2];
+ 
++  // [rexglue-native] SDK 0301: native render targets created and not cleared
++  // yet (PerformNativeInitialClears).
++  std::vector<RenderTarget*> native_initial_clears_;
++
+   // Temporary storage for PerformTransfersAndResolveClears.
+   std::vector<TransferInvocation> current_transfer_invocations_;
+ 
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -50,6 +50,16 @@
+                     "again from the resolved memory (32bpp, no MSAA, no conversion, no resolution "
+                     "scaling): less graphics-card work. Applies at once");
+ 
++// [rexglue-native] SDK 0301. Read once, at the render target cache's
++// Initialize: render targets made without transfers hold nothing the EDRAM
++// emulation could carry on from (and the reverse), so it can't switch while
++// render targets exist.
++REXCVAR_DEFINE_BOOL(native_render_targets, false, "GPU",
++                    "Vulkan host render targets: native mode. No ownership transfers between "
++                    "render targets (each keeps its own contents), new ones start cleared. Read at "
++                    "start")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ // DEFINE_string(
+ //     render_target_path_vulkan, "",
+ //     "Render target emulation path to use on Vulkan.\n"
+@@ -978,6 +988,13 @@
+   last_update_framebuffer_ = VK_NULL_HANDLE;
+ 
+   InitializeCommon();
++
++  // [rexglue-native] SDK 0301.
++  SetNativeRenderTargets(REXCVAR_GET(native_render_targets) &&
++                         path_ == Path::kHostRenderTargets);
++  if (IsNativeRenderTargets()) {
++    REXGPU_INFO("VulkanRenderTargetCache: native render targets (native_render_targets)");
++  }
+   return true;
+ }
+ 
+@@ -990,6 +1007,7 @@
+   // may happen if shutting down the VulkanRenderTargetCache by destroying it,
+   // so ShutdownCommon is called by the RenderTargetCache destructor, when it's
+   // already too late.
++  native_initial_clears_.clear();  // [rexglue-native] SDK 0301
+   DestroyAllRenderTargets(true);
+ 
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
+@@ -1358,9 +1376,13 @@
+         RenderTarget* clear_render_targets[2];
+         // If PrepareHostRenderTargetsResolveClear returns false, may be just an
+         // empty region (success) or an error - don't care.
+-        if (PrepareHostRenderTargetsResolveClear(resolve_info, clear_rectangle,
+-                                                 clear_render_targets[0], clear_transfers_[0],
+-                                                 clear_render_targets[1], clear_transfers_[1])) {
++        bool clear_prepared = PrepareHostRenderTargetsResolveClear(
++            resolve_info, clear_rectangle, clear_render_targets[0], clear_transfers_[0],
++            clear_render_targets[1], clear_transfers_[1]);
++        // [rexglue-native] SDK 0301: a render target created just now for the
++        // clear starts cleared as a whole first.
++        PerformNativeInitialClears();
++        if (clear_prepared) {
+           uint64_t clear_values[2];
+           clear_values[0] = resolve_info.rb_depth_clear;
+           clear_values[1] =
+@@ -1446,6 +1468,8 @@
+       RenderTarget* const* depth_and_color_render_targets =
+           last_update_accumulated_render_targets();
+ 
++      PerformNativeInitialClears();  // [rexglue-native] SDK 0301
++
+       PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                        depth_and_color_render_targets, last_update_transfers());
+ 
+@@ -2123,9 +2147,45 @@
+   }
+   dfn.vkUpdateDescriptorSets(device, key.is_depth ? 2 : 1, descriptor_set_write, 0, nullptr);
+ 
+-  return new VulkanRenderTarget(key, *this, image, memory, view_depth_color, view_depth_stencil,
+-                                view_stencil, view_srgb, view_color_transfer_separate,
+-                                descriptor_set_index_transfer_source);
++  auto* render_target =
++      new VulkanRenderTarget(key, *this, image, memory, view_depth_color, view_depth_stencil,
++                             view_stencil, view_srgb, view_color_transfer_separate,
++                             descriptor_set_index_transfer_source);
++  // [rexglue-native] SDK 0301: cleared before its first use
++  // (PerformNativeInitialClears), not here, as the caller may be in the middle
++  // of setting up the render targets of a draw.
++  if (IsNativeRenderTargets()) {
++    native_initial_clears_.push_back(render_target);
++  }
++  return render_target;
++}
++
++void VulkanRenderTargetCache::PerformNativeInitialClears() {
++  // [rexglue-native] SDK 0301: what a new native render target starts with:
++  // color 0, depth 1.0 and stencil 0, cleared like a resolve clears (a render
++  // pass clear of the whole render target, nothing transferred).
++  if (native_initial_clears_.empty()) {
++    return;
++  }
++  const std::vector<Transfer> no_transfers;
++  for (RenderTarget* render_target : native_initial_clears_) {
++    RenderTargetKey key = render_target->key();
++    // The guest's clear value, as in RB_DEPTH_CLEAR / RB_COLOR_CLEAR(_LO).
++    uint64_t clear_value = 0;
++    if (key.is_depth) {
++      uint32_t depth_one = key.GetDepthFormat() == xenos::DepthRenderTargetFormat::kD24FS8
++                               ? xenos::Float32To20e4(1.0f, false)
++                               : uint32_t(0xFFFFFF);
++      clear_value = uint64_t(depth_one) << 8;
++    }
++    Transfer::Rectangle rectangle;
++    rectangle.x_pixels = 0;
++    rectangle.y_pixels = 0;
++    rectangle.width_pixels = key.GetWidth();
++    rectangle.height_pixels = GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++    PerformTransfersAndResolveClears(1, &render_target, &no_transfers, &clear_value, &rectangle);
++  }
++  native_initial_clears_.clear();
+ }
+ 
+ bool VulkanRenderTargetCache::IsHostDepthEncodingDifferent(

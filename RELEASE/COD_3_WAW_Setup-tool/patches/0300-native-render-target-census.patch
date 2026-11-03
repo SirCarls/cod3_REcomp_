@@ -1,0 +1,318 @@
+[rexglue-native] SDK 0300, released in setup tool 2.26.0 (2026-11-03; owner 05:46 "sync release", answer
+"Native set, opt-in"). The native render-target census: with native_census_seconds (GPU, default 0 = off)
+set, a log line counts render-target switches, ownership transfers, resolves and clears.
+native_census_skip_transfers (GPU, default off) is a test switch. With both at their defaults nothing
+changes. Tested by rexglue-native-test on the owner's PC: 2026-11-02 N1 (dev/agents/rexglue-native/
+N1-RESULTS.md) and, with 0301 and 0302, the N2/N3 runs; the exact release set (fork + 0001-0149 +
+0300-0302) built and run 2026-11-03 (dev/agents/rexglue-native/RELEASE-2.26.0.md).
+The diff below is the draft's (dev/agents/rexglue-native/drafts/, md5 9a6376bb).
+
+diff --git a/include/rex/graphics/native_census.h b/include/rex/graphics/native_census.h
+new file mode 100644
+index 0000000..1c7c3ec
+--- /dev/null
++++ b/include/rex/graphics/native_census.h
+@@ -0,0 +1,76 @@
++/**
++ * @file        rex/graphics/native_census.h
++ *
++ * @brief       [rexglue-native] SDK 0300: counts what the EDRAM emulation does
++ *              (render-target switches, ownership transfers between aliased
++ *              render targets, resolves and whether they could be copied
++ *              straight into their textures), for the native render-target
++ *              design (the project's dev/agents/rexglue-native/DESIGN.md).
++ *
++ * Off by default: with native_census_seconds 0 the cost is one setting read
++ * per render-target update and per resolve. The GPU command thread is the only
++ * writer and reader, so the counters are plain integers.
++ *
++ * native_census_skip_transfers (test only, off) drops the ownership transfers
++ * that render-target updates ask for, so every render target keeps its own
++ * contents, as native host render targets will. A picture difference with it
++ * on shows a pass that reads EDRAM another render target wrote.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstdint>
++
++namespace rex::graphics::native_census {
++
++enum TransferKind : uint32_t {
++  // Same depth/color kind and format, another base or pitch.
++  kTransferSameFormat,
++  // Same kind, another format.
++  kTransferFormatChange,
++  // Color to depth or depth to color.
++  kTransferColorDepth,
++  kTransferKindCount,
++};
++
++// Why a color resolve wasn't copied straight into its texture. 0-5 are the
++// reasons VulkanRenderTargetCache::CopyResolveIntoTexture logs (in its order).
++enum ResolveSkip : uint32_t {
++  kSkipShaderOrMsaa,       // 0: MSAA, 64bpp or another copy shader
++  kSkipFormat,             // 1: format, exponent bias, array, endian or offset
++  kSkipSeveralOwners,      // 2: more than one render target owns the area
++  kSkipPartOwner,          // 3: the render target owns only part of the area
++  kSkipOtherOwner,         // 4: the owner isn't a 1x 8_8_8_8 color target of the pitch
++  kSkipOutside,            // 5: the area is outside the render target
++  kSkipNoTexture,          // 6: no texture of that address, pitch and format
++  kSkipNotAttempted,       // 7: resolve-into-textures off, or resolution scaled
++  kResolveSkipCount,
++};
++
++struct Counters {
++  uint64_t updates;
++  uint64_t updates_changed;  // the bound render targets differ from the last update
++  uint64_t transfers[kTransferKindCount];
++  uint64_t transfer_tiles;
++  uint64_t transfers_dropped;  // by native_census_skip_transfers
++  uint64_t resolves;
++  uint64_t resolves_depth;
++  uint64_t resolves_msaa;
++  uint64_t resolves_offset;  // a destination offset (sub-rectangle)
++  uint64_t into_texture;
++  uint64_t not_into_texture[kResolveSkipCount];
++  uint64_t clears_depth;
++  uint64_t clears_color;
++};
++
++// native_census_seconds != 0.
++bool Active();
++// native_census_skip_transfers.
++bool SkipTransfers();
++Counters& Get();
++// Logs one line and starts over when native_census_seconds have passed.
++void MaybeLog();
++
++}  // namespace rex::graphics::native_census
+diff --git a/src/graphics/pipeline/render_target/cache.cpp b/src/graphics/pipeline/render_target/cache.cpp
+index 0c226ab..d7c070a 100644
+--- a/src/graphics/pipeline/render_target/cache.cpp
++++ b/src/graphics/pipeline/render_target/cache.cpp
+@@ -10,6 +10,7 @@
+  */
+ 
+ #include <algorithm>
++#include <chrono>
+ #include <cmath>
+ #include <cstring>
+ #include <iterator>
+@@ -20,6 +21,7 @@
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/graphics/flags.h>
++#include <rex/graphics/native_census.h>
+ #include <rex/graphics/pipeline/render_target/cache.h>
+ #include <rex/graphics/register_file.h>
+ #include <rex/graphics/registers.h>
+@@ -41,6 +43,81 @@ REXCVAR_DEFINE_BOOL(direct_host_resolve, true, "GPU",
+                     "Resolve from host render targets directly to shared memory when possible")
+     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+ 
++// [rexglue-native] SDK 0300: the native render-target census (native_census.h).
++REXCVAR_DEFINE_UINT32(native_census_seconds, 0, "GPU",
++                      "Every this many seconds, log what the EDRAM emulation did: render-target "
++                      "switches, ownership transfers, resolves (0 = off)")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++REXCVAR_DEFINE_BOOL(native_census_skip_transfers, false, "GPU",
++                    "Test only: drop render-target ownership transfers, so each render target "
++                    "keeps its own contents as native render targets will")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
++namespace rex::graphics::native_census {
++
++namespace {
++Counters counters_;
++std::chrono::steady_clock::time_point interval_start_;
++bool interval_started_ = false;
++}  // namespace
++
++bool Active() { return REXCVAR_GET(native_census_seconds) != 0; }
++
++bool SkipTransfers() { return REXCVAR_GET(native_census_skip_transfers); }
++
++Counters& Get() { return counters_; }
++
++void MaybeLog() {
++  const uint32_t seconds = REXCVAR_GET(native_census_seconds);
++  if (!seconds) {
++    return;
++  }
++  const auto now = std::chrono::steady_clock::now();
++  if (!interval_started_) {
++    interval_started_ = true;
++    interval_start_ = now;
++    counters_ = Counters();
++    return;
++  }
++  const double elapsed = std::chrono::duration<double>(now - interval_start_).count();
++  if (elapsed < double(seconds)) {
++    return;
++  }
++  const Counters& c = counters_;
++  auto per_second = [elapsed](uint64_t count) { return double(count) / elapsed; };
++  REXGPU_INFO(
++      "native census ({:.1f} s, per second): render-target updates {:.0f}, {:.0f} changed what "
++      "is bound; ownership transfers {:.1f} (same format {:.1f}, format change {:.1f}, "
++      "color/depth {:.1f}; {:.0f} tiles){}; resolves {:.1f} (depth {:.1f}, MSAA {:.1f}, "
++      "offset {:.1f}); color resolves copied into their textures {:.1f}, not: MSAA/64bpp/shader "
++      "{:.1f}, format {:.1f}, several owners {:.1f}, part owner {:.1f}, other owner {:.1f}, "
++      "outside {:.1f}, no texture {:.1f}, not attempted {:.1f}; resolve clears depth {:.1f} "
++      "color {:.1f}",
++      elapsed, per_second(c.updates), per_second(c.updates_changed),
++      per_second(c.transfers[kTransferSameFormat] + c.transfers[kTransferFormatChange] +
++                 c.transfers[kTransferColorDepth]),
++      per_second(c.transfers[kTransferSameFormat]), per_second(c.transfers[kTransferFormatChange]),
++      per_second(c.transfers[kTransferColorDepth]), per_second(c.transfer_tiles),
++      c.transfers_dropped ? fmt::format(", {:.1f} dropped (skip_transfers on)",
++                                        per_second(c.transfers_dropped))
++                          : std::string(),
++      per_second(c.resolves), per_second(c.resolves_depth), per_second(c.resolves_msaa),
++      per_second(c.resolves_offset), per_second(c.into_texture),
++      per_second(c.not_into_texture[kSkipShaderOrMsaa]),
++      per_second(c.not_into_texture[kSkipFormat]),
++      per_second(c.not_into_texture[kSkipSeveralOwners]),
++      per_second(c.not_into_texture[kSkipPartOwner]),
++      per_second(c.not_into_texture[kSkipOtherOwner]),
++      per_second(c.not_into_texture[kSkipOutside]),
++      per_second(c.not_into_texture[kSkipNoTexture]),
++      per_second(c.not_into_texture[kSkipNotAttempted]), per_second(c.clears_depth),
++      per_second(c.clears_color));
++  counters_ = Counters();
++  interval_start_ = now;
++}
++
++}  // namespace rex::graphics::native_census
++
+ namespace rex::graphics {
+ 
+ void RenderTargetCache::GetPSIColorFormatInfo(xenos::ColorRenderTargetFormat format,
+@@ -707,6 +784,49 @@ bool RenderTargetCache::Update(bool is_rasterization_done,
+     return true;
+   }
+ 
++  // [rexglue-native] SDK 0300: count this update's switches and transfers
++  // (last_update_used_render_targets_ still holds the previous update's), and
++  // with native_census_skip_transfers drop the transfers before the
++  // implementation performs them.
++  if (native_census::Active()) {
++    native_census::Counters& census = native_census::Get();
++    ++census.updates;
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      RenderTarget* bound_now =
++          (depth_and_color_rts_used_bits & (uint32_t(1) << i)) ? rts[i] : nullptr;
++      if (bound_now != last_update_used_render_targets_[i]) {
++        ++census.updates_changed;
++        break;
++      }
++    }
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (!(depth_and_color_rts_used_bits & (uint32_t(1) << i))) {
++        continue;
++      }
++      const RenderTargetKey dest_key = rt_keys[i];
++      for (const Transfer& transfer : last_update_transfers_[i]) {
++        const RenderTargetKey source_key = transfer.source->key();
++        native_census::TransferKind kind = native_census::kTransferSameFormat;
++        if (source_key.is_depth != dest_key.is_depth) {
++          kind = native_census::kTransferColorDepth;
++        } else if (source_key.resource_format != dest_key.resource_format) {
++          kind = native_census::kTransferFormatChange;
++        }
++        ++census.transfers[kind];
++        census.transfer_tiles += transfer.end_tiles - transfer.start_tiles;
++      }
++    }
++    native_census::MaybeLog();
++  }
++  if (native_census::SkipTransfers()) {
++    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
++      if (native_census::Active()) {
++        native_census::Get().transfers_dropped += last_update_transfers_[i].size();
++      }
++      last_update_transfers_[i].clear();
++    }
++  }
++
+   // If everything succeeded, update the used render targets.
+   for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+     last_update_used_render_targets_[i] =
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index f4c3ea9..8cba30a 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -26,6 +26,7 @@
+ #include <rex/cvar.h>
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/gpu_stats.h>
++#include <rex/graphics/native_census.h>
+ #include <rex/graphics/pipeline/shader/spirv_builder.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
+@@ -1156,6 +1157,38 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+     return true;
+   }
+ 
++  // [rexglue-native] SDK 0300: the resolve kinds (native_census.h).
++  if (native_census::Active()) {
++    native_census::Counters& census = native_census::Get();
++    if (resolve_info.copy_dest_extent_length) {
++      ++census.resolves;
++      const bool copying_depth = resolve_info.IsCopyingDepth();
++      if (copying_depth) {
++        ++census.resolves_depth;
++      }
++      const draw_util::ResolveEdramInfo& source_info =
++          copying_depth ? resolve_info.depth_edram_info : resolve_info.color_edram_info;
++      if (source_info.msaa_samples != xenos::MsaaSamples::k1X) {
++        ++census.resolves_msaa;
++      }
++      if (resolve_info.copy_dest_coordinate_info.offset_x_div_8 ||
++          resolve_info.copy_dest_coordinate_info.offset_y_div_8) {
++        ++census.resolves_offset;
++      }
++      if (!copying_depth && (!REXCVAR_GET(vulkan_resolve_into_textures) ||
++                             draw_resolution_scaled || GetPath() != Path::kHostRenderTargets)) {
++        ++census.not_into_texture[native_census::kSkipNotAttempted];
++      }
++    }
++    if (resolve_info.IsClearingDepth()) {
++      ++census.clears_depth;
++    }
++    if (resolve_info.IsClearingColor()) {
++      ++census.clears_color;
++    }
++    native_census::MaybeLog();
++  }
++
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -6063,6 +6096,11 @@ void VulkanRenderTargetCache::CopyResolveIntoTexture(const draw_util::ResolveInf
+   // message is only put together that first time (this runs for every resolve).
+   static uint32_t reasons_logged = 0;
+   auto first_time = [](uint32_t reason) {
++    // [rexglue-native] SDK 0300: every reason is checked here, once per skipped
++    // resolve, so it is also where the census counts it.
++    if (native_census::Active()) {
++      ++native_census::Get().not_into_texture[reason];
++    }
+     if (reasons_logged & (uint32_t(1) << reason)) {
+       return false;
+     }
+@@ -6179,6 +6217,11 @@ void VulkanRenderTargetCache::CopyResolveIntoTexture(const draw_util::ResolveInf
+           vulkan_rt.current_access_mask(), vulkan_rt.current_layout(), source_x, source_y)) {
+     vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++    if (native_census::Active()) {
++      ++native_census::Get().into_texture;
++    }
++  } else if (native_census::Active()) {
++    ++native_census::Get().not_into_texture[native_census::kSkipNoTexture];
+   }
+ }
+ 

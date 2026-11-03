@@ -32,11 +32,18 @@
 // of our own exist; one data table, kButtons). cod3_key_prompts turns the
 // keys off. Nothing else changes: no timing, no input, only what the
 // prompts show.
+// [claude-9b-think] 2026-10-27 UNTESTED: with cod3_key_caps on, mouse buttons
+// are a small mouse picture and the PlayStation (playstation: PS4/5,
+// playstation2: PS2), Nintendo and GameCube styles pictures of our own
+// (simple shapes and plain letters, in colors close to the controller's own:
+// ui/hud_overlay.cpp cod3_glyph_color_mode); the texts' keyboard-and-mouse wording can
+// be set by string key (config/prompt_text_kbm.tsv, userdata's copy).
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -58,6 +65,11 @@ void NoteKeyboardUse();
 // [mp-menus] The app's input system (after setup; nullptr at shutdown): which
 // kind of controller each player holds, for cod3_glyph_style auto.
 void SetInputSystem(rex::input::InputSystem* input);
+// [claude-9b-think] The keyboard-and-mouse texts by string key: the built-in
+// config/prompt_text_kbm.tsv and `user_dir`/prompt_text_kbm.tsv (the
+// player's rows replace the built-in ones). At start, after the user folder
+// is known; again to reload. Campaign only (nothing in cod3mp).
+void LoadPromptText(const std::filesystem::path& user_dir);
 // [rumble] Whether the keyboard and mouse are in use now: mnk_mode on, and a
 // key or mouse press since the last controller button (what the first
 // controller's prompts follow, whatever cod3_key_prompts says). Any thread.
@@ -69,7 +81,8 @@ bool KeyboardMouseInUse();
 // What the first player's prompts show right now: keys, or a controller's
 // buttons in one style (the same choice the game's prompts make: mnk_mode,
 // cod3_key_prompts, the last device used, cod3_glyph_style). Any thread.
-enum class Look : uint8_t { kKeys, kXbox, kPlayStation, kNintendo, kGameCube };
+// [claude-9b-think] kPlayStation the PS4/5 style, kPlayStation2 the PS2 style.
+enum class Look : uint8_t { kKeys, kXbox, kPlayStation, kNintendo, kGameCube, kPlayStation2 };
 Look FirstPlayerLook();
 // A read of the first controller's state outside the game's own pad reads
 // (the cutscene skip reads it while the game's pad reads may not run): a
@@ -81,10 +94,19 @@ void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger,
 // game and noted here, in the game's 640x480 menu space, for the overlay to
 // draw as a key cap like "SPACE Skip"'s (ui/hud_overlay.cpp). Entries are
 // those drawn in the last `max_age_ms`. UI thread.
+// [claude-9b-think] Also our pictures: `picture` set, `name` the code between
+// the braces the game laid out ("1" a mouse button, "x" a PlayStation cross,
+// "L1" a labeled cap ...; button_prompts.cpp PictureCode and MouseCode),
+// drawn in `look`'s style (kKeys: the mouse pictures).
+// [claude-9b-think] 2026-10-27 UNTESTED `fitted`: the room is as wide as the cap (the game laid out a string of the
+// cap's width, button_prompts.cpp FittedRoom; cod3_key_cap_scale scales both): the overlay draws the cap across it.
 struct KeyCap {
   float x0, y0, x1, y1;  // menu space
   std::string name;      // without the brackets
   float alpha;           // the text's opacity as the game draws it (fades)
+  Look look = Look::kKeys;
+  bool picture = false;
+  bool fitted = false;
 };
 std::vector<KeyCap> CurrentKeyCaps(int max_age_ms);
 

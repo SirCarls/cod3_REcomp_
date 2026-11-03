@@ -1,0 +1,129 @@
+diff --git a/src/kernel/xam/xam_user.cpp b/src/kernel/xam/xam_user.cpp
+--- a/src/kernel/xam/xam_user.cpp
++++ b/src/kernel/xam/xam_user.cpp
+@@ -31,17 +31,17 @@
+ 
+ REXCVAR_DEFINE_UINT32(user_language, 1, "Kernel", "User's language ID");
+ REXCVAR_DEFINE_STRING(user_name, "", "Kernel",
+-                      "Player 1's gamertag as the game sees it (up to 15 characters); empty = the "
+-                      "profile's own (\"User\")");
++                      "Player 1's gamertag as the game sees it (up to 15 characters, ^0-^9 "
++                      "and ^: color codes count); empty = the profile's own (\"User\")");
+ REXCVAR_DEFINE_STRING(user_name_2, "", "Kernel",
+-                      "Player 2's name in split screen (up to 14 characters); empty = the game's own "
+-                      "(\"Player 2\")");
++                      "Player 2's name in split screen (up to 14 characters, color codes count); "
++                      "empty = the game's own (\"Player 2\")");
+ REXCVAR_DEFINE_STRING(user_name_3, "", "Kernel",
+-                      "Player 3's name in split screen (up to 14 characters); empty = the game's own "
+-                      "(\"Player 3\")");
++                      "Player 3's name in split screen (up to 14 characters, color codes count); "
++                      "empty = the game's own (\"Player 3\")");
+ REXCVAR_DEFINE_STRING(user_name_4, "", "Kernel",
+-                      "Player 4's name in split screen (up to 14 characters); empty = the game's own "
+-                      "(\"Player 4\")");
++                      "Player 4's name in split screen (up to 14 characters, color codes count); "
++                      "empty = the game's own (\"Player 4\")");
+ 
+ namespace rex {
+ namespace kernel {
+@@ -49,40 +49,76 @@
+ using namespace rex::system;
+ using namespace rex::system::xam;
+ 
+-// The name the game is given for the signed-in player: user_name when set (its first 15
+-// characters, the gamertag's room), else the profile's.
++// A player name made safe before the game sees it (owner 2026-11-03: "these user supplied entries
++// need to be safe guarded too"; names may carry World at War's color codes, "^0-9" and the rainbow
++// "^:"). The same rule as Call of Duty 3's recomp/src/game/color_codes.h SanitizeName and the setup
++// tool's clean_player_name: printable ASCII; no '"' or '\' (they split a game's info strings), '%'
++// (a format code) or ';' (it ends a console command); '^' only as a color code (^0-^9, ^:); spaces
++// trimmed; at most max_bytes bytes, codes included, never half a code; codes with nothing printed
++// after them dropped; empty when nothing visible is left.
++static bool IsNameCode(char c) { return (c >= '0' && c <= '9') || c == ':'; }
++
++static std::string SafePlayerName(const std::string& raw, size_t max_bytes) {
++  std::string s;
++  for (size_t i = 0; i < raw.size() && s.size() < 256; ++i) {
++    const char c = raw[i];
++    const unsigned char u = static_cast<unsigned char>(c);
++    if (u < 32 || u > 126 || c == '"' || c == '\\' || c == '%' || c == ';') continue;
++    if (c == '^') {
++      if (i + 1 < raw.size() && IsNameCode(raw[i + 1])) {
++        s.push_back('^');
++        s.push_back(raw[++i]);
++      }
++      continue;
++    }
++    s.push_back(c);
++  }
++  size_t lead = 0;
++  while (lead < s.size() && s[lead] == ' ') ++lead;
++  s.erase(0, lead);
++  if (s.size() > max_bytes) {
++    s.resize(max_bytes);
++    if (!s.empty() && s.back() == '^') s.pop_back();  // a code cut in half
++  }
++  for (;;) {  // every '^' left starts a code, so a '^' second from the end is a code at the end
++    if (!s.empty() && s.back() == ' ') {
++      s.pop_back();
++    } else if (s.size() >= 2 && s[s.size() - 2] == '^') {
++      s.resize(s.size() - 2);
++    } else {
++      break;
++    }
++  }
++  for (size_t i = 0; i < s.size(); ++i) {
++    if (s[i] == '^') {
++      ++i;
++      continue;
++    }
++    if (s[i] != ' ') return s;
++  }
++  return {};
++}
++
++// The name the game is given for the signed-in player: user_name when set (made safe, at most 15
++// bytes, the gamertag's room), else the profile's.
+ static std::string PlayerName() {
+-  std::string name = REXCVAR_GET(user_name);
+-  while (!name.empty() && (name.back() == ' ' || name.back() == '\t')) name.pop_back();
+-  while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
++  std::string name = SafePlayerName(REXCVAR_GET(user_name), 15);
+   if (name.empty()) return REX_KERNEL_STATE()->user_profile()->name();
+-  if (name.size() > 15) name.resize(15);
+   return name;
+ }
+ 
+ // Players 2-4 (split screen): no profile is signed in for them, so a game asks XamUserGetName and
+ // shows its own "Player N" when that fails. user_name_2..4 answer it, without signing anyone in (no
+-// profile reads, saves or sign-in prompts start for them): printable ASCII without quotes,
+-// backslashes, '%' or '^' (format and color codes), at most 14 characters (Call of Duty 3's session
+-// table keeps 15 bytes a name). Empty: no such user, as before.
++// profile reads, saves or sign-in prompts start for them): made safe as above, color codes allowed,
++// at most 14 bytes (Call of Duty 3's session table keeps 15 bytes a name). Empty: no such user, as
++// before.
+ static std::string LocalPlayerName(uint32_t user_index) {
+-  std::string name;
+   switch (user_index) {
+-    case 1: name = REXCVAR_GET(user_name_2); break;
+-    case 2: name = REXCVAR_GET(user_name_3); break;
+-    case 3: name = REXCVAR_GET(user_name_4); break;
++    case 1: return SafePlayerName(REXCVAR_GET(user_name_2), 14);
++    case 2: return SafePlayerName(REXCVAR_GET(user_name_3), 14);
++    case 3: return SafePlayerName(REXCVAR_GET(user_name_4), 14);
+     default: return {};
+   }
+-  std::string clean;
+-  for (char c : name) {
+-    const unsigned char u = static_cast<unsigned char>(c);
+-    if (u < 32 || u > 126 || c == '"' || c == '\\' || c == '%' || c == '^') continue;
+-    clean += c;
+-  }
+-  while (!clean.empty() && clean.back() == ' ') clean.pop_back();
+-  while (!clean.empty() && clean.front() == ' ') clean.erase(clean.begin());
+-  if (clean.size() > 14) clean.resize(14);
+-  return clean;
+ }
+ 
+ i32 XamUserGetXUID_entry(u32 user_index, u32 type_mask, mapped_u64 xuid_ptr) {

@@ -64,23 +64,76 @@ def _is_aspect(value: Any) -> bool:
     return w > 0 and h > 0 and MIN_ASPECT - 0.001 <= w / h <= MAX_ASPECT + 0.001
 
 
+# [claude-setup] 2026-11-03 Player names may carry World at War's color codes (owner: "names and other user supplied
+# text things can inherit those various color codes. ^0-9", "rainbow code is "^:" with the colon") and are made safe
+# (owner: "these user supplied entries need to be safe guarded too"). The same rule as the game's
+# recomp/src/game/color_codes.h SanitizeName and the SDK's player-name patch: printable ASCII; no '"' or '\' (they
+# split the game's info strings), '%' (a format code) or ';' (it ends a console command); '^' only as a code
+# (^0-^9, ^:); at most max_bytes bytes, codes included; something visible left.
+NAME_CODE_CHARS = "0123456789:"
+
+
+def strip_color_codes(text: str) -> str:
+    """The text as printed: without its ^0-^9 and ^: codes."""
+    out, i = [], 0
+    while i < len(text):
+        if text[i] == "^" and i + 1 < len(text) and text[i + 1] in NAME_CODE_CHARS:
+            i += 2
+            continue
+        out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+def clean_player_name(value: str, max_bytes: int) -> str:
+    """The name the game will use for `value` (empty: the game's own name). See the rule above."""
+    kept, i = [], 0
+    while i < len(value) and len(kept) < 256:
+        c = value[i]
+        if not 32 <= ord(c) <= 126 or c in '"\\%;':
+            i += 1
+            continue
+        if c == "^":
+            if i + 1 < len(value) and value[i + 1] in NAME_CODE_CHARS:
+                kept += ["^", value[i + 1]]
+                i += 2
+            else:
+                i += 1
+            continue
+        kept.append(c)
+        i += 1
+    name = "".join(kept).lstrip(" ")
+    if len(name) > max_bytes:
+        name = name[:max_bytes]
+        if name.endswith("^"):  # a code cut in half
+            name = name[:-1]
+    while True:
+        if name.endswith(" "):
+            name = name[:-1]
+        elif len(name) >= 2 and name[-2] == "^":  # a code with nothing printed after it
+            name = name[:-2]
+        else:
+            break
+    return name if strip_color_codes(name).strip(" ") else ""
+
+
 def _is_player_name(value: Any) -> bool:
     """[claude-9b] A player name for user_name (SDK patch 0070): 1-15 printable ASCII
-    characters (the gamertag's room), no quotes or backslashes."""
+    characters (the gamertag's room). [claude-setup] 2026-11-03: the game's name rule above (codes count)."""
     if not isinstance(value, str):
         return False
-    name = value.strip()
-    return 0 < len(name) <= 15 and all(32 <= ord(c) <= 126 and c not in '"\\' for c in name)
+    name = clean_player_name(value, 15)
+    return bool(name) and name == value.strip()
 
 
 def _is_other_player_name(value: Any) -> bool:
     """[claude-9b] A split-screen player's name for user_name_2..4 (SDK patch 0074): 1-14 printable
-    ASCII characters (the game's session table keeps 15 bytes a name), no quotes, backslashes, '%' or
-    '^'."""
+    ASCII characters (the game's session table keeps 15 bytes a name). [claude-setup] 2026-11-03: the game's
+    name rule above, so color codes too (codes count)."""
     if not isinstance(value, str):
         return False
-    name = value.strip()
-    return 0 < len(name) <= 14 and all(32 <= ord(c) <= 126 and c not in '"\\%^' for c in name)
+    name = clean_player_name(value, 14)
+    return bool(name) and name == value.strip()
 
 
 @dataclass(frozen=True)
@@ -202,6 +255,20 @@ SETTINGS: List[Setting] = [
     Setting("cod3_skip_movies", "Skip cutscenes",
             "Skips the logos, the briefing films and the level intros as soon as the game allows it.",
             "bool", default=False),
+    # [claude-9b-think] 2026-10-27 UNTESTED (owner 13:19-13:21) the campaign's scripted scenes' black bars, the skip
+    # prompt's place and the hold to skip (recomp/src/game/ultrawide.cpp, cutscene_skip.cpp; F2 > Game).
+    Setting("cod3_letterbox", "Cinematic letterbox bars",
+            "The black bars at the top and bottom of the screen during the campaign's scripted in-game scenes. "
+            "Off: the scene fills the screen.", "bool", default=True),
+    Setting("cod3_skip_prompt_position", "Skip prompt position",
+            "Where \"SPACE Skip\" shows while a briefing can be skipped. The corner keeps it out of the "
+            "subtitles' way.",
+            "choice", (("corner", "Bottom-right corner"), ("bottom_center", "Bottom center")), default="corner"),
+    Setting("cod3_skip_hold_ms", "Hold to skip (ms)",
+            "How long the skip key or the controller's A is held to skip a briefing; letting go early cancels. "
+            "0: a press skips at once.",
+            "int", ((0, "0 (a press skips)"), (500, "500"), (1000, "1000"), (2000, "2000")), min=0, max=5000,
+            default=1000),
     Setting("cod3_volume", "Master volume",
             "Everything the game plays, in percent. Music, effects and voices have their own sliders in "
             "the game's Options.", "int", min=0, max=100, default=100, scale=100),
@@ -221,22 +288,45 @@ SETTINGS: List[Setting] = [
     # [claude-9b] The SDK's own setting (SDK patch 0070): the gamertag the game is given.
     Setting("user_name", "Player name",
             "Your name in the game, up to 15 characters: the name others see in multiplayer. Pick the "
-            "profile's own or type a name. The game reads it when it starts.",
+            "profile's own or type a name. ^0-^9 color the letters after them as in World at War (^1 red, ^2 green, "
+            "^3 yellow, ^4 blue, ^5 cyan, ^6 orange, ^7 white, ^8 and ^9 the team colors) and ^: makes them a "
+            "rainbow; codes count in the 15. The game reads it when it starts.",
             "choice", (("", "The profile's own (User)"),), default="", also=_is_player_name),
     # [claude-9b] SDK patch 0074: split-screen players 2-4 in multiplayer.
     Setting("user_name_2", "Player 2 name",
-            "Split-screen player 2's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "Split-screen player 2's name in multiplayer, up to 14 characters; ^0-^9 and ^: colors as for "
+            "Player name (codes count). The game reads it when it starts.",
             "choice", (("", "The game's own (Player 2)"),), default="", also=_is_other_player_name),
     Setting("user_name_3", "Player 3 name",
-            "Split-screen player 3's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "Split-screen player 3's name in multiplayer, up to 14 characters; ^0-^9 and ^: colors as for "
+            "Player name (codes count). The game reads it when it starts.",
             "choice", (("", "The game's own (Player 3)"),), default="", also=_is_other_player_name),
     Setting("user_name_4", "Player 4 name",
-            "Split-screen player 4's name in multiplayer, up to 14 characters. The game reads it when it starts.",
+            "Split-screen player 4's name in multiplayer, up to 14 characters; ^0-^9 and ^: colors as for "
+            "Player name (codes count). The game reads it when it starts.",
             "choice", (("", "The game's own (Player 4)"),), default="", also=_is_other_player_name),
+    # [claude-setup] 2026-11-03 (owner: split-screen glyphs independent of each other): "auto", the game's default
+    # (each player sees the buttons of the controller in their own hands), was missing, so the tool showed
+    # Xbox 360 and could only write one style for everyone; "nintendo" too.
     Setting("cod3_glyph_style", "Controller button style",
-            "How the game's prompts show controller buttons.",
-            "choice", (("xbox", "Xbox 360 (the game's own)"), ("playstation", "PlayStation"),
-                       ("gamecube", "GameCube")), default="xbox"),
+            "How the game's prompts show controller buttons: each player's own controller (split screen too), "
+            "or one style for everyone.",
+            "choice", (("auto", "Each player's own controller"), ("xbox", "Xbox 360 (the game's own)"),
+                       ("playstation", "PlayStation 4 / 5"),
+                       ("playstation2", "PlayStation 2"),  # [claude-9b-think] 2026-10-27 (owner 12:33)
+                       ("nintendo", "Nintendo Switch"), ("gamecube", "GameCube")), default="auto"),
+    # [claude-9b-think] 2026-10-27 (owner 12:35) our controller button pictures in the buttons' own colors.
+    # [claude-setup] 2026-11-03 (owner: by default the buttons as the original, a toggle for customized colors,
+    # "also add rainbow option"): was the cod3_glyph_colors checkbox (off: the gold key-cap style).
+    Setting("cod3_glyph_color_mode", "Button colors",
+            "The colors of the prompts' button pictures: like the controller's own (the key caps in the game's "
+            "gold), your own colors (set in the game's F2 > Game > Prompts), slowly round the rainbow, stepping "
+            "through World at War's ^ colors like its rainbow names, or the gold key-cap style for controller "
+            "buttons too.",
+            "choice", (("original", "Original (like the controller's own)"), ("custom", "Custom (set in F2)"),
+                       ("rainbow", "Rainbow (smooth)"),
+                       ("rainbow_codes", "Rainbow (^ colors)"),  # [claude-setup] 2026-11-03 "Both as choices"
+                       ("gold", "Gold, like the key caps")), default="original"),
 ]
 BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
 

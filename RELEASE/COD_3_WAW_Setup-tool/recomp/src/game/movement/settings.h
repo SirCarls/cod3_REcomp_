@@ -35,6 +35,11 @@ int MoveStepHz();            // cod3_move_hz (0 = one move a frame) [acct2-main]
 // the player's own choice).
 MoveRules LocalRules();
 
+// [claude-9b-think] 2026-11-02 UNTESTED The movement steps that apply with `rules`, as the Pmove hook picks them
+// (hooks_sp.cpp): CoD4 PC's 8 ms steps, cod3_move_hz's (with cod3_move_hz_sync) or one a frame. For F2's "Steps" line
+// and the log line when what applies changes.
+std::string DescribeSteps(const MoveRules& rules);
+
 // --- the rows (F2 and the game's menus) ------------------------------------------
 enum Row : int {
   kRowSprint,        // SPRINT                 ON / OFF

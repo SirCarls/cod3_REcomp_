@@ -42,6 +42,7 @@ REXCVAR_DEFINE_INT32(cod3_move_hz, 60, "cod3/Movement",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_movement, false, "cod3",
                     "Log the player's movement 4 times a second (position, speed, stamina, sprint, rules)");
+REXCVAR_DECLARE(bool, cod3_move_hz_sync);  // [claude-9b-think] game/server_step.cpp (DescribeSteps)
 
 
 namespace cod3::movement {
@@ -110,6 +111,16 @@ MoveRules LocalRules() {
   return EffectiveRules(pd::Get(pd::Id::kAlternateMovement), host, OwnPreference(), SprintSetting());
 }
 
+std::string DescribeSteps(const MoveRules& rules) {  // [claude-9b-think] 2026-11-02 UNTESTED
+  if (rules.Cod4Steps() && kProgram.pmove.pmove_fixed != 0 && kProgram.update_view_angles != 0)
+    return "CoD4 PC's 8 ms steps (125 a second) at any frame rate, the velocity rounded after each";
+  const int hz = MoveStepHz();
+  if (hz <= 0 || kProgram.update_view_angles == 0)
+    return "one a frame with the frame's time, as the game (cod3_move_hz 0)";
+  return std::to_string(hz) + " a second at any frame rate (cod3_move_hz), cod3_move_hz_sync " +
+         (REXCVAR_GET(cod3_move_hz_sync) ? "on" : "off");
+}
+
 // ---------------------------------------------------------------------------
 // The rows
 // ---------------------------------------------------------------------------
@@ -169,6 +180,9 @@ std::string RowLock(int row) {
   if (row >= kRowStyle && ServerDecidesStyle()) return "Set by the server in this match.";
   if (row >= kRowCod4Sprint && row <= kRowCod4Jumps && !OwnPreference().cod4)
     return "Only with the Call of Duty 4 movement style.";
+  // [claude-9b-think] 2026-11-02 UNTESTED CoD4 sprint is a kind of sprint: with SPRINT off there is none (SprintAllowed),
+  // so the row did nothing while it showed ON.
+  if (row == kRowCod4Sprint && !SprintSetting()) return "Only with SPRINT on.";
   return "";
 }
 
@@ -230,8 +244,10 @@ bool TwoValueRow(int row, const char* label, const char* off_text, const char* o
 // when no match's server sets it).
 static bool ResetMovementSettings() {
   bool changed = false;
+  // [claude-9b-think] 2026-11-02 UNTESTED also the movement steps (cod3_move_hz, cod3_move_hz_sync: no row, set in
+  // the console or cod3.toml), which the reset left as they were.
   for (const char* name : {"cod3_sprint", "cod3_sprint_toggle", "cod3_cod4_movement", "cod3_cod4_sprint",
-                           "cod3_cod4_speeds", "cod3_cod4_jumps"}) {
+                           "cod3_cod4_speeds", "cod3_cod4_jumps", "cod3_move_hz", "cod3_move_hz_sync"}) {
     const auto* info = rex::cvar::GetFlagInfo(name);
     if (!info || rex::cvar::GetFlagByName(name) == info->default_value) continue;
     changed |= rex::cvar::SetFlagByName(name, info->default_value);
@@ -264,6 +280,7 @@ bool DrawF2Section() {
   }
   const MoveRules effective = LocalRules();
   ImGui::Text("Now: %s", Describe(effective).c_str());
+  ImGui::TextDisabled("Steps: %s", DescribeSteps(effective).c_str());  // [claude-9b-think] 2026-11-02 UNTESTED
   ImGui::Spacing();
 
   if (kProgram.sprint_is_a_setting)

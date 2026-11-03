@@ -1,0 +1,705 @@
+[claude-setup] SDK 0209, synced to the project folder in setup tool 2.27.0 (2026-11-03, folder only; owner ~08:05
+"Please sync the folder with stuff that works", answer "Add tested extras, folder only"). claude-9b-think's draft 0209
+(c9b-think/owner-1102/0209-system-link-copies-on-one-pc.UNTESTED.patch, md5 b2abfa34) and its r1
+(0209-r1-system-link-trace-and-xuid.UNTESTED.diff, eec26ded) folded into one diff. The three files come out byte for
+byte as in claude-9b-test's tested tree ob29d before 0210 (xam_net.cpp ffcdbdd0, xgi_app.cpp 7a3ddc43,
+user_profile.cpp 74f9e7a1).
+What it does: system link between copies of cod3mp on one PC. A loopback net_interface (127.0.0.N) is that copy's
+system link address; binds to "any address" go to it; an unbound datagram socket is bound to it before its first send;
+broadcasts also go as unicast to each net_broadcast_peers address (new, Net, default empty), and with a loopback address
+the real broadcast is skipped. net_trace (Net, default off) logs the network calls and datagrams. With a loopback
+net_interface the XUID's low 32 bits are that address (one XUID per copy); LAN addresses keep the old XUID.
+XSessionLeaveLocal/Remote (0xB0013) answered; session create/join/leave/delete logged. Real LANs are unchanged unless
+net_broadcast_peers is set.
+Tested with 0210: claude-9b-test q-22 (ob29d, 2026-11-03 04:45: host and joiner both PASSED on mp_merv) and
+claude-setup's sync1103 build and runs (dev/agents/claude-setup/SYNC-2026-11-03.md). The "UNTESTED" marks in the code
+comments are from the drafts.
+
+diff --git a/src/kernel/xam/apps/xgi_app.cpp b/src/kernel/xam/apps/xgi_app.cpp
+index 33858a7..a3affb5 100644
+--- a/src/kernel/xam/apps/xgi_app.cpp
++++ b/src/kernel/xam/apps/xgi_app.cpp
+@@ -9,7 +9,10 @@
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
+ #include <cstring>
++#include <mutex>
++#include <unordered_map>
+ 
+ #include <rex/kernel/xam/apps/xgi_app.h>
+ #include <rex/kernel/xam/xnet.h>
+@@ -26,6 +29,43 @@ using namespace rex::system;
+ 
+ XgiApp::XgiApp(KernelState* kernel_state) : App(kernel_state, 0xFB) {}
+ 
++namespace {
++
++// [claude-9b-think] 0209: how many players each session holds as far as its
++// joins and leaves went through here (for the log: tests read the counts).
++struct SessionCount {
++  int local = 0;
++  int remote = 0;
++};
++
++std::mutex& SessionCountsMutex() {
++  static std::mutex mutex;
++  return mutex;
++}
++
++std::unordered_map<uint32_t, SessionCount>& SessionCounts() {
++  static std::unordered_map<uint32_t, SessionCount> counts;
++  return counts;
++}
++
++// Adds `delta` local or remote players to the session at `session_ptr` and
++// logs the totals. A count never goes below 0; at most 64 sessions are kept.
++void CountSessionPlayers(uint32_t session_ptr, bool local, int delta, const char* what) {
++  std::lock_guard<std::mutex> lock(SessionCountsMutex());
++  auto& counts = SessionCounts();
++  if (!counts.count(session_ptr) && counts.size() >= 64) {
++    counts.clear();
++  }
++  SessionCount& count = counts[session_ptr];
++  int& field = local ? count.local : count.remote;
++  field = std::max(0, field + delta);
++  REXKRNL_INFO("XSession {:08X}: {} {} player(s) {}; now {} local and {} remote", session_ptr,
++               delta < 0 ? -delta : delta, local ? "local" : "remote", what, count.local,
++               count.remote);
++}
++
++}  // namespace
++
+ // http://mb.mirage.org/bugzilla/xliveless/main.c
+ 
+ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+@@ -122,6 +162,10 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       // comes from the host. Either way its key is registered with XNet.
+       constexpr uint32_t kSessionCreateHost = 0x00000001;
+       bool host = (flags & kSessionCreateHost) != 0;
++      // [claude-9b-think] 0209: at info level, for tests that read the log.
++      REXKRNL_INFO("XSession {:08X}: {} ({} public and {} private slots, flags {:08X})",
++                   session_ptr, host ? "created here (host)" : "joined (another PC hosts it)",
++                   num_slots_public, num_slots_private, flags);
+       if (session_info_ptr &&
+           xnet::GuestRangeValid(session_info_ptr, sizeof(X_XSESSION_INFO), host)) {
+         auto info = memory_->TranslateVirtual<X_XSESSION_INFO*>(session_info_ptr);
+@@ -151,6 +195,12 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       uint64_t session_nonce = memory::load_and_swap<uint64_t>(buffer + 8);
+ 
+       REXKRNL_DEBUG("XGISessionDelete({:08X}, {:08X}, {:016X})", obj_ptr, flags, session_nonce);
++      {
++        // [claude-9b-think] 0209
++        std::lock_guard<std::mutex> lock(SessionCountsMutex());
++        SessionCounts().erase(obj_ptr);
++      }
++      REXKRNL_INFO("XSession {:08X}: deleted", obj_ptr);
+ 
+       return X_E_SUCCESS;
+     }
+@@ -166,6 +216,23 @@ X_HRESULT XgiApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       REXKRNL_DEBUG("{}({:08X}, {}, {}, {:08X}, {:08X})",
+                     is_local ? "XGISessionJoinLocal" : "XGISessionJoinRemote", session_ptr,
+                     user_count, xuid_array_ptr, user_index_array, private_slots_array);
++      // [claude-9b-think] 0209: the session's player count, for the log.
++      CountSessionPlayers(session_ptr, is_local, static_cast<int>(std::min(user_count, 64u)),
++                          "joined");
++      return X_E_SUCCESS;
++    }
++    case 0x000B0013: {
++      // [claude-9b-think] 0209: XSessionLeaveLocal / XSessionLeaveRemote (the
++      // same 20-byte block as the joins; remote players by XUID, local ones by
++      // user index). Nothing to do between PCs; failing it was logged as an
++      // unimplemented message.
++      assert_true(!buffer_length || buffer_length == 20);
++      uint32_t session_ptr = memory::load_and_swap<uint32_t>(buffer + 0);
++      uint32_t user_count = memory::load_and_swap<uint32_t>(buffer + 4);
++      uint32_t xuid_array_ptr = memory::load_and_swap<uint32_t>(buffer + 8);
++      bool is_local = xuid_array_ptr == 0;
++      CountSessionPlayers(session_ptr, is_local, -static_cast<int>(std::min(user_count, 64u)),
++                          "left");
+       return X_E_SUCCESS;
+     }
+     case 0x000B0014: {
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 09fa742..87903fd 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -26,6 +26,8 @@
+ #include <sys/select.h>
+ #endif
+ 
++#include <fmt/format.h>  // [claude-9b-think] 0209 r1: net_trace
++
+ #include <rex/chrono/clock.h>
+ #include <rex/cvar.h>
+ #include <rex/kernel/xam/xnet.h>
+@@ -58,11 +60,24 @@
+ REXCVAR_DEFINE_STRING(net_interface, "", "Net",
+                       "System link: the network to play on. Empty picks the interface of the "
+                       "default route; otherwise an IPv4 address of this PC or an interface name "
+-                      "(names on Linux only)");
++                      "(names on Linux only). A loopback address (127.0.0.2, ...) gives each copy "
++                      "of the game on this PC its own system link address");
+ REXCVAR_DEFINE_BOOL(net_lan_only, true, "Net",
+                     "System link: exchange packets only with local network addresses (private, "
+                     "link-local and the chosen interface's subnet). Turn off to play over the "
+                     "internet, for example with a forwarded port");
++// [claude-9b-think] 0209: system link between copies on one PC (and past a router).
++REXCVAR_DEFINE_STRING(net_broadcast_peers, "", "Net",
++                      "System link: IPv4 addresses, separated by commas, that also get every "
++                      "broadcast the game sends (finding games), as one packet each. For copies "
++                      "on one PC (127.0.0.1,127.0.0.2,...) and for PCs a broadcast can't reach (a "
++                      "VPN, another subnet). Empty: the broadcast only");
++// [claude-9b-think] 0209 r1 (UNTESTED): what system link does, for finding why a join hangs.
++REXCVAR_DEFINE_BOOL(net_trace, false, "Net",
++                    "System link: log the XNet address calls (XNADDR to address and back, keys, "
++                    "connects and connect status, QoS targets) and the first datagrams each way "
++                    "for every port and peer, with each drop and send error, and a count per "
++                    "port and peer every 10 s");
+ 
+ namespace rex {
+ namespace kernel {
+@@ -243,6 +258,10 @@ struct TitleAddress {
+   uint32_t netmask = 0xFF000000;
+   bool broadcast = false;
+   bool lan = false;  // false when only the loopback address was found
++  // [claude-9b-think] 0209: net_interface is a loopback address (copies on one
++  // PC): sockets the guest binds to "any" address are bound to it instead,
++  // and broadcasts go to net_broadcast_peers only (loopback has none).
++  bool loopback = false;
+ };
+ 
+ struct KeyEntry {
+@@ -334,6 +353,17 @@ TitleAddress PickTitleAddress(const std::string& choice, std::string* note) {
+   if (!choice.empty()) {
+     uint32_t wanted = 0;
+     bool by_address = rex::net::parse_ipv4(choice, &wanted);
++    if (by_address && rex::net::ipv4_is_loopback(wanted)) {
++      // [claude-9b-think] 0209: chosen on purpose, for copies of the game on
++      // this PC: every address of 127.0.0.0/8 is this PC's.
++      *note = "net_interface, a loopback address: system link with other copies on this PC";
++      TitleAddress title;
++      title.addr = wanted;
++      title.netmask = 0xFF000000;
++      title.lan = true;
++      title.loopback = true;
++      return title;
++    }
+     for (auto& entry : usable) {
+       if (by_address ? entry.address == wanted : entry.name == choice) {
+         *note = "net_interface";
+@@ -417,6 +447,160 @@ bool PeerAllowed(uint32_t addr, const char* what) {
+   return false;
+ }
+ 
++// [claude-9b-think] 0209: the chosen address (a copy, for use without the lock).
++TitleAddress TitleNow() {
++  auto& state = State();
++  std::lock_guard<std::mutex> lock(state.mutex);
++  return CurrentTitle(state);
++}
++
++// [claude-9b-think] 0209: net_broadcast_peers, parsed (at most 32 addresses;
++// anything that isn't a dotted-quad address is skipped). Read at every
++// broadcast: the game broadcasts only while it looks for games.
++std::vector<uint32_t> BroadcastPeers() {
++  std::vector<uint32_t> peers;
++  std::string list = REXCVAR_GET(net_broadcast_peers);
++  size_t pos = 0;
++  while (pos <= list.size() && peers.size() < 32) {
++    size_t end = list.find_first_of(", ;", pos);
++    if (end == std::string::npos) {
++      end = list.size();
++    }
++    uint32_t addr = 0;
++    if (end > pos && rex::net::parse_ipv4(std::string_view(list).substr(pos, end - pos), &addr) &&
++        addr && addr != rex::net::kIpv4Broadcast && !rex::net::ipv4_is_multicast(addr) &&
++        std::find(peers.begin(), peers.end(), addr) == peers.end()) {
++      peers.push_back(addr);
++    }
++    pos = end + 1;
++  }
++  return peers;
++}
++
++// [claude-9b-think] 0209 r1: net_trace. Datagrams are counted per flow (this socket's port, the peer's
++// address and port, the direction); the first 3 of each flow are logged with their first 12 bytes, every
++// drop and send error is logged, and every 10 s one line counts each flow. At most 64 flows (later ones are
++// neither counted nor logged, but their drops and errors). XNet calls are logged by their entry points below.
++bool Tracing() {
++  return REXCVAR_GET(net_trace);
++}
++
++std::string KidText(const X_XNKID& kid) {
++  std::string text;
++  for (uint8_t b : kid.ab) {
++    text += fmt::format("{:02X}", b);
++  }
++  return text;
++}
++
++std::string XnAddrText(const X_XNADDR& xnaddr) {
++  return fmt::format("ina {} enet {:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
++                     rex::net::format_ipv4(xnaddr.ina), xnaddr.enet[0], xnaddr.enet[1],
++                     xnaddr.enet[2], xnaddr.enet[3], xnaddr.enet[4], xnaddr.enet[5]);
++}
++
++struct TraceFlow {
++  bool out = false;
++  uint16_t local_port = 0;
++  uint32_t peer = 0;
++  uint16_t peer_port = 0;
++  uint64_t packets = 0;
++  uint64_t bytes = 0;
++  uint32_t logged = 0;
++};
++
++struct TraceState {
++  std::mutex mutex;
++  std::vector<TraceFlow> flows;
++  std::chrono::steady_clock::time_point last_summary{};
++  std::vector<std::pair<uint32_t, uint32_t>> status;  // address, last connect status logged
++  uint32_t title_logged = 0;
++};
++
++TraceState& Trace() {
++  static TraceState trace;
++  return trace;
++}
++
++void TraceDatagram(bool out, const XSocket* socket, uint32_t peer, uint16_t peer_port,
++                   const uint8_t* data, uint32_t length, const char* note) {
++  if (!Tracing()) {
++    return;
++  }
++  auto& trace = Trace();
++  std::lock_guard<std::mutex> lock(trace.mutex);
++  const uint16_t local_port = socket->bound_port();
++  TraceFlow* flow = nullptr;
++  for (auto& f : trace.flows) {
++    if (f.out == out && f.local_port == local_port && f.peer == peer && f.peer_port == peer_port) {
++      flow = &f;
++      break;
++    }
++  }
++  if (!flow && trace.flows.size() < 64) {
++    trace.flows.emplace_back();
++    flow = &trace.flows.back();
++    flow->out = out;
++    flow->local_port = local_port;
++    flow->peer = peer;
++    flow->peer_port = peer_port;
++  }
++  if (flow && !note) {
++    ++flow->packets;
++    flow->bytes += length;
++  }
++  if (note || (flow && flow->logged < 3)) {
++    if (flow && !note) {
++      ++flow->logged;
++    }
++    std::string head;
++    for (uint32_t i = 0; data && i < length && i < 12; ++i) {
++      head += fmt::format("{:02X}", data[i]);
++    }
++    REXKRNL_INFO("XNet trace: {} port {} {} {}:{}, {} bytes{} [{}]{}{}", out ? "send" : "recv",
++                 local_port, out ? "->" : "<-", rex::net::format_ipv4(peer), peer_port, length,
++                 socket->is_vdp() ? " (VDP)" : "", head, note ? ": " : "", note ? note : "");
++  }
++  auto now = std::chrono::steady_clock::now();
++  if (now - trace.last_summary >= std::chrono::seconds(10)) {
++    trace.last_summary = now;
++    std::string line;
++    for (auto& f : trace.flows) {
++      if (f.packets) {
++        line += fmt::format(" [port {} {} {}:{}: {} packets, {} bytes]", f.local_port,
++                            f.out ? "->" : "<-", rex::net::format_ipv4(f.peer), f.peer_port,
++                            f.packets, f.bytes);
++      }
++      f.packets = 0;
++      f.bytes = 0;
++    }
++    REXKRNL_INFO("XNet trace: the last 10 s by port and peer:{}", line.empty() ? " nothing" : line);
++  }
++}
++
++// Logs a peer's connect status when it differs from the last one logged for that address.
++void TraceStatus(uint32_t ina, uint32_t status) {
++  if (!Tracing()) {
++    return;
++  }
++  auto& trace = Trace();
++  std::lock_guard<std::mutex> lock(trace.mutex);
++  for (auto& entry : trace.status) {
++    if (entry.first == ina) {
++      if (entry.second != status) {
++        entry.second = status;
++        REXKRNL_INFO("XNet trace: XNetGetConnectStatus({}) is now {}", rex::net::format_ipv4(ina),
++                     status);
++      }
++      return;
++    }
++  }
++  if (trace.status.size() < 64) {
++    trace.status.emplace_back(ina, status);
++  }
++  REXKRNL_INFO("XNet trace: XNetGetConnectStatus({}) = {}", rex::net::format_ipv4(ina), status);
++}
++
+ // The XNADDR of the PC at `ina`. The console's MAC address field is how the
+ // game tells players apart, so it is made from the address: every PC
+ // computes the same XNADDR for a peer from its address alone.
+@@ -546,9 +730,21 @@ int SendDatagram(XSocket* socket, const uint8_t* data, uint32_t length, uint32_t
+     return -1;
+   }
+   if (socket->is_vdp() && !VdpHeaderValid(data, length)) {
++    TraceDatagram(true, socket, to ? to->addr : 0, to ? to->port : 0, data, length,
++                  "refused: bad VDP header");  // [claude-9b-think] 0209 r1
+     SetError(wsa::kEinval);
+     return -1;
+   }
++  const TitleAddress title = TitleNow();
++  if (title.loopback && !socket->bound_port()) {
++    // [claude-9b-think] 0209: a socket the guest never bound sends from this
++    // copy's own address (else the host would pick 127.0.0.1 for every copy).
++    uint32_t bind_error = socket->Bind({title.addr, 0});
++    if (bind_error) {
++      REXKRNL_WARN("XNet: binding an unbound socket to {} failed (Winsock error {})",
++                   rex::net::format_ipv4(title.addr), bind_error);
++    }
++  }
+   SockAddrV4 target;
+   if (to) {
+     target = *to;
+@@ -557,19 +753,45 @@ int SendDatagram(XSocket* socket, const uint8_t* data, uint32_t length, uint32_t
+         SetError(wsa::kEacces);
+         return -1;
+       }
++      // [claude-9b-think] 0209: the broadcast also goes to each address of
++      // net_broadcast_peers but this copy's own, as a plain packet.
++      for (uint32_t peer : BroadcastPeers()) {
++        if (peer == title.addr || !PeerAllowed(peer, "send to")) {
++          continue;
++        }
++        SockAddrV4 unicast{peer, target.port};
++        uint32_t peer_error = 0;
++        int sent = socket->SendTo(data, length, flags, &unicast, &peer_error);
++        // [claude-9b-think] 0209 r1
++        TraceDatagram(true, socket, peer, target.port, data, length,
++                      sent < 0 ? "broadcast copy failed" : "broadcast copy");
++      }
++      if (title.loopback) {
++        // Loopback has no broadcast: the packets above are all there is.
++        return static_cast<int>(length);
++      }
+       // Send the broadcast on the chosen interface's network.
+-      auto& state = State();
+-      std::lock_guard<std::mutex> lock(state.mutex);
+-      target.addr = DirectedBroadcast(CurrentTitle(state));
++      target.addr = DirectedBroadcast(title);
+     }
+     if (!PeerAllowed(target.addr, "send to")) {
++      TraceDatagram(true, socket, target.addr, target.port, data, length,
++                    "refused: not a local network address");  // [claude-9b-think] 0209 r1
+       SetError(wsa::kEhostunreach);
+       return -1;
+     }
+   }
+   int ret = socket->SendTo(data, length, flags, to ? &target : nullptr, &error);
+   if (ret < 0) {
++    // [claude-9b-think] 0209 r1
++    if (Tracing() && error != wsa::kEwouldblock) {
++      std::string note = fmt::format("send failed (Winsock error {})", error);
++      TraceDatagram(true, socket, to ? target.addr : 0, to ? target.port : 0, data, length,
++                    note.c_str());
++    }
+     SetError(error);
++  } else {
++    TraceDatagram(true, socket, to ? target.addr : 0, to ? target.port : 0, data, length,
++                  nullptr);  // [claude-9b-think] 0209 r1
+   }
+   return ret;
+ }
+@@ -579,9 +801,22 @@ int SendDatagram(XSocket* socket, const uint8_t* data, uint32_t length, uint32_t
+ namespace xnet {
+ 
+ void GetTitleXnAddr(X_XNADDR* out) {
+-  auto& state = State();
+-  std::lock_guard<std::mutex> lock(state.mutex);
+-  *out = MakeXnAddr(CurrentTitle(state).addr);
++  uint32_t addr = 0;
++  {
++    auto& state = State();
++    std::lock_guard<std::mutex> lock(state.mutex);
++    addr = CurrentTitle(state).addr;
++    *out = MakeXnAddr(addr);
++  }
++  // [claude-9b-think] 0209 r1: what this copy tells the others it is (discovery replies carry it).
++  if (Tracing()) {
++    auto& trace = Trace();
++    std::lock_guard<std::mutex> lock(trace.mutex);
++    if (trace.title_logged != addr) {
++      trace.title_logged = addr;
++      REXKRNL_INFO("XNet trace: XNetGetTitleXnAddr = {}", XnAddrText(MakeXnAddr(addr)));
++    }
++  }
+ }
+ 
+ void CreateKey(X_XNKID* kid, X_XNKEY* key) {
+@@ -595,6 +830,9 @@ void CreateKey(X_XNKID* kid, X_XNKEY* key) {
+   std::lock_guard<std::mutex> lock(state.mutex);
+   state.created_kid = *kid;
+   state.has_created_kid = true;
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetCreateKey -> kid {}", KidText(*kid));
++  }
+ }
+ 
+ uint32_t RegisterKey(const X_XNKID& kid, const X_XNKEY& key) {
+@@ -610,6 +848,10 @@ uint32_t RegisterKey(const X_XNKID& kid, const X_XNKEY& key) {
+     state.keys.erase(state.keys.begin());
+   }
+   state.keys.push_back({kid, key});
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetRegisterKey kid {} ({} key(s) registered)", KidText(kid),
++                 state.keys.size());
++  }
+   return 0;
+ }
+ 
+@@ -958,6 +1200,10 @@ u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, u32 xnaddr_ptr, u32 kid_ptr, u32
+   std::memcpy(&kid, GuestBytes(kid_ptr), sizeof(kid));
+   uint32_t ina = xnaddr.ina;
+   if (!ina || !PeerAllowed(ina, "peer")) {
++    if (Tracing()) {  // [claude-9b-think] 0209 r1
++      REXKRNL_INFO("XNet trace: XNetXnAddrToInAddr({}, kid {}) refused", XnAddrText(xnaddr),
++                   KidText(kid));
++    }
+     return wsa::kEinval;
+   }
+   {
+@@ -966,6 +1212,10 @@ u32 NetDll_XNetXnAddrToInAddr_entry(u32 caller, u32 xnaddr_ptr, u32 kid_ptr, u32
+     AddPeer(state, ina, xnaddr, kid);
+   }
+   memory::store_and_swap<uint32_t>(GuestBytes(in_addr_ptr), ina);
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetXnAddrToInAddr({}, kid {}) -> {}", XnAddrText(xnaddr),
++                 KidText(kid), rex::net::format_ipv4(ina));
++  }
+   return 0;
+ }
+ 
+@@ -978,10 +1228,14 @@ u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, u32 xnaddr_ptr, u32
+     return wsa::kEfault;
+   }
+   if (!in_addr || !PeerAllowed(in_addr, "peer")) {
++    if (Tracing()) {  // [claude-9b-think] 0209 r1
++      REXKRNL_INFO("XNet trace: XNetInAddrToXnAddr({}) refused", rex::net::format_ipv4(in_addr));
++    }
+     return wsa::kEinval;
+   }
+   XNADDR xnaddr;
+   X_XNKID kid;
++  const char* how = "a known peer";  // [claude-9b-think] 0209 r1
+   {
+     auto& state = State();
+     std::lock_guard<std::mutex> lock(state.mutex);
+@@ -992,8 +1246,14 @@ u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, u32 xnaddr_ptr, u32
+       // The newest registered key is the session's; failing that, the
+       // newest key made here.
+       if (state.keys.empty() && !state.has_created_kid) {
++        if (Tracing()) {  // [claude-9b-think] 0209 r1: the game then refuses the player
++          REXKRNL_INFO("XNet trace: XNetInAddrToXnAddr({}) refused: no key registered or made",
++                       rex::net::format_ipv4(in_addr));
++        }
+         return wsa::kEinval;
+       }
++      how = state.keys.empty() ? "a new peer, with the newest key made here"
++                               : "a new peer, with the newest registered key";
+       const X_XNKID& newest = state.keys.empty() ? state.created_kid : state.keys.back().kid;
+       peer = &AddPeer(state, in_addr, MakeXnAddr(in_addr), newest);
+       REXKRNL_DEBUG("XNet: new peer {}", rex::net::format_ipv4(in_addr));
+@@ -1001,6 +1261,10 @@ u32 NetDll_XNetInAddrToXnAddr_entry(u32 caller, u32 in_addr, u32 xnaddr_ptr, u32
+     xnaddr = peer->xnaddr;
+     kid = peer->kid;
+   }
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetInAddrToXnAddr({}) -> {}, kid {} ({})",
++                 rex::net::format_ipv4(in_addr), XnAddrText(xnaddr), KidText(kid), how);
++  }
+   std::memcpy(GuestBytes(xnaddr_ptr), &xnaddr, sizeof(xnaddr));
+   if (kid_ptr) {
+     std::memcpy(GuestBytes(kid_ptr), &kid, sizeof(kid));
+@@ -1032,11 +1296,15 @@ u32 NetDll_XNetUnregisterInAddr_entry(u32 caller, u32 in_addr) {
+     return wsa::kEinval;
+   }
+   state.peers.erase(it);
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetUnregisterInAddr({})", rex::net::format_ipv4(in_addr));
++  }
+   return 0;
+ }
+ 
+ // There is no key exchange between PCs: a known peer is connected at once.
+-u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) {
++// [claude-9b-think] 0209 r1: traced; the answers are unchanged.
++static u32 XNetConnectAnswer(u32 in_addr) {
+   if (rex::net::ipv4_is_loopback(in_addr)) {
+     return 0;
+   }
+@@ -1050,7 +1318,15 @@ u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) {
+   return 0;
+ }
+ 
+-u32 NetDll_XNetGetConnectStatus_entry(u32 caller, u32 in_addr) {
++u32 NetDll_XNetConnect_entry(u32 caller, u32 in_addr) {
++  u32 result = XNetConnectAnswer(in_addr);
++  if (Tracing()) {
++    REXKRNL_INFO("XNet trace: XNetConnect({}) = {}", rex::net::format_ipv4(in_addr), result);
++  }
++  return result;
++}
++
++static u32 XNetConnectStatusAnswer(u32 in_addr) {
+   if (rex::net::ipv4_is_loopback(in_addr)) {
+     return kConnectStatusConnected;
+   }
+@@ -1061,6 +1337,12 @@ u32 NetDll_XNetGetConnectStatus_entry(u32 caller, u32 in_addr) {
+   return FindPeer(state, in_addr) ? kConnectStatusConnected : kConnectStatusLost;
+ }
+ 
++u32 NetDll_XNetGetConnectStatus_entry(u32 caller, u32 in_addr) {
++  u32 status = XNetConnectStatusAnswer(in_addr);
++  TraceStatus(in_addr, status);
++  return status;
++}
++
+ u32 NetDll_XNetCreateKey_entry(u32 caller, u32 kid_ptr, u32 key_ptr) {
+   if (!GuestRangeValid(kid_ptr, sizeof(X_XNKID), true) ||
+       !GuestRangeValid(key_ptr, sizeof(X_XNKEY), true)) {
+@@ -1101,9 +1383,14 @@ u32 NetDll_XNetUnregisterKey_entry(u32 caller, u32 kid_ptr) {
+                                   [&](const KeyEntry& entry) { return same_kid(entry.kid); }),
+                    state.keys.end());
+   // Peers reached through that key go with it, as on the console.
++  const size_t peers_before = state.peers.size();  // [claude-9b-think] 0209 r1
+   state.peers.erase(std::remove_if(state.peers.begin(), state.peers.end(),
+                                    [&](const PeerEntry& peer) { return same_kid(peer.kid); }),
+                     state.peers.end());
++  if (Tracing()) {  // [claude-9b-think] 0209 r1
++    REXKRNL_INFO("XNet trace: XNetUnregisterKey kid {}: {} peer(s) forgotten, {} key(s) left",
++                 KidText(kid), peers_before - state.peers.size(), state.keys.size());
++  }
+   return 0;
+ }
+ 
+@@ -1257,6 +1544,11 @@ u32 NetDll_XNetQosLookup_entry(u32 caller, u32 xnaddr_count, u32 xnaddrs_ptr, u3
+       info.up_bits_per_sec = kQosBitsPerSec;
+       info.down_bits_per_sec = kQosBitsPerSec;
+     }
++    if (Tracing()) {  // [claude-9b-think] 0209 r1
++      REXKRNL_INFO("XNet trace: XNetQosLookup target {} of {}: {} {}", i + 1, count,
++                   rex::net::format_ipv4(ina),
++                   (info.flags & kQosTargetContacted) ? "contacted" : "not contacted");
++    }
+   }
+   {
+     auto& state = State();
+@@ -1402,8 +1694,24 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, u32 name_ptr, u32 namelen)
+   // Bound exactly where the guest asks.
+   SockAddrV4 name;
+   uint32_t error = ReadGuestSockaddr(name_ptr, namelen, &name);
++  if (!error && !name.addr) {
++    // [claude-9b-think] 0209: with a loopback net_interface, "any address" is
++    // this copy's own, so copies on one PC can each have ports 3074 and 50000.
++    const TitleAddress title = TitleNow();
++    if (title.loopback) {
++      REXKRNL_INFO("XNet: socket bound to {}:{} (net_interface) instead of any address",
++                   rex::net::format_ipv4(title.addr), name.port);
++      name.addr = title.addr;
++    }
++  }
+   if (!error) {
+     error = socket->Bind(name);
++    if (error == wsa::kEaddrinuse) {
++      // [claude-9b-think] 0209: the cause is nearly always a second copy.
++      REXKRNL_WARN("XNet: bind to {}:{} failed: address in use (another copy of the game on "
++                   "this PC? give each copy its own net_interface, 127.0.0.2 and so on)",
++                   rex::net::format_ipv4(name.addr), name.port);
++    }
+   }
+   if (error) {
+     SetError(error);
+@@ -1642,18 +1950,31 @@ u32 NetDll_recvfrom_entry(u32 caller, u32 socket_handle, u32 buf_ptr, u32 buf_le
+     uint32_t full_len = 0;
+     int ret = socket->RecvFrom(buf, buf_len, flags, &from, &error, &full_len);
+     if (ret < 0 && error != wsa::kEmsgsize) {
++      if (Tracing() && error != wsa::kEwouldblock) {  // [claude-9b-think] 0209 r1
++        REXKRNL_INFO("XNet trace: recv port {} failed (Winsock error {})", socket->bound_port(),
++                     error);
++      }
+       SetError(error);
+       return -1;
+     }
+     bool drop = false;
++    const char* why = nullptr;  // [claude-9b-think] 0209 r1
+     if (datagram) {
+       if (!PeerAllowed(from.addr, "packet from")) {
+         drop = true;
++        why = "dropped: not a local network address";
+       } else if (socket->is_vdp() && buf_len >= 2 && full_len) {
+         // The header is checked against the datagram's real length.
+         drop = !VdpHeaderValid(buf, full_len);
++        why = "dropped: bad VDP header";
+       }
+     }
++    if (datagram) {  // [claude-9b-think] 0209 r1
++      // (The length passed is at most the guest's buffer: the first bytes logged are read from it.)
++      TraceDatagram(false, socket.get(), from.addr, from.port, buf,
++                    ret < 0 ? std::min<uint32_t>(full_len, buf_len) : static_cast<uint32_t>(ret),
++                    drop ? why : nullptr);
++    }
+     if (drop) {
+       if (flags & wsa::kMsgPeek) {
+         // A peeked datagram is still queued: read it to discard it.
+diff --git a/src/system/xam/user_profile.cpp b/src/system/xam/user_profile.cpp
+index a77f5e6..e0c8cdc 100644
+--- a/src/system/xam/user_profile.cpp
++++ b/src/system/xam/user_profile.cpp
+@@ -13,10 +13,15 @@
+ 
+ #include <fmt/format.h>
+ 
++#include <rex/cvar.h>
+ #include <rex/logging.h>
++#include <rex/net/socket.h>
+ #include <rex/system/kernel_state.h>
+ #include <rex/system/xam/user_profile.h>
+ 
++// [claude-9b-think] 0209 r1 (UNTESTED): xam_net.cpp's system link address setting.
++REXCVAR_DECLARE(std::string, net_interface);
++
+ namespace rex {
+ namespace system {
+ namespace xam {
+@@ -26,6 +31,19 @@ UserProfile::UserProfile() {
+   // if non-zero, it prevents the user from playing the game.
+   // "You do not have permissions to perform this operation."
+   xuid_ = 0xB13EBABEBABEBABE;
++  // [claude-9b-think] 0209 r1: every copy had this same XUID, so two copies in one system link game were
++  // the same player to anything that compares XUIDs. With net_interface set to a loopback address (copies
++  // on one PC: 127.0.0.2, 127.0.0.3, ...), the low 32 bits are that address, so each copy differs; the high
++  // bits (0xB13EBABE) keep the mask above clear. Only then: a LAN address is left alone for now, since
++  // anything saved under the XUID would seem lost (two PCs differ in their XNADDR anyway). Else as before.
++  {
++    uint32_t addr = 0;
++    const std::string& choice = REXCVAR_GET(net_interface);
++    if (!choice.empty() && rex::net::parse_ipv4(choice, &addr) && rex::net::ipv4_is_loopback(addr)) {
++      xuid_ = 0xB13EBABE00000000ull | addr;
++      REXSYS_INFO("XUID {:016X} (from net_interface {})", xuid_, choice);
++    }
++  }
+   name_ = "User";
+ 
+   // https://cs.rin.ru/forum/viewtopic.php?f=38&t=60668&hilit=gfwl+live&start=195

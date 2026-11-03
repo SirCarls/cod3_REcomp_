@@ -71,6 +71,8 @@
 // Pmove, the game's own (hooked below); RunCod4Steps calls it too.
 REX_EXTERN(__imp__sub_82496978);
 
+REXCVAR_DECLARE(bool, cod3_move_hz_sync);  // [claude-9b-think] game/server_step.cpp (LogMovementChange)
+
 // [claude-9b] 2026-10-27 Stairs between the movement steps (dev/agents/claude-9b-think/CAMERA_ORIGIN.md 5 (A)).
 REXCVAR_DEFINE_BOOL(cod3_move_stairs_view, true, "cod3",
                     "Walking up or down stairs above 60 fps: the camera eases each stair step once, as the game does; "
@@ -85,6 +87,20 @@ REXCVAR_DEFINE_BOOL(cod3_move_bob_smooth, true, "cod3",
 REXCVAR_DEFINE_BOOL(cod3_move_aim_smooth, true, "cod3",
                     "Above 60 fps: raising the weapon to the sights (its travel and the zoom) and leaning move in every "
                     "frame (between the movement steps, as the camera does); off: only in the movement steps")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [claude-9b-think] 2026-11-02 UNTESTED (owner 11-02: "AI not shooting above 60 fps"; ob31) A usercmd that runs no
+// movement step runs Pmove with no time; its loop runs no PmoveSingle, so the pmove_t's box (pm +272 / +288, which
+// ClientThink_real zeroes with the rest of pm at its start, memset of 336 bytes at 0x8256C468, and only PmoveSingle
+// fills) stays empty, and ClientThink_real copies it into the player's entity (+240 / +256, 0x8256C7F0) and links
+// him (0x82513198) as a point at his feet. The AI's sight test (0x824AE908) only counts a point when its entity trace
+// (0x8248A058 -> 0x825157C0: the box at entity +336, mins +240, maxs +256, contents +324 against mask 0x0280F021)
+// hits an enemy sentient before the point, and the AI's bullets find him by the same box: with an empty box neither
+// ever finds him. At 60 fps nearly every usercmd runs a step; uncapped about 3 in 4 don't (ob31: 3.4-3.7 usercmds an
+// update), so the update's AI saw him in 0 of 1368 sight tests and hit him 0 times (60 fps: 16%, 37 hits).
+REXCVAR_DEFINE_BOOL(cod3_move_keep_box, true, "cod3",
+                    "Above 60 fps: a frame that runs no movement step keeps the player's collision box from the last "
+                    "step (as the console, where every frame moves him); off: the game's empty box (the AI can't see "
+                    "or hit him between movement steps)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
@@ -122,6 +138,7 @@ thread_local MoveContext g_move;
 // usercmd that ran a step, as on the console.
 thread_local bool g_no_step = false;
 int g_no_step_skips = 0;  // calls left out (the debug log)
+uint64_t g_steps_run = 0;  // [claude-9b-think] 2026-11-02 RunHzSteps' and RunCod4Steps' steps so far (StepsRun)
 
 // CoD4 sprint's "let go of the button after running out", per client (the
 // campaign moves client 0 only).
@@ -316,6 +333,7 @@ StepVals ReadStepVals(uint8_t* base, uint32_t ps) {
 
 void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3], const StepVals& pre,
                    int start_time, int steps, int step_ms, int final_time);  // [claude-9b] below
+void KeepBox(uint8_t* base, uint32_t pm, uint32_t ps, int client, bool stepped, int final_time);  // [claude-9b-think]
 
 // Runs the game's Pmove in CoD4 PC's 8 ms steps (its own pmove_fixed loop),
 // the usercmd's time and the time left from the usercmds before. The
@@ -327,6 +345,12 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   const uint32_t cmd = Cmd(pm);
   const int final_time = g::ReadS32(base, cmd + P.cmd.server_time);
   const int command_time = g::ReadS32(base, ps + P.ps.command_time);
+  // [claude-9b-think] 2026-11-02 UNTESTED An older usercmd: the game's own call, which refuses it (as RunHzSteps does).
+  // The plan below wrote the older time into the playerState's commandTime, and the next usercmd moved that time again.
+  if (final_time < command_time) {
+    __imp__sub_82496978(ctx, base);
+    return;
+  }
   StepState& st = g_steps[client];
   if (!st.on) st.pending = 0;
   st.on = true;
@@ -348,12 +372,14 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   __imp__sub_82496978(ctx, base);  // no steps: its loop runs none
   g_move.snap = false;
   if (plan.steps == 0) g_no_step = true;  // [claude-9b]
+  KeepBox(base, pm, ps, client, plan.steps > 0, final_time);  // [claude-9b-think] 2026-11-02 UNTESTED
   g::WriteU32(base, pm + P.pmove.pmove_fixed, fixed);
   g::WriteU32(base, pm + P.pmove.pmove_msec, step_msec);
   if (plan.steps == 0) UpdateViewAngles(ctx, base, pm, ps, final_time - command_time);
   g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
   st.pending = plan.pending_after;
+  g_steps_run += static_cast<uint64_t>(plan.steps);  // [claude-9b-think] 2026-11-02 the CoD4 style's steps too
   Cod4StepsDone(base, ps, client, before, pre, plan.start_time, plan.steps, kStep, final_time);  // [claude-9b]
 }
 
@@ -377,8 +403,48 @@ struct HzSteps {
   int log_steps = 0;
   int log_cmds = 0;
   int log_time = -1000000;
+  int phase = -1;  // [claude-9b-think] the step ends' offset the last usercmd used (cod3_move_hz_sync; -1: none yet;
+                   // -2: the last steps were the CoD4 style's)
+  // [claude-9b-think] 2026-11-02 UNTESTED (cod3_move_keep_box) the pmove_t's box after the last usercmd that ran a
+  // step (mins and maxs, 4 words each, raw), the playerState it was for and that usercmd's time.
+  bool box_valid = false;
+  uint32_t box[8] = {};
+  uint32_t box_ps = 0;
+  int box_time = 0;
+  int boxes_kept = 0;  // the debug log: usercmds without a step that got it
 };
 HzSteps g_hz[mv::PlayerPreferences::kMaxClients];
+
+// [claude-9b-think] 2026-11-02 UNTESTED (cod3_move_keep_box, see the cvar) After a usercmd's Pmove: one that ran a
+// step keeps the box PmoveSingle left in the pmove_t; one that ran none (its box is still ClientThink_real's zeroes)
+// gets that box back, so ClientThink_real gives the entity the last step's box. Only a box from this playerState,
+// from at most a second before (a new level, a load, a clock started again: the game's own). Not for a program
+// whose pmove_t box isn't known (mins / maxs 0: cod3mp until its offsets are found).
+void KeepBox(uint8_t* base, uint32_t pm, uint32_t ps, int client, bool stepped, int final_time) {
+  if (P.pmove.mins == 0 || P.pmove.maxs == 0) return;
+  HzSteps& h = g_hz[client];
+  if (stepped) {
+    for (int i = 0; i < 4; ++i) {
+      h.box[i] = g::ReadU32(base, pm + P.pmove.mins + 4 * i);
+      h.box[4 + i] = g::ReadU32(base, pm + P.pmove.maxs + 4 * i);
+    }
+    // A box with no height is the game's own empty one (a step that didn't fill it): not kept.
+    h.box_valid = g::ReadF32(base, pm + P.pmove.maxs + 8) > g::ReadF32(base, pm + P.pmove.mins + 8);
+    h.box_ps = ps;
+    h.box_time = final_time;
+    return;
+  }
+  if (!REXCVAR_GET(cod3_move_keep_box) || !h.box_valid || h.box_ps != ps) return;
+  if (final_time < h.box_time || final_time - h.box_time > 1000) {
+    h.box_valid = false;
+    return;
+  }
+  for (int i = 0; i < 4; ++i) {
+    g::WriteU32(base, pm + P.pmove.mins + 4 * i, h.box[i]);
+    g::WriteU32(base, pm + P.pmove.maxs + 4 * i, h.box[4 + i]);
+  }
+  ++h.boxes_kept;
+}
 
 void ReadOrigin(uint8_t* base, uint32_t ps, float o[3]) {
   for (int i = 0; i < 3; ++i) o[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
@@ -403,12 +469,26 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
   if (final_time <= command_time || command_time < 0) {
     // Nothing to move (the game refuses an older usercmd): its own call, as before.
     __imp__sub_82496978(ctx, base);
+    // [claude-9b-think] 2026-11-02 UNTESTED a usercmd of the same time ran no step either (its box is empty)
+    if (final_time == command_time && command_time >= 0) KeepBox(base, pm, ps, client, false, final_time);
     return;
   }
   // Pmove keeps at most 1000 ms, and 50 with pm_flags 0x80000 (the time before it is dropped,
   // as the game drops it).
   const int max_span = (g::ReadU32(base, ps + P.ps.pm_flags) & 0x80000u) ? 50 : 1000;
-  int start = mv::MoveStepEndAtOrBefore(command_time, hz);
+  // [claude-9b-think] 2026-11-02 UNTESTED (cod3_move_hz_sync) The step ends moved by `o` ms so that they fall where
+  // the game's updates end (server_step.cpp MoveStepPhase): each update then sees one more step, never 0 or 2. The
+  // steps are the same 16, 17, 17 ms; only where they start changes (less than one step). 0: as before.
+  const int phase = cod3::server_step::MoveStepPhase(base, hz);
+  const int o = command_time >= phase ? phase : 0;
+  int start = o + mv::MoveStepEndAtOrBefore(command_time - o, hz);
+  // A new offset (the setting turned, the game's clock started again), or the CoD4 style's 8 ms steps before this
+  // usercmd (phase -2, Cod4StepsDone: the style switched mid-level): go on from the last step's end, so no time is
+  // moved twice or left out; the first step on the new ends is shorter.
+  if ((h.phase == -2 || (o != h.phase && h.phase >= 0)) && h.step_end >= o && h.step_end <= command_time &&
+      command_time - h.step_end <= 1000 / hz + 1)
+    start = h.step_end;
+  h.phase = o;
   if (final_time - start > max_span) start = final_time - max_span;
 
   float before[3] = {};
@@ -422,7 +502,8 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
     ctx.r3 = args[0]; ctx.r4 = args[1]; ctx.r5 = args[2]; ctx.r6 = args[3];
     ctx.r7 = args[4]; ctx.r8 = args[5]; ctx.r9 = args[6]; ctx.r10 = args[7];
   };
-  for (int end = mv::MoveStepEndAfter(t, hz); end <= final_time; end = mv::MoveStepEndAfter(end, hz)) {
+  for (int end = o + mv::MoveStepEndAfter(t - o, hz); end <= final_time;
+       end = o + mv::MoveStepEndAfter(end - o, hz)) {
     ReadOrigin(base, ps, before);
     pre = ReadStepVals(base, ps);  // [claude-9b]
     g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(t));
@@ -441,6 +522,7 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
     UpdateViewAngles(ctx, base, pm, ps, final_time - command_time);
     g_no_step = true;  // [claude-9b]
   }
+  KeepBox(base, pm, ps, client, steps > 0, final_time);  // [claude-9b-think] 2026-11-02 UNTESTED
   g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
 
@@ -462,11 +544,14 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
   h.ps = ps;
   h.log_steps += steps;
   h.log_cmds += 1;
+  g_steps_run += static_cast<uint64_t>(steps);  // [claude-9b-think]
   if (mv::DebugMovement() && (final_time - h.log_time >= 1000 || final_time < h.log_time)) {
     if (h.log_time > -1000000 && final_time > h.log_time)
       REXLOG_INFO("cod3: movement steps: {} steps of 1/{} s in {} usercmds over {} ms (cod3_move_hz); "
-                  "held-player fix left out after {} usercmds without a step",  // [claude-9b]
-                  h.log_steps, hz, h.log_cmds, final_time - h.log_time, g_no_step_skips);
+                  "held-player fix left out after {} usercmds without a step; the last step's box kept in {} "
+                  "(cod3_move_keep_box)",  // [claude-9b], [claude-9b-think] 2026-11-02
+                  h.log_steps, hz, h.log_cmds, final_time - h.log_time, g_no_step_skips, h.boxes_kept);
+    h.boxes_kept = 0;
     h.log_time = final_time;
     h.log_steps = 0;
     h.log_cmds = 0;
@@ -503,6 +588,27 @@ void Cod4StepsDone(uint8_t* base, uint32_t ps, int client, const float before[3]
   }
   h.now = final_time;
   h.ps = ps;
+  // [claude-9b-think] 2026-11-02 UNTESTED A switch to cod3_move_hz's steps goes on from this last 8 ms step's end
+  // (RunHzSteps): the time between it and the 60 Hz step end before it was moved twice, or left out.
+  h.phase = -2;
+}
+
+// [claude-9b-think] 2026-11-02 UNTESTED One log line whenever what the player's movement follows changes: the style and
+// its parts, sprint, and the steps (CoD4 PC's 8 ms, cod3_move_hz with cod3_move_hz_sync, or one a frame), so a test or a
+// player's log shows when a setting took effect (F2, the Options menu, the console, the match rule).
+void LogMovementChange(const mv::MoveRules& rules) {
+  static bool logged = false;
+  static mv::MoveRules last_rules;
+  static int last_hz = 0;
+  static bool last_sync = false;
+  const int hz = mv::MoveStepHz();
+  const bool sync = REXCVAR_GET(cod3_move_hz_sync);
+  if (logged && rules == last_rules && hz == last_hz && sync == last_sync) return;
+  logged = true;
+  last_rules = rules;
+  last_hz = hz;
+  last_sync = sync;
+  REXLOG_INFO("cod3: movement now: {}; steps: {}", mv::Describe(rules), mv::DescribeSteps(rules));
 }
 
 // The debug log's jump height: the highest point of each jump above where it
@@ -549,6 +655,7 @@ REX_HOOK_RAW(sub_82496978) {
     return;
   }
   const mv::MoveRules rules = RulesFor(ClientIndex(base, ps));
+  LogMovementChange(rules);  // [claude-9b-think] 2026-11-02 UNTESTED
   if (rules.AllOriginal()) {
     // The console's movement: nothing of ours runs (but the fixed rate,
     // cod3_move_hz). A sprint key still held from before sprint was switched
@@ -935,6 +1042,7 @@ void BeginDrawnStepValues(uint8_t* base) {
 
 namespace cod3::movement {
 void EndDrawnStepValues(uint8_t* base) { PutBackDrawnStepValues(base); }
+uint64_t StepsRun() { return g_steps_run; }  // [claude-9b-think] 2026-11-02 UNTESTED
 }  // namespace cod3::movement
 
 REX_EXTERN(__imp__CG_CalcViewValues);
@@ -1009,6 +1117,13 @@ REX_HOOK_RAW(IN_SprintbreathUp) {
 REX_EXTERN(__imp__IN_BinocularsDown);
 REX_HOOK_RAW(IN_BinocularsDown) {
   const int key = static_cast<int32_t>(ctx.r3.u32), time = static_cast<int32_t>(ctx.r4.u32);
+  // [claude-9b-think] 2026-11-02 UNTESTED CoD4 sprint starts only at 105 of 127 forward (rules.cpp SprintAllowed); the
+  // pad's L3 meant sprint from 64 (sprint_input.h kPadSprintForward), so between the two it took the binoculars and
+  // didn't sprint. There it stays the binoculars.
+  if (mv::LocalRules().Cod4Sprint() && g_input.last_forwardmove() < mv::cod4::kSprintForwardMinimum) {
+    __imp__IN_BinocularsDown(ctx, base);
+    return;
+  }
   bool handled = false;
   const mv::KeyAction a =
       g_input.OnBinocularsDown(key, time, mv::SprintButtonMode(), mv::SprintSetting(), g_view, &handled);

@@ -35,6 +35,7 @@ from .common import IS_LINUX, IS_WINDOWS, Log, SetupError
 from .gui_games import HERO_H, Games
 from .gui_log import LogPage
 from .gui_pages import Pages
+from .gui_updates import Updates  # [updater] the setup tool's own update checks
 from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline, fidelityfx_available
 from .widgets import ScrollFrame, px, section, hint, tip  # noqa: F401 - ScrollFrame/px kept importable from gui
 from .xiso import XisoImage
@@ -108,7 +109,7 @@ def format_duration(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
-class App(Pages, LogPage, Games):
+class App(Pages, LogPage, Games, Updates):
     def __init__(self, root: tk.Tk, launcher: bool):
         self.root = root
         self.launcher = launcher
@@ -260,6 +261,8 @@ class App(Pages, LogPage, Games):
         root.protocol("WM_DELETE_WINDOW", self._on_close)
         root.after(100, self._poll)
         root.after(50, lambda: widgets.title_bar_dark(root, not theme.current["light"]))
+        # [updater] The question about update checks (once), and the check when allowed.
+        root.after(800, self._updates_on_start)
 
     # ------------------------------------------------------------------ window
     def _build_shell(self) -> None:

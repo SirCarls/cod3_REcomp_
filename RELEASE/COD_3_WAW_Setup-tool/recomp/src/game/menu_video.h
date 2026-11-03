@@ -24,7 +24,10 @@
 //   SHADOWS           cod3_shadow_quality: original, off (game/shadows.h)
 //   HD TEXTURES       cod3_hd_textures (after a restart)
 //   BATTLE ACTIONS    cod3_qte_style: spinner or original (game/qte_actions.h);
-//                     the in-game page only (the front end's has six rows)
+//                     [claude-9b-think] 2026-10-27 UNTESTED shown on the in-game
+//                     GAMEPLAY page now, not on VIDEO (menu_fov.cpp, owner 13:26:
+//                     "the battle action should be gameplay. within the menus");
+//                     the front end's pages have no room for it
 //   DEPTH OF FIELD    [post-effects] cod3_depth_of_field: on (the game's own) or
 //                     off (game/post_effects.h); the in-game page only
 //   MOTION BLUR       [post-effects] cod3_motion_blur: on or off; the in-game
@@ -52,7 +55,8 @@ enum Row : int {
   kHdTextures,
   // Stick battle actions: spinner or the game's arrow (game/qte_actions.h).
   // Only the in-game page has room for this seventh row; the front end's
-  // page shows the first six.
+  // page shows the first six. [claude-9b-think] In game it is on the GAMEPLAY
+  // page now (menu_fov.cpp kGameplayPage), not on VIDEO.
   kBattleActions,
   // [post-effects] The game's depth of field and motion blur on or off
   // (game/post_effects.h); the in-game page only, like kBattleActions.
@@ -74,6 +78,9 @@ const char* TitleKey();                // "OPTIONS / VIDEO" (page title)
 const char* ItemKey();                 // the front end Options item "VIDEO"
 const char* ItemInstructionsKey();     // its help text
 const char* PauseItemKey();            // the in-game row "VIDEO OPTIONS"
+// [claude-9b-think] The in-game GAMEPLAY page (menu_fov.cpp): its page button and title.
+const char* GameplayButtonKey();       // "GAMEPLAY"
+const char* GameplayTitleKey();        // "OPTIONS / GAMEPLAY"
 
 // The value a row shows now ("1280 X 720", "ON" ...), read from the setting.
 std::string Value(int row);

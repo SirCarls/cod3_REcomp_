@@ -98,14 +98,25 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   void DrawVideoFrameRate();
   void DrawVideoColors();
   void DrawVideoQuality();
-  void DrawVideoAccuracy();
   void DrawSound();
   void DrawGame();
+  void DrawGamePrompts();  // [claude-9b-think] Game > Prompts
   void DrawSoundOutput();
   void DrawCrosshair();
   void DrawControls();
+  // [claude-9b-think] CONTROLS' subtabs.
+  void DrawControlsMouse();
+  void DrawControlsController();
+  void DrawControlsPerWeapon();
+  void DrawControlsKeys();
   void DrawInterface();
   void DrawPerformance();
+  // [claude-9b] 2026-10-27 EMULATION and its subtabs.
+  void DrawEmulation();
+  void DrawEmulationGpu();
+  void DrawEmulationSpeedups();
+  void DrawEmulationNative();
+  void DrawEmulationSound();
   void DrawConsole();
   void DrawSavedConsoleSettings();
   void Save();

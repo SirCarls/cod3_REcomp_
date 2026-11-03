@@ -18,6 +18,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game/addresses.h"       // [claude-9b-think] kActiveLocalClient
+#include "game/button_prompts.h"  // [claude-9b] KeyboardMouseInUse (both programs: [claude-9b-think] cod3mp too)
 #include "game/guest.h"
 #include "game/program.h"
 #if !defined(COD3_MP)
@@ -26,7 +28,6 @@
 #include <imgui.h>
 
 #include "game/aim_assist.h"
-#include "game/button_prompts.h"  // [claude-9b] KeyboardMouseInUse
 #include "game/protected_dvars.h"
 #endif
 
@@ -74,6 +75,31 @@ constexpr uint32_t kViewAngles = cod3::kMultiplayer ? 204 : 172;
 constexpr uint32_t kDeltaAngles = cod3::kMultiplayer ? 84 : 88;
 // usercmd_t: serverTime (milliseconds) first, as in Quake III.
 constexpr uint32_t kCmdServerTime = 0;
+
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 12:39: "The usage of aim assist on kbm cannot work"; cod3mp).
+// usercmd_t is 48 bytes (CL_CreateCmd's memset 0x30; CL_FinishMove 0x82522B10 fills +0 serverTime, +4 buttons,
+// +8 the weapon, +12..+20 the angles and +28..+44; CL_KeyMove 0x82525338 the move bytes +24 forward, +25 right, +26
+// up). Byte +27 is the struct's padding: nothing writes it (the memset leaves it 0) and the player movement code and
+// the client game read no byte there (a scan of the Ghidra pages 0x82460000 and 0x82480000-0x824B0000, the prediction
+// and the player movement, and 0x82560000-0x82590000, ClientThink_real and the game's client code, found byte reads of
+// +24 and +25 only). Every copy of a usercmd is the whole 48 bytes: CL_CreateNewCommands 0x8252C9E0 into the client's
+// ring (64 usercmds at 0x82C2F388 + client * 6352), the server's fetch 0x82530270 (ClientThink, by client number) and
+// the prediction's CL_GetUserCmd 0x82526898, then into pmove_t's cmd. So a flag written there by the client that made
+// the usercmd reaches the host's Pmove and the client's own prediction of that same usercmd, and nothing else.
+// cod3mp's netchan carries no usercmds (SV_ExecuteClientMessage 0x82530EE0 takes only command strings): every player
+// is a local one today; a transport of ours that brings a remote player's usercmds into that ring has to copy all 48
+// bytes (it does if it copies usercmd_t whole). The campaign asks the device directly (one player).
+#if defined(COD3_MP)
+constexpr uint32_t kCmdPortFlags = 27;
+constexpr uint8_t kCmdFlagPort = 0x80;  // this port's client made the usercmd (the flags below mean something)
+constexpr uint8_t kCmdFlagKbm = 0x01;   // its aim came from the keyboard and mouse
+// The flag can only take the pull away: a usercmd without it (an old build, another client, any usercmd made before
+// this) pulls as the game always did, at most the game's own pull (PullShare is never above 1).
+bool CmdSaysKbm(uint8_t* base, uint32_t cmd) {
+  const uint8_t f = guest::ReadU8(base, cmd + kCmdPortFlags);
+  return (f & kCmdFlagPort) != 0 && (f & kCmdFlagKbm) != 0;
+}
+#endif
 
 // The console's rhythm: the game ran at most 60 frames a second on the Xbox
 // 360 (its display's vblank), one usercmd and one pull per frame.
@@ -132,6 +158,7 @@ struct PsStats {
   uint32_t ps = 0;
   int64_t last_time = INT64_MIN;
   uint32_t usercmds = 0, pulls = 0;
+  uint32_t kbm = 0;  // [claude-9b-think] usercmds whose pull was taken away (keyboard and mouse)
   int64_t ms = 0;
 };
 std::array<PsStats, 4> g_ps_stats{};
@@ -139,7 +166,7 @@ uint32_t g_clock_calls = 0;
 float g_turned = 0.0f;  // degrees the pulls turned the view, summed
 std::mutex g_stats_mutex;
 
-void Count(uint32_t ps, int64_t before, int64_t now, int pulls, bool clock, float turned) {
+void Count(uint32_t ps, int64_t before, int64_t now, int pulls, bool clock, float turned, bool kbm) {
   std::lock_guard lock(g_stats_mutex);
   g_turned += turned;
   if (clock) {
@@ -159,6 +186,7 @@ void Count(uint32_t ps, int64_t before, int64_t now, int pulls, bool clock, floa
   slot->last_time = now;
   slot->usercmds += 1;
   slot->pulls += uint32_t(pulls);
+  slot->kbm += kbm ? 1u : 0u;  // [claude-9b-think]
   slot->ms += std::clamp<int64_t>(now - before, 0, 1000);
 }
 
@@ -174,9 +202,10 @@ void LogStats() {
     std::lock_guard lock(g_stats_mutex);
     for (auto& p : g_ps_stats) {
       if (p.ps == 0 || p.ms <= 0) continue;
-      line += fmt::format(" [player state {:08X}: {} usercmds, {} pulls in {} ms of usercmds = {:.1f} pulls/s]", p.ps,
-                          p.usercmds, p.pulls, p.ms, p.pulls * 1000.0 / double(p.ms));
-      p.usercmds = p.pulls = 0;
+      line += fmt::format(" [player state {:08X}: {} usercmds ({} keyboard and mouse: no pull), {} pulls in {} ms of "
+                          "usercmds = {:.1f} pulls/s]",
+                          p.ps, p.usercmds, p.kbm, p.pulls, p.ms, p.pulls * 1000.0 / double(p.ms));
+      p.usercmds = p.pulls = p.kbm = 0;
       p.ms = 0;
     }
     line += fmt::format(" {} calls without a time of their own; the pulls turned the view {:.3f} deg; share "
@@ -388,9 +417,10 @@ REX_HOOK_RAW(sub_8248D138) {
 #if !defined(COD3_MP)
   const bool kbm = cod3::prompts::KeyboardMouseInUse();
 #else
-  // cod3mp: the host pulls for every player, and its own keyboard says nothing of the others' (to do: a client's
-  // device has to reach the host).
-  const bool kbm = false;
+  // [claude-9b-think] 2026-10-27 UNTESTED cod3mp: the host pulls for every player (and each client predicts its own),
+  // so the device is the usercmd's own word, written by the client that made it (CL_FinishMove below): the same bit
+  // on the host and in that client's prediction, per usercmd.
+  const bool kbm = CmdSaysKbm(base, cmd);
 #endif
   const double share = kbm ? 0.0 : PullShare();
   float turned = 0.0f;
@@ -415,6 +445,25 @@ REX_HOOK_RAW(sub_8248D138) {
   }
   // This usercmd's part of the new pull's turn.
   if (spread && pulls > 0) turned += ApplySpread(base, ps, *spread, now_ns, false);
-  if (REXCVAR_GET(cod3_debug_sticky_aim)) Count(ps, before, now, pulls, clock, turned);
+  if (REXCVAR_GET(cod3_debug_sticky_aim)) Count(ps, before, now, pulls, clock, turned, kbm);
   LogStats();
 }
+
+#if defined(COD3_MP)
+// [claude-9b-think] 2026-10-27 UNTESTED CL_FinishMove(usercmd_t* cmd) (cod3mp 0x82522B10): the last step of making
+// the active local client's usercmd. Marks it as this port's and, for the local player the keyboard and mouse play
+// as (local client 0: player 1, as the mouse look and the prompts have it) while they are in use
+// (prompts::KeyboardMouseInUse: mnk_mode on and a key or mouse press since that player's last controller button),
+// as aimed with them. The other local players' usercmds carry the port flag only, so their pads keep the pull.
+REX_EXTERN(__imp__CL_FinishMove);
+REX_HOOK_RAW(CL_FinishMove) {
+  using namespace cod3::sticky_aim;
+  const uint32_t cmd = ctx.r3.u32;
+  __imp__CL_FinishMove(ctx, base);
+  if (!cmd) return;
+  const uint32_t local = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  uint8_t flags = kCmdFlagPort;
+  if (local == 0 && cod3::prompts::KeyboardMouseInUse()) flags |= kCmdFlagKbm;
+  cod3::guest::WriteU8(base, cmd + kCmdPortFlags, flags);
+}
+#endif

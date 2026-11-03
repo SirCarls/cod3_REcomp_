@@ -1,0 +1,150 @@
+[claude-setup] SDK 0210, synced to the project folder in setup tool 2.27.0 (2026-11-03, folder only; on top of 0209).
+claude-9b-think's draft (c9b-think/owner-1102/0210-system-link-low-ports.UNTESTED.diff, md5 2676394e); xam_net.cpp
+comes out as in claude-9b-test's tested tree ob29d (28d96be6).
+Why: CoD3 binds UDP port 1000 for system link. Ports below 1024 need admin rights on Linux, so the bind failed (only
+"address in use" was logged) and a joining PC hung at "Connecting to remote host".
+What it does: net_low_port_offset (Net, int, default 30000; 0 = off; 1024-64512, else off with one warning). A guest
+port 1-1023 in bind, connect, sendto and WSASendTo is moved up by the offset (1000 -> 31000) and moved back down in the
+addresses recvfrom and accept hand the game. The default is the same on Windows, so Windows and Linux PCs match; every
+PC in a game needs the same value (a build without 0210 still uses port 1000). Discovery's port 50000 and ports 0 and
+1024+ are unchanged. "socket bound to ..." is logged only after a bind succeeds, and every failed bind is logged with
+its reason. Firewall or port forwarding for system link: UDP 31000 and 50000 (was 1000 and 50000).
+Tested: claude-9b-test q-22 (ob29d: both copies bound 127.0.0.x:31000, no failed binds, the joiner reached the host's
+match on mp_merv) and claude-setup's sync1103 build and runs (dev/agents/claude-setup/SYNC-2026-11-03.md).
+
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index 87903fd..66450cc 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -78,6 +78,13 @@ REXCVAR_DEFINE_BOOL(net_trace, false, "Net",
+                     "connects and connect status, QoS targets) and the first datagrams each way "
+                     "for every port and peer, with each drop and send error, and a count per "
+                     "port and peer every 10 s");
++// [claude-9b-think] 0210 (UNTESTED): ports below 1024 need admin rights on Linux, so CoD3's
++// game port 1000 never bound and a join hung at "Connecting to remote host".
++REXCVAR_DEFINE_INT32(net_low_port_offset, 30000, "Net",
++                     "System link: a port below 1024 that the game uses (CoD3's game port is "
++                     "1000) is moved up by this much on this PC, because ports below 1024 need "
++                     "admin rights on Linux. Every copy and every PC in a match must use the "
++                     "same value. 0 keeps the game's own ports. 1024 to 64512");
+ 
+ namespace rex {
+ namespace kernel {
+@@ -661,7 +668,49 @@ object_ref<XSocket> LookupSocket(uint32_t socket_handle) {
+   return socket;
+ }
+ 
++// [claude-9b-think] 0210: net_low_port_offset, or 0 when it is 0 or out of range.
++uint32_t LowPortOffset() {
++  const int32_t offset = REXCVAR_GET(net_low_port_offset);
++  if (offset < 1024 || offset > 65535 - 1023) {
++    if (offset != 0) {
++      static std::once_flag warned;
++      std::call_once(warned, [offset] {
++        REXKRNL_WARN("XNet: net_low_port_offset {} is outside 1024-64512; the game's ports "
++                     "below 1024 are used as they are",
++                     offset);
++      });
++    }
++    return 0;
++  }
++  return static_cast<uint32_t>(offset);
++}
++
++// [claude-9b-think] 0210: the game's port as this PC uses it: 1-1023 move up by
++// net_low_port_offset (1000 -> 31000 by default). Applied to every address the
++// game passes in (bind, connect, sendto), so a copy sends to the moved port of
++// its peer too: all copies must use the same offset.
++uint16_t HostPort(uint16_t game_port) {
++  const uint32_t offset = LowPortOffset();
++  if (offset && game_port && game_port < 1024) {
++    return static_cast<uint16_t>(game_port + offset);
++  }
++  return game_port;
++}
++
++// [claude-9b-think] 0210: a host port as the game sees it (recvfrom, accept):
++// the moved range comes back down, so the game sees its peer's port 1000 and
++// replies there (HostPort moves it back up). A port the game picks itself in
++// that range (31000 for 1000) would be shown moved down too; CoD3 uses 1000 and 50000.
++uint16_t GamePort(uint16_t host_port) {
++  const uint32_t offset = LowPortOffset();
++  if (offset && host_port > offset && host_port < offset + 1024) {
++    return static_cast<uint16_t>(host_port - offset);
++  }
++  return host_port;
++}
++
+ // Reads a guest sockaddr_in. Returns 0 or a Winsock error code.
++// [claude-9b-think] 0210: the port comes back as this PC uses it (HostPort).
+ uint32_t ReadGuestSockaddr(uint32_t address, uint32_t length, SockAddrV4* out) {
+   if (length < sizeof(XSOCKADDR_IN) || !GuestRangeValid(address, sizeof(XSOCKADDR_IN), false)) {
+     return wsa::kEfault;
+@@ -670,7 +719,7 @@ uint32_t ReadGuestSockaddr(uint32_t address, uint32_t length, SockAddrV4* out) {
+   if (memory::load_and_swap<uint16_t>(bytes + 0) != XSocket::X_AF_INET) {
+     return wsa::kEafnosupport;
+   }
+-  out->port = memory::load_and_swap<uint16_t>(bytes + 2);
++  out->port = HostPort(memory::load_and_swap<uint16_t>(bytes + 2));
+   out->addr = memory::load_and_swap<uint32_t>(bytes + 4);
+   return 0;
+ }
+@@ -697,7 +746,7 @@ void WriteGuestSockaddr(uint32_t address, uint32_t length_address, const SockAdd
+   }
+   uint8_t* bytes = GuestBytes(address);
+   memory::store_and_swap<uint16_t>(bytes + 0, XSocket::X_AF_INET);
+-  memory::store_and_swap<uint16_t>(bytes + 2, addr.port);
++  memory::store_and_swap<uint16_t>(bytes + 2, GamePort(addr.port));  // [claude-9b-think] 0210
+   memory::store_and_swap<uint32_t>(bytes + 4, addr.addr);
+   std::memset(bytes + 8, 0, 8);
+   memory::store_and_swap<uint32_t>(GuestBytes(length_address), sizeof(XSOCKADDR_IN));
+@@ -1694,23 +1743,45 @@ u32 NetDll_bind_entry(u32 caller, u32 socket_handle, u32 name_ptr, u32 namelen)
+   // Bound exactly where the guest asks.
+   SockAddrV4 name;
+   uint32_t error = ReadGuestSockaddr(name_ptr, namelen, &name);
++  bool any_to_title = false;  // [claude-9b-think] 0210
+   if (!error && !name.addr) {
+     // [claude-9b-think] 0209: with a loopback net_interface, "any address" is
+     // this copy's own, so copies on one PC can each have ports 3074 and 50000.
+     const TitleAddress title = TitleNow();
+     if (title.loopback) {
+-      REXKRNL_INFO("XNet: socket bound to {}:{} (net_interface) instead of any address",
+-                   rex::net::format_ipv4(title.addr), name.port);
+       name.addr = title.addr;
++      any_to_title = true;
+     }
+   }
+   if (!error) {
+     error = socket->Bind(name);
+-    if (error == wsa::kEaddrinuse) {
++    // [claude-9b-think] 0210: logged after the bind (0209 logged before it, so a
++    // failed bind looked done), and every failure is logged, not only "in use".
++    const uint16_t game_port = GamePort(name.port);
++    const std::string moved =
++        game_port != name.port ? fmt::format(" (the game's port {}, moved by net_low_port_offset)",
++                                             game_port)
++                               : std::string();
++    if (!error) {
++      if (any_to_title) {
++        REXKRNL_INFO("XNet: socket bound to {}:{}{} (net_interface) instead of any address",
++                     rex::net::format_ipv4(name.addr), name.port, moved);
++      } else if (!moved.empty()) {
++        REXKRNL_INFO("XNet: socket bound to {}:{}{}", rex::net::format_ipv4(name.addr), name.port,
++                     moved);
++      }
++    } else if (error == wsa::kEaddrinuse) {
+       // [claude-9b-think] 0209: the cause is nearly always a second copy.
+-      REXKRNL_WARN("XNet: bind to {}:{} failed: address in use (another copy of the game on "
++      REXKRNL_WARN("XNet: bind to {}:{}{} failed: address in use (another copy of the game on "
+                    "this PC? give each copy its own net_interface, 127.0.0.2 and so on)",
++                   rex::net::format_ipv4(name.addr), name.port, moved);
++    } else if (error == wsa::kEacces && name.port && name.port < 1024) {
++      REXKRNL_WARN("XNet: bind to {}:{} failed: permission denied (ports below 1024 need admin "
++                   "rights on Linux; set net_low_port_offset, 30000 by default, on every copy)",
+                    rex::net::format_ipv4(name.addr), name.port);
++    } else {
++      REXKRNL_WARN("XNet: bind to {}:{}{} failed (Winsock error {})",
++                   rex::net::format_ipv4(name.addr), name.port, moved, error);
+     }
+   }
+   if (error) {

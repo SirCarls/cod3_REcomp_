@@ -163,6 +163,62 @@ void PlayerPreferences::Clear(int client) {
   if (client >= 0 && client < kMaxClients) slots_[client] = Slot{};
 }
 
+// [claude-9b-think] 2026-11-02 UNTESTED multiplayer (rules.h)
+MatchDecision DecideMatch(const MatchFacts& f) {
+  MatchDecision d;
+  if (!f.hooks_ready) {
+    d.reason = "the movement hooks aren't ready in this build: Call of Duty 3 movement";
+    return d;
+  }
+  if (f.host_mode < 0 || f.host_mode > 2) {
+    d.reason = "unknown movement rule " + std::to_string(f.host_mode) + ": Call of Duty 3 movement";
+    return d;
+  }
+  if (f.remote_peers && !(f.peers_announced && f.peers_match)) {
+    d.reason = f.peers_announced ? "another console runs other movement rules: Call of Duty 3 for everyone"
+                                 : "another console didn't announce its movement rules: Call of Duty 3 for everyone";
+    return d;
+  }
+  d.mode = f.host_mode;
+  d.host_parts = f.host_parts;
+  d.reason = std::string("the host's rule: ") + DescribeMode(f.host_mode);
+  return d;
+}
+
+bool DecodeMatchRule(std::string_view text, int* mode, Parts* parts) {
+  if (text.size() > 8) return false;
+  if (text == "own") {
+    *mode = static_cast<int>(MatchMode::kPlayersChoice);
+    *parts = Parts{};
+    return true;
+  }
+  Preference p;
+  if (!DecodePreference(text, &p)) return false;
+  *mode = p.cod4 ? static_cast<int>(MatchMode::kCod4) : static_cast<int>(MatchMode::kCod3);
+  *parts = p.cod4 ? p.parts : Parts{};
+  return true;
+}
+
+LocalChoice ParseLocalChoice(std::string_view text) {
+  LocalChoice c;
+  if (text.empty()) return c;
+  if (text.size() > 8 || !DecodePreference(text, &c.pref)) {
+    c.pref = Preference{};
+    c.valid = false;
+  }
+  return c;
+}
+
+int DecodeProtocol(std::string_view text) {
+  if (text.empty() || text.size() > 3) return -1;
+  int v = 0;
+  for (const char ch : text) {
+    if (ch < '0' || ch > '9') return -1;
+    v = v * 10 + (ch - '0');
+  }
+  return v >= 1 ? v : -1;
+}
+
 bool IsBounceSlope(float normal_z) {
   return normal_z >= cod4::kBounceMinNormalZ && normal_z < kWalkableNormalZ;
 }

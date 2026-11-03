@@ -25,11 +25,11 @@ class ConsoleKeyListener : public rex::ui::WindowInputListener {
   void OnKeyDown(rex::ui::KeyEvent& e) override {
     // Space, Enter and Escape skip a movie (game/cutscene_skip.h); the key
     // still reaches its binds.
-    if (!cod3::ui::GameConsole::IsOpen() &&
-        (e.virtual_key() == rex::ui::VirtualKey::kSpace ||
-         e.virtual_key() == rex::ui::VirtualKey::kReturn ||
-         e.virtual_key() == rex::ui::VirtualKey::kEscape))
-      cod3::CutsceneSkip::Get().RequestSkip();
+    // [claude-9b-think] 2026-10-27 UNTESTED held to skip (cod3_skip_hold_ms; a press with 0), and any key shows the
+    // prompt again for a while (game/cutscene_skip.h).
+    if (const uint32_t key = SkipKey(e); key && !cod3::ui::GameConsole::IsOpen())
+      cod3::CutsceneSkip::Get().SkipKeyDown(key);
+    cod3::CutsceneSkip::Get().AnyInput();
     if (e.virtual_key() == rex::ui::VirtualKey::kOem3) {  // ` and ~ on US layouts
       if (on_toggle) on_toggle(e.is_shift_pressed());
       e.set_handled(true);
@@ -40,6 +40,19 @@ class ConsoleKeyListener : public rex::ui::WindowInputListener {
                cod3::ui::GameConsole::IsOpen()) {
       if (on_close) on_close();
       e.set_handled(true);
+    }
+  }
+  // [claude-9b-think] A skip key let go: a hold ends (also with the console open, so a hold can't stick).
+  void OnKeyUp(rex::ui::KeyEvent& e) override {
+    if (const uint32_t key = SkipKey(e)) cod3::CutsceneSkip::Get().SkipKeyUp(key);
+  }
+  static uint32_t SkipKey(const rex::ui::KeyEvent& e) {
+    using S = cod3::CutsceneSkip;
+    switch (e.virtual_key()) {
+      case rex::ui::VirtualKey::kSpace: return S::kSkipKeySpace;
+      case rex::ui::VirtualKey::kReturn: return S::kSkipKeyReturn;
+      case rex::ui::VirtualKey::kEscape: return S::kSkipKeyEscape;
+      default: return 0;
     }
   }
   void OnKeyChar(rex::ui::KeyEvent& e) override {
@@ -59,9 +72,15 @@ class MouseLookListener : public rex::ui::WindowInputListener {
   rex::ui::Window::CursorVisibility prev_cursor = rex::ui::Window::CursorVisibility::kVisible;
 
   void OnMouseMove(rex::ui::MouseEvent& e) override;
-  // A left click skips a movie (game/cutscene_skip.h).
+  // A left click skips a movie (game/cutscene_skip.h). [claude-9b-think] held, with cod3_skip_hold_ms.
   void OnMouseDown(rex::ui::MouseEvent& e) override {
-    if (e.button() == rex::ui::MouseEvent::Button::kLeft) cod3::CutsceneSkip::Get().RequestSkip();
+    if (e.button() == rex::ui::MouseEvent::Button::kLeft)
+      cod3::CutsceneSkip::Get().SkipKeyDown(cod3::CutsceneSkip::kSkipKeyMouse);
+    cod3::CutsceneSkip::Get().AnyInput();
+  }
+  void OnMouseUp(rex::ui::MouseEvent& e) override {
+    if (e.button() == rex::ui::MouseEvent::Button::kLeft)
+      cod3::CutsceneSkip::Get().SkipKeyUp(cod3::CutsceneSkip::kSkipKeyMouse);
   }
 };
 

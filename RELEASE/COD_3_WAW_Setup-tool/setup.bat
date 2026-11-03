@@ -96,5 +96,6 @@ pause
 exit /b 1
 
 :run
-%PY% "%~dp0cod3_waw_setup.py" %*
-if errorlevel 1 pause
+rem Keep the start and the end on this one line: an update may replace this
+rem file while the tool runs, and cmd reads a batch file line by line as it goes.
+%PY% "%~dp0cod3_waw_setup.py" %* || pause & exit /b

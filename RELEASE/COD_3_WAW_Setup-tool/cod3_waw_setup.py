@@ -10,6 +10,7 @@ playable Call of Duty 3 recompilation. It installs whatever is missing.
     python3 cod3_waw_setup.py doctor [--fix]  # what this PC has; --fix installs what's missing
     python3 cod3_waw_setup.py xiso "<disc image>" [--extract <folder> --only "*.ff"]
     python3 cod3_waw_setup.py map-pack "<patch download>" [--extract <folder>]
+    python3 cod3_waw_setup.py update [--check] [--yes] [--undo] [--allow|--deny]  # this tool's own updates
 
 Versions: by default the one for this system. --linux and --windows pick
 which to build, on either system: Linux builds the Windows version with
@@ -38,6 +39,15 @@ if sys.version_info < (3, 9):
     sys.exit("Python 3.9 or newer is required.")
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# [updater] Before any other part of the tool is loaded: an update that was cut
+# off halfway is rolled back, a downloaded one is put in place (c3w/update.py
+# needs only the standard library), and the tool starts again on the new files.
+if __name__ == "__main__":
+    from c3w import update as _update  # noqa: E402
+    _restarted = _update.at_start(__file__, sys.argv)
+    if _restarted is not None:
+        sys.exit(_restarted)
 
 from c3w import common, deps, inputs, map_packs, pc_check, rippers, upscale, waw  # noqa: E402
 from c3w.pipeline import KNOWN_XEX, BuildOptions, Pipeline  # noqa: E402
@@ -273,6 +283,67 @@ def cmd_xiso(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_update(a: argparse.Namespace) -> int:
+    """[updater] Checks for a newer release of the setup tool and, with the
+    user's yes, downloads and applies it (docs/UPDATES.md)."""
+    from c3w import update
+    if a.allow or a.deny:
+        update.set_checks_allowed(bool(a.allow))
+        print("The window checks for updates when it starts." if a.allow else
+              "The window doesn't check for updates.")
+        return 0
+    if a.undo:
+        try:
+            print(update.undo_last())
+        except (update.UpdateError, OSError) as e:
+            print(f"It couldn't be undone: {e}")
+            return 1
+        return 0
+    reason = update.why_not_here()
+    if reason:
+        print(reason)
+        return 1
+    try:
+        plan, message = update.check()
+    except update.UpdateError as e:
+        print(f"No update was used: {e}.")
+        return 1
+    except Exception as e:   # shown, never a traceback
+        print(f"The check didn't work: {type(e).__name__}: {e}")
+        return 1
+    if plan is None:
+        print(message)
+        return 0
+    keys = update.load_keys(update.release_root())
+    print(f"Setup tool {plan.release.version_text} is available (this copy: {plan.installed.version_text}).")
+    if plan.release.notes:
+        print(f"  What's new: {plan.release.notes}")
+    print(f"  {plan.summary}\n  from: github.com/{keys.repo}, tag {plan.release.ref}\n  into: {update.release_root()}")
+    if plan.edited:
+        print(f"  {len(plan.edited)} of them you changed here; your copies are kept in {update.update_dir() / 'previous'}")
+    if a.check:
+        return 0
+    if not a.yes:
+        if sys.stdin is None or not sys.stdin.isatty():
+            print("Nothing was downloaded. Run again with --yes to approve, or in a terminal to be asked.")
+            return 0
+        try:
+            if input("Download and install it? [y/N] ").strip().lower() not in ("y", "yes"):
+                print("Nothing was downloaded.")
+                return 0
+        except EOFError:
+            return 0
+    try:
+        update.download(plan, progress=lambda f, t: print(f"\r  {int(f * 100):3d}%  {t[:70]:70s}", end="", flush=True))
+    except Exception as e:
+        print(f"\nThe update wasn't downloaded: {e}")
+        return 1
+    print()
+    # Put in place as at a start (rolled back if it's cut off, undone if its
+    # code doesn't load), then the new version says where it stands.
+    return update.at_start(__file__, [__file__, "update", "--check"]) or 0
+
+
 def main() -> int:
     if common.IS_WINDOWS:
         # Output sent to a file or a pipe uses the ANSI code page, which can't
@@ -372,6 +443,13 @@ def main() -> int:
     mp.add_argument("--work", help=argparse.SUPPRESS)
     mp.set_defaults(func=cmd_map_pack)
 
+    up = sub.add_parser("update", help="check for a newer setup tool and, with your yes, install it")
+    up.add_argument("--check", action="store_true", help="only say whether there is one")
+    up.add_argument("--yes", action="store_true", help="install it without asking")
+    up.add_argument("--undo", action="store_true", help="go back to the files the last update replaced")
+    up.add_argument("--allow", action="store_true", help="let the window check for updates when it starts")
+    up.add_argument("--deny", action="store_true", help="don't let the window check for updates")
+    up.set_defaults(func=cmd_update)
     a = ap.parse_args()
     if a.cmd:
         return a.func(a)

@@ -448,6 +448,8 @@ void Cod3App::OnPostSetup() {
   auto& engine = cod3::Engine::Get();
   engine.SetConfigPath(user_data_root() / "cod3_config.cfg");
   cod3::ui::GameConsole::Get().SetUserDir(user_data_root());
+  // [claude-9b-think] The prompts' keyboard-and-mouse texts by string key (game/button_prompts.h).
+  cod3::prompts::LoadPromptText(user_data_root());
 
   // While the console is open the game gets no controller / keyboard input.
   if (auto* input = static_cast<rex::input::InputSystem*>(runtime()->input_system())) {

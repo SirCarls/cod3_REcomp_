@@ -33,9 +33,7 @@
 #include "game/mp/test_autojoin_mp.h"  // [claude-9b]
 #endif
 #include "game/guest.h"
-#if !defined(COD3_MP)
-#include "game/list_memory.h"  // [claude-9b-think]
-#endif
+#include "game/list_memory.h"  // [claude-9b-think] both programs since 2026-11-02 [mp]
 #include "game/ultrawide.h"
 
 // For testing other sizes by hand; 0 / -1 = use the plan.
@@ -939,9 +937,7 @@ std::string RenderResolutionNote() {
 // addr::live_video::kBeginNextFrame).
 REX_EXTERN(__imp__sub_82130808);
 REX_HOOK_RAW(sub_82130808) {
-#if !defined(COD3_MP)
-  cod3::list_memory::BeforeBeginNextFrame(base);  // [claude-9b-think] 2026-11-02 the frame just sent, measured
-#endif
+  cod3::list_memory::BeforeBeginNextFrame(base);  // [claude-9b-think] 2026-11-02 the frame just sent, measured (both programs [mp])
   __imp__sub_82130808(ctx, base);
   cod3::anim_clock::AfterBeginNextFrame(base);  // [claude-9b] the fallback animation clock in real time
 #if defined(COD3_MP)

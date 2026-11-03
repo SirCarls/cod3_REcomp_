@@ -1,0 +1,4 @@
+// [claude-9b-think] 2026-10-27 Made by CMakeLists.txt from config/prompt_text_kbm.tsv (game/button_prompts.cpp
+// reads it at start, LoadPromptText). The table must not contain the closing sequence )cod3tsv" of the literal.
+#pragma once
+inline constexpr char kPromptTextKbm[] = R"cod3tsv(@COD3_PROMPT_TEXT_KBM@)cod3tsv";

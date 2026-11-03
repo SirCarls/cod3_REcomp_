@@ -48,7 +48,9 @@ GS_GROUPS = [
                   "cod3_depth_of_field", "cod3_motion_blur",  # [post-effects]
                   "cod3_hd_textures", "cod3_user_textures", "cod3_graphics_api"]),
     ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
-                            "cod3_skip_movies"]),
+                            "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
+                            "cod3_skip_movies",
+                            "cod3_letterbox", "cod3_skip_prompt_position", "cod3_skip_hold_ms"]),  # [claude-9b-think]
     ("Player", ["user_name", "user_name_2", "user_name_3", "user_name_4"]),  # [claude-9b] SDK patches 0070, 0074
 ]
 
@@ -417,10 +419,10 @@ class Pages:
                     bad.append(f"{st.label}: pick a whole number from {st.min} to {st.max}.")
                 elif st.also:  # [claude-9b] typed values of the player's own
                     own = {"cod3_aspect_ratio": "W:H from 4:3 to 48:9, e.g. 24:10",
-                           "user_name": "up to 15 letters, digits or signs, no quotes",
-                           "user_name_2": "up to 14 letters, digits or signs, no quotes",  # [claude-9b] 0074
-                           "user_name_3": "up to 14 letters, digits or signs, no quotes",
-                           "user_name_4": "up to 14 letters, digits or signs, no quotes"}.get(st.key, "WxH, e.g. 2560x1080")
+                           "user_name": "up to 15 characters, ^0-^9 and ^: colors; no quotes, \\, % or ;",
+                           "user_name_2": "up to 14 characters, ^0-^9 and ^: colors; no quotes, \\, % or ;",  # [claude-9b] 0074
+                           "user_name_3": "up to 14 characters, ^0-^9 and ^: colors; no quotes, \\, % or ;",
+                           "user_name_4": "up to 14 characters, ^0-^9 and ^: colors; no quotes, \\, % or ;"}.get(st.key, "WxH, e.g. 2560x1080")
                     bad.append(f"{st.label}: pick one from the list or type your own ({own}).")
                 else:
                     bad.append(f"{st.label}: pick one from the list.")
@@ -1386,6 +1388,7 @@ class Pages:
         d.columnconfigure(1, weight=1)
         docs = [("README.md", "Read me", "How to set up and play; the project folder."),
                 ("docs/SECURITY.md", "Security", "What the tool downloads, runs and deletes, and how it checks."),
+                ("docs/UPDATES.md", "Updates", "How the setup tool checks and signs its updates."),  # [updater]
                 ("docs/TEXTURE_REPLACEMENT.md", "Texture replacement", "Your own pictures in place of textures."),
                 ("docs/SOURCES.md", "Sources", "Every download, its version and checksum."),
                 ("docs/REQUIREMENTS.md", "Requirements", "What your PC needs."),
@@ -1401,13 +1404,15 @@ class Pages:
                 tip(b, str(path))
             hint(d, what).grid(row=r, column=1, sticky="w", padx=(px(12), 0))
 
-        k = section(t, "Keyboard shortcuts", 3, columns=1)
+        self._about_updates(t, 3)   # [updater] c3w/gui_updates.py
+
+        k = section(t, "Keyboard shortcuts", 5, columns=1)
         for r, (keys, what) in enumerate(SHORTCUTS):
             keys = keys.format(n=min(9, max(len(pages) for pages in self.page_lists.values())))
             ttk.Label(k, text=keys, style="Bold.TLabel").grid(row=r, column=0, sticky="w", pady=px(1))
             ttk.Label(k, text=what).grid(row=r, column=1, sticky="w", padx=(px(16), 0))
 
-        lic = section(t, "Licenses and credits", 5, columns=1)
+        lic = section(t, "Licenses and credits", 7, columns=1)
         hint(lic, "This project's code is under the MIT license. The SDK patches in COD_3_WAW_Setup-tool/patches "
                   "are under the ReXGlue SDK's BSD 3-Clause license. Built on the ReXGlue SDK and the Xenia "
                   "project it derives from. The game's settings window uses the Barlow font (SIL Open Font "

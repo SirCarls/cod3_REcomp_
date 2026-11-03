@@ -3,6 +3,7 @@
 #include "game/hd_textures.h"
 
 #include <atomic>
+#include <cctype>  // [claude-9b-think] std::tolower
 #include <cstdio>
 #include <fstream>
 #include <iterator>
@@ -29,6 +30,14 @@ REXCVAR_DEFINE_BOOL(cod3_user_textures, true, "cod3/Display",
                     "user texture pack\" makes into data/cod3/user_textures. Applies after a "
                     "restart.")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+
+// [claude-9b-think] 2026-11-02 UNTESTED (owner 17:06). Read in one place,
+// EffectivePolicy (SetMultiplayerMode / SyncMultiplayerMode).
+REXCVAR_DEFINE_STRING(cod3_mp_texture_policy, "all", "cod3/Multiplayer",
+                      "Replaced textures during a multiplayer match: all (the HD pack and your "
+                      "user pack, as in the campaign), insignia (only the world insignia on a "
+                      "fixed list, from your user pack) or off (none). Applies at once")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace cod3 {
 
@@ -68,6 +77,55 @@ std::mutex g_mp_mutex;
 std::filesystem::path g_user_pack;       // data/cod3/user_textures, when in use
 std::filesystem::path g_mp_allow_list;   // userdata/texture_allow_list_mp.txt
 std::atomic<bool> g_mp_mode{false};
+
+// [claude-9b-think] 2026-11-02 UNTESTED: what a match may replace
+// (cod3_mp_texture_policy). Each policy that limits replacement has a file of
+// its own (insignia: g_mp_allow_list, off: g_mp_allow_list_off), so a change of
+// policy during a match always changes texture_replacement_allow_list's value
+// and the SDK reads the list again (it reads the file only when the value
+// changes).
+enum class MatchPolicy { kAll, kInsignia, kOff };
+constexpr int kNoMatch = -1;
+std::atomic<int> g_mp_policy{kNoMatch};       // the policy applied, kNoMatch outside a match
+std::filesystem::path g_mp_allow_list_off;    // userdata/texture_allow_list_mp_off.txt
+
+// The local setting; anything but "insignia" or "off" is "all" (the default).
+MatchPolicy LocalPolicy() {
+  std::string value = REXCVAR_GET(cod3_mp_texture_policy);
+  for (char& c : value) c = char(std::tolower(static_cast<unsigned char>(c)));
+  if (value == "insignia") return MatchPolicy::kInsignia;
+  if (value == "off") return MatchPolicy::kOff;
+  return MatchPolicy::kAll;
+}
+
+// The policy for the match.
+MatchPolicy EffectivePolicy() {
+  // ---- [host policy] (later) ----
+  // A policy announced by the match's host (a server toggle) goes here and wins
+  // over the local setting, e.g.:
+  //   if (const auto announced = mp::HostTexturePolicy()) return *announced;
+  // Not built: there is no channel to the other machines yet
+  // (game/mp/session.cpp). Until then each machine uses its own setting.
+  return LocalPolicy();
+}
+
+// Writes an allow list file (a comment line, then one key per line). False
+// when it couldn't be written (the SDK then allows nothing: it fails closed).
+bool WriteAllowList(const std::filesystem::path& path, const std::string& comment,
+                    const std::set<uint64_t>& keys) {
+  std::string text = "# " + comment + "\n";
+  for (uint64_t key : keys) {
+    char line[20];
+    std::snprintf(line, sizeof(line), "%016llx\n", static_cast<unsigned long long>(key));
+    text += line;
+  }
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream file(path, std::ios::binary | std::ios::trunc);
+  file << text;
+  file.close();
+  return static_cast<bool>(file);
+}
 
 // The keys in a pack's index.tsv (the first column of each line).
 std::set<uint64_t> PackKeys(const std::filesystem::path& pack) {
@@ -215,6 +273,7 @@ void ApplyHdTextures(const std::filesystem::path& root, bool gpu) {
   {
     std::lock_guard<std::mutex> lock(g_mp_mutex);
     g_mp_allow_list = root / "userdata" / "texture_allow_list_mp.txt";
+    g_mp_allow_list_off = root / "userdata" / "texture_allow_list_mp_off.txt";  // [claude-9b-think]
   }
   // A match never runs at the start, so no allow list: one saved in
   // cod3.toml by F2 during a match must not limit single player.
@@ -254,8 +313,14 @@ const uint64_t* MultiplayerInsigniaKeys(size_t& count_out) {
 
 void SetMultiplayerMode(bool match_running) {
   std::lock_guard<std::mutex> lock(g_mp_mutex);
-  if (g_mp_mode.load() == match_running) return;
+  // [claude-9b-think] 2026-11-02 UNTESTED: the policy is part of the state, so
+  // a change of cod3_mp_texture_policy during a match applies at once.
+  const MatchPolicy policy = EffectivePolicy();
+  const int want = match_running ? static_cast<int>(policy) : kNoMatch;
+  if (g_mp_mode.load() == match_running && g_mp_policy.load() == want) return;
+  const bool started = match_running && !g_mp_mode.load();
   g_mp_mode = match_running;
+  g_mp_policy = want;
   if (!rex::cvar::GetFlagInfo(kSdkAllowList)) {
     // No texture replacement in this build: nothing to limit.
     return;
@@ -265,45 +330,65 @@ void SetMultiplayerMode(bool match_running) {
     REXLOG_INFO("cod3: multiplayer match over: texture replacement back to normal");
     return;
   }
-  // Allowed: the world insignia that the user pack replaces. Nothing else,
+  const char* when = started ? "multiplayer match" : "multiplayer match, policy changed";
+  if (policy == MatchPolicy::kAll) {
+    // As in the campaign: every texture in the packs (the user pack's wins).
+    rex::cvar::SetFlagByName(kSdkAllowList, "");
+    REXLOG_INFO("cod3: {}: every replaced texture is used, HD pack and user pack "
+                "(cod3_mp_texture_policy all)",
+                when);
+    return;
+  }
+  if (policy == MatchPolicy::kOff) {
+    if (!WriteAllowList(g_mp_allow_list_off,
+                        "Written by the game for a multiplayer match (game/hd_textures.cpp, "
+                        "cod3_mp_texture_policy off): no texture is replaced.",
+                        {})) {
+      REXLOG_WARN("cod3: couldn't write {}; the SDK replaces nothing either way",
+                  PathToUtf8(g_mp_allow_list_off));
+    }
+    rex::cvar::SetFlagByName(kSdkAllowList, PathToUtf8Generic(g_mp_allow_list_off));
+    REXLOG_INFO("cod3: {}: no texture is replaced until the match ends (cod3_mp_texture_policy off)",
+                when);
+    return;
+  }
+  // kInsignia: the world insignia that the user pack replaces. Nothing else,
   // HD textures included (the SDK takes a key from the user pack when both
-  // packs have it, so these come from the user pack).
+  // packs have it, so these come from the user pack). With no user pack (or
+  // none of the insignia in it) the list holds only its comment line, and
+  // nothing is replaced.
   std::set<uint64_t> user_keys;
   if (!g_user_pack.empty()) user_keys = PackKeys(g_user_pack);
-  std::string text =
-      "# Written by the game for a multiplayer match (game/hd_textures.cpp): the textures that "
-      "may be replaced.\n";
-  size_t allowed = 0;
+  std::set<uint64_t> allowed;
   for (uint64_t key : kMultiplayerInsigniaKeys) {
-    if (!user_keys.count(key)) continue;
-    char line[20];
-    std::snprintf(line, sizeof(line), "%016llx\n", static_cast<unsigned long long>(key));
-    text += line;
-    ++allowed;
+    if (user_keys.count(key)) allowed.insert(key);
   }
-  std::error_code ec;
-  std::filesystem::create_directories(g_mp_allow_list.parent_path(), ec);
-  {
-    std::ofstream file(g_mp_allow_list, std::ios::binary | std::ios::trunc);
-    file << text;
-    if (!file) {
-      // The SDK allows nothing when it can't read the list, so the match
-      // still has no replaced textures.
-      REXLOG_WARN("cod3: couldn't write {}; no texture is replaced during the match",
-                  PathToUtf8(g_mp_allow_list));
-    }
+  if (!WriteAllowList(g_mp_allow_list,
+                      "Written by the game for a multiplayer match (game/hd_textures.cpp, "
+                      "cod3_mp_texture_policy insignia): the textures that may be replaced.",
+                      allowed)) {
+    // The SDK allows nothing when it can't read the list, so the match
+    // still has no replaced textures.
+    REXLOG_WARN("cod3: couldn't write {}; no texture is replaced during the match",
+                PathToUtf8(g_mp_allow_list));
   }
   rex::cvar::SetFlagByName(kSdkAllowList, PathToUtf8Generic(g_mp_allow_list));
-  REXLOG_INFO("cod3: multiplayer match: texture replacement limited to {} insignia texture(s) "
-              "from the user pack; HD and other replaced textures are off until the match ends",
-              allowed);
+  REXLOG_INFO("cod3: {}: texture replacement limited to {} insignia texture(s) from the user pack{}; "
+              "HD and other replaced textures are off until the match ends "
+              "(cod3_mp_texture_policy insignia)",
+              when, allowed.size(), g_user_pack.empty() ? " (no user pack)" : "");
 }
 
 bool IsMultiplayerMode() { return g_mp_mode.load(); }
 
 void SyncMultiplayerMode() {
   const bool running = mp::IsMatchRunning();
-  if (running != g_mp_mode.load()) SetMultiplayerMode(running);
+  // [claude-9b-think] 2026-11-02: during a match the policy is followed too
+  // (cod3_mp_texture_policy is live; a host's policy later, EffectivePolicy).
+  if (running != g_mp_mode.load() ||
+      (running && g_mp_policy.load() != static_cast<int>(EffectivePolicy()))) {
+    SetMultiplayerMode(running);
+  }
 }
 
 }  // namespace hd

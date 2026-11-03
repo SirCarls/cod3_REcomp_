@@ -68,4 +68,9 @@ uint64_t MarkCount();
 // Start(); before it, the address alone).
 std::string GuestCodeName(uint32_t addr);
 
+// [claude-9b-think] 2026-11-02 UNTESTED (cod3_debug_ai_shots) The guest call stack from a hook's context: the
+// return addresses its frames saved, from ctx.r1 up, each named as GuestCodeName does (the SDK 0208 handler's
+// walk). Linux only; elsewhere "not on this platform".
+std::string GuestStack(const PPCContext& ctx, uint8_t* base);
+
 }  // namespace cod3::watchdog

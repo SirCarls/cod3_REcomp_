@@ -3,8 +3,8 @@
 rem Starts the COD_3_WAW setup tool (Windows; also runs under Wine). It installs
 rem anything missing (Python here; Rust, compilers and libraries when you press Build).
 if not exist "%~dp0COD_3_WAW_Setup-tool\setup.bat" goto not_extracted
-call "%~dp0COD_3_WAW_Setup-tool\setup.bat" %*
-exit /b
+rem One line: an update may replace this file while the tool runs (cmd reads it as it goes).
+call "%~dp0COD_3_WAW_Setup-tool\setup.bat" %* & exit /b
 
 :not_extracted
 rem Started from inside a zip in File Explorer: Windows copied only this file.

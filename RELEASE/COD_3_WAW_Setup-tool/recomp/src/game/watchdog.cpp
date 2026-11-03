@@ -551,6 +551,29 @@ bool OnUnhandledFault(rex::arch::Exception* ex, void*) {
   return false;
 }
 
+// [claude-9b-think] 2026-11-02 The guest call stack from a context's r1: the return addresses its frames saved
+// (the walk of GuestThreadState), each named by GuestCode. [claude-9b] 2026-11-02 sync: only this walk, for
+// GuestStack (cod3_debug_ai_shots); the SDK 0208 invalid-call handler that also uses it is not in this tree.
+std::string GuestStackFrom(const PPCContext& c, uint8_t* base) {
+  using rex::system::XThread;
+  XThread* t = XThread::IsInThread() ? XThread::GetCurrentThread() : nullptr;
+  const uint32_t pcr = t ? t->pcr_ptr() : 0;
+  const uint32_t top = pcr ? cod3::guest::ReadU32(base, pcr + 0x70) : 0;
+  const uint32_t end = pcr ? cod3::guest::ReadU32(base, pcr + 0x74) : 0;
+  const uint32_t r1 = c.r1.u32;
+  if (!(end && end < top && top - end <= (64u << 20) && r1 >= end && r1 < top)) return "r1 isn't inside its stack";
+  std::string out;
+  uint32_t sp = r1;
+  for (int i = 0; i < 24; ++i) {
+    if ((sp & 3) || sp + 4 > top) break;
+    const uint32_t caller = cod3::guest::ReadU32(base, sp);
+    if (caller <= sp || caller > top || (caller & 3) || caller - 8 < end) break;
+    out += (i ? " <- " : "") + GuestCode(cod3::guest::ReadU32(base, caller - 8));
+    sp = caller;
+  }
+  return out.empty() ? "none" : out;
+}
+
 // Called from the watchdog thread once the runtime (and so the guest memory
 // system's handler) exists.
 void InstallCrashLogger() {
@@ -613,6 +636,17 @@ uint64_t MarkCount() {  // [hw-scaling]
 }
 
 std::string GuestCodeName(uint32_t addr) { return GuestCode(addr); }  // [heap-check]
+
+// [claude-9b-think] 2026-11-02 UNTESTED (cod3_debug_ai_shots)
+std::string GuestStack(const PPCContext& ctx, uint8_t* base) {
+#if defined(__linux__)
+  return GuestStackFrom(ctx, base);
+#else
+  (void)ctx;
+  (void)base;
+  return "not on this platform";
+#endif
+}
 
 }  // namespace cod3::watchdog
 

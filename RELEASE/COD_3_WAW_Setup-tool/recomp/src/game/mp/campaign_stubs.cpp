@@ -29,6 +29,7 @@ void CutsceneSkip::RequestSkip() {}
 void CutsceneSkip::OnGuestFrame(PPCContext&, uint8_t*) {}
 float CutsceneSkip::PromptAlpha() const { return 0.0f; }
 float CutsceneSkip::CoverAlpha() const { return 0.0f; }
+float CutsceneSkip::HoldProgress() const { return -1.0f; }  // [claude-9b] nothing held (no films in multiplayer)
 
 namespace qte {
 void AddMouse(float, float) {}

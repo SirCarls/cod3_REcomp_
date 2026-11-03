@@ -197,6 +197,46 @@ class PlayerPreferences {
   Slot slots_[kMaxClients];
 };
 
+// --- multiplayer: which rule a match runs (c9b-think/mp-movement-design.md) -------------------
+// [claude-9b-think] 2026-11-02 UNTESTED Plain logic for cod3mp. Each console moves its own players, so a rule
+// other than Call of Duty 3 is fair only when every console of the match runs it: anything unknown, missing or
+// mismatched is Call of Duty 3 for this console's players, with the reason for the log.
+
+// The movement rules' version. Peers announce it (stage 2: the transport isn't mapped yet); a match whose
+// consoles don't all announce this number moves as Call of Duty 3.
+inline constexpr int kMovementProtocol = 1;
+
+struct MatchFacts {
+  int host_mode = 0;           // the host's rule: 0, 1 or 2 (MatchMode); anything else is Call of Duty 3
+  Parts host_parts;            // the parts under rule 1
+  bool hooks_ready = false;    // this build's movement hooks have every address they use
+  bool remote_peers = false;   // another console is in the match
+  bool peers_announced = false;  // every other console announced its movement protocol
+  bool peers_match = false;    // ... and every one is kMovementProtocol
+};
+struct MatchDecision {
+  int mode = 0;                // what this console's players follow (0 = Call of Duty 3)
+  Parts host_parts;            // under mode 1
+  std::string reason;          // one line for the log
+};
+MatchDecision DecideMatch(const MatchFacts& facts);
+
+// The host's rule as a setting (cod3mp_movement_rule): "3" (Call of Duty 3 for everyone), "4" + four digits
+// (Call of Duty 4 for everyone with those parts, as EncodePreference) or "own" (each player's own). Strict:
+// anything else is false (then the caller uses Call of Duty 3 and logs it).
+bool DecodeMatchRule(std::string_view text, int* mode, Parts* parts);
+
+// One local (split-screen) player's own choice (cod3mp_movement, _2 to _4), in the wire form DecodePreference
+// reads. Empty is Call of Duty 3; a malformed value is Call of Duty 3 too, with `valid` false for the log.
+struct LocalChoice {
+  Preference pref;
+  bool valid = true;
+};
+LocalChoice ParseLocalChoice(std::string_view text);
+
+// A peer's announced protocol ("1" .. "999", decimal, no sign, no spaces); -1 for anything else.
+int DecodeProtocol(std::string_view text);
+
 // --- Q3 info strings ("\key\value\key\value") ---------------------------------------
 // Calls `fn(key, value)` for each pair; false for a malformed string (then
 // nothing should be taken from it). Bounded: at most 64 pairs.

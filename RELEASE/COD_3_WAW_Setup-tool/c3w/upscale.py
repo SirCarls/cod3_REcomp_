@@ -38,6 +38,12 @@ ripper (no kind column), nothing is upscaled: the build rips again first.
 If normal maps are ever asked for (`kinds`), they are only enlarged, never
 denoised: the denoiser would treat their fine detail as noise.
 
+[claude-9b-think] 2026-10-27 UNTESTED: picture atlases (c3w/atlas_cells.py,
+today the Xbox 360 button font i_button_icons_xe_<language>) are upscaled
+whatever their kind (a font's picture is `unknown`: no material names it),
+cell by cell with the artwork model, so no button bleeds into the next. The
+ripper packs them whatever their kind too (hd::packed_whatever_kind).
+
 Upscaling is optional: if it fails (no Vulkan driver, no graphics card), the
 build carries on and says why.
 
@@ -62,7 +68,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from . import user_textures
+from . import atlas_cells, user_textures
 from .common import IS_WINDOWS, Cancelled, Log, Runner, SetupError, safe_rmtree
 
 OUTPUT_NAME = "textures_upscaled"   # next to the ripper's "textures" folder
@@ -98,6 +104,12 @@ DEFAULT_MODEL = "photo"
 NOISE_LEVELS: Dict[int, str] = {-1: "None", 0: "Very light", 1: "Light", 2: "Medium", 3: "Strong"}
 DEFAULT_NOISE = 1
 
+# [claude-9b-think] UNTESTED: picture atlases (atlas_cells.CELL_ATLASES, the
+# Xbox 360 button font) are upscaled cell by cell, whatever their kind, with
+# the model for drawn pictures. False leaves them as the game has them.
+UPSCALE_ATLASES = True
+ATLAS_MODEL = "art"
+
 # Texture names that hold directions or other data rather than colors:
 # "_n", "_nm", "_nml", "_nrm", "_norm", "_normal", "_bump", "_ddn" as a word
 # of the name (the word may be followed by digits).
@@ -122,9 +134,10 @@ DEFAULT_KINDS = frozenset({"diffuse"})
 
 def wanted_pictures(textures: Path, kinds: frozenset = DEFAULT_KINDS) -> Optional[set]:
     """The PNG names (without .png) the HD pack uses, from the ripper's
-    hd_keys.tsv: the `file` of every key whose `kind` is in `kinds`. None
-    when the file is missing or from an older ripper (fewer columns): the
-    game must be ripped again, so nothing is upscaled."""
+    hd_keys.tsv: the `file` of every key whose `kind` is in `kinds`, and of
+    every picture atlas (`name` in atlas_cells.CELL_ATLASES) whatever its
+    kind. None when the file is missing or from an older ripper (fewer
+    columns): the game must be ripped again, so nothing is upscaled."""
     try:
         text = (textures / KEYS_FILE).read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -136,7 +149,8 @@ def wanted_pictures(textures: Path, kinds: frozenset = DEFAULT_KINDS) -> Optiona
         cols = line.split("\t")
         if len(cols) < KEYS_COLUMNS:
             return None
-        if cols[5] != NO_FILE and cols[6] in kinds:
+        atlas = UPSCALE_ATLASES and atlas_cells.cell_size(cols[4]) is not None
+        if cols[5] != NO_FILE and (cols[6] in kinds or atlas):
             wanted.add(cols[5])
     return wanted
 
@@ -358,6 +372,47 @@ def _progress(log: Log, total: int, done_before: int) -> Callable[[str], None]:
     return handle
 
 
+def _errors_only(log: Log) -> Callable[[str], None]:
+    """waifu2x's errors without its per-image lines ([claude-9b-think]: an
+    atlas's cells are many images for one texture, so they aren't counted)."""
+    def handle(line: str) -> None:
+        if line and not line.endswith(" done") and "->" not in line and not line.startswith("["):
+            log.output(line)
+    return handle
+
+
+def _upscale_atlases(atlases: List[Path], tool_dir: Path, exe: Path, dst: Path, staging: Path, s: "Settings",
+                     runner: Runner, log: Log) -> None:
+    """[claude-9b-think] UNTESTED. The picture atlases in `atlases` cell by
+    cell (atlas_cells.upscale_atlases), with ATLAS_MODEL (the 1x model at
+    1x). One that fails keeps no copy, so the game uses its original."""
+    if s.scale == 1 and s.noise == -1:
+        for f in atlases:   # waifu2x would change nothing
+            shutil.copy2(f, dst / f.name)
+        return
+    model = ONE_X_MODEL if s.scale == 1 else ATLAS_MODEL
+    model_dir = tool_dir / MODELS[model][0]
+    if not model_dir.is_dir():
+        log.warn(f"waifu2x's {MODELS[model][1].split(' (')[0]} model is missing in {tool_dir}; the button "
+                 "pictures stay as the game has them.")
+        return
+    log.info(f"Upscaling {len(atlases)} button picture atlas(es) cell by cell ({MODELS[model][1]}), so no "
+             "button bleeds into the next...")
+
+    def run(cells: Path, out: Path) -> None:
+        runner.run(command(exe, cells, out, model_dir, s.noise, s.scale), quiet=True, line_filter=_errors_only(log))
+
+    try:
+        done = atlas_cells.upscale_atlases(atlases, dst, staging, s.scale, run)
+    except SetupError as e:
+        log.warn(f"The button pictures weren't upscaled ({e}); the game uses its own.")
+        return
+    for atlas in atlases:
+        if atlas not in done:
+            log.warn(f"{atlas.name} couldn't be upscaled cell by cell (not a whole number of cells, or "
+                     "waifu2x left cells out); the game uses its own.")
+
+
 def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings: Settings, runner: Runner,
                    log: Log, cancel: threading.Event) -> Tuple[int, int]:
     """Upscales the PNGs in `src` that `dst` lacks. `tool_dir` is the unpacked
@@ -397,8 +452,11 @@ def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings
         log.info("Only the textures the game's materials use as color pictures are upscaled; normal, specular "
                  "and detail maps stay as the game has them (upscaled, they change the lighting), and so do "
                  "textures no material names (HUD, fonts, effects, menus).")
-    colors = [p for p in todo if not is_data_map(p)]
-    data_maps = [p for p in todo if is_data_map(p)]
+    # [claude-9b-think] Picture atlases go cell by cell, after the rest.
+    atlases = [p for p in todo if UPSCALE_ATLASES and atlas_cells.cell_size(p.stem) is not None]
+    pictures = [p for p in todo if p not in atlases]
+    colors = [p for p in pictures if not is_data_map(p)]
+    data_maps = [p for p in pictures if is_data_map(p)]
     if data_maps:
         log.info(f"{len(data_maps)} of them look like normal maps; those are enlarged without noise reduction.")
     batches = [(colors, s.noise, "colors"), (data_maps, -1, "maps")]
@@ -423,6 +481,12 @@ def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings
             runner.run(command(exe, source, dst, model_dir, noise, s.scale), quiet=True,
                        line_filter=_progress(log, total, done_before))
             done_before += len(files)
+        if atlases:
+            if cancel.is_set():
+                raise Cancelled()
+            _upscale_atlases(atlases, tool_dir, exe, dst, staging / "atlases", s, runner, log)
+            done_before += len(atlases)
+            log.progress(done_before / max(total, 1), f"upscaled {done_before}/{total} textures")
     finally:
         if staging.exists():
             safe_rmtree(staging, staging.parent, [src, dst], log)

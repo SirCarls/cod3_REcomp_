@@ -761,7 +761,13 @@ constexpr int kAdvMovementItem = kAdvBrightItem + 1;
 // can scale the menu down a little or completely re-organize them per
 // function"): left and right move along the line.
 constexpr int kAdvAimItem = kAdvMovementItem + 1;
-constexpr int kAdvItemsAll = kAdvAimItem + 1;
+// [claude-9b-think] 2026-10-27 UNTESTED GAMEPLAY (24): a fourth page button, first on the line (GAMEPLAY,
+// VIDEO, MOVEMENT, AIM), after AIM's item (only added when AIM was). Its page has one row, BATTLE ACTIONS
+// (videomenu::kBattleActions: the same value, note, step and saving), which the VIDEO page no longer shows (owner
+// 13:26: "the battle action should be gameplay. within the menus"). The options list itself has no room for a row
+// (BRIGHTNESS's note above), and the front end's Gameplay page none for a seventh (menu_video.h).
+constexpr int kAdvGameplayItem = kAdvAimItem + 1;
+constexpr int kAdvItemsAll = kAdvGameplayItem + 1;
 namespace br = cod3::addr::brightness;
 
 bool IsSubRow(int item) { return item >= kAdvVideoFirst && item < kAdvVideoFirst + kAdvSubRows; }
@@ -780,13 +786,30 @@ struct SubPage {
   bool (*number)(int, cod3::menuslider::Number*, double*) = nullptr;
   std::string (*set_number)(int, double) = nullptr;
 };
-const SubPage kVideoPage = {int(vm::kRowCount), vm::LabelKey, vm::Value, vm::Note, vm::Step, vm::TitleKey};
+// [claude-9b-think] The VIDEO page's rows are the video rows but BATTLE ACTIONS (on GAMEPLAY now): its row i is
+// video row VideoRow(i).
+constexpr int kVideoPageRows = int(vm::kRowCount) - 1;
+int VideoRow(int i) { return i < vm::kBattleActions ? i : i + 1; }
+const char* VideoLabelKey(int i) { return vm::LabelKey(VideoRow(i)); }
+std::string VideoValue(int i) { return vm::Value(VideoRow(i)); }
+std::string VideoNote(int i) { return vm::Note(VideoRow(i)); }
+std::string VideoStep(PPCContext& ctx, uint8_t* base, int i, bool right) { return vm::Step(ctx, base, VideoRow(i), right); }
+const SubPage kVideoPage = {kVideoPageRows, VideoLabelKey, VideoValue, VideoNote, VideoStep, vm::TitleKey};
+// [claude-9b-think] GAMEPLAY: BATTLE ACTIONS.
+const char* GameplayLabelKey(int) { return vm::LabelKey(vm::kBattleActions); }
+std::string GameplayValue(int) { return vm::Value(vm::kBattleActions); }
+std::string GameplayNote(int) { return vm::Note(vm::kBattleActions); }
+std::string GameplayStep(PPCContext& ctx, uint8_t* base, int, bool right) {
+  return vm::Step(ctx, base, vm::kBattleActions, right);
+}
+const SubPage kGameplayPage = {1, GameplayLabelKey, GameplayValue, GameplayNote, GameplayStep, vm::GameplayTitleKey};
 const SubPage kMovementPage = {mm::kRows, mm::LabelKey, mm::Value, mm::Note, mm::Step, mm::TitleKey};
 const SubPage kAimPage = {am::kRows,  am::LabelKey, am::Value,    am::Note,
                           am::Step,   am::TitleKey, am::NumberOf, am::SetNumber};  // [claude-9b]
 constexpr int kPageVideo = 0;
 constexpr int kPageMovement = 1;
 constexpr int kPageAim = 2;  // [claude-9b]
+constexpr int kPageGameplay = 3;  // [claude-9b-think]
 
 // [claude-9b] Slider rows (game/menu_slider.h; owner 2026-10-20 21:09: "the
 // arrows should be next to the sliders and the sliders need to reflect the
@@ -854,6 +877,8 @@ struct AdvRows {
   uint32_t movement_label = 0;       // [movement] MOVEMENT OPTIONS (a copy of Reset's label)
   bool has_aim = false;              // [claude-9b] AIM, and the page buttons share a line
   uint32_t aim_label = 0;            // [claude-9b] AIM (a copy of Reset's label)
+  bool has_gameplay = false;         // [claude-9b-think] GAMEPLAY, first on the page buttons' line
+  uint32_t gameplay_label = 0;       // [claude-9b-think] GAMEPLAY (a copy of Reset's label)
   int button = 0;                    // [claude-9b] the page button last on (kAdvVideoItem when 0)
   FovRow vrow[kAdvSubRows];          // the sub page's rows (copies of the ADS row)
   uint32_t note = 0;                 // the line under them (a copy of Reset's label)
@@ -895,13 +920,18 @@ void PutAdv(uint32_t self, const AdvRows& r) {
 
 // [movement] The sub page shown (or last shown).
 const SubPage& PageOf(const AdvRows& r) {
+  if (r.page == kPageGameplay) return kGameplayPage;  // [claude-9b-think]
   if (r.page == kPageAim) return kAimPage;  // [claude-9b]
   return r.page == kPageMovement ? kMovementPage : kVideoPage;
 }
 // [claude-9b] The page buttons on one line (with AIM): which item, which page.
-bool IsButton(int item) { return item == kAdvVideoItem || item == kAdvMovementItem || item == kAdvAimItem; }
+bool IsButton(int item) {
+  return item == kAdvVideoItem || item == kAdvMovementItem || item == kAdvAimItem ||
+         item == kAdvGameplayItem;  // [claude-9b-think]
+}
 int ButtonItem(const AdvRows& r) { return IsButton(r.button) ? r.button : kAdvVideoItem; }
 int PageItem(int page) {
+  if (page == kPageGameplay) return kAdvGameplayItem;  // [claude-9b-think]
   return page == kPageAim ? kAdvAimItem : page == kPageMovement ? kAdvMovementItem : kAdvVideoItem;
 }
 // [menus-brightness] BRIGHTNESS is a row of the video page only.
@@ -916,7 +946,7 @@ int SubPageLast(const AdvRows& r) {
 // place), with a copy of Volume's gauge where the values are.
 void FollowBright(uint8_t* base, const AdvRows& r) {
   if (!r.has_bright || !r.invert[0] || !r.volume_label) return;
-  const float dy = r.pitch * float(vm::kRowCount);
+  const float dy = r.pitch * float(kVideoPageRows);  // [claude-9b-think] was vm::kRowCount (BATTLE ACTIONS left)
   FollowText(base, r.invert[0], r.bright_label, dy);
   const float to_volume = ReadF32(base, r.invert[0] + fe::kTextY) + dy - ReadF32(base, r.volume_label + fe::kTextY);
   FollowQuad(base, r.volume_back, r.bright_back, to_volume);
@@ -1231,7 +1261,7 @@ void FollowSliderArrows(uint8_t* base, const AdvRows& r) {
   for (int slot = 0; slot < kSliderSlots; ++slot) {
     const Slider& s = r.slider[slot];
     if (!s.own_arrows) continue;
-    const int row = slot == kSlotBright ? int(vm::kRowCount) : kNativeGauges[slot].item;
+    const int row = slot == kSlotBright ? kVideoPageRows : kNativeGauges[slot].item;  // [claude-9b-think]
     FollowQuad(base, r.invert[2], s.left, r.pitch * float(row));
     FollowQuad(base, r.invert[3], s.right, r.pitch * float(row));
   }
@@ -1335,12 +1365,17 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   cod3::guest::WriteF32(base, r.reset + fe::kTextY, reset_y);
   if (!r.has_video) return;
   if (button_line) {  // [claude-9b] VIDEO, MOVEMENT, AIM: centered on Reset, a quarter of the row apart
+    // [claude-9b-think] With GAMEPLAY first: four, a little closer (0.45 of Reset's distance from the labels' column
+    // apart instead of 0.55; GAMEPLAY and MOVEMENT are the long ones).
     const float cx = ReadF32(base, r.reset + fe::kTextX);
-    const float dx = 0.55f * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
-    const uint32_t labels[3] = {r.video_label, r.movement_label, r.aim_label};
-    for (int i = 0; i < 3; ++i) {
+    const int n = r.has_gameplay ? 4 : 3;
+    const float dx = (n == 4 ? 0.45f : 0.55f) * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+    const uint32_t labels[4] = {r.has_gameplay ? r.gameplay_label : 0u, r.video_label, r.movement_label,
+                                r.aim_label};
+    for (int i = 4 - n; i < 4; ++i) {
       FollowText(base, r.reset, labels[i], -label_step);
-      if (labels[i]) cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * float(i - 1));
+      const float at = float(i - (4 - n)) - 0.5f * float(n - 1);  // -1.5 .. 1.5, or -1 .. 1
+      if (labels[i]) cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * at);
     }
   } else {
     FollowText(base, r.reset, r.video_label, -label_step * (r.has_movement ? 2.0f : 1.0f));
@@ -1429,6 +1464,7 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   if (!r.has_video || r.video) return;
   if (page == kPageMovement && !r.has_movement) return;  // [movement]
   if (page == kPageAim && !r.has_aim) return;  // [claude-9b]
+  if (page == kPageGameplay && !r.has_gameplay) return;  // [claude-9b-think]
   r.page = page;
   const int count = static_cast<int16_t>(ReadU16(base, self + fe::kItemCount));
   for (int i = 0; i < count && i < kAdvItemsAll; ++i) {
@@ -1455,7 +1491,10 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   AdvSelect(ctx, base, self, kAdvVideoFirst);
   ShowAdvNote(ctx, base, self, r);
   REXLOG_INFO("cod3: pause menu: {} options",
-              page == kPageAim ? "aim" : page == kPageMovement ? "movement" : "video");  // [claude-9b] aim
+              page == kPageGameplay ? "gameplay"  // [claude-9b-think]
+              : page == kPageAim    ? "aim"
+              : page == kPageMovement ? "movement"
+                                      : "video");  // [claude-9b] aim
 }
 
 void LeaveAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, bool select_row) {
@@ -1623,6 +1662,28 @@ int AddAdvAimRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
   FollowTank(base, r);
   REXLOG_INFO("cod3: in-game options: AIM added; VIDEO, MOVEMENT and AIM on one line (Reset x {:.1f}, rows x {:.1f})",
               ReadF32(base, r.reset + fe::kTextX), ReadF32(base, r.tank[0] + fe::kTextX));
+  return kAdvGameplayItem;  // [claude-9b-think] was kAdvItemsAll (GAMEPLAY comes after)
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED Adds GAMEPLAY (Init, after AIM): one more copy of Reset's label, first on
+// the page buttons' line. Returns the page's item count.
+int AddAdvGameplayRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  auto valid = [](uint32_t p) { return p >= 0x10000 && (p & 3) == 0; };
+  if (!r.has_aim) return kAdvGameplayItem;
+  r.gameplay_label = CopyElement(ctx, base, r.reset, false, 0.0f);  // owned by the page (dtor hook)
+  if (!valid(r.gameplay_label) ||
+      !AddLabelItem(ctx, base, self, kAdvGameplayItem, r.gameplay_label, vm::GameplayButtonKey())) {
+    REXLOG_WARN("cod3: in-game options: GAMEPLAY not added (BATTLE ACTIONS is then in F2 > Game > Prompts only)");
+    if (valid(r.gameplay_label)) SetVisible(ctx, base, r.gameplay_label, false);
+    return kAdvGameplayItem;
+  }
+  r.has_gameplay = true;
+  FollowTank(base, r);
+  float x[4] = {};
+  const uint32_t labels[4] = {r.gameplay_label, r.video_label, r.movement_label, r.aim_label};
+  for (int i = 0; i < 4; ++i) x[i] = labels[i] ? ReadF32(base, labels[i] + fe::kTextX) : 0.0f;
+  REXLOG_INFO("cod3: in-game options: GAMEPLAY added; GAMEPLAY, VIDEO, MOVEMENT, AIM at x {:.1f} {:.1f} {:.1f} {:.1f}",
+              x[0], x[1], x[2], x[3]);
   return kAdvItemsAll;
 }
 
@@ -1768,7 +1829,8 @@ REX_HOOK_RAW(sub_824E60E8) {
       if (used == kAdvItemsMax) used = AddAdvBrightRow(ctx, base, self, panel, r);  // [menus-brightness]
       if (used == kAdvMovementItem) used = AddAdvMovementRow(ctx, base, self, r);  // [movement]
       if (used == kAdvAimItem) used = AddAdvAimRow(ctx, base, self, r);  // [claude-9b]
-      if (used == kAdvItemsAll) AddSliders(ctx, base, panel, r);  // [claude-9b] slider rows
+      if (used == kAdvGameplayItem) used = AddAdvGameplayRow(ctx, base, self, r);  // [claude-9b-think]
+      if (used >= kAdvGameplayItem) AddSliders(ctx, base, panel, r);  // [claude-9b] slider rows (with or without GAMEPLAY)
     }
   }
   SetItemCount(base, self, used);
@@ -1796,7 +1858,8 @@ REX_HOOK_RAW(AdvancedOptionsMenu__dtor) {
   std::vector<uint32_t> copies;
   const FovRow& sc = r.row[1];
   copies.insert(copies.end(), {sc.text_a, sc.text_b, sc.arrow_left, sc.arrow_right, r.video_label, r.note,
-                               r.movement_label, r.aim_label});  // [movement] [claude-9b] aim_label
+                               r.movement_label, r.aim_label,
+                               r.gameplay_label});  // [movement] [claude-9b] aim_label [claude-9b-think] gameplay
   for (const FovRow& v : r.vrow)
     copies.insert(copies.end(), {v.text_a, v.text_b, v.arrow_left, v.arrow_right});
   copies.insert(copies.end(), {r.bright_label, r.bright_back, r.bright_fill});  // [menus-brightness]
@@ -2001,9 +2064,13 @@ REX_HOOK_RAW(sub_824DC1C0) {
   }
   // [claude-9b] The page buttons' line: left and right move along it.
   if (IsButton(sel) && GetAdv(base, self, r) && r.has_aim && !r.video) {
-    static constexpr int kLine[3] = {kAdvVideoItem, kAdvMovementItem, kAdvAimItem};
-    const int at = sel == kAdvAimItem ? 2 : sel == kAdvMovementItem ? 1 : 0;
-    const int next = kLine[std::clamp(at + (right ? 1 : -1), 0, 2)];
+    // [claude-9b-think] GAMEPLAY first on the line when it is there.
+    static constexpr int kLine[4] = {kAdvGameplayItem, kAdvVideoItem, kAdvMovementItem, kAdvAimItem};
+    const int first = r.has_gameplay ? 0 : 1;
+    int at = first;
+    for (int i = first; i < 4; ++i)
+      if (kLine[i] == sel) at = i;
+    const int next = kLine[std::clamp(at + (right ? 1 : -1), first, 3)];
     if (next != sel) {
       r.button = next;
       PutAdv(self, r);
@@ -2032,6 +2099,9 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_19) {
     } else if (item == kAdvAimItem && r.has_aim && !r.video) {  // [claude-9b]
       am::OnOpen(base);
       EnterAdvVideo(ctx, base, self, r, kPageAim);
+      PutAdv(self, r);
+    } else if (item == kAdvGameplayItem && r.has_gameplay && !r.video) {  // [claude-9b-think]
+      EnterAdvVideo(ctx, base, self, r, kPageGameplay);
       PutAdv(self, r);
     }
     if (IsButton(item) && r.has_aim) {  // [claude-9b] B comes back to this button

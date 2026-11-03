@@ -84,16 +84,22 @@ set(COD3_SOURCES
     src/game/protected_dvars.cpp  # [movement] server_sided_protected dvars
     src/game/pc_menu.cpp
     src/game/button_prompts.cpp
+    src/game/stick_arrow_keys.cpp  # [claude-9b] the battle actions' stick picture as a MOUSE key with the keyboard (campaign only)
     src/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     src/game/perf_stats.cpp
     src/game/physics_step.cpp  # [claude-9b] the physics in fixed steps, 60 a second, whatever the frame rate (campaign only)
     src/game/server_step.cpp  # [acct2-main] the game in fixed updates, 60 a second, drawn smoothly between them (campaign only)
+    src/game/ride_bones.cpp  # [claude-9b-think] the ridden vehicle's turret and gun between updates (cod3_blend_ride_bones; campaign only)
+    src/game/profile_timers.cpp  # [claude-9b-think] the console build's profiling timers in the scene build and traces skipped (cod3_skip_profile_timers; campaign only)
     src/game/render_list_guard.cpp  # [claude-9b] a freed object in the render lists is skipped and logged, not a crash (campaign only)
+    src/game/ai_census.cpp  # [claude-9b-think] cod3_debug_ai_census: AI shots and spawns a second, to find what scales with fps (campaign only)
+    src/game/ai_aim.cpp  # [claude-9b-think] the AI's sample of the player's movement taken as at 60 fps; census line 3: hit decisions vs hurt (campaign only)
+    src/game/ai_shots.cpp  # [claude-9b-think] cod3_debug_ai_shots: each AI shot near the player with its guest stack, aim error and trace (campaign only)
     src/game/view_cull.cpp  # [claude-9b] the game's on-screen check as wide as the picture: logs, and cod3_cull_match_view (campaign only)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
-    src/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes and the effects pool checked (campaign only)
+    src/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes and the effects pool checked (both programs; cod3mp: mp/CMakeLists.txt, without the physical pages and the effects pool)
     src/game/script_fiber.cpp
     src/game/script_threads.cpp
     src/game/settings_sync.cpp
@@ -133,6 +139,15 @@ else()
 endif()
 
 target_include_directories(cod3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
+# [claude-9b-think] The prompts' keyboard-and-mouse texts by string key (config/prompt_text_kbm.tsv), built into the
+# game as prompt_text_kbm.inc (game/button_prompts.cpp; userdata/prompt_text_kbm.tsv adds to them at start). An edit
+# of the table runs the configure step again.
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/config/prompt_text_kbm.tsv" COD3_PROMPT_TEXT_KBM)
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/game/prompt_text_kbm.inc.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/prompt_text/prompt_text_kbm.inc" @ONLY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/config/prompt_text_kbm.tsv")
+target_include_directories(cod3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/prompt_text")
 
 # GPU_PLUGINS stages librexgpu-xenos next to the executable (Vulkan / D3D12
 # Xenos emulation). It is loaded at startup; see Cod3App::OnPreSetup.

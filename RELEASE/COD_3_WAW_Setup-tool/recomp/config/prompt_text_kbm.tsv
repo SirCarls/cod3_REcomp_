@@ -1,0 +1,21 @@
+# [claude-9b-think] 2026-10-27 The keyboard-and-mouse wording of the game's texts by string key
+# (game/button_prompts.cpp, LoadPromptText). Our own words only, never the game's.
+# A row: KEY<tab>TEXT.
+#  KEY   the string's key: its hash as 8 hex digits (the game's own key hash, h * 33 + each lowercase
+#        character; dev/agents/button-prompts/HINTS-CATALOG.tsv lists every hint's), or a key name.
+#  TEXT  shown instead while the keyboard and mouse are in use (menus and play), English only. It may
+#        use the game's [ACTION] words and ~button tokens, and these: <MOVE> the movement keys, <LOOK>
+#        the mouse (the look keys without mouse aim), <BIND:keybind_x> the key of a controller button's
+#        bind, <ACTION:name> the key of one of the port's actions (game/keybinds/binds.h), <KEY:name> a
+#        key; \n a new line.
+# userdata/prompt_text_kbm.tsv, if there, is read after this file at start: its rows add to these or
+# replace them. Texts without a row keep the stick phrase table (button_prompts.cpp kStickPhrases).
+
+# Saint-Lo: moving and looking around (both sticks in words; two wordings).
+45D8EB25	Use <MOVE> to move and <LOOK> to look around.
+81E1068C	Use <MOVE> to move and <LOOK> to look around.
+# Saint-Lo: the objectives (the controller's back button in words; two wordings).
+7FFC5AFF	Press and hold <BIND:keybind_back> to check your objectives.
+DEEA4A0B	Press and hold <BIND:keybind_back> to check your objectives.
+# Options: aiming down the sights while the aim toggle is off.
+A4118529	When off, hold <BIND:keybind_left_trigger> to aim down the sights.

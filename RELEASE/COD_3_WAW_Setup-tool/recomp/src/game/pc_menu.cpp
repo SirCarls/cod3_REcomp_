@@ -449,8 +449,11 @@ void MenuInput::OnMouseWheel(rex::ui::MouseEvent& e) {
   if (!Usable()) return;
   wheel_ += e.scroll_y();
   const int detent = rex::ui::MouseEvent::kScrollPerDetent;
-  for (; wheel_ >= detent; wheel_ -= detent) Push({Ask::kButton, pm::kCodeUp});
-  for (; wheel_ <= -detent; wheel_ += detent) Push({Ask::kButton, pm::kCodeDown});
+  int up = 0, down = 0;  // [claude-9b-think] 2026-11-02 for the trace below
+  for (; wheel_ >= detent; wheel_ -= detent) Push({Ask::kButton, pm::kCodeUp}), ++up;
+  for (; wheel_ <= -detent; wheel_ += detent) Push({Ask::kButton, pm::kCodeDown}), ++down;
+  if (REXCVAR_GET(cod3_menu_trace) && (up || down))
+    REXLOG_INFO("cod3: menu trace: wheel {} (scroll {}): {} up, {} down asked", e.scroll_y(), wheel_, up, down);
   e.set_handled(true);
 }
 
@@ -538,6 +541,7 @@ struct Item {
   Box hit;                    // what the pointer selects it in
   bool left_aligned = false;  // label on the left, a value to its right
   RowControls ctl;            // [menus-brightness] its arrows and gauge
+  bool value = false;         // [claude-9b-think] 2026-11-02 (cod3mp) an entry holding a value: left / right change it
 };
 
 // ---------------------------------------------------------------------------
@@ -929,6 +933,41 @@ void LayOutHitAreas(std::vector<Item>& items, bool has_values) {
   }
 }
 
+#if defined(COD3_MP)
+// [claude-9b-think] 2026-11-02 UNTESTED (owner 11-02 21:58: "the scrolling on the create match page is broken when
+// using keyboard and mouse. Seems like it's a similar problem to the horizontal scrolling") cod3mp's option rows are
+// two entries on one line: a plain entry with the row's name and the value entry (FEComboBox / FESlider) beside it.
+// CreateLanSessionMenu (vtable 0x82082F0C): names 0 / 2 / 4, values 1 / 3 / 5; its MoveUp / MoveDown (slots 32 / 33,
+// 0x82394808 / 0x82394740) light name k with value k + 1, and its left / right (slots 34 / 35) step the value of
+// row 1 (the map, 0x823970E0) or 3 (the game type, 0x8239C888). As two items side by side, the pointer on a row's
+// name made SelectItem step "along the line" with left / right (the 10-26 fix for side-by-side buttons): on these
+// rows that changes the value instead, the highlight never arrives, and the walk tries again every frame for up to
+// count + kClickWaitFrames frames: the map or game type scrolls through its values while the pointer rests there.
+// Now a name on a value's line is part of that row: its hit area goes to the value entry, which the moves select.
+void MergeNamesIntoValues(std::vector<Item>& items) {
+  float line = 0.0f;
+  for (const auto& it : items) line = std::max(line, it.layout.y1 - it.layout.y0);
+  int merged = 0;
+  for (auto& v : items) {
+    if (!v.value) continue;
+    for (auto& n : items) {
+      if (n.value || n.index < 0 || std::abs(n.layout.cy() - v.layout.cy()) >= line * 0.5f) continue;
+      v.hit = Box{std::min(v.hit.x0, n.hit.x0), std::min(v.hit.y0, n.hit.y0), std::max(v.hit.x1, n.hit.x1),
+                  std::max(v.hit.y1, n.hit.y1)};
+      n.index = -1;  // dropped below
+      ++merged;
+    }
+  }
+  if (!merged) return;
+  std::erase_if(items, [](const Item& it) { return it.index < 0; });
+  static int logged = 0;
+  if (REXCVAR_GET(cod3_menu_trace) && logged < 8) {
+    ++logged;
+    REXLOG_INFO("cod3: menu trace: {} row names joined to the value beside them", merged);
+  }
+}
+#endif
+
 // A page of settings: it takes left / right (its rows have values).
 bool HasValues(uint8_t* base, uint32_t page) {
 #if defined(COD3_MP)
@@ -1010,10 +1049,19 @@ std::vector<Item> ItemRects(PPCContext& ctx, uint8_t* base, uint32_t page, uint3
     if (selected) DrawnText(ctx, base, label, false, &it.layout);
     it.index = i;
     it.left_aligned = (ReadU16(base, label + pm::kTextAlign) & pm::kAlignLeft) != 0;
+#if defined(COD3_MP)
+    {  // [claude-9b-think] 2026-11-02 UNTESTED
+      const uint32_t vt = ReadU32(base, entry);
+      it.value = vt == mpui::kComboVtable || vt == mpui::kSliderVtable;
+    }
+#endif
     items.push_back(it);
   }
   const bool values = HasValues(base, page);
   LayOutHitAreas(items, values);
+#if defined(COD3_MP)
+  if (values && !buttons) MergeNamesIntoValues(items);  // [claude-9b-think] 2026-11-02 UNTESTED
+#endif
   if (!buttons && values) AttachControls(items, DrawnControls(system), loose);  // [menus-brightness]
   return items;
 }
@@ -1062,12 +1110,26 @@ void SelectItem(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, 
     // MoveUp / MoveDown go to the row above or below them and back, never along the line, so the
     // highlight steps along it with left / right, as the D-pad does there.
     if (from && std::abs(to->ink.cy() - from->ink.cy()) <= line) {
+      // [claude-9b-think] 2026-11-02 UNTESTED Never on an entry holding a value (cod3mp's FEComboBox / FESlider):
+      // left / right change its value there, they don't move the highlight (the create match page's map and game
+      // type scrolled through their values while the pointer rested on a row's name).
+      if (from->value || to->value) {
+        if (REXCVAR_GET(cod3_menu_trace))
+          REXLOG_INFO("cod3: menu trace: {} -> {} on one line left alone (a value entry: left / right would change it)",
+                      sel, target);
+        return;
+      }
       Press(ctx, base, system, to->ink.cx() > from->ink.cx() ? pm::kCodeRight : pm::kCodeLeft, false);
       if (Selected(base, page) == sel) return;  // the page didn't move
       continue;
     }
     const bool down = from ? to->ink.cy() > from->ink.cy() + line : target > sel;
     VCall(ctx, base, page, down ? pm::kPageMoveDown : pm::kPageMoveUp);
+    // [claude-9b-think] 2026-11-02 the pointer's walk, step by step, with the page's scroll window (cod3_menu_trace)
+    if (REXCVAR_GET(cod3_menu_trace))
+      REXLOG_INFO("cod3: menu trace: walk to {}: {} {} -> {} (scrolling {}, first {}, shown {}, items {})", target,
+                  down ? "down" : "up", sel, Selected(base, page), (ReadU16(base, page + pm::kPageFlags) & 1) != 0,
+                  ReadS16(base, page + pm::kPageScrollTop), ReadS16(base, page + pm::kPageScrollShown), count);
     if (Selected(base, page) == sel) return;  // the page didn't move
   }
 }

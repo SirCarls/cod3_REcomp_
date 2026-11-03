@@ -53,6 +53,16 @@
 // controller's A once a controller is (game/button_prompts.h
 // FirstPlayerLook), and fades in and out.
 //
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 13:20: "the space to skip will cover subtitles a lot of the time";
+// 13:21: "please make sure the skip requires the key/button to be held a little while"). The prompt sits in the
+// bottom-right corner of the HUD's safe area (cod3_skip_prompt_position; bottom-center as before), smaller, and shows
+// for 4 s when the film starts and for 4 s after any key or button press, fading out (the skip still works while it is
+// hidden). A skip is a hold: the skip key (Space, Enter, Escape, a left click) or the controller's A / START held for
+// cod3_skip_hold_ms (1000; 0 = a press skips as before), with a fill on the prompt's button; letting go early cancels.
+// While the prompt is hidden, the first press only shows it (no hold starts). A press must start during the film: a key or button still held from the menu doesn't count, nor do a held key's
+// repeats. With the hold, the briefing's post-load loop keeps the loader's "never" minimum, so the game's own check
+// (any button) doesn't skip it; the hold does, through the same skip path.
+//
 // No timers decide anything (owner, 2026-10-10): a movie is skippable while
 // the game's movie loop runs (hooks on its start and end) and past the game's
 // own minimum time; a briefing while the game draws it as the loading screen
@@ -76,6 +86,15 @@ class CutsceneSkip {
 
   // UI thread: the player pressed a skip key or clicked.
   void RequestSkip();
+  // [claude-9b-think] UI thread: a skip key (Space, Enter, Escape) or the left mouse button went down or up, `key` one
+  // bit each (kSkipKey*; a held key's repeats are ignored), and any key or button went down (shows the prompt again
+  // for a while).
+  static constexpr uint32_t kSkipKeySpace = 1, kSkipKeyReturn = 2, kSkipKeyEscape = 4, kSkipKeyMouse = 8;
+  void SkipKeyDown(uint32_t key);
+  void SkipKeyUp(uint32_t key);
+  void AnyInput();
+  // UI thread: how far the skip key's or button's hold is, 0..1; < 0 when nothing is held.
+  float HoldProgress() const;
 
   // Guest main thread, from mid-asm hooks: a movie loop starts and ends
   // (0x824EF308 at start-up; 0x824EEBA0, a briefing, after a level loads).
@@ -110,6 +129,13 @@ class CutsceneSkip {
   // call; `first` = the first call of this cutscene (a button already held,
   // e.g. from skipping the one before, doesn't count).
   bool PadPressed(bool first);
+  // [claude-9b-think] Guest main thread, every frame of a skippable film: the controller's A / START held (a hold
+  // starts on a press during the film; `first` = the film's first frame), and true when a hold has lasted
+  // cod3_skip_hold_ms.
+  bool PadHold(bool first);
+  bool HoldDone();
+  double Visible(int64_t t) const;  // the prompt's visibility at time t while something is skippable (0..1)
+  bool PromptShown(int64_t t) const;  // a press at t starts a hold (else it only shows the prompt)
   void SetSkippable(std::atomic<bool>& flag, bool on);
   void EndIntroSkip(PPCContext& ctx, uint8_t* base, const char* why);
 
@@ -125,6 +151,13 @@ class CutsceneSkip {
   std::atomic<int64_t> skippable_since_{0};  // for the prompt's fade-in only
   std::atomic<int64_t> hidden_since_{0};     // [acct2-decomp] and its fade-out
   uint16_t pad_buttons_ = 0;                 // PadPressed: the buttons seen last time
+  // [claude-9b-think] The hold (0: none), who holds (1 a key or the mouse, 2 a controller), the last press during a
+  // film (shows the prompt), and whether a skip key or the left button is down now (UI thread; any time, so a key
+  // held since before the film and its repeats don't start a hold).
+  std::atomic<int64_t> hold_since_{0};
+  std::atomic<int> hold_source_{0};
+  std::atomic<int64_t> input_at_{0};
+  uint32_t skip_keys_down_ = 0;  // kSkipKey* bits
 
   // Intro screens (guest main thread, except the atomics read by the UI).
   uint32_t intro_cvar_ = 0;                 // cvar_t* of introScreen

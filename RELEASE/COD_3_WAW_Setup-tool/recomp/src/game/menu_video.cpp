@@ -56,6 +56,8 @@ constexpr const char* kQuitToDesktopKey = "FEMENU_PAUSE_QUIT_TO_DESKTOP";
 constexpr const char* kQuitToTitleKey = "FEMENU_MAIN_QUIT_TO_TITLE";
 constexpr const char* kQuitQuestionKey = "FEMENU_QUIT_TO_DESKTOP_QUESTION";
 constexpr const char* kBrightnessKey = "FEMENU_COP_BRIGHTNESS";  // [menus-brightness]
+constexpr const char* kGameplayButtonKey = "FEMENU_COP_GAMEPLAY_BUTTON";  // [claude-9b-think]
+constexpr const char* kGameplayTitleKey = "FEMENU_COP_GAMEPLAY_TITLE";    // [claude-9b-think]
 
 constexpr Text kTexts[] = {
     {kTitleKey, "OPTIONS / VIDEO"},
@@ -69,6 +71,8 @@ constexpr Text kTexts[] = {
     {kQuitToTitleKey, "QUIT TO TITLE SCREEN"},
     {kQuitQuestionKey, "Quit the game and go back to the desktop?"},
     {kBrightnessKey, "BRIGHTNESS"},  // [menus-brightness]
+    {kGameplayButtonKey, "GAMEPLAY"},  // [claude-9b-think]
+    {kGameplayTitleKey, "OPTIONS / GAMEPLAY"},
 };
 
 // Guest copies of the texts: fixed ones once, help texts in a buffer of
@@ -197,6 +201,8 @@ const char* TitleKey() { return kTitleKey; }
 const char* ItemKey() { return kItemKey; }
 const char* ItemInstructionsKey() { return kItemInstKey; }
 const char* PauseItemKey() { return kPauseItemKey; }
+const char* GameplayButtonKey() { return kGameplayButtonKey; }  // [claude-9b-think]
+const char* GameplayTitleKey() { return kGameplayTitleKey; }
 const char* QuitToMenuKey() { return kQuitToMenuKey; }
 const char* QuitToDesktopKey() { return kQuitToDesktopKey; }
 const char* QuitToTitleKey() { return kQuitToTitleKey; }

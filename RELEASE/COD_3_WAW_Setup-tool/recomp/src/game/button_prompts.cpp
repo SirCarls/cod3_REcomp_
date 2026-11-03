@@ -33,6 +33,18 @@
 // game's token pass takes like its buttons (KeyToken), so they are caps and
 // follow device switches too; the cutscene skip's own controller reads count
 // for the switch (NotePadState), and its prompt asks FirstPlayerLook.
+//
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 12:28-12:37): pictures of our own and the texts by key.
+//  * With cod3_key_caps on, a mouse button is a small mouse picture, and the PlayStation (PS4/5 and PS2),
+//    Nintendo and GameCube styles' buttons are pictures of our own, drawn by the overlay like the key caps: the
+//    game lays out a short "{code}" in the text's font to keep the room and draws it invisibly (NameText,
+//    PictureCode, MouseCode, NoteKeyCaps; ui/hud_overlay.cpp DrawPromptPicture). The controller pictures are in
+//    colors close to the buttons' own ([claude-setup] 2026-11-03: ui/hud_overlay.cpp cod3_glyph_color_mode, which
+//    replaced cod3_glyph_colors).
+//  * The keyboard-and-mouse wording of the game's texts by string key (config/prompt_text_kbm.tsv, built in;
+//    userdata/prompt_text_kbm.tsv, the player's): the string tables' lookup (0x82527FD0) tells which key a text
+//    came from, and the "[ACTION]" pass (0x824DE290) lays out our text instead while keys are shown, English.
+//    The stick phrase table stays the fallback (campaign).
 
 #include "game/button_prompts.h"
 
@@ -43,7 +55,10 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>  // [claude-9b-think] userdata/prompt_text_kbm.tsv
+#include <fstream>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -66,23 +81,42 @@
 #include "game/rumble.h"  // [rumble]
 #include "game/pc_menu.h"
 
+#if !defined(COD3_MP)
+// [claude-9b-think] kPromptTextKbm: config/prompt_text_kbm.tsv, built in (CMakeLists.txt, prompt_text_kbm.inc.in).
+#include "prompt_text_kbm.inc"
+#endif
+
 REXCVAR_DEFINE_BOOL(cod3_key_prompts, true, "cod3/Mouse",
                     "Show the bound keyboard and mouse keys (e.g. [R]) instead of controller "
                     "buttons in the game's prompts while the keyboard and mouse are in use "
                     "(game/button_prompts.h)");
 REXCVAR_DEFINE_STRING(cod3_glyph_style, "auto", "cod3/Interface",
                       "Controller buttons in the game's prompts: auto (each player's own controller: "
-                      "an Xbox pad the game's pictures, a PlayStation or Nintendo pad its button "
-                      "names), xbox (the game's own pictures), playstation, nintendo or gamecube "
-                      "(button names until pictures of our own exist)")
-    .allowed({"auto", "xbox", "playstation", "nintendo", "gamecube"});
+                      "an Xbox pad the game's pictures, a PlayStation pad the PS4/5 style, a Nintendo "
+                      "pad its own), xbox (the game's own pictures), playstation (PS4/5), playstation2 "
+                      "(PS2), nintendo or gamecube (pictures of our own while cod3_key_caps is on, else "
+                      "the button names)")
+    .allowed({"auto", "xbox", "playstation", "playstation2", "nintendo", "gamecube"});
 // [acct2-decomp] Owner 2026-10-25 23:42: "the keyboard glyphs need to match
 // the 'SPACE to skip' button".
 REXCVAR_DEFINE_BOOL(cod3_key_caps, true, "cod3/Interface",
                     "Draw the keys in the game's prompts as key caps, like the \"SPACE Skip\" "
-                    "prompt's (else the key's name in brackets, [R])");
+                    "prompt's, mouse buttons as a small mouse and the PlayStation, Nintendo and "
+                    "GameCube buttons as pictures of our own (else the names in brackets, [R])");
+// [claude-9b-think] 2026-10-27 (owner 12:35: "add toggle for fill color to match the button so they don't look like
+// keycaps"): was cod3_glyph_colors here. [claude-setup] 2026-11-03 (owner: by default the buttons as the original, a
+// toggle for customized colors, a rainbow option): now cod3_glyph_color_mode in ui/hud_overlay.cpp, with the colors.
 // [claude-9b-think] 2026-10-27 UNTESTED (owner 10:27: the key caps fade out a little after their text; stick words and
 // pictures still show with the keyboard and mouse): what the key caps and the stick words do, for a test run.
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 15:01: "the hint spacing is off with it's new size. Could we allow the
+// user to enlarge it if desired? we would need to account for new breaklines etc"): the key caps' and our pictures'
+// size; the room the game keeps for each (FittedRoom) grows with it, so the game's own line breaking makes room.
+REXCVAR_DEFINE_DOUBLE(cod3_key_cap_scale, 1.0, "cod3/Interface",
+                      "Size of the key caps and button pictures in the game's prompts (1: 1.3 times the text's "
+                      "capitals tall); the text keeps room for them, so bigger caps can move words to the next "
+                      "line. Their height stops short of the lines above and below")
+    .range(0.8, 1.8)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_key_caps, false, "cod3",
                     "Log the key caps' lines as the game draws them (their text's and keys' opacity, the game "
                     "frame) and as the overlay shows them, and the prompts that still name a stick or show a "
@@ -136,7 +170,9 @@ std::atomic<bool> g_mouse_aim{false};  // cod3_raw_mouse or mnk_mouse
 std::atomic<uint32_t> g_bind_gen{0};   // + 1 whenever a setting the prompts show changes
 
 // [mp-menus] kAuto: each player's own controller's (PadMode).
-enum class Style : uint8_t { kAuto, kXbox, kPlayStation, kNintendo, kGameCube };
+// [claude-9b-think] kPlayStation the PS4/5 style, kPlayStation2 the PS2 style (a choice only: auto can't tell them
+// apart; the SDK names any PlayStation pad kPlayStation).
+enum class Style : uint8_t { kAuto, kXbox, kPlayStation, kNintendo, kGameCube, kPlayStation2 };
 std::atomic<Style> g_style{Style::kAuto};
 // [mp-menus] The app's input system (SetInputSystem): which kind of pad each
 // player holds.
@@ -212,6 +248,7 @@ bool CvarTrue(const char* name) {
 Style ParseStyle(std::string_view s) {
   if (SameText(s, "xbox")) return Style::kXbox;
   if (SameText(s, "playstation")) return Style::kPlayStation;
+  if (SameText(s, "playstation2")) return Style::kPlayStation2;  // [claude-9b-think]
   if (SameText(s, "nintendo")) return Style::kNintendo;
   if (SameText(s, "gamecube")) return Style::kGameCube;
   return Style::kAuto;
@@ -229,6 +266,8 @@ void RefreshSettings() {
   for (const char* c : kBindCvars) now += rex::cvar::GetFlagByName(c) + '\n';
   now += std::to_string(cod3::binds::Generation()) + '\n';  // [keybinds] the port's own action keys
   now += g_mouse_aim.load(std::memory_order_relaxed) ? "mouse" : "keys";
+  now += REXCVAR_GET(cod3_key_caps) ? "\ncaps" : "\nnames";  // [claude-9b-think] pictures or names: laid out again
+  now += "\n" + rex::cvar::GetFlagByName("cod3_key_cap_scale");  // [claude-9b-think] the caps' room: laid out again
   std::lock_guard lock(mutex);
   if (now != last) {
     last = std::move(now);
@@ -286,12 +325,33 @@ void WatchPad(uint8_t* base, uint32_t state) {
 // What the prompts show.
 // ---------------------------------------------------------------------------
 // The game's own pictures (kXbox), a controller's button names, or keys.
-enum class Mode : uint8_t { kXbox, kPlayStation, kNintendo, kGameCube, kMenuKeys, kPlayKeys };
-constexpr uint32_t kModeCount = 6;
+// [claude-9b-think] kPlayStation the PS4/5 style, kPlayStation2 the PS2 style.
+enum class Mode : uint8_t { kXbox, kPlayStation, kNintendo, kGameCube, kPlayStation2, kMenuKeys, kPlayKeys };
+constexpr uint32_t kModeCount = 7;
 
 bool IsKeys(Mode m) { return m == Mode::kMenuKeys || m == Mode::kPlayKeys; }
 // Every mode but the game's own pictures writes names in the text's font.
 bool IsText(Mode m) { return m != Mode::kXbox; }
+// [claude-9b-think] 2026-10-27 UNTESTED A controller style drawn as pictures of our own (cod3_key_caps on): the room
+// the game keeps for a button is a short "{code}" (PictureCode), the overlay draws the picture over it.
+bool PadPictures(Mode m) {
+  return (m == Mode::kPlayStation || m == Mode::kPlayStation2 || m == Mode::kNintendo || m == Mode::kGameCube) &&
+         REXCVAR_GET(cod3_key_caps);
+}
+// The lines whose names the overlay draws (key caps, mouse and controller pictures): the game draws them invisibly.
+bool OverlayNames(Mode m) { return REXCVAR_GET(cod3_key_caps) && (IsKeys(m) || PadPictures(m)); }
+// The overlay's word for a mode (button_prompts.h Look).
+cod3::prompts::Look LookOf(Mode m) {
+  using cod3::prompts::Look;
+  switch (m) {
+    case Mode::kPlayStation: return Look::kPlayStation;
+    case Mode::kPlayStation2: return Look::kPlayStation2;
+    case Mode::kNintendo: return Look::kNintendo;
+    case Mode::kGameCube: return Look::kGameCube;
+    case Mode::kXbox: return Look::kXbox;
+    default: return Look::kKeys;
+  }
+}
 
 // The local client whose text is being made or drawn now.
 uint32_t PromptPlayer(uint8_t* base) {
@@ -361,6 +421,7 @@ Mode Wanted(uint8_t* base, uint32_t player) {
   switch (g_style.load(std::memory_order_relaxed)) {
     case Style::kXbox: return Mode::kXbox;
     case Style::kPlayStation: return Mode::kPlayStation;
+    case Style::kPlayStation2: return Mode::kPlayStation2;  // [claude-9b-think]
     case Style::kNintendo: return Mode::kNintendo;
     case Style::kGameCube: return Mode::kGameCube;
     default: return PadMode(base, player);
@@ -374,35 +435,39 @@ Mode Wanted(uint8_t* base, uint32_t player) {
 // [mp-menus] Nintendo: the label on the button in that place (the SDK reads
 // pads by position: the bottom button is the game's A, labeled B on a Switch
 // pad).
+// [claude-9b-think] 2026-10-27 two PlayStation styles (owner 12:33): PS4/5 (playstation: OPTIONS / SHARE; the SDK
+// doesn't tell a DualSense, CREATE, from a DualShock 4) and PS2 (playstation2: START / SELECT). GameCube's C-stick
+// for the right stick.
 struct Button {
   char glyph;
   int bind;  // index into kBindCvars, -1: made of the D-pad binds
   const char* menu_key;
   const char* xbox;
-  const char* playstation;
+  const char* playstation;   // PS4/5
+  const char* playstation2;  // [claude-9b-think] PS2
   const char* nintendo;
   const char* gamecube;
 };
 constexpr Button kButtons[] = {
-    {'"', 0, "ENTER", "A", "CROSS", "B", "A"},
-    {'%', 1, "ESC", "B", "CIRCLE", "A", "B"},
-    {'#', 2, nullptr, "X", "SQUARE", "Y", "X"},
-    {'$', 3, nullptr, "Y", "TRIANGLE", "X", "Y"},
-    {'&', 4, nullptr, "LT", "L2", "ZL", "L"},
-    {'!', 5, nullptr, "RT", "R2", "ZR", "R"},
-    {'\'', 6, nullptr, "LB", "L1", "L", nullptr},
-    {'(', 7, nullptr, "RB", "R1", "R", "Z"},
-    {'-', 8, "ENTER", "START", "START", "+", "START"},
-    {'1', 9, nullptr, "BACK", "SELECT", "-", nullptr},
-    {'2', 10, nullptr, "LS", "L3", nullptr, nullptr},
-    {'3', 11, nullptr, "RS", "R3", nullptr, nullptr},
-    {')', 12, "UP", "UP", "UP", "UP", "UP"},
-    {',', 13, "DOWN", "DOWN", "DOWN", "DOWN", "DOWN"},
-    {'+', 14, "LEFT", "LEFT", "LEFT", "LEFT", "LEFT"},
-    {'*', 15, "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT"},
-    {'/', -1, "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN"},
-    {'.', -1, "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT"},
-    {'0', -1, "ARROWS", "D-PAD", "D-PAD", "D-PAD", "D-PAD"},
+    {'"', 0, "ENTER", "A", "CROSS", "CROSS", "B", "A"},
+    {'%', 1, "ESC", "B", "CIRCLE", "CIRCLE", "A", "B"},
+    {'#', 2, nullptr, "X", "SQUARE", "SQUARE", "Y", "X"},
+    {'$', 3, nullptr, "Y", "TRIANGLE", "TRIANGLE", "X", "Y"},
+    {'&', 4, nullptr, "LT", "L2", "L2", "ZL", "L"},
+    {'!', 5, nullptr, "RT", "R2", "R2", "ZR", "R"},
+    {'\'', 6, nullptr, "LB", "L1", "L1", "L", nullptr},
+    {'(', 7, nullptr, "RB", "R1", "R1", "R", "Z"},
+    {'-', 8, "ENTER", "START", "OPTIONS", "START", "+", "START"},
+    {'1', 9, nullptr, "BACK", "SHARE", "SELECT", "-", nullptr},
+    {'2', 10, nullptr, "LS", "L3", "L3", nullptr, nullptr},
+    {'3', 11, nullptr, "RS", "R3", "R3", nullptr, "C"},
+    {')', 12, "UP", "UP", "UP", "UP", "UP", "UP"},
+    {',', 13, "DOWN", "DOWN", "DOWN", "DOWN", "DOWN", "DOWN"},
+    {'+', 14, "LEFT", "LEFT", "LEFT", "LEFT", "LEFT", "LEFT"},
+    {'*', 15, "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT", "RIGHT"},
+    {'/', -1, "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN", "UP/DOWN"},
+    {'.', -1, "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT", "LEFT/RIGHT"},
+    {'0', -1, "ARROWS", "D-PAD", "D-PAD", "D-PAD", "D-PAD", "D-PAD"},
 };
 constexpr int kButtonCount = int(sizeof(kButtons) / sizeof(kButtons[0]));
 
@@ -492,6 +557,7 @@ std::string FourKeys(int up) {
 std::string NameFor(const Button& b, Mode mode) {
   switch (mode) {
     case Mode::kPlayStation: return b.playstation ? b.playstation : b.xbox;
+    case Mode::kPlayStation2: return b.playstation2 ? b.playstation2 : b.xbox;  // [claude-9b-think]
     case Mode::kNintendo: return b.nintendo ? b.nintendo : b.xbox;
     case Mode::kGameCube: return b.gamecube ? b.gamecube : b.xbox;
     case Mode::kXbox: return b.xbox;
@@ -515,19 +581,180 @@ std::string NameFor(const Button& b, Mode mode) {
   return out;
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED The picture a controller style shows for a button (PadPictures), as the code
+// the game lays out between braces, "{x}"; ui/hud_overlay.cpp DrawPromptPicture draws it. The D-pad is our own arrows
+// ("^" up, "v" down, "<" left, ">" right; "^v" up/down, "<>" left/right, "<^v>" all of it), PlayStation's face
+// buttons shapes ("x" cross, "o" circle, "s" square, "t" triangle), every other button its name on a cap ("L1",
+// "OPTIONS", "SELECT"; GameCube "A" ... "Z", "C" the C-stick; Nintendo "B" ... "ZR", "+", "-").
+std::string PictureCode(const Button& b, Mode mode) {
+  switch (b.glyph) {
+    case ')': return "^";
+    case ',': return "v";
+    case '+': return "<";
+    case '*': return ">";
+    case '/': return "^v";
+    case '.': return "<>";
+    case '0': return "<^v>";
+    default: break;
+  }
+  if (mode == Mode::kPlayStation || mode == Mode::kPlayStation2) {
+    switch (b.glyph) {
+      case '"': return "x";
+      case '%': return "o";
+      case '#': return "s";
+      case '$': return "t";
+      default: break;
+    }
+  }
+  return NameFor(b, mode);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 12:28: "the glyphs for mouse1 and mouse2 seem too big": the game kept
+// "[MOUSE1]"'s width for the cap). A mouse button is a small mouse picture in a room about as wide as tall: "{1}" ..
+// "{5}" the buttons (4 back, 5 forward), "{U}" / "{D}" the wheel up / down (DrawPromptPicture). The names are the
+// keybind settings' (LMB, MB4 ...) and the port's own (MOUSE1, MWHEELUP ...; game/keybinds/keys.cpp). Other keys,
+// and every key while cod3_key_caps is off, keep "[NAME]".
+const char* MouseCode(std::string_view name) {
+  struct Mouse {
+    const char* name;
+    const char* code;
+  };
+  static constexpr Mouse kMouse[] = {
+      {"LMB", "1"},    {"MOUSE1", "1"}, {"MB1", "1"},    {"RMB", "2"},       {"MOUSE2", "2"},      {"MB2", "2"},
+      {"MMB", "3"},    {"MOUSE3", "3"}, {"MB3", "3"},    {"MOUSE4", "4"},    {"MB4", "4"},         {"MM4", "4"},
+      {"MOUSE5", "5"}, {"MB5", "5"},    {"MM5", "5"},    {"MWHEELUP", "U"},  {"MWHEELDOWN", "D"},
+  };
+  for (const auto& m : kMouse)
+    if (SameText(name, m.name)) return m.code;
+  return nullptr;
+}
+std::string RoomText(const std::string& name, bool keys) {
+  if (keys && REXCVAR_GET(cod3_key_caps))
+    if (const char* code = MouseCode(name)) return std::string("{") + code + "}";
+  return "[" + name + "]";
+}
+
+// ---------------------------------------------------------------------------
+// [claude-9b-think] 2026-10-27 UNTESTED Room as wide as the cap (owner 15:01: "the hint spacing is off with it's new
+// size. Could we allow the user to enlarge it if desired? we would need to account for new breaklines etc").
+//
+// The game keeps for each name the width of the string we hand it, laid out in the line's font at the text's scale
+// (the line layout, the word wrap's measure and the token pass below). That was "[NAME]" in the game's font, wider
+// than the smaller key cap the overlay draws now (TAB: ~80 px of room for a ~41 px cap at 1280x720), so the words
+// stood off the caps. While the overlay draws the names (OverlayNames), the string is now "[" filler "]" whose width
+// in the line's font is the cap's own (FittedRoom), and the names, in their order, are kept for the line
+// (g_line_names), so the overlay knows what each room is for and draws the cap across the whole room. The cap size
+// (cod3_key_cap_scale) scales the room too, so the game's own word wrap moves words for bigger caps.
+//
+// The cap, in the line's height h (ui/hud_overlay.cpp DrawPromptKeyCaps): 0.611 h tall at scale 1 (1.3 times the
+// capitals, 0.47 h), our name in Barlow Semi Condensed with 0.3 of the cap's height of margin on each side, at least
+// square. In the font's own units (the text drawn as wide as tall on the screen, as the HUD's text is): width =
+// max(0.5 x the name's width in the game's font + 2 x 0.183 h, 0.611 h) x the scale; one-character pictures (a mouse
+// button, a PlayStation shape, a D-pad arrow) square. 0.5: TAB measured ~29 px on the cap against ~60 px in the game's
+// font (c9b-test-pr-look-s40). The overlay narrows the name if a font's letters run wider than that.
+constexpr float kCapLetters = 0.5f;
+constexpr float kCapMargin = 0.183f;
+constexpr float kCapTall = 0.611f;
+
+// The font names are laid out in right now (the line layout and the word measure set it), its index, and whether this
+// is a line's layout (not a word measure), whose names are kept in order.
+thread_local uint32_t t_name_font = 0;
+thread_local uint32_t t_name_font_index = 0;
+thread_local bool t_line_layout = false;
+thread_local std::vector<std::string> t_line_names;
+
+float KeyCapScale() { return std::clamp(float(REXCVAR_GET(cod3_key_cap_scale)), 0.8f, 1.8f); }
+
+// A character's advance in `font` (the layout's pen step; a space steps like an 'a'), or -1 outside the font.
+int32_t Advance(uint8_t* base, uint32_t font, uint8_t c) {
+  namespace pm = cod3::addr::pc_menu;
+  const int32_t first = int32_t(ReadU32(base, font + pm::kFontFirstChar));
+  const int32_t count = int32_t(ReadU32(base, font + pm::kFontGlyphCount));
+  const uint32_t glyphs = ReadU32(base, font + pm::kFontGlyphs);
+  if (c == ' ') c = 'a';
+  if (count <= 0 || !Valid(glyphs) || int32_t(c) < first || int32_t(c) >= first + count) return -1;
+  return int32_t(ReadU32(base, glyphs + pm::kGlyphSize * uint32_t(int32_t(c) - first) + 4 * 6));
+}
+
+// "[filler]" (or "{filler}" for a picture) as wide in `font` as the cap for `name`; "" when the font can't tell.
+std::string FittedRoom(uint8_t* base, uint32_t font, const std::string& name, bool picture) {
+  namespace pm = cod3::addr::pc_menu;
+  const float line = float(int32_t(ReadU32(base, font + pm::kFontLineHeight)));
+  if (!(line > 0.0f && line < 512.0f)) return "";
+  float letters = 0.0f;
+  for (char c : name) {
+    const int32_t a = Advance(base, font, uint8_t(c));
+    letters += float(std::max(a, 0));
+  }
+  const bool square = picture && name.size() == 1;
+  const float want = KeyCapScale() * (square ? kCapTall * line
+                                             : std::max(kCapLetters * letters + 2.0f * kCapMargin * line,
+                                                        kCapTall * line));
+  const char open = picture ? '{' : '[', close = picture ? '}' : ']';
+  const int32_t a_open = Advance(base, font, uint8_t(open)), a_close = Advance(base, font, uint8_t(close));
+  if (a_open < 0 || a_close < 0) return "";
+  // The filler: characters of the font, widest first, each while it still fits (to within half the narrowest's
+  // width); no spaces (the word wrap breaks there), no '~' (a token), no brackets.
+  static constexpr char kFill[] = "MWmw@#HNQOGDUCBRKAESVXYZPTLFJ0123456789abdeghnopqsuvxyzckrtfIijl|!.,:;'";
+  struct Piece {
+    char c;
+    int32_t a;
+  };
+  Piece pieces[sizeof(kFill)];
+  int count = 0;
+  int32_t narrowest = INT32_MAX;
+  for (const char* p = kFill; *p; ++p) {
+    const int32_t a = Advance(base, font, uint8_t(*p));
+    if (a <= 0) continue;
+    pieces[count++] = {*p, a};
+    narrowest = std::min(narrowest, a);
+  }
+  if (!count) return "";
+  std::sort(pieces, pieces + count, [](const Piece& x, const Piece& y) { return x.a > y.a; });
+  std::string out(1, open);
+  float left = want - float(a_open + a_close);
+  const float slack = float(narrowest) * 0.5f;
+  while (left > slack && out.size() < 29) {
+    const Piece* pick = nullptr;
+    for (int i = 0; i < count && !pick; ++i)
+      if (float(pieces[i].a) <= left + slack) pick = &pieces[i];
+    if (!pick) break;
+    out += pick->c;
+    left -= float(pick->a);
+  }
+  if (out.size() == 1) out += pieces[count - 1].c;  // at least one (the line's draw note skips "[]")
+  out += close;
+  return out;
+}
+
+// The string the game lays out for a name: the fitted room while the overlay draws the names and the layout's font is
+// known (a line's names kept in order), else as before. `shown` is "[NAME]" or "{code}".
+std::string LaidOutName(uint8_t* base, const std::string& shown, Mode mode) {
+  if (!t_name_font || !OverlayNames(mode) || shown.size() < 3) return shown;
+  const bool picture = shown.front() == '{';
+  const std::string name = shown.substr(1, shown.size() - 2);
+  std::string room = FittedRoom(base, t_name_font, name, picture);
+  if (room.empty()) return shown;
+  if (t_line_layout && t_line_names.size() < 64) t_line_names.push_back(name);
+  return room;
+}
+
 // Guest memory for our strings: one 32-byte slot per button (+1 for "[?]")
 // per mode, and a 256-byte text buffer. [mp-menus] Per mode, because a laid
 // out line keeps pointing at its names: split-screen players with different
 // controllers (or one on the keyboard) each keep their own.
+// [claude-9b-think] and per font (the fitted rooms differ by font; kFontCount: none known).
 constexpr uint32_t kSlotSize = 32;
 constexpr uint32_t kTextSize = 256;
 constexpr uint32_t kSlotsPerMode = uint32_t(kButtonCount) + 1;
+constexpr uint32_t kFontSlots = bp::kFontCount + 1;
+constexpr uint32_t kNameSlots = kSlotsPerMode * kModeCount * kFontSlots;
 uint32_t g_guest = 0;
 
 uint32_t GuestScratch() {
   if (!g_guest) {
     auto* mem = rex::system::kernel_state()->memory();
-    g_guest = mem->SystemHeapAlloc(kSlotSize * kSlotsPerMode * kModeCount + kTextSize);
+    g_guest = mem->SystemHeapAlloc(kSlotSize * kNameSlots + kTextSize);
   }
   return g_guest;
 }
@@ -547,12 +774,16 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
     std::string name;
     if (mode == Mode::kPlayKeys) name = cod3::binds::KeyNameForPadKey(base, PadKeyFor(glyph));
     if (name.empty()) name = NameFor(kButtons[i], mode);
-    text = "[" + name + "]";
+    // [claude-9b-think] a controller style's picture, or a mouse button's (RoomText).
+    text = PadPictures(mode) ? "{" + PictureCode(kButtons[i], mode) + "}" : RoomText(name, IsKeys(mode));
+    text = LaidOutName(base, text, mode);  // [claude-9b-think] as wide as its cap
     break;
   }
   if (text.size() > kSlotSize - 1) text.resize(kSlotSize - 1);
   const uint32_t mode_slot = uint32_t(mode) < kModeCount ? uint32_t(mode) : 0;
-  const uint32_t at = scratch + kSlotSize * (mode_slot * kSlotsPerMode + uint32_t(index));
+  const uint32_t font_slot = t_name_font && t_name_font_index < bp::kFontCount ? t_name_font_index : bp::kFontCount;
+  const uint32_t at =
+      scratch + kSlotSize * ((font_slot * kModeCount + mode_slot) * kSlotsPerMode + uint32_t(index));
   std::memcpy(base + at, text.c_str(), text.size() + 1);
   return at;
 }
@@ -585,7 +816,8 @@ uint32_t KeyTokenText(uint8_t* base, uint32_t text, uint32_t* length) {
   static std::atomic<uint32_t> next{0};
   if (!ring) ring = rex::system::kernel_state()->memory()->SystemHeapAlloc(kRing * kSlotSize);
   if (!ring) return 0;
-  std::string shown = "[" + name + "]";
+  std::string shown = RoomText(name, true);  // [claude-9b-think] a mouse button's picture
+  shown = LaidOutName(base, shown, Mode::kPlayKeys);  // [claude-9b-think] as wide as its cap (only keys make these)
   if (shown.size() > kSlotSize - 1) shown.resize(kSlotSize - 1);
   const uint32_t at = ring + kSlotSize * (next.fetch_add(1, std::memory_order_relaxed) % kRing);
   std::memcpy(base + at, shown.c_str(), shown.size() + 1);
@@ -597,7 +829,7 @@ uint32_t KeyTokenText(uint8_t* base, uint32_t text, uint32_t* length) {
 uint32_t TempText(uint8_t* base, const std::string& text) {
   const uint32_t scratch = GuestScratch();
   if (!scratch || text.size() >= kTextSize) return 0;
-  const uint32_t at = scratch + kSlotSize * kSlotsPerMode * kModeCount;
+  const uint32_t at = scratch + kSlotSize * kNameSlots;  // [claude-9b-think] after the name slots (per font now)
   std::memcpy(base + at, text.c_str(), text.size() + 1);
   return at;
 }
@@ -638,6 +870,8 @@ std::mutex g_mutex;
 // Lines laid out with names: they are drawn with the text font too. [acct2-
 // decomp] The mode they were laid out in: keys are drawn as key caps.
 std::unordered_map<uint32_t, Mode> g_text_lines;
+// [claude-9b-think] The names of a line laid out with rooms as wide as their caps (FittedRoom), in its buttons' order.
+std::unordered_map<uint32_t, std::vector<std::string>> g_line_names;
 // The last set-text call of each text that had buttons, to lay it out again.
 struct TextCall {
   uint32_t slot = 0;        // the virtual slot called (bp::kSet*)
@@ -683,7 +917,66 @@ void NoteGameFrame(uint8_t* base) {
 // starts at its x / y and is the line font's height times the y scale tall.
 // The segment table: s16 pairs {string index, x offset} (addresses.h
 // pc_menu::kLineSegments; pc_menu.cpp's clickable footers read it the same way).
-void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, float alpha) {
+// [claude-9b-think] 2026-10-28 UNTESTED (owner 06:43 / 06:46: "QTE events are no longer showing keybind glyphs", "The
+// Keycaps never showed. I had to toggle them back to controller buttons to see anything"). A battle action's button
+// prompt is a line with a button and no words of its own. The cap took the fainter of the text color's and the button
+// color's opacity (the 10-26 fade fix), and such a line need not give its text color any opacity: the controller's
+// picture is drawn in the button color alone and showed, the cap at 0 did not. Now a line with no visible characters
+// besides its names takes the button color's opacity (a line with words still takes the fainter of the two, so a fading
+// hint takes its caps along). And a name that ends its line got its right edge from the line's width (+16); where that
+// is not past the name's start, the room's own width in the line's font at the x scale is used (else no cap at all).
+float RoomWidth(uint8_t* base, uint32_t font, const std::string& room, float x_scale) {
+  float width = 0.0f;
+  for (char c : room) width += float(std::max(Advance(base, font, uint8_t(c)), 0));
+  return width * x_scale;
+}
+// [claude-9b-think] 2026-10-28 UNTESTED (owner: "the way the glyphs are being mapped in the hints isn't consistently
+// centered in the gap"). The cap was centered in its room: the stretch of the line the game keeps for the name, from
+// the name's x offset to the next segment's (both fixed when the line is laid out). What the reader sees as the gap is
+// something else: from the ink of the word before to the ink of the word after, drawn by the game at the draw's x
+// scale. The two agree only when the line is drawn at the scale it was laid out at and the neighbours' spaces and side
+// bearings match. A hint drawn larger or smaller than its layout (the draw's f2 against the layout's f1: offsets stay,
+// words grow or shrink from their starts) moves the visible gap off the room's middle by a share of the word before's
+// width, so the error differs from hint to hint and with each word's length. Now each cap with words on both sides is
+// moved to the middle of that visible gap, measured from the font's own glyphs (x offset, width, advance) at the
+// draw's x scale; a cap at a line's start or end keeps its room.
+struct GlyphBox {
+  int32_t xoff = 0, width = 0, advance = 0;
+};
+// A character's glyph in `font` (font units); a space measures as an 'a' (the game's layout) and has no ink.
+bool Glyph(uint8_t* base, uint32_t font, uint8_t c, GlyphBox* g) {
+  namespace pm = cod3::addr::pc_menu;
+  const int32_t first = int32_t(ReadU32(base, font + pm::kFontFirstChar));
+  const int32_t count = int32_t(ReadU32(base, font + pm::kFontGlyphCount));
+  const uint32_t glyphs = ReadU32(base, font + pm::kFontGlyphs);
+  const uint8_t look = c == ' ' ? uint8_t('a') : c;
+  if (count <= 0 || !Valid(glyphs) || int32_t(look) < first || int32_t(look) >= first + count) return false;
+  const uint32_t at = glyphs + pm::kGlyphSize * uint32_t(int32_t(look) - first);
+  g->width = int32_t(ReadU32(base, at + 8));
+  g->xoff = int32_t(ReadU32(base, at + 16));
+  g->advance = int32_t(ReadU32(base, at + 24));
+  return true;
+}
+// The ink of `text` drawn from 0 at `x_scale`: its first visible glyph's left edge and its last one's right edge.
+// False when it has none (spaces only) or a character the font can't tell.
+bool InkSpan(uint8_t* base, uint32_t font, const std::string& text, float x_scale, float* left, float* right) {
+  float pen = 0.0f;
+  bool any = false;
+  for (char ch : text) {
+    GlyphBox g;
+    if (!Glyph(base, font, uint8_t(ch), &g)) return false;
+    if (ch != ' ' && ch != '\t' && g.width > 0) {
+      const float l = (pen + float(g.xoff)) * x_scale, r = (pen + float(g.xoff + g.width)) * x_scale;
+      *left = any ? std::min(*left, l) : l;
+      *right = any ? std::max(*right, r) : r;
+      any = true;
+    }
+    pen += float(g.advance);
+  }
+  return any;
+}
+void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float x_scale, float y_scale, float text_alpha,
+                 float button_alpha, Mode mode) {
   namespace pm = cod3::addr::pc_menu;
   const int32_t n = int32_t(ReadU32(base, line + pm::kLineSegmentCount));
   const uint32_t segments = ReadU32(base, line + pm::kLineSegments);
@@ -692,8 +985,18 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, flo
   drawn.ms = NowMs();
   drawn.frame = ReadU32(base, pm::kFrameCount);  // [claude-9b-think]
   NoteGameFrame(base);
+  // [claude-9b-think] the line's names when its rooms are as wide as their caps (FittedRoom), in its buttons' order.
+  std::vector<std::string> fitted_names;
+  {
+    std::lock_guard lock(g_mutex);
+    if (auto it = g_line_names.find(line); it != g_line_names.end()) fitted_names = it->second;
+  }
+  size_t button = 0;
+  bool has_text = true;  // [claude-9b-think] visible characters besides the names (unknown: as if there were)
+  float max_shift = 0.0f;  // [claude-9b-think] the largest move into a visible gap's middle (menu units)
   if (n > 0 && n <= 64 && Valid(segments) && Valid(string)) {
     const std::string text = ReadString(base, string + bp::kStringChars, 512);
+    std::string words = text;  // [claude-9b-think] the line with its names blanked out
     const float x = cod3::guest::ReadF32(base, line + pm::kLineX);
     const float y = cod3::guest::ReadF32(base, line + pm::kLineY);
     const float width = cod3::guest::ReadF32(base, line + pm::kLineWidth);
@@ -707,15 +1010,48 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, flo
         const int32_t end = k + 1 < n ? entry(k + 1, 0) : int32_t(text.size());
         if (start < 0 || end <= start + 2 || end > int32_t(text.size())) continue;
         std::string name = text.substr(size_t(start), size_t(end - start));
-        if (name.front() != '[' || name.back() != ']') continue;  // not one of our names
+        // [claude-9b-think] "[NAME]" a key cap, "{code}" a picture of our own (PictureCode, MouseCode).
+        const bool picture = name.front() == '{' && name.back() == '}';
+        if (!picture && (name.front() != '[' || name.back() != ']')) continue;  // not one of our names
+        const std::string room = name;  // [claude-9b-think] as the game laid it out (RoomWidth)
+        words.replace(size_t(start), room.size(), room.size(), ' ');
         name = name.substr(1, name.size() - 2);
-        const float x0 = x + float(entry(k, 1));
-        const float x1 = k + 1 < n ? x + float(entry(k + 1, 1)) : x + width;
+        // [claude-9b-think] a fitted room: the name kept for it at the layout; the cap fills the room.
+        const size_t ordinal = button++;
+        const bool fitted = ordinal < fitted_names.size();
+        if (fitted) name = fitted_names[ordinal];
+        float x0 = x + float(entry(k, 1));
+        float x1 = k + 1 < n ? x + float(entry(k + 1, 1)) : x + width;
+        if (!(x1 > x0) && k + 1 >= n) x1 = x0 + RoomWidth(base, font, room, x_scale);  // [claude-9b-think]
         if (!(x1 > x0)) continue;
-        drawn.caps.push_back({x0, y, x1, y + height, std::move(name), alpha});
+        // [claude-9b-think] 2026-10-28 UNTESTED the middle of the visible gap (InkSpan): the word before (the text
+        // from the previous segment, or from the line's start, to this name) and the word after (the next segment).
+        if (x_scale > 0.0f && k + 1 < n) {
+          const int32_t before_at = k >= 1 ? entry(k - 1, 0) : 0;
+          const float before_x = k >= 1 ? x + float(entry(k - 1, 1)) : x;
+          const int32_t after_end = k + 2 < n ? entry(k + 2, 0) : int32_t(text.size());
+          float bl = 0.0f, br = 0.0f, al = 0.0f, ar = 0.0f;
+          if (before_at >= 0 && before_at < start && after_end > end && after_end <= int32_t(text.size()) &&
+              InkSpan(base, font, text.substr(size_t(before_at), size_t(start - before_at)), x_scale, &bl, &br) &&
+              InkSpan(base, font, text.substr(size_t(end), size_t(after_end - end)), x_scale, &al, &ar)) {
+            const float gap_l = before_x + br, gap_r = x + float(entry(k + 1, 1)) + al;
+            const float half = 0.5f * (x1 - x0);
+            const float shift = std::clamp(0.5f * (gap_l + gap_r) - 0.5f * (x0 + x1), -half, half);
+            if (std::isfinite(shift) && gap_r > gap_l) {
+              x0 += shift;
+              x1 += shift;
+              max_shift = std::max(max_shift, std::fabs(shift));
+            }
+          }
+        }
+        drawn.caps.push_back({x0, y, x1, y + height, std::move(name), 0.0f, LookOf(mode), picture, fitted});
       }
     }
+    has_text = words.find_first_not_of(" \t\r\n") != std::string::npos;
   }
+  // [claude-9b-think] a line of names alone: the button color's opacity; with words, the fainter of the two.
+  const float alpha = has_text ? std::min(text_alpha, button_alpha) : button_alpha;
+  for (auto& cap : drawn.caps) cap.alpha = alpha;
   std::lock_guard lock(g_cap_mutex);
   if (g_caps.size() > 512) {  // lines that went away: forget the old ones
     const int64_t now = drawn.ms;
@@ -728,12 +1064,16 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float y_scale, flo
     drawn.cadence = since >= 1 && since <= 8 ? since : 1;
   }
   if (REXCVAR_GET(cod3_debug_key_caps)) {
+    // [claude-9b-think] every draw while the line fades (opacity under 1; up to 400 lines a second), else the first
+    // 30 lines a second (the 30-a-second cap alone missed the fades).
     static int64_t window = 0;
-    static int lines = 0;
-    if (drawn.ms - window >= 1000) window = drawn.ms, lines = 0;
-    if (lines++ < 30)
-      REXLOG_INFO("cod3: key caps: line {:08X} drawn in game frame {} (every {}), {} caps at opacity {:.3f}", line,
-                  drawn.frame, drawn.cadence, drawn.caps.size(), alpha);
+    static int lines = 0, fading = 0;
+    if (drawn.ms - window >= 1000) window = drawn.ms, lines = 0, fading = 0;
+    if (alpha < 0.999f ? fading++ < 400 : lines++ < 30)
+      REXLOG_INFO("cod3: key caps: line {:08X} drawn in game frame {} (every {}), {} caps at opacity {:.3f} (text "
+                  "{:.3f}, button {:.3f}{}), moved up to {:.2f} units into the gap's middle (x scale {:.3f})",
+                  line, drawn.frame, drawn.cadence, drawn.caps.size(), alpha, text_alpha, button_alpha,
+                  has_text ? "" : ", names only", max_shift, x_scale);
   }
   g_caps[line] = std::move(drawn);
 }
@@ -1017,6 +1357,91 @@ std::string StickPhraseKeys(PPCContext& ctx, uint8_t* base, std::string text) {
 #endif
 
 #if !defined(COD3_MP)
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 12:28: "Please make sure you are cataloging the hints, incase we need
+// to edit them"). The keyboard-and-mouse wording of the game's texts by string key: config/prompt_text_kbm.tsv (built
+// in, kPromptTextKbm) and userdata/prompt_text_kbm.tsv (the player's, read at start; its rows replace the built-in
+// ones). A row is "KEY<tab>TEXT". KEY: the string's key hash as 8 hex digits (the game hashes its keys, h * 33 + each
+// lowercase character, 0x820A0118; the level scripts only have the hashes; dev/agents/button-prompts/HINTS-CATALOG.tsv
+// lists them), or a key name. TEXT: ours, with the game's "[ACTION]" words and "~button" tokens as they are and our
+// placeholders: <MOVE> the movement keys, <LOOK> the mouse (the look keys without mouse aim), <BIND:keybind_x> a
+// controller button's key, <ACTION:name> one of the port's actions' key (game/keybinds/binds.h), <KEY:name> a key;
+// "\n" a new line. Used while keys are shown (menus and play), English only; other texts keep the phrase table.
+uint32_t KeyHash(std::string_view key) {
+  uint32_t h = 0;
+  for (char c : key) h = h * 33 + uint32_t(uint8_t(std::tolower(uint8_t(c))));
+  return h;
+}
+std::mutex g_kbm_mutex;
+std::unordered_map<uint32_t, std::string> g_kbm_text;    // key hash -> our keyboard-and-mouse text
+std::unordered_map<std::string, uint32_t> g_kbm_key_of;  // the game's text (as the tables hold it) -> its key hash
+uint32_t g_kbm_buffer = 0;                               // guest copy of our text for the "[ACTION]" pass
+
+void ReadPromptText(std::istream& in, const char* from, std::unordered_map<uint32_t, std::string>& rows) {
+  std::string line;
+  int read = 0, left_out = 0;
+  while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line.empty() || line[0] == '#') continue;
+    const size_t tab = line.find('\t');
+    if (tab == std::string::npos || tab == 0) {
+      ++left_out;
+      continue;
+    }
+    const std::string key = line.substr(0, tab);
+    std::string text = line.substr(tab + 1);
+    for (size_t at = text.find("\\n"); at != std::string::npos; at = text.find("\\n", at + 1)) text.replace(at, 2, "\n");
+    bool hex = key.size() == 8;
+    for (char c : key) hex = hex && std::isxdigit(uint8_t(c)) != 0;
+    if (text.empty() || text.size() > 500) {
+      ++left_out;
+      continue;
+    }
+    rows[hex ? uint32_t(std::strtoul(key.c_str(), nullptr, 16)) : KeyHash(key)] = std::move(text);
+    ++read;
+  }
+  REXLOG_INFO("cod3: prompt texts: {} rows from {} ({} lines left out)", read, from, left_out);
+}
+
+// The key of a keybind setting by name ("keybind_back" -> TAB), "" when unknown or unbound.
+std::string BindKeyNamed(std::string_view cvar) {
+  for (int i = 0; i < int(sizeof(kBindCvars) / sizeof(kBindCvars[0])); ++i)
+    if (SameText(cvar, kBindCvars[i])) return BindKey(i);
+  return "";
+}
+
+// Our placeholders -> key tokens (KeyToken) or words.
+std::string ExpandPlaceholders(std::string text) {
+  for (size_t at = text.find('<'); at != std::string::npos; at = text.find('<', at + 1)) {
+    const size_t end = text.find('>', at);
+    if (end == std::string::npos) break;
+    const std::string tag = text.substr(at + 1, end - at - 1);
+    std::string with;
+    if (tag == "MOVE") {
+      const std::string keys = FourKeys(kBindMoveUp);
+      with = keys.empty() ? "the movement keys" : KeyToken(keys);
+    } else if (tag == "LOOK") {
+      const std::string keys = FourKeys(kBindLookUp);
+      with = g_mouse_aim.load(std::memory_order_relaxed) || keys.empty() ? (at == 0 ? "The mouse" : "the mouse")
+                                                                          : KeyToken(keys);
+    } else if (tag.rfind("BIND:", 0) == 0) {
+      const std::string key = BindKeyNamed(tag.substr(5));
+      with = key.empty() ? "" : KeyToken(key);
+    } else if (tag.rfind("ACTION:", 0) == 0) {
+      const std::string key = cod3::binds::KeyNameForAction(tag.substr(7).c_str());
+      with = key.empty() ? "" : KeyToken(key);
+    } else if (tag.rfind("KEY:", 0) == 0 && tag.size() > 4) {
+      with = KeyToken(tag.substr(4));
+    } else {
+      continue;  // not ours: left as it is
+    }
+    text.replace(at, end - at + 1, with);
+    if (!with.empty()) at += with.size() - 1;
+  }
+  return text;
+}
+#endif
+
+#if !defined(COD3_MP)
 // With keys, "Pull ~r1" and "Click ~lstick" (the game's words for triggers
 // and stick buttons) read "Press ...": every language's own words.
 std::string KeyVerbs(PPCContext& ctx, uint8_t* base, std::string text) {
@@ -1121,6 +1546,28 @@ void SetInputSystem(rex::input::InputSystem* input) {
 
 void NoteKeyboardUse() { KeyboardUsed("a test's key or mouse"); }
 
+// [claude-9b-think] See button_prompts.h.
+void LoadPromptText(const std::filesystem::path& user_dir) {
+#if !defined(COD3_MP)
+  std::unordered_map<uint32_t, std::string> rows;
+  {
+    std::istringstream in{std::string(kPromptTextKbm)};
+    ReadPromptText(in, "config/prompt_text_kbm.tsv (built in)", rows);
+  }
+  std::error_code error;
+  const std::filesystem::path user = user_dir / "prompt_text_kbm.tsv";
+  if (!user_dir.empty() && std::filesystem::exists(user, error)) {
+    std::ifstream in(user);
+    if (in) ReadPromptText(in, "userdata/prompt_text_kbm.tsv", rows);
+  }
+  std::lock_guard lock(g_kbm_mutex);
+  g_kbm_text = std::move(rows);
+  g_kbm_key_of.clear();
+#else
+  (void)user_dir;  // the campaign's texts only
+#endif
+}
+
 bool KeyboardMouseInUse() {
   return g_mnk_mode.load(std::memory_order_relaxed) &&
          g_kbm_presses.load(std::memory_order_relaxed) != 0 &&
@@ -1136,16 +1583,12 @@ Look FirstPlayerLook() {
   switch (g_style.load(std::memory_order_relaxed)) {
     case Style::kXbox: mode = Mode::kXbox; break;
     case Style::kPlayStation: mode = Mode::kPlayStation; break;
+    case Style::kPlayStation2: mode = Mode::kPlayStation2; break;  // [claude-9b-think]
     case Style::kNintendo: mode = Mode::kNintendo; break;
     case Style::kGameCube: mode = Mode::kGameCube; break;
     default: mode = UserPadMode(0); break;  // the first controller (guest user 0)
   }
-  switch (mode) {
-    case Mode::kPlayStation: return Look::kPlayStation;
-    case Mode::kNintendo: return Look::kNintendo;
-    case Mode::kGameCube: return Look::kGameCube;
-    default: return Look::kXbox;
-  }
+  return LookOf(mode);  // [claude-9b-think] PS2 too
 }
 
 void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger, const int16_t axes[4]) {
@@ -1252,23 +1695,38 @@ REX_HOOK_RAW(sub_824D7650) {
     __imp__sub_824D7650(ctx, base);
     std::lock_guard lock(g_mutex);
     g_text_lines.erase(line);
+    g_line_names.erase(line);  // [claude-9b-think]
     return;
   }
   ctx.f2.f64 = ctx.f1.f64;  // names at the text's scale
   const bool outer_names = t_names;
   const Mode outer_mode = t_name_mode;
   t_names = true, t_name_mode = mode;
+  // [claude-9b-think] the font the names are laid out in (FittedRoom), and this line's names in order.
+  const uint32_t outer_font = t_name_font, outer_font_index = t_name_font_index;
+  const bool outer_line = t_line_layout;
+  std::vector<std::string> outer_names_list;
+  outer_names_list.swap(t_line_names);
+  t_name_font = font, t_name_font_index = ReadU32(base, line + bp::kLineFont), t_line_layout = true;
   const uint32_t tokens = t_tokens;
   WithButtonFont(base, font, [&] { __imp__sub_824D7650(ctx, base); });
   t_names = outer_names, t_name_mode = outer_mode;
+  t_name_font = outer_font, t_name_font_index = outer_font_index, t_line_layout = outer_line;
+  std::vector<std::string> names;
+  names.swap(t_line_names);
+  t_line_names.swap(outer_names_list);
   std::lock_guard lock(g_mutex);
   if (t_tokens != tokens) {
     // Practically never this many; a forgotten line only loses its names.
-    if (g_text_lines.size() > 50000) g_text_lines.clear();
+    if (g_text_lines.size() > 50000) g_text_lines.clear(), g_line_names.clear();
     g_text_lines[line] = mode;
   } else {
     g_text_lines.erase(line);
   }
+  if (names.empty())
+    g_line_names.erase(line);
+  else
+    g_line_names[line] = std::move(names);
 }
 
 // Measures one word for the word wrap: with names like the layout above.
@@ -1284,8 +1742,14 @@ REX_HOOK_RAW(sub_824D7B48) {
   const bool outer_names = t_names;
   const Mode outer_mode = t_name_mode;
   t_names = true, t_name_mode = mode;
+  // [claude-9b-think] measured with the rooms the line layout will give them (FittedRoom), so the word wrap breaks
+  // for the caps' widths; a measure keeps no names.
+  const uint32_t outer_font = t_name_font, outer_font_index = t_name_font_index;
+  const bool outer_line = t_line_layout;
+  t_name_font = font, t_name_font_index = ctx.r4.u32, t_line_layout = false;
   WithButtonFont(base, font, [&] { __imp__sub_824D7B48(ctx, base); });
   t_names = outer_names, t_name_mode = outer_mode;
+  t_name_font = outer_font, t_name_font_index = outer_font_index, t_line_layout = outer_line;
 }
 
 // Draws one line: names in the line's font at the text's x scale, standing on
@@ -1296,16 +1760,18 @@ REX_HOOK_RAW(sub_824D7D88) {
   cod3::pcmenu::NoteLineDrawn(base, line, ctx.f3.f64);  // footer prompts can be clicked (pc_menu.h)
   NoteGameFrame(base);  // [claude-9b-think] any line drawn: the key caps' newest game frame
   bool names;
+  bool fitted_rooms = false;  // [claude-9b-think] laid out with rooms of filler (FittedRoom): never shown as text
   Mode mode = Mode::kXbox;
   {
     std::lock_guard lock(g_mutex);
     auto it = g_text_lines.find(line);
     names = it != g_text_lines.end();
     if (names) mode = it->second;
+    fitted_rooms = g_line_names.count(line) != 0;
   }
   const uint32_t font = names ? TextFont(base, ReadU32(base, line + bp::kLineFont)) : 0;
   // [acct2-decomp] A line not drawn with keys now has no key caps.
-  if (!font || !IsKeys(mode) || !REXCVAR_GET(cod3_key_caps)) {
+  if (!font || !OverlayNames(mode)) {  // [claude-9b-think] pictures too
     std::lock_guard lock(g_cap_mutex);
     g_caps.erase(line);
   }
@@ -1319,15 +1785,23 @@ REX_HOOK_RAW(sub_824D7D88) {
   // [acct2-decomp] Keys as key caps: the game draws the names invisibly (the
   // button color's alpha 0; D3DCOLOR, alpha in the top byte) to keep their
   // room, and the overlay draws a cap there at the color's own opacity.
-  if (IsKeys(mode) && REXCVAR_GET(cod3_key_caps)) {
+  // [claude-9b-think] and our pictures (mouse buttons, controller styles): OverlayNames.
+  if (OverlayNames(mode)) {
     const uint32_t color = ctx.r6.u32;
     // [claude-9b] The cap fades with the line's text (owner 2026-10-26: the keyboard and mouse glyphs
     // didn't follow their prompt's fade-out; the glyph alone showed for a moment): the game fades a
     // prompt through its text color (r5, the text segments' color in this function) while the
     // button color (r6) can stay opaque, so the cap takes the fainter of the two.
+    // [claude-9b-think] 2026-10-28 UNTESTED both opacities: a line of names alone (a battle action's button) takes the
+    // button color's (NoteKeyCaps).
     const uint32_t text_alpha = ctx.r5.u32 >> 24, button_alpha = color >> 24;
-    NoteKeyCaps(base, line, font, float(ctx.f3.f64), float(std::min(text_alpha, button_alpha)) / 255.0f);
+    NoteKeyCaps(base, line, font, float(ctx.f2.f64), float(ctx.f3.f64), float(text_alpha) / 255.0f,
+                float(button_alpha) / 255.0f, mode);
     ctx.r6.u64 = color & 0x00FFFFFFu;
+  } else if (fitted_rooms) {
+    // [claude-9b-think] key caps just turned off: the filler stays invisible until the text is laid out again (the
+    // settings are read about once a second).
+    ctx.r6.u64 = ctx.r6.u32 & 0x00FFFFFFu;
   }
 #if defined(COD3_MP)
   const uint32_t widescreen = ReadU32(base, kWidescreenInt);
@@ -1353,10 +1827,43 @@ REX_HOOK_RAW(sub_824DD9A8) {
 // words -> "Press [V]" (ViewSwitchKeys).
 REX_EXTERN(__imp__sub_824DE290);
 REX_HOOK_RAW(sub_824DE290) {
+  // [claude-9b-think] A text the keyboard-and-mouse table has, by its key (r3 the text): ours is laid out instead
+  // while keys are shown (English), and the text is remembered either way, so a device switch lays it out again.
+  bool ours = false;
+  uint32_t key = 0;
+  if (Valid(ctx.r3.u32)) {
+    std::string kbm;
+    {
+      const std::string source = ReadString(base, ctx.r3.u32, 512);
+      std::lock_guard lock(g_kbm_mutex);
+      if (auto it = g_kbm_key_of.find(source); it != g_kbm_key_of.end()) {
+        key = it->second;
+        if (auto row = g_kbm_text.find(key); row != g_kbm_text.end()) kbm = row->second;
+      }
+    }
+    if (!kbm.empty()) {
+      ++t_tokens;
+      if (IsKeys(LayoutMode(base)) && ReadU32(base, bp::kLanguageMode) == 0 && kbm.size() < 511) {
+        if (!g_kbm_buffer) g_kbm_buffer = rex::system::kernel_state()->memory()->SystemHeapAlloc(512);
+        if (g_kbm_buffer) {
+          std::memcpy(base + g_kbm_buffer, kbm.c_str(), kbm.size() + 1);
+          ctx.r3.u64 = g_kbm_buffer;
+          ours = true;
+        }
+      }
+    }
+  }
   __imp__sub_824DE290(ctx, base);
   const uint32_t buf = ctx.r3.u32;
   if (!Valid(buf)) return;
-  const std::string text = ReadString(base, buf, 512);
+  const std::string shown = ReadString(base, buf, 512);
+  // [claude-9b-think] our placeholders (<MOVE>, <BIND:..> ...) -> key tokens, after the game's "[ACTION]" pass.
+  const std::string text = ours ? ExpandPlaceholders(shown) : shown;
+  if (ours && REXCVAR_GET(cod3_debug_key_caps)) {
+    static std::unordered_map<uint32_t, int> logged;
+    if (logged.size() < 200 && logged[key]++ == 0)
+      REXLOG_INFO("cod3: prompts: text {:08X} shown with the keyboard-and-mouse table: \"{}\"", key, text);
+  }
   // [acct2-decomp] A view hint is remembered with either device (counted as
   // a button), so a later switch lays it out again.
   size_t words = 0;
@@ -1375,7 +1882,22 @@ REX_HOOK_RAW(sub_824DE290) {
       REXLOG_INFO("cod3: prompts: stick words left with keys ({}): \"{}\"", mode == Mode::kPlayKeys ? "play" : "menu",
                   out);
   }
-  if (out != text && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
+  if (out != shown && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED The string tables' lookup by key hash (r3 the tables, r4 the hash; Localize's
+// keys and the level scripts' hashes both end here): which key a text came from, noted for the keys the
+// keyboard-and-mouse table has (the "[ACTION]" pass above looks the text up).
+REX_EXTERN(__imp__sub_82527FD0);
+REX_HOOK_RAW(sub_82527FD0) {
+  const uint32_t hash = ctx.r4.u32;
+  __imp__sub_82527FD0(ctx, base);
+  const uint32_t text = ctx.r3.u32;
+  if (!Valid(text)) return;
+  std::lock_guard lock(g_kbm_mutex);
+  if (g_kbm_text.find(hash) == g_kbm_text.end()) return;
+  if (g_kbm_key_of.size() > 4096) g_kbm_key_of.clear();
+  g_kbm_key_of[ReadString(base, text, 512)] = hash;
 }
 #else
 // [mp-menus] cod3mp's "[ACTION]" -> its sentence is FEMultiLineText's slot 94

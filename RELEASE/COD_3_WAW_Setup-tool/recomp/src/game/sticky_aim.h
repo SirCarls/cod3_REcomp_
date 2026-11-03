@@ -32,6 +32,13 @@
 //     cod3mp doesn't build that category yet (it is campaign-only until the
 //     peer-to-peer transport exists), so cod3mp keeps the game's own rule:
 //     each player's choice, the full pull, at the fixed 60 Hz.
+//   - [claude-9b-think] 2026-10-27 UNTESTED Keyboard and mouse (owner 12:39:
+//     "The usage of aim assist on kbm cannot work."): no pull for a player
+//     aiming with them, whatever the rules. The campaign asks the device
+//     (prompts::KeyboardMouseInUse). cod3mp: the client marks each usercmd it
+//     makes (byte +27, the struct's padding; sticky_aim.cpp kCmdPortFlags),
+//     the host's Pmove and that client's prediction read the same mark. A
+//     usercmd without it pulls as before; the mark only ever removes the pull.
 // Nothing here can make the pull stronger than the game's at 60 fps.
 
 #pragma once

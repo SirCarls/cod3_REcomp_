@@ -82,7 +82,8 @@ class TableTests(unittest.TestCase):
         self.assertIs(d["cod3_depth_of_field"], True)   # [post-effects] the game's own look
         self.assertIs(d["cod3_motion_blur"], True)
         self.assertEqual(d["cod3_volume"], 100)
-        self.assertEqual(d["cod3_glyph_style"], "xbox")
+        self.assertEqual(d["cod3_glyph_style"], "auto")   # [claude-setup] each player's own controller
+        self.assertEqual(d["cod3_glyph_color_mode"], "original")
 
     def test_check_values(self):
         gs.check({"cod3_max_fps": 144, "cod3_render_resolution": "2560x1080", "fullscreen": False,
@@ -202,7 +203,7 @@ class LoadTests(GameSettingsCase):
         self.assertEqual(v["cod3_volume"], 100)
         self.assertIs(v["vsync"], True)
         self.assertEqual(v["swap_post_effect"], "none")
-        self.assertEqual(v["cod3_glyph_style"], "xbox")
+        self.assertEqual(v["cod3_glyph_style"], "auto")
 
 
 class SaveTests(GameSettingsCase):
@@ -340,6 +341,38 @@ class NoTkTests(unittest.TestCase):
                 "print('ok')")
         r = subprocess.run([sys.executable, "-c", code], cwd=str(TOOL), capture_output=True, text=True, timeout=60)
         self.assertEqual(r.stdout.strip(), "ok", r.stderr)
+
+
+class PlayerNameRuleTests(unittest.TestCase):
+    """[claude-setup] 2026-11-03 Player names: World at War's color codes allowed, everything else made safe (owner:
+    "these user supplied entries need to be safe guarded too"); the game's color_codes.h SanitizeName keeps the same
+    rule."""
+
+    def test_clean_player_name(self):
+        c = gs.clean_player_name
+        self.assertEqual(c("^1Red^2Grn^4Blu", 15), "^1Red^2Grn^4Blu")
+        self.assertEqual(c("^:Rainbow", 15), "^:Rainbow")
+        self.assertEqual(c('a%sb;c"d\\e', 15), "asbcde")          # format code, command end, info string signs
+        self.assertEqual(c("x^y^^1z", 15), "xy^1z")                 # '^' only as a code
+        self.assertEqual(c("^1^2", 15), "")                         # nothing visible: the game's own name
+        self.assertEqual(c("   ", 15), "")
+        self.assertEqual(c("Bob^1", 15), "Bob")                     # a code with nothing after it
+        self.assertEqual(c("abcdefghijklmn^1", 15), "abcdefghijklmn")  # never half a code
+        self.assertEqual(c("\x01Bob\x7f\u00e9\n", 15), "Bob")       # printable ASCII only
+        self.assertEqual(c("  ^1 Bob  ", 15), "^1 Bob")
+        self.assertEqual(len(c("^1" * 20 + "x", 15)), 0)            # 15 bytes of codes, nothing printed
+        self.assertEqual(gs.strip_color_codes("^1R^:G^^x"), "RG^^x")
+
+    def test_name_settings(self):
+        self.assertTrue(gs._is_player_name("^1Red^2Grn^4Blu"))
+        self.assertTrue(gs._is_player_name("Bob"))
+        self.assertFalse(gs._is_player_name("50%"))
+        self.assertFalse(gs._is_player_name("a;quit"))
+        self.assertFalse(gs._is_player_name("^1"))
+        self.assertFalse(gs._is_player_name("x" * 16))
+        self.assertTrue(gs._is_other_player_name("^5Two"))
+        self.assertFalse(gs._is_other_player_name("x" * 15))
+        self.assertFalse(gs._is_other_player_name('say "hi"'))
 
 
 if __name__ == "__main__":

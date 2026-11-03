@@ -50,6 +50,9 @@
 #include <rex/logging.h>
 
 #include "game/guest.h"
+#if defined(COD3_MP)
+#include "game/list_memory.h"  // [claude-9b-think] 2026-11-02 [mp] the scene node guard
+#endif
 
 REXCVAR_DEFINE_BOOL(cod3_viewmodel_flip, false, "cod3/Game",
                     "The weapon in the left hand (mirrored), player 1; the key \"Flip weapon hand\" switches it")
@@ -420,6 +423,9 @@ REX_HOOK_RAW(sub_822B5AC0) {  // the cull mode's get (r3: the mode)
 // render_job_timing.cpp, which calls the same two functions (a function can have only one hook).
 REX_EXTERN(__imp__sub_82167688);
 REX_HOOK_RAW(sub_82167688) {
+  // [claude-9b-think] 2026-11-02 [mp] The node's callbacks and links checked first (list_memory.cpp,
+  // cod3_render_node_guard), as the campaign's back end hook in render_job_timing.cpp does.
+  cod3::list_memory::CheckNode(base);
   const bool turned = cod3::viewmodel::BeginScene(base);
   __imp__sub_82167688(ctx, base);
   cod3::viewmodel::EndScene(base, turned);

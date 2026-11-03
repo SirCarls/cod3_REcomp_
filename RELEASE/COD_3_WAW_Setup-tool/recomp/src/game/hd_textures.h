@@ -23,14 +23,21 @@
 // texture stays opaque). Used when cod3_user_textures is on (default) and
 // the pack is there (SDK setting texture_replacement_user_path).
 //
-// Multiplayer (hd::SetMultiplayerMode): while a match runs, only the world
-// insignia on a fixed list (kMultiplayerInsigniaKeys in hd_textures.cpp:
-// flags, banners, aircraft markings ... never textures a soldier or a
-// vehicle wears) may be replaced, and only from the user pack. Every other
-// replacement, HD textures included, is turned off for the match, because a
-// replaced texture could be made see-through or bright to spot players. The
-// SDK applies the change live (texture_replacement_allow_list): textures
-// already made are made again on their next use.
+// Multiplayer (hd::SetMultiplayerMode): [claude-9b-think] 2026-11-02 UNTESTED
+// (owner 17:06: "allow for all textures to be replaced, but allow for server
+// toggle (later on)"). While a match runs, cod3_mp_texture_policy decides:
+//   all       (default) every replacement, HD pack and user pack, as in the
+//             campaign;
+//   insignia  only the world insignia on a fixed list (kMultiplayerInsigniaKeys
+//             in hd_textures.cpp: flags, banners, aircraft markings ... never
+//             textures a soldier or a vehicle wears), and only from the user
+//             pack: the earlier rule (a replaced texture could be made
+//             see-through or bright to spot players);
+//   off       no replacement.
+// A policy the match's host announces would override the local one in
+// EffectivePolicy (hd_textures.cpp); not built yet. The SDK applies a change
+// live (texture_replacement_allow_list): textures already made are made again
+// on their next use.
 
 #pragma once
 
@@ -70,13 +77,14 @@ HdTextures GetUserTextures();
 const uint64_t* MultiplayerInsigniaKeys(size_t& count_out);
 
 // Turns the multiplayer texture policy on (a match started) or off (it
-// ended). Any thread; repeated calls with the same value do nothing. The
-// multiplayer code calls it, or SyncMultiplayerMode does once per frame.
+// ended). Any thread; a call that changes neither the match state nor the
+// policy does nothing. The multiplayer code calls it, or SyncMultiplayerMode
+// does once per frame.
 void SetMultiplayerMode(bool match_running);
 bool IsMultiplayerMode();
 
-// Follows cod3::mp::IsMatchRunning() (game/multiplayer.h): cheap, for once
-// per game frame.
+// Follows cod3::mp::IsMatchRunning() (game/multiplayer.h) and, during a
+// match, cod3_mp_texture_policy: cheap, for once per game frame.
 void SyncMultiplayerMode();
 
 }  // namespace hd

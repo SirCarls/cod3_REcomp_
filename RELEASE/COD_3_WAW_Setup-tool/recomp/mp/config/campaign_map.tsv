@@ -66,6 +66,7 @@ ScriptThread_Destroy	824A3040	824C0DC8	mp			map: verified
 longjmp_guest	8234EEC0	8231E400	mp			map: verified
 nglListAddQuad	8212AC58	82142988	mp			map: verified (90% equal, 90% same instruction kinds (55 vs 60 instructions); pair table: calls (4); aligned calls: 22 of 22 )
 nglListAddString	82134F70	8214CE30	mp			map: verified (95% equal, 100% same instruction kinds (87 vs 87 instructions); field offsets differ: -5724->-16084 x4; pair t)
+sub_82127A20	82127A20	8213F780	mp			hand check [claude-9b-think] 2026-11-02 list memory: the render module's allocator (size, alignment, flags), the callee of cod3mp's list init 0x8216C1F0 (campaign 0x821542F8) at +0xC0/+0xD4/+0x200/+0x214 and of its size setter 0x8216BFE0 (campaign 0x821540E8) at +0x1D8/+0x1EC, the same offsets in both; its free is 0x8213F430 (campaign 0x821276D0, not hooked in cod3mp)
 sub_8212A100	8212A100	82141E40	mp			map: verified
 sub_8212A110	8212A110	82141E50	mp			map: verified (88% equal, 88% same instruction kinds (34 vs 30 instructions); pair table: calls (5); aligned calls: 13 of 16 )
 sub_8212A520	8212A520	82142248	mp			map: verified (99% equal, 99% same instruction kinds (152 vs 153 instructions); pair table: calls (1); aligned calls: 2 of 2 )
@@ -672,3 +673,15 @@ lit:game/aim_sensitivity.cpp:82A2A2E0	82A2A2E0	82BCBF9C	mp			hand check ([claude
 midasm:Cod3SoundStallCheck@8211ABF4	8211ABF4	8212CFEC	mp			hand check [voice]: the start of nslFmodUpdate's stuck-sound check (MP 0x8212C600): lis r11 / lwz r10,0x60(r31) / lwz r11,0x199C(r11); r31 the sound's FMOD data in both
 lit:game/sound_stall.cpp:825A1800	825A1800	825B199C	mp			hand check [voice]: the stuck-sound limit, 32 ms (lwz r11,0x1800 / 0x199C after lis r11 in the check); the 4 updates are the next word in both
 lit:game/sound_stall.cpp:8290CA30	8290CA30	82A898BC	mp			hand check [voice]: nslUpdate's milliseconds clock, read in the check as lwz -0x35D0(r19) / -0x6744(r20); its update count is the next word in both
+lit:game/list_memory.cpp:8290E9B8	8290E9B8	82A8C140	mp			hand check [claude-9b-think] 2026-11-02 list memory: the open frame's list buffer, the word before live_video::kListCursor in both (campaign 0x8290E9BC / cod3mp 0x82A8C144)
+lit:game/list_memory.cpp:8290E9BC	8290E9BC	82A8C144	mp			hand check [claude-9b-think] 2026-11-02 list memory: the list cursor, as live_video::kListCursor (map: verified, 158 of 158 aligned uses)
+lit:game/list_memory.cpp:8290E9C0	8290E9C0	82A8C148	mp			hand check [claude-9b-think] 2026-11-02 list memory: the game's size of a list buffer, the word after the cursor in both
+lit:game/list_memory.cpp:82912D00	82912D00	82A8FC10	mp			hand check [claude-9b-think] 2026-11-02 list memory: the first list buffer's address, stored by the list init (campaign 0x821542F8 at +11520 off 0x82910000; cod3mp 0x8216C1F0 as stw -1008 off 0x82A90000)
+lit:game/list_memory.cpp:82912D04	82912D04	82A8FC14	mp			hand check [claude-9b-think] 2026-11-02 list memory: the second list buffer's address (+11524 / -1004), the next word in both
+lit:game/list_memory.cpp:8290E9AC	8290E9AC	82A8C134	mp			hand check [claude-9b-think] 2026-11-02 list memory: the scene node the render back end draws (campaign 0x8214F770 / cod3mp 0x82167688 read it: cod3mp lwz -16076 off 0x82A90000)
+lit:game/list_memory.cpp:821542C4	821542C4	8216C1BC	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the size setter (campaign 0x821540E8 / cod3mp 0x8216BFE0, +0x1DC in both)
+lit:game/list_memory.cpp:821542D8	821542D8	8216C1D0	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the size setter (campaign 0x821540E8 / cod3mp 0x8216BFE0, +0x1F0 in both)
+lit:game/list_memory.cpp:821543BC	821543BC	8216C2B4	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the list init (campaign 0x821542F8 / cod3mp 0x8216C1F0, +0xC4 in both)
+lit:game/list_memory.cpp:821543D0	821543D0	8216C2C8	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the list init (campaign 0x821542F8 / cod3mp 0x8216C1F0, +0xD8 in both)
+lit:game/list_memory.cpp:821544FC	821544FC	8216C3F4	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the list init (campaign 0x821542F8 / cod3mp 0x8216C1F0, +0x204 in both)
+lit:game/list_memory.cpp:82154510	82154510	8216C408	mp			hand check [claude-9b-think] 2026-11-02 list memory: a list buffer allocation's return address in the list init (campaign 0x821542F8 / cod3mp 0x8216C1F0, +0x218 in both)

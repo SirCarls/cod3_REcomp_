@@ -50,6 +50,8 @@
 #define __imp__nglListAddString __imp__sub_8214CE30
 #define sub_821258C8 sub_82137910  // 0x821258C8 -> 0x82137910
 #define __imp__sub_821258C8 __imp__sub_82137910
+#define sub_82127A20 sub_8213F780  // 0x82127A20 -> 0x8213F780
+#define __imp__sub_82127A20 __imp__sub_8213F780
 #define sub_8212A100 Jobs_WakeWorkers  // 0x8212A100 -> 0x82141E40
 #define __imp__sub_8212A100 __imp__Jobs_WakeWorkers
 #define sub_8212A110 sub_82141E50  // 0x8212A110 -> 0x82141E50

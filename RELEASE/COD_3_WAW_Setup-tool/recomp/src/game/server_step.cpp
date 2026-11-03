@@ -62,6 +62,7 @@
 
 #include "game/guest.h"
 #include "game/movement/step_view.h"  // [claude-9b] the aim and lean drawn between steps
+#include "game/ride_bones.h"  // [claude-9b-think] cod3_blend_ride_bones: the ridden vehicle's turret and gun
 
 // [claude-9b] 2026-10-26 23:20: off by default again (owner 23:16: "People and various other entities
 // are flickering"). Above 60 fps, frames without an update drew fewer things (bench serverhz1: 3228
@@ -109,6 +110,19 @@ REXCVAR_DEFINE_BOOL(cod3_server_smooth_view, true, "cod3/Game",
                     "With cod3_server_hz and cod3_server_smooth, in a vehicle (a tank's turret, a car, a "
                     "bike) the view turns smoothly between the game's updates, as the vehicle is drawn; "
                     "off: it turns in steps of the update rate (judder above it)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [claude-9b-think] 2026-10-28 UNTESTED (owner 06:43: "Camera rotation while on turrets (MG42, or the manning the turret
+// mission) is locked to 60hz"). The view smoothing above ran only in a vehicle (RidesVehicle): a tank's turret is a seat,
+// an MG42 or a flak gun is not. On a mounted gun the player's view angles (client +172) are set in the game's updates
+// alone, as in a vehicle (the mouse turns the client's angles every frame; the camera turned once an update, so the update
+// turns the view). Now the same smoothing also runs while the playerState says the player works a mounted gun (ps +208
+// & 0x6000, as fov.cpp's vehicle_view reads it; movement/NOTES.md: turret 0x2000 / 0x4000). Like the tank's turret it
+// is drawn between the last two updates (one update behind at most); a view that turns between updates is left as it
+// is (ViewAnglesToDraw's own test), so this changes nothing where the game already turns it every frame.
+REXCVAR_DEFINE_BOOL(cod3_server_smooth_turret, true, "cod3/Game",
+                    "With cod3_server_smooth_view, on a mounted gun (an MG42, a flak gun, a crane) the view turns "
+                    "smoothly between the game's updates too; off: it turns in steps of the update rate")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [claude-9b-think] 2026-10-27 UNTESTED The first-person view on a vehicle the player drives or rides (owner 09:56:
@@ -257,6 +271,8 @@ constexpr uint32_t kEntClient = 528;         // the player's client
 constexpr uint32_t kEntVehicleInfo = 540;    // a vehicle's own data (0x82447D48 tests it)
 constexpr uint32_t kClientViewAngles = 172;  // the view's angles: 0x824505E8 places the camera by them
 constexpr uint32_t kClientVehicle = 1148;    // the handle of the vehicle the player rides
+constexpr uint32_t kClientPsFlags = 208;     // [claude-9b-think] the playerState's flags (fov.cpp kPsFlags 0xD0)
+constexpr uint32_t kPsOnAGun = 0x6000;       // [claude-9b-think] working a mounted gun (fov.cpp kOnAGun)
 constexpr float kMaxSmoothedTurn = 90.0f;    // more in one update (degrees): a cut, not smoothed
 // [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride
 constexpr uint32_t kEntAnglesPrev = 72;      // the angles' trajectory base: 0x82438B68 blends from it
@@ -615,6 +631,7 @@ void PutBackOne(uint8_t* base, const Saved& s, uint32_t at) {
 }
 void PutBackDrawn(uint8_t* base) {
   cod3::movement::EndDrawnStepValues(base);  // [claude-9b] 2026-10-27 the aim and lean (movement/hooks_sp.cpp)
+  cod3::ride_bones::Restore(base);  // [claude-9b-think] cod3_blend_ride_bones: the update's turret and gun bones back
   for (const Saved& s : g_saved) PutBackOne(base, s, s.ent + kEntDrawnOrigin);
   g_saved.clear();
   for (const Saved& s : g_saved_angles) PutBackOne(base, s, s.ent + kEntDrawnAngles);
@@ -626,6 +643,7 @@ void Forget() {
   g_player = History{};
   g_view = ViewHistory{};
   g_ride = RideHistory{};         // [claude-9b-think]
+  cod3::ride_bones::Forget();     // [claude-9b-think] cod3_blend_ride_bones
   g_ride_before = RideBefore{};
   g_body.clear();                 // [claude-9b-think] cod3_server_smooth_body
   g_saved.clear();
@@ -705,7 +723,9 @@ bool ViewAnglesToDraw(uint8_t* base, uint32_t& at, float now[3], float out[3]) {
     return false;
   }
   if (g_view.turned_between && g_clock.updates - g_view.turned_between_at <= 1) return false;
-  if (!RidesVehicle(base, client) || Same(g_view.prev, g_view.cur)) return false;
+  // [claude-9b-think] 2026-10-28 UNTESTED a mounted gun too (cod3_server_smooth_turret).
+  const bool on_gun = REXCVAR_GET(cod3_server_smooth_turret) && (g::ReadU32(base, client + kClientPsFlags) & kPsOnAGun);
+  if (!(on_gun || RidesVehicle(base, client)) || Same(g_view.prev, g_view.cur)) return false;
   const float back = Back();
   if (back <= 0.0f) return false;
   return BlendAngles(g_view.prev, g_view.cur, back, out);
@@ -1761,6 +1781,11 @@ REX_HOOK_RAW(sub_8253F438) {
   g_game_armed = true;
   __imp__sub_8253F438(ctx, base);
   if (REXCVAR_GET(cod3_debug_pose)) PoseAfterUpdate(base);  // [claude-9b] cod3_debug_pose
+  // [claude-9b-think] 2026-10-27 UNTESTED cod3_blend_ride_bones: the ridden vehicle's bones as this update left them.
+  {
+    const uint32_t client = PlayerClient(base);
+    cod3::ride_bones::AfterUpdate(ctx, base, client ? RiddenVehicle(base, client) : 0);
+  }
 }
 
 // [claude-9b] 2026-10-27 cod3_debug_pose: the renderer's draw of a scene node, before it runs.
@@ -1768,6 +1793,7 @@ REX_EXTERN(__imp__sub_8242E450);
 REX_HOOK_RAW(sub_8242E450) {
   const int32_t want = REXCVAR_GET(cod3_debug_pose);
   if (want != 0) PoseAtDraw(base, ctx.r3.u32, want);
+  cod3::ride_bones::AtDraw(base, ctx.r3.u32);  // [claude-9b-think] cod3_blend_ride_bones: drawn inside the blend?
   __imp__sub_8242E450(ctx, base);
 }
 
@@ -1991,6 +2017,12 @@ REX_HOOK_RAW(CG_DrawActiveFrame) {
   g_ride_trace_b308 = 0.0f;
   g_ride_trace_v286 = 0;
   g_ride_trace_body = -1;  // [claude-9b-think] ride9
+  // [claude-9b-think] 2026-10-27 UNTESTED cod3_blend_ride_bones: the ridden vehicle's turret and gun between its last
+  // two updates by Back(), as its hull and the camera are, before the camera reads tag_turret; PutBackDrawn undoes it.
+  {
+    const uint32_t client = g_clock.hz > 0 && REXCVAR_GET(cod3_server_smooth) ? PlayerClient(base) : 0;
+    cod3::ride_bones::Blend(base, client ? RiddenVehicle(base, client) : 0, Back());
+  }
   __imp__CG_DrawActiveFrame(ctx, base);
   cod3::movement::EndDrawnStepValues(base);  // [claude-9b] the game's aim and lean back after the client game's frame
   TraceFrame(base, out);
@@ -2055,6 +2087,50 @@ REX_HOOK_RAW(CL_CreateNewCommands) {
   g_trace_lead = Lead();
   __imp__CL_CreateNewCommands(ctx, base);
 }
+
+// [claude-9b-think] 2026-11-02 UNTESTED The player's movement steps against the game's updates (claude-9b's lead from
+// the tester's ob25 Mace runs: the player read ~15% faster uncapped). Both are 1/60 s with the same 16, 17, 17 ms
+// pattern, but on different origins: the steps end at fixed times of the usercmd clock (movement/hooks_sp.cpp
+// RunHzSteps, rules.h MoveStepEndAfter: k * 1000 / 60), the updates where the game's clock has run whole updates since
+// it started (svs.time at that start plus TickEnd(k)). So they are out of phase by svs.time's start modulo the
+// pattern (any 0-16 ms, fixed until the game's clock starts again). Each frame runs its updates first and then its
+// usercmd (CL_Frame after 0x823FFC10's / SV_Frame's updates), so an update sees the steps up to the last frame's usercmd
+// time; above 60 fps that time is anywhere in the last frame before the update, and a step that ends within one frame
+// time of the update's end is seen in that update or the next as the frame times fall: 0 or 2 steps in an update
+// instead of 1 (about a quarter of the possible phases at ~240 fps, half at ~120 fps; at 60 fps the frames and the
+// updates mostly coincide). With the steps' ends on the updates' ends, the step that ends with update k is run by the
+// first usercmd after it, and update k + 1 sees exactly that one more step, at any frame rate above the update rate
+// (below it, two updates in one frame see the same usercmd, as before).
+// Not changed: the steps (60 a second, 16, 17, 17 ms), the usercmds and their input, the view angles (every usercmd),
+// the camera between steps (it counts from the step's own end); the steps only start up to one step earlier or later,
+// once. The CoD4 style keeps its own 8 ms steps (they can't end on 1/60 s updates); multiplayer has no fixed updates
+// here (cod3mp is its own program, not touched).
+REXCVAR_DEFINE_BOOL(cod3_move_hz_sync, true, "cod3/Movement",
+                    "The player's movement steps (cod3_move_hz) end where the game's updates (cod3_server_hz) end, so "
+                    "each update sees one more step at any frame rate (the AI and everything else the update reads); "
+                    "the same steps, moved by less than one step. Off: the steps end at fixed times of the usercmd "
+                    "clock, and above 60 fps an update can see 0 or 2 steps")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace cod3::server_step {
+
+int MoveStepPhase(uint8_t* base, int move_hz) {
+  const int hz = g_clock.hz;
+  if (!REXCVAR_GET(cod3_move_hz_sync) || hz <= 0 || move_hz <= 0 || move_hz % hz != 0) return 0;
+  int a = 1000, b = hz;  // gcd(1000, hz)
+  while (b != 0) {
+    const int r = a % b;
+    a = b;
+    b = r;
+  }
+  const int64_t period = 1000 / a;  // the update ends' pattern repeats every period ms (50 at 60: 16, 17, 17)
+  // The last update ended at svs.time, at TickEnd(tick) of the game's clock; the usercmds' times are svs.time plus the
+  // game clock's lead (CL_CreateNewCommands above). So update k ends at origin + TickEnd(k) on the usercmd clock.
+  const int64_t origin = int64_t(cod3::guest::ReadS32(base, kSvTime)) - TickEnd(g_clock.tick, hz);
+  return static_cast<int>(((origin % period) + period) % period);
+}
+
+}  // namespace cod3::server_step
 
 // CG_AddPacketEntities(): the entities into the scene (RE_RenderScene calls it). Its list read as it
 // reads it, before it runs.

@@ -29,6 +29,7 @@
 #include "game/cheat_watch.h"
 #include "game/cutscene_skip.h"
 #include "game/button_prompts.h"  // [acct2-decomp] key caps, the skip prompt's device
+#include "game/color_codes.h"     // [claude-setup] World at War's ^ colors (Rainbow (^ colors), names)
 #include "game/diagnostics.h"
 #include "game/engine.h"
 #include "game/fov.h"
@@ -122,6 +123,69 @@ REXCVAR_DEFINE_STRING(cod3_crosshair_color_friendly, "64 255 64 255", "cod3/Cros
 REXCVAR_DEFINE_STRING(cod3_crosshair_color_dead, "0 0 0 255", "cod3/Crosshair",
                       "R G B A over a dead body (the game's black)");
 
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 13:59: "forgot to add the option to change the color of the glyphs if
+// the user wants", "default button is needed tho"): the colors of our prompt pictures, hex RRGGBB or RRGGBBAA (a '#'
+// in front allowed; one that doesn't parse counts as the default). F2 > Game > Prompts. Both programs.
+// [claude-setup] 2026-11-03 (owner ~09:55: "the toggle for the button colors seems backwards in logic. By default it
+// should show the button as if it were the original, the toggle enables a customized color"; ~10:00: "also add
+// rainbow option"): which colors the pictures use. Replaces cod3_glyph_colors (off: the gold key-cap style, on: the
+// colors below), so the controller pictures look like the controller's own buttons by default and the colors below
+// are used only when asked for. An old cod3_glyph_colors line in cod3.toml is ignored (the SDK logs it as unknown).
+REXCVAR_DEFINE_STRING(cod3_glyph_color_mode, "original", "cod3/Interface",
+                      "Colors of our prompt pictures: original (the controller's own button colors, the key caps "
+                      "in the game's menu gold), custom (the cod3_glyph_color* settings), rainbow (slowly through the "
+                      "rainbow), rainbow_codes (stepping through World at War's ^ colors) or gold (controller buttons "
+                      "in the key caps' gold style too)")
+    .allowed({"original", "custom", "rainbow", "rainbow_codes", "gold"})
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color, "D6AC68", "cod3/Interface",
+                      "With cod3_glyph_color_mode custom: our prompt pictures' accent, the key caps' edge and "
+                      "name, the mouse and the skip prompt; the game's menu gold by default (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_fill, "14100ACC", "cod3/Interface",
+                      "With cod3_glyph_color_mode custom: the inside of the key caps, with its opacity (hex RRGGBB "
+                      "or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_ps_cross, "7CACEA", "cod3/Interface",
+                      "Colored buttons: the PlayStation cross (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_ps_circle, "EE6060", "cod3/Interface",
+                      "Colored buttons: the PlayStation circle (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_ps_square, "EC84D6", "cod3/Interface",
+                      "Colored buttons: the PlayStation square (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_ps_triangle, "48CEA0", "cod3/Interface",
+                      "Colored buttons: the PlayStation triangle (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_gc_a, "2EA860", "cod3/Interface",
+                      "Colored buttons: GameCube A (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_gc_b, "CC3A3A", "cod3/Interface",
+                      "Colored buttons: GameCube B (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_gc_x, "96969E", "cod3/Interface",
+                      "Colored buttons: GameCube X (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_gc_y, "96969E", "cod3/Interface",
+                      "Colored buttons: GameCube Y (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_gc_z, "7850B0", "cod3/Interface",
+                      "Colored buttons: GameCube Z (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_nx_a, "303034E6", "cod3/Interface",
+                      "Colored buttons: Nintendo A (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_nx_b, "303034E6", "cod3/Interface",
+                      "Colored buttons: Nintendo B (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_nx_x, "303034E6", "cod3/Interface",
+                      "Colored buttons: Nintendo X (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_STRING(cod3_glyph_color_nx_y, "303034E6", "cod3/Interface",
+                      "Colored buttons: Nintendo Y (hex RRGGBB or RRGGBBAA)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DEFINE_STRING(cod3_render_resolution, "auto", "cod3/Display",
                       "Render resolution: auto (the screen, or the window when windowed), 720p, "
                       "1080p, 1440p, 2160p, 4320p, WxH or original (the Xbox 360's 1040x624). "
@@ -193,6 +257,203 @@ std::array<float, 4> ParseRgba(const std::string& text, std::array<float, 4> fal
           std::clamp(a, 0, 255) / 255.0f};
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED the prompt pictures' colors (the cod3_glyph_color* settings above).
+// "RRGGBB" or "RRGGBBAA" (a '#' in front and spaces around allowed) as 0xRRGGBBAA; false when it doesn't parse.
+bool ParseHexColor(const std::string& text, uint32_t* rgba) {
+  const size_t b = text.find_first_not_of(" \t");
+  if (b == std::string::npos) return false;
+  const size_t e = text.find_last_not_of(" \t");
+  std::string_view t(text.data() + b, e - b + 1);
+  if (t.front() == '#') t.remove_prefix(1);
+  if (t.size() != 6 && t.size() != 8) return false;
+  uint32_t v = 0;
+  for (char ch : t) {
+    const char l = char(ch | 0x20);
+    const int d = ch >= '0' && ch <= '9' ? ch - '0' : l >= 'a' && l <= 'f' ? l - 'a' + 10 : -1;
+    if (d < 0) return false;
+    v = v * 16 + uint32_t(d);
+  }
+  *rgba = t.size() == 6 ? (v << 8) | 0xFFu : v;
+  return true;
+}
+
+std::string HexColor(const float c[4], bool alpha) {
+  auto byte = [](float f) { return std::clamp(int(f * 255.0f + 0.5f), 0, 255); };
+  char buf[16];
+  if (alpha)
+    std::snprintf(buf, sizeof(buf), "%02X%02X%02X%02X", byte(c[0]), byte(c[1]), byte(c[2]), byte(c[3]));
+  else
+    std::snprintf(buf, sizeof(buf), "%02X%02X%02X", byte(c[0]), byte(c[1]), byte(c[2]));
+  return buf;
+}
+
+enum GlyphColorId : int {
+  kGlyphAccent, kGlyphFill,
+  kPsCross, kPsCircle, kPsSquare, kPsTriangle,
+  kGcA, kGcB, kGcX, kGcY, kGcZ,
+  kNxA, kNxB, kNxX, kNxY,
+  kGlyphColorCount
+};
+struct GlyphColorSetting {
+  const char* cvar;
+  const char* label;
+  const char* def;  // the cvar's default; 8 digits: the color has an opacity of its own
+};
+constexpr GlyphColorSetting kGlyphColorSettings[kGlyphColorCount] = {
+    {"cod3_glyph_color", "Accent", "D6AC68"},
+    {"cod3_glyph_fill", "Cap fill", "14100ACC"},
+    {"cod3_glyph_color_ps_cross", "Cross", "7CACEA"},
+    {"cod3_glyph_color_ps_circle", "Circle", "EE6060"},
+    {"cod3_glyph_color_ps_square", "Square", "EC84D6"},
+    {"cod3_glyph_color_ps_triangle", "Triangle", "48CEA0"},
+    {"cod3_glyph_color_gc_a", "A", "2EA860"},
+    {"cod3_glyph_color_gc_b", "B", "CC3A3A"},
+    {"cod3_glyph_color_gc_x", "X", "96969E"},
+    {"cod3_glyph_color_gc_y", "Y", "96969E"},
+    {"cod3_glyph_color_gc_z", "Z", "7850B0"},
+    {"cod3_glyph_color_nx_a", "A", "303034E6"},
+    {"cod3_glyph_color_nx_b", "B", "303034E6"},
+    {"cod3_glyph_color_nx_x", "X", "303034E6"},
+    {"cod3_glyph_color_nx_y", "Y", "303034E6"},
+};
+
+// The color setting `id` holds (F2's rows show and change it).
+uint32_t GlyphSettingRgba(int id) {
+  const GlyphColorSetting& g = kGlyphColorSettings[id];
+  uint32_t v = 0;
+  if (!ParseHexColor(Get(g.cvar), &v)) ParseHexColor(g.def, &v);
+  return v;
+}
+uint32_t GlyphDefaultRgba(int id) {
+  uint32_t v = 0;
+  ParseHexColor(kGlyphColorSettings[id].def, &v);
+  return v;
+}
+
+// [claude-setup] 2026-11-03 cod3_glyph_color_mode (its definition above says why).
+enum class GlyphMode : uint8_t { kOriginal, kCustom, kRainbow, kRainbowCodes, kGold };
+GlyphMode CurrentGlyphMode() {
+  const std::string m = Get("cod3_glyph_color_mode");
+  if (m == "custom") return GlyphMode::kCustom;
+  if (m == "rainbow") return GlyphMode::kRainbow;
+  if (m == "rainbow_codes") return GlyphMode::kRainbowCodes;
+  if (m == "gold") return GlyphMode::kGold;
+  return GlyphMode::kOriginal;
+}
+
+// Rainbow: once round the color wheel every kRainbowSeconds of the overlay's own clock (the game's speed is never
+// touched), each button of a controller a step further round so no two share a color; bright but not glaring, and
+// the color keeps its own opacity (the Nintendo buttons'). Slow and smooth: no flashing.
+constexpr double kRainbowSeconds = 6.0;
+uint32_t RainbowRgba(int id) {
+  static constexpr float kStep[kGlyphColorCount] = {0.0f,  0.0f,                       // accent, fill (not used)
+                                                    0.0f,  0.25f, 0.5f, 0.75f,         // cross circle square triangle
+                                                    0.0f,  0.2f,  0.4f, 0.6f, 0.8f,    // GameCube A B X Y Z
+                                                    0.0f,  0.25f, 0.5f, 0.75f};        // Nintendo A B X Y
+  const double t = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
+  const float h = float(std::fmod(t / kRainbowSeconds + double(kStep[id]), 1.0));
+  float r = 1.0f, g = 1.0f, b = 1.0f;
+  ImGui::ColorConvertHSVtoRGB(h, 0.70f, 1.0f, r, g, b);
+  auto byte = [](float f) { return uint32_t(std::clamp(int(f * 255.0f + 0.5f), 0, 255)); };
+  return (byte(r) << 24) | (byte(g) << 16) | (byte(b) << 8) | (GlyphDefaultRgba(id) & 0xFFu);
+}
+
+// [claude-setup] 2026-11-03 (owner: "similar to ^: from WAW"; asked, "Both as choices"): the rainbow as World at War's
+// rainbow names do it, stepping through its ^ colors (game/color_codes.h: red, orange, yellow, green, cyan, blue)
+// every kRainbowCodeSeconds, each button of a controller one step on; the color keeps its own opacity.
+constexpr double kRainbowCodeSeconds = 0.5;
+uint32_t RainbowCodesRgba(int id) {
+  namespace cc = cod3::color_codes;
+  static constexpr int kStep[kGlyphColorCount] = {0, 0, 0, 1, 2, 3, 0, 1, 2, 3, 4, 0, 1, 2, 3};
+  const double t = ImGui::GetCurrentContext() ? ImGui::GetTime() : 0.0;
+  constexpr int kCount = int(sizeof(cc::kRainbowCodes) / sizeof(cc::kRainbowCodes[0]));
+  const int64_t n = int64_t(std::floor(t / kRainbowCodeSeconds)) + kStep[id];
+  const int code = cc::kRainbowCodes[int(((n % kCount) + kCount) % kCount)];
+  return (cc::kCodeRgba[code] & 0xFFFFFF00u) | (GlyphDefaultRgba(id) & 0xFFu);
+}
+
+// The color the pictures are drawn in: the setting's own only in custom mode; rainbow for everything but the key
+// caps' fill (kept dark so the names stay readable); else the original.
+uint32_t GlyphRgba(int id) {
+  switch (CurrentGlyphMode()) {
+    case GlyphMode::kCustom: return GlyphSettingRgba(id);
+    case GlyphMode::kRainbow:
+      if (id != kGlyphFill) return RainbowRgba(id);
+      break;
+    case GlyphMode::kRainbowCodes:
+      if (id != kGlyphFill) return RainbowCodesRgba(id);
+      break;
+    default: break;
+  }
+  return GlyphDefaultRgba(id);
+}
+// Color `id` at the picture's opacity `a` (0-255): its own opacity times `a`.
+ImU32 GlyphColor(int id, int a) {
+  const uint32_t v = GlyphRgba(id);
+  return IM_COL32(v >> 24, (v >> 16) & 0xFF, (v >> 8) & 0xFF, int((v & 0xFF) * uint32_t(std::clamp(a, 0, 255)) / 255));
+}
+bool GlyphColorIsDefault(int id) { return GlyphRgba(id) == GlyphDefaultRgba(id); }
+
+// [claude-setup] 2026-11-03 Text with World at War's ^0-^9 and ^: color codes (game/color_codes.h; owner: "names and
+// other user supplied text things can inherit those various color codes. ^0-9", "rainbow code is "^:" with the
+// colon") drawn in its colors as one ImGui item at the cursor: the codes aren't printed, text before the first code is
+// in the window's text color, a ^: rainbow steps one color a character and moves on every half second. A dark run
+// (^0, ^4) gets a light edge, so a name is never invisible on a dark background. Bounds-checked for any bytes.
+void CodedText(std::string_view text) {
+  namespace cc = cod3::color_codes;
+  ImFont* font = ImGui::GetFont();
+  const float size = ImGui::GetFontSize();
+  const ImVec2 start = ImGui::GetCursorScreenPos();
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const double t = ImGui::GetTime();
+  const ImU32 normal = ImGui::GetColorU32(ImGuiCol_Text);
+  float x = start.x;
+  int64_t rainbow_n = 0;
+  auto draw = [&](std::string_view s, uint32_t rgba, bool own) {
+    if (s.empty()) return;
+    const char* b = s.data();
+    const char* e = b + s.size();
+    const ImU32 col = own ? normal : IM_COL32(rgba >> 24, (rgba >> 16) & 0xFF, (rgba >> 8) & 0xFF, 255);
+    const float luma = own ? 1.0f
+                           : (0.299f * float(rgba >> 24) + 0.587f * float((rgba >> 16) & 0xFF) +
+                              0.114f * float((rgba >> 8) & 0xFF)) / 255.0f;
+    if (luma < 0.3f) {
+      static constexpr float kEdge[4][2] = {{-1, 0}, {1, 0}, {0, -1}, {0, 1}};
+      for (const auto& o : kEdge)
+        dl->AddText(font, size, ImVec2(x + o[0], start.y + o[1]), IM_COL32(220, 220, 220, 200), b, e);
+    }
+    dl->AddText(font, size, ImVec2(x, start.y), col, b, e);
+    x += font->CalcTextSizeA(size, FLT_MAX, 0.0f, b, e).x;
+  };
+  cc::ForEachRun(text, [&](std::string_view run, int code) {
+    if (code == cc::kRainbow) {
+      for (size_t i = 0; i < run.size(); ++i) draw(run.substr(i, 1), cc::RainbowRgba(t, rainbow_n++), false);
+    } else {
+      draw(run, code >= 0 && code < 10 ? cc::kCodeRgba[code] : 0u, code < 0 || code >= 10);
+    }
+  });
+  ImGui::Dummy(ImVec2(std::max(x - start.x, 1.0f), size));
+}
+
+// [claude-setup] 2026-11-03 Under a name field: the name as the game will be given it (made safe), in its colors,
+// when it has color codes or the rule changed it; nothing for a plain name.
+void NameShowsAs(const char* typed, size_t max_bytes) {
+  namespace cc = cod3::color_codes;
+  const std::string_view raw(typed);
+  if (raw.empty()) return;
+  const std::string safe = cc::SanitizeName(raw, max_bytes);
+  const bool coded = safe.find('^') != std::string::npos;
+  if (!coded && safe == raw) return;
+  ImGui::Indent();
+  ImGui::TextDisabled("Shows as:");
+  ImGui::SameLine();
+  if (safe.empty())
+    ImGui::TextDisabled("(nothing visible: the game's own name)");
+  else
+    CodedText(safe);
+  ImGui::Unindent();
+}
+
 // [claude-9b] The game's crosshair color (white, red, green or black: CG_CalcCrosshairColor,
 // addresses.h `crosshair`) replaced by the player's own for that case, keeping the game's alpha.
 void ApplyOwnCrosshairColor(float rgba[4]) {
@@ -233,6 +494,35 @@ void SetGameCrosshairOption(bool on) {
   if (uint8_t* base = GuestBase())
     cod3::guest::WriteU8(base, cod3::addr::controls::kSettings + cod3::addr::controls::kCrosshair, on ? 1 : 0);
 }
+
+#if defined(COD3_MP)
+// [claude-setup] 2026-11-03 (owner ~10:10: "draw crosshair needs to be player independent. Currently when the custom
+// crosshair is on and you toggle visibility the custom crosshair is still shown on the splitscreen player's screen";
+// asked, he chose one "Show crosshair" box per split-screen player in F2). The game decides each view's crosshair
+// from that local player's own switch (sub_824528A0, which CG_DrawCrosshair checks at 0x8245DD40 and the mounted
+// guns' crosshair at 0x82452D10: the local client in use, byte +212 of its block, then byte +57 of the profile block
+// of the controller it plays with, +180), and the custom crosshair is drawn only where the game would draw its own,
+// so it follows each player's switch; F2's single box changed only the first profile's. The local players in the
+// game, each with the address of its crosshair byte:
+struct LocalCrosshair {
+  uint32_t player;  // the local client, 0-3
+  uint32_t byte;    // its controller's profile block + kCrosshair
+};
+constexpr uint32_t kLocalClientInUse = 212;  // u8 (sub_824528A0: lbzx at +212 of the local client's block)
+constexpr uint32_t kProfileStride = 6984;    // the profiles' blocks, one per controller (game/mp/controls_mp.cpp)
+std::vector<LocalCrosshair> LocalCrosshairs(uint8_t* base) {
+  namespace kb = cod3::addr::keybinds;
+  std::vector<LocalCrosshair> out;
+  for (uint32_t c = 0; c < 4; ++c) {
+    const uint32_t client = kb::kLocalClients + c * kb::kLocalClientStride;
+    if (cod3::guest::ReadU8(base, client + kLocalClientInUse) == 0) continue;
+    const uint32_t pad = cod3::guest::ReadU32(base, client + kb::kLocalClientPad);
+    if (pad >= 4) continue;
+    out.push_back({c, cod3::addr::controls::kSettings + pad * kProfileStride + cod3::addr::controls::kCrosshair});
+  }
+  return out;
+}
+#endif
 
 }  // namespace
 
@@ -459,21 +749,341 @@ static void DrawPerfOverlay(ImGuiIO& io) {
   }
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 15:27: "lettering within the glyphs isn't centered"). Where AddText
+// has to start so that `text`'s ink sits in the middle of p0-p1. Until now each name was centered on
+// CalcTextSizeA's box: the font's whole line height (ascent + descent) and the advance widths. In the shorter
+// caps, capitals sat up to a few pixels off center vertically, and side bearings moved names sideways.
+//  * Horizontally: from the first glyph's left ink edge (X0) to the last glyph's right ink edge (X1), with the
+//    advances in between.
+//  * Vertically: the capitals' band (the top of 'H' down to the baseline) when the text has a capital or a digit;
+//    otherwise the text's own ink (+, -).
+// Rounded to the nearest pixel (AddText truncates its position). If the font gives nothing to measure, falls back to
+// the box, rounded the same way. Uses ImGui 1.92's baked fonts (the overlay already uses 1.92's
+// PushFont(font, size)).
+static ImVec2 InkCenteredPos(ImFont* font, float size, const char* text, ImVec2 p0, ImVec2 p1) {
+  const ImVec2 mid((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  if (!font || !text || !*text) return ImVec2(std::floor(mid.x + 0.5f), std::floor(mid.y + 0.5f));
+  const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+  const ImVec2 box(std::floor(mid.x - ext.x * 0.5f + 0.5f), std::floor(mid.y - ext.y * 0.5f + 0.5f));
+  ImFontBaked* baked = font->GetFontBaked(size);
+  if (!baked || baked->Size <= 0.0f) return box;
+  const float k = size / baked->Size;  // AddText's own scale for this bake
+  float pen = 0.0f, ink_l = FLT_MAX, ink_r = -FLT_MAX, ink_t = FLT_MAX, ink_b = -FLT_MAX;
+  bool capitals = false;
+  for (const unsigned char* s = reinterpret_cast<const unsigned char*>(text); *s;) {
+    unsigned int c = *s++;
+    if (c >= 0xC0) {  // UTF-8: a lead byte and its continuation bytes
+      const int more = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : 1;
+      c &= 0x3Fu >> more;
+      for (int i = 0; i < more && (*s & 0xC0) == 0x80; ++i) c = (c << 6) | (*s++ & 0x3Fu);
+    }
+    if (c > IM_UNICODE_CODEPOINT_MAX) c = IM_UNICODE_CODEPOINT_INVALID;
+    if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z')) capitals = true;
+    const ImFontGlyph* g = baked->FindGlyph(ImWchar(c));
+    if (!g) continue;
+    if (g->Visible) {
+      ink_l = std::min(ink_l, pen + g->X0 * k);
+      ink_r = std::max(ink_r, pen + g->X1 * k);
+      ink_t = std::min(ink_t, g->Y0 * k);
+      ink_b = std::max(ink_b, g->Y1 * k);
+    }
+    pen += g->AdvanceX * k;
+  }
+  if (ink_l > ink_r) return box;  // nothing visible (spaces only)
+  if (capitals) {
+    const ImFontGlyph* h = baked->FindGlyphNoFallback(ImWchar('H'));
+    if (h && h->Visible && h->Y1 > h->Y0) ink_t = h->Y0 * k, ink_b = h->Y1 * k;
+  }
+  return ImVec2(std::floor(mid.x - (ink_l + ink_r) * 0.5f + 0.5f), std::floor(mid.y - (ink_t + ink_b) * 0.5f + 0.5f));
+}
+
 // [acct2-decomp] A key cap as "SPACE Skip" draws it (owner 2026-10-25 23:42:
 // "the keyboard glyphs need to match the 'SPACE to skip' button"): a shadow, a
 // dark rounded box with a gold edge and the key's name in gold, centered.
 // The game's prompts' keys are drawn with it too (DrawPromptKeyCaps).
 static void DrawKeyCapBox(ImDrawList* dl, ImFont* font, float text_size, ImVec2 p0, ImVec2 p1,
                           const char* text, int a, float scale) {
-  const ImU32 gold = IM_COL32(214, 172, 104, a);  // the game's menu and loading text
+  const ImU32 gold = GlyphColor(kGlyphAccent, a);  // the game's menu and loading text [claude-9b-think] or the player's
   const ImU32 shadow = IM_COL32(0, 0, 0, a * 3 / 4);
   const float round = 4.0f * scale;
   dl->AddRectFilled(ImVec2(p0.x + 2, p0.y + 2), ImVec2(p1.x + 2, p1.y + 2), shadow, round);
-  dl->AddRectFilled(p0, p1, IM_COL32(20, 16, 10, a * 4 / 5), round);
+  dl->AddRectFilled(p0, p1, GlyphColor(kGlyphFill, a), round);
   dl->AddRect(p0, p1, gold, round, 0, 1.5f * scale);
-  const ImVec2 ext = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, text);
-  dl->AddText(font, text_size,
-              ImVec2(std::floor((p0.x + p1.x - ext.x) * 0.5f), std::floor((p0.y + p1.y - ext.y) * 0.5f)), gold, text);
+  // [claude-9b-think] centered on the name's ink (InkCenteredPos), was on CalcTextSizeA's box.
+  dl->AddText(font, text_size, InkCenteredPos(font, text_size, text, p0, p1), gold, text);
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 12:28-12:37): pictures of our own in the game's prompts
+// (game/button_prompts.cpp PictureCode / MouseCode), each over the room the game keeps for it ("{code}"):
+//  * keys: a mouse button as a small mouse on a key cap (outline, the pressed button filled: 1 left, 2 right,
+//    3 the wheel, U / D the wheel with an arrow up / down, 4 / 5 the side buttons, back / forward);
+//  * the PlayStation (PS4/5 and PS2), Nintendo and GameCube styles: simple shapes and the buttons' printed names in
+//    the overlay's own font, filled in colors close to the controller's own buttons (no gold box or edge);
+//    [claude-setup] 2026-11-03: that is cod3_glyph_color_mode original, the default (was cod3_glyph_colors on);
+//    custom and the two rainbows change the colors, gold draws them in the key caps' gold style (was the default).
+// Copyright: no company's logo, artwork, font or exact button shapes; generic geometry (circles, a cross, a
+// square, a triangle, rounded caps, our own arrows) and plain letters. The colored option uses simple shapes and
+// colors only to show which button to press on the player's own controller. The PS2 style: domed buttons and bolder
+// strokes, SELECT / START; PS4/5: flat buttons and thinner strokes, SHARE / OPTIONS.
+namespace prompt_glyph {
+
+using cod3::prompts::Look;
+
+struct Palette {
+  ImU32 fill, edge, ink;  // the button, its rim, the shape or the writing
+};
+
+Palette Gold(int a) {
+  const ImU32 gold = GlyphColor(kGlyphAccent, a);  // [claude-9b-think] the player's colors (cod3_glyph_color, _fill)
+  return {GlyphColor(kGlyphFill, a), gold, gold};
+}
+// The colored option's plain buttons, D-pad and labels: dark grey with light writing.
+Palette DarkGrey(int a) { return {IM_COL32(48, 48, 52, a * 9 / 10), IM_COL32(96, 96, 104, a), IM_COL32(232, 232, 232, a)}; }
+Palette Filled(int a, int r, int g, int b, bool dark_ink = false) {
+  return {IM_COL32(r, g, b, a), IM_COL32(r * 3 / 4, g * 3 / 4, b * 3 / 4, a),
+          dark_ink ? IM_COL32(30, 30, 30, a) : IM_COL32(245, 245, 245, a)};
+}
+// [claude-9b-think] A button filled with the player's color `id` (cod3_glyph_color_*), at opacity `a`.
+Palette FilledWith(int id, int a) {
+  const uint32_t v = GlyphRgba(id);
+  const int alpha = int((v & 0xFF) * uint32_t(std::clamp(a, 0, 255)) / 255);
+  const int r = int(v >> 24), g = int((v >> 16) & 0xFF), b = int((v >> 8) & 0xFF);
+  return {IM_COL32(r, g, b, alpha), IM_COL32(r * 3 / 4, g * 3 / 4, b * 3 / 4, a), IM_COL32(245, 245, 245, a)};
+}
+
+void Shadow(ImDrawList* dl, ImVec2 c, float r, int a) {
+  dl->AddCircleFilled(ImVec2(c.x + 1.5f, c.y + 1.5f), r, IM_COL32(0, 0, 0, a * 3 / 4));
+}
+
+// A round button; `dome`: the PS2 style's highlight arc at the top left.
+void RoundButton(ImDrawList* dl, ImVec2 c, float r, const Palette& p, float edge, bool dome, int a) {
+  Shadow(dl, c, r, a);
+  dl->AddCircleFilled(c, r, p.fill);
+  if (dome) {
+    constexpr float kPi = 3.14159265f;
+    dl->PathArcTo(c, r * 0.72f, kPi * 1.05f, kPi * 1.55f, 12);
+    dl->PathStroke(IM_COL32(255, 255, 255, a / 4), 0, std::max(1.0f, r * 0.12f));
+  }
+  dl->AddCircle(c, r, p.edge, 0, edge);
+}
+
+// Text centered in a box, made smaller to fit its width.
+void CenteredText(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const char* text, ImU32 col, float size) {
+  ImFont* font = FontFor(size);
+  const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+  const float room = (p1.x - p0.x) * 0.86f;
+  if (ext.x > room && room > 0.0f) {
+    size *= std::max(0.45f, room / ext.x);
+    font = FontFor(size);
+  }
+  // [claude-9b-think] centered on the ink (InkCenteredPos): L1 / R1, OPTIONS, the GameCube and Nintendo letters.
+  dl->AddText(font, size, InkCenteredPos(font, size, text, p0, p1), col, text);
+}
+
+// A labeled cap (L1, OPTIONS, Z ...): a rounded box with the name; `pill` fully rounded ends (START, SELECT ...).
+void LabelCap(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const char* label, const Palette& p, float edge, bool pill,
+              int a) {
+  const float h = p1.y - p0.y;
+  const float round = pill ? h * 0.5f : h * 0.22f;
+  dl->AddRectFilled(ImVec2(p0.x + 1.5f, p0.y + 1.5f), ImVec2(p1.x + 1.5f, p1.y + 1.5f), IM_COL32(0, 0, 0, a * 3 / 4),
+                    round);
+  dl->AddRectFilled(p0, p1, p.fill, round);
+  dl->AddRect(p0, p1, p.edge, round, 0, edge);
+  CenteredText(dl, p0, p1, label, p.ink, h * 0.62f);
+}
+
+// The D-pad as our own plus shape (two bars, outlined); `arms`: which of "^v<>" are pressed (filled).
+void DPad(ImDrawList* dl, ImVec2 c, float s, const std::string& arms, const Palette& p, float edge, int a) {
+  const float h = s * 0.5f, w = s * 0.17f;  // half the length, half an arm's width
+  const ImU32 shadow = IM_COL32(0, 0, 0, a * 3 / 4);
+  dl->AddRectFilled(ImVec2(c.x - w + 1.5f, c.y - h + 1.5f), ImVec2(c.x + w + 1.5f, c.y + h + 1.5f), shadow);
+  dl->AddRectFilled(ImVec2(c.x - h + 1.5f, c.y - w + 1.5f), ImVec2(c.x + h + 1.5f, c.y + w + 1.5f), shadow);
+  dl->AddRectFilled(ImVec2(c.x - w, c.y - h), ImVec2(c.x + w, c.y + h), p.fill);
+  dl->AddRectFilled(ImVec2(c.x - h, c.y - w), ImVec2(c.x + h, c.y + w), p.fill);
+  const float in = w * 0.35f;  // the pressed arm, inside the outline
+  for (char arm : arms) {
+    ImVec2 q0, q1;
+    switch (arm) {
+      case '^': q0 = ImVec2(c.x - w + in, c.y - h + in), q1 = ImVec2(c.x + w - in, c.y - w); break;
+      case 'v': q0 = ImVec2(c.x - w + in, c.y + w), q1 = ImVec2(c.x + w - in, c.y + h - in); break;
+      case '<': q0 = ImVec2(c.x - h + in, c.y - w + in), q1 = ImVec2(c.x - w, c.y + w - in); break;
+      case '>': q0 = ImVec2(c.x + w, c.y - w + in), q1 = ImVec2(c.x + h - in, c.y + w - in); break;
+      default: continue;
+    }
+    dl->AddRectFilled(q0, q1, p.ink);
+  }
+  const ImVec2 pts[12] = {ImVec2(c.x - w, c.y - h), ImVec2(c.x + w, c.y - h), ImVec2(c.x + w, c.y - w),
+                          ImVec2(c.x + h, c.y - w), ImVec2(c.x + h, c.y + w), ImVec2(c.x + w, c.y + w),
+                          ImVec2(c.x + w, c.y + h), ImVec2(c.x - w, c.y + h), ImVec2(c.x - w, c.y + w),
+                          ImVec2(c.x - h, c.y + w), ImVec2(c.x - h, c.y - w), ImVec2(c.x - w, c.y - w)};
+  dl->AddPolyline(pts, 12, p.edge, ImDrawFlags_Closed, edge);
+}
+
+// A mouse on a key cap: the body, its two buttons and the wheel; the pressed one filled.
+void Mouse(ImDrawList* dl, ImVec2 p0, ImVec2 p1, char code, int a, float scale) {
+  const Palette p = Gold(a);
+  const float h = p1.y - p0.y;
+  const float side = std::min(p1.x - p0.x, h);
+  const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  // The cap, as wide as it is tall.
+  const ImVec2 b0(std::floor(c.x - side * 0.5f), p0.y), b1(std::floor(c.x + side * 0.5f), p1.y);
+  dl->AddRectFilled(ImVec2(b0.x + 2, b0.y + 2), ImVec2(b1.x + 2, b1.y + 2), IM_COL32(0, 0, 0, a * 3 / 4), 4.0f * scale);
+  dl->AddRectFilled(b0, b1, p.fill, 4.0f * scale);
+  dl->AddRect(b0, b1, p.edge, 4.0f * scale, 0, 1.5f * scale);
+  // The body: a rounded upright box.
+  const float bw = side * 0.42f, bh = h * 0.70f;
+  const ImVec2 m0(c.x - bw * 0.5f, c.y - bh * 0.5f), m1(c.x + bw * 0.5f, c.y + bh * 0.5f);
+  const float round = bw * 0.48f, line = std::max(1.0f, 1.2f * scale);
+  const float split = m0.y + bh * 0.42f;  // the buttons' lower edge
+  const float wheel_w = bw * 0.18f, wheel_h = bh * 0.20f;
+  const ImVec2 w0(c.x - wheel_w * 0.5f, m0.y + bh * 0.12f), w1(c.x + wheel_w * 0.5f, m0.y + bh * 0.12f + wheel_h);
+  if (code == '1') dl->AddRectFilled(m0, ImVec2(c.x, split), p.ink, round, ImDrawFlags_RoundCornersTopLeft);
+  if (code == '2') dl->AddRectFilled(ImVec2(c.x, m0.y), ImVec2(m1.x, split), p.ink, round, ImDrawFlags_RoundCornersTopRight);
+  dl->AddRect(m0, m1, p.edge, round, 0, line);
+  dl->AddLine(ImVec2(m0.x, split), ImVec2(m1.x, split), p.edge, line);
+  dl->AddLine(ImVec2(c.x, m0.y), ImVec2(c.x, w0.y), p.edge, line);
+  dl->AddLine(ImVec2(c.x, w1.y), ImVec2(c.x, split), p.edge, line);
+  const bool wheel = code == '3' || code == 'U' || code == 'D';
+  if (wheel)
+    dl->AddRectFilled(w0, w1, p.ink, wheel_w * 0.5f);
+  else
+    dl->AddRect(w0, w1, p.edge, wheel_w * 0.5f, 0, line);
+  if (code == 'U' || code == 'D') {  // an arrow beside the body
+    const float ax = m1.x + (b1.x - m1.x) * 0.5f, ay = (w0.y + w1.y) * 0.5f, ah = bh * 0.16f;
+    const float dir = code == 'U' ? -1.0f : 1.0f;
+    dl->AddTriangleFilled(ImVec2(ax, ay + dir * ah), ImVec2(ax - ah * 0.8f, ay - dir * ah * 0.4f),
+                          ImVec2(ax + ah * 0.8f, ay - dir * ah * 0.4f), p.ink);
+  }
+  if (code == '4' || code == '5') {  // the side buttons on the left: 5 forward (upper), 4 back (lower)
+    for (int i = 0; i < 2; ++i) {
+      const float y = m0.y + bh * (0.50f + 0.18f * float(i));
+      const ImVec2 s0(m0.x - bw * 0.16f, y), s1(m0.x + bw * 0.02f, y + bh * 0.13f);
+      const bool pressed = (i == 0 && code == '5') || (i == 1 && code == '4');
+      if (pressed)
+        dl->AddRectFilled(s0, s1, p.ink, 1.0f);
+      else
+        dl->AddRect(s0, s1, p.edge, 1.0f, 0, line);
+    }
+  }
+}
+
+// PlayStation (PS4/5 and PS2 styles).
+void PlayStation(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const std::string& code, bool ps2, bool colors, int a,
+                 float scale) {
+  const float h = p1.y - p0.y;
+  const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  const float r = std::min(p1.x - p0.x, h) * 0.5f;
+  const float edge = (ps2 ? 2.0f : 1.2f) * scale, stroke = (ps2 ? 2.6f : 1.6f) * scale;
+  if (code.find_first_not_of("^v<>") == std::string::npos) {
+    DPad(dl, c, r * 2.0f, code, colors ? DarkGrey(a) : Gold(a), edge, a);
+    return;
+  }
+  if (code.size() == 1 && std::string("xost").find(code[0]) != std::string::npos) {
+    Palette p = colors ? DarkGrey(a) : Gold(a);
+    if (colors) {  // the shape in a color close to its button's
+      switch (code[0]) {  // [claude-9b-think] cod3_glyph_color_ps_* (the defaults are these colors)
+        case 'x': p.ink = GlyphColor(kPsCross, a); break;
+        case 'o': p.ink = GlyphColor(kPsCircle, a); break;
+        case 's': p.ink = GlyphColor(kPsSquare, a); break;
+        default: p.ink = GlyphColor(kPsTriangle, a); break;
+      }
+    }
+    RoundButton(dl, c, r, p, edge, ps2, a);
+    const float d = r * 0.42f;
+    switch (code[0]) {
+      case 'x':
+        dl->AddLine(ImVec2(c.x - d, c.y - d), ImVec2(c.x + d, c.y + d), p.ink, stroke);
+        dl->AddLine(ImVec2(c.x - d, c.y + d), ImVec2(c.x + d, c.y - d), p.ink, stroke);
+        break;
+      case 'o': dl->AddCircle(c, r * 0.46f, p.ink, 0, stroke); break;
+      case 's': dl->AddRect(ImVec2(c.x - d, c.y - d), ImVec2(c.x + d, c.y + d), p.ink, 0.0f, 0, stroke); break;
+      default:
+        dl->AddTriangle(ImVec2(c.x, c.y - r * 0.50f), ImVec2(c.x - r * 0.47f, c.y + r * 0.32f),
+                        ImVec2(c.x + r * 0.47f, c.y + r * 0.32f), p.ink, stroke);
+        break;
+    }
+    return;
+  }
+  const Palette p = colors ? DarkGrey(a) : Gold(a);
+  if (code == "L3" || code == "R3") {  // the sticks' clicks: a round cap
+    RoundButton(dl, c, r, p, edge, ps2, a);
+    CenteredText(dl, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), code.c_str(), p.ink, r * 1.05f);
+    return;
+  }
+  const bool pill = code == "START" || code == "SELECT" || code == "OPTIONS" || code == "SHARE";
+  LabelCap(dl, p0, p1, code.c_str(), p, edge, pill, a);
+}
+
+// GameCube: a large round A, a smaller round B, X and Y as rounded caps, Z / L / R / START labeled caps, the C-stick a
+// small round cap; colored: green A, red B, grey X / Y, purple Z, grey START and shoulders.
+void GameCube(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const std::string& code, bool colors, int a, float scale) {
+  const float h = p1.y - p0.y;
+  const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  const float r = std::min(p1.x - p0.x, h) * 0.5f, edge = 1.5f * scale;
+  const Palette grey = colors ? Filled(a, 150, 150, 158) : Gold(a);
+  if (code.find_first_not_of("^v<>") == std::string::npos) {
+    DPad(dl, c, r * 2.0f, code, colors ? DarkGrey(a) : Gold(a), edge, a);
+  } else if (code == "A") {
+    const Palette p = colors ? FilledWith(kGcA, a) : Gold(a);  // [claude-9b-think] cod3_glyph_color_gc_*
+    RoundButton(dl, c, r, p, edge, false, a);
+    CenteredText(dl, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), "A", p.ink, r * 1.3f);
+  } else if (code == "B") {
+    const Palette p = colors ? FilledWith(kGcB, a) : Gold(a);
+    RoundButton(dl, c, r * 0.78f, p, edge, false, a);
+    CenteredText(dl, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), "B", p.ink, r * 1.0f);
+  } else if (code == "X" || code == "Y") {
+    const Palette p = colors ? FilledWith(code == "X" ? kGcX : kGcY, a) : Gold(a);
+    LabelCap(dl, ImVec2(c.x - r * 0.95f, c.y - r * 0.70f), ImVec2(c.x + r * 0.95f, c.y + r * 0.70f), code.c_str(), p,
+             edge, true, a);
+  } else if (code == "C") {
+    const Palette p = colors ? DarkGrey(a) : Gold(a);
+    RoundButton(dl, c, r * 0.80f, p, edge, false, a);
+    CenteredText(dl, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), "C", p.ink, r * 1.0f);
+  } else {
+    const Palette p = !colors ? Gold(a) : code == "Z" ? FilledWith(kGcZ, a) : grey;
+    LabelCap(dl, p0, p1, code.c_str(), p, edge, code == "START", a);
+  }
+}
+
+// Nintendo (Switch): round lettered face buttons, labeled shoulder caps (L, R, ZL, ZR), small round + and -.
+void Nintendo(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const std::string& code, bool colors, int a, float scale) {
+  const float h = p1.y - p0.y;
+  const ImVec2 c((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  const float r = std::min(p1.x - p0.x, h) * 0.5f, edge = 1.5f * scale;
+  const Palette p = colors ? DarkGrey(a) : Gold(a);
+  if (code.find_first_not_of("^v<>") == std::string::npos) {
+    DPad(dl, c, r * 2.0f, code, p, edge, a);
+  } else if (code == "A" || code == "B" || code == "X" || code == "Y" || code == "+" || code == "-") {
+    const float rr = code.size() == 1 && (code[0] == '+' || code[0] == '-') ? r * 0.75f : r;
+    // [claude-9b-think] cod3_glyph_color_nx_*: a face button of the player's color (the default: the dark grey).
+    const int id = code == "A" ? kNxA : code == "B" ? kNxB : code == "X" ? kNxX : code == "Y" ? kNxY : -1;
+    const Palette q = colors && id >= 0 && !GlyphColorIsDefault(id) ? FilledWith(id, a) : p;
+    RoundButton(dl, c, rr, q, edge, false, a);
+    CenteredText(dl, ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), code.c_str(), q.ink, rr * 1.2f);
+  } else {
+    LabelCap(dl, p0, p1, code.c_str(), p, edge, false, a);
+  }
+}
+
+}  // namespace prompt_glyph
+
+// [claude-9b-think] One picture of ours (KeyCap::picture) in its room (window pixels).
+static void DrawPromptPicture(ImDrawList* dl, const cod3::prompts::KeyCap& cap, ImVec2 p0, ImVec2 p1, int a,
+                              float scale) {
+  using cod3::prompts::Look;
+  const bool colors = CurrentGlyphMode() != GlyphMode::kGold;  // [claude-setup] 2026-11-03 cod3_glyph_color_mode
+  switch (cap.look) {
+    case Look::kKeys:
+      if (cap.name.size() == 1) prompt_glyph::Mouse(dl, p0, p1, cap.name[0], a, scale);
+      break;
+    case Look::kPlayStation:
+    case Look::kPlayStation2:
+      prompt_glyph::PlayStation(dl, p0, p1, cap.name, cap.look == Look::kPlayStation2, colors, a, scale);
+      break;
+    case Look::kGameCube: prompt_glyph::GameCube(dl, p0, p1, cap.name, colors, a, scale); break;
+    case Look::kNintendo: prompt_glyph::Nintendo(dl, p0, p1, cap.name, colors, a, scale); break;
+    default: break;
+  }
 }
 
 // [acct2-decomp] A controller's skip button in the same colors: a round
@@ -482,19 +1092,26 @@ static void DrawKeyCapBox(ImDrawList* dl, ImFont* font, float text_size, ImVec2 
 // one (simple shapes of our own, not any company's art).
 static void DrawPadButton(ImDrawList* dl, ImFont* font, float text_size, ImVec2 center, float radius,
                           cod3::prompts::Look look, int a, float scale) {
-  const ImU32 gold = IM_COL32(214, 172, 104, a);
-  dl->AddCircleFilled(ImVec2(center.x + 2, center.y + 2), radius, IM_COL32(0, 0, 0, a * 3 / 4));
-  dl->AddCircleFilled(center, radius, IM_COL32(20, 16, 10, a * 4 / 5));
-  dl->AddCircle(center, radius, gold, 0, 1.5f * scale);
-  if (look == cod3::prompts::Look::kPlayStation) {
-    const float d = radius * 0.42f;
-    dl->AddLine(ImVec2(center.x - d, center.y - d), ImVec2(center.x + d, center.y + d), gold, 2.0f * scale);
-    dl->AddLine(ImVec2(center.x - d, center.y + d), ImVec2(center.x + d, center.y - d), gold, 2.0f * scale);
+  // [claude-9b-think] PlayStation (both styles), Nintendo and GameCube: the bottom face button as the prompts draw it
+  // (DrawPromptPicture: a cross, B, A; colored as cod3_glyph_color_mode says).
+  using cod3::prompts::Look;
+  if (look == Look::kPlayStation || look == Look::kPlayStation2 || look == Look::kNintendo || look == Look::kGameCube) {
+    cod3::prompts::KeyCap cap{};
+    cap.look = look;
+    cap.picture = true;
+    cap.name = look == Look::kNintendo ? "B" : look == Look::kGameCube ? "A" : "x";
+    DrawPromptPicture(dl, cap, ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius),
+                      a, scale);
     return;
   }
-  const char* label = look == cod3::prompts::Look::kNintendo ? "B" : "A";
-  const ImVec2 ext = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, label);
-  dl->AddText(font, text_size, ImVec2(std::floor(center.x - ext.x * 0.5f), std::floor(center.y - ext.y * 0.5f)),
+  const ImU32 gold = GlyphColor(kGlyphAccent, a);  // [claude-9b-think] the player's colors
+  dl->AddCircleFilled(ImVec2(center.x + 2, center.y + 2), radius, IM_COL32(0, 0, 0, a * 3 / 4));
+  dl->AddCircleFilled(center, radius, GlyphColor(kGlyphFill, a));
+  dl->AddCircle(center, radius, gold, 0, 1.5f * scale);
+  const char* label = "A";  // [claude-9b-think] Xbox (the other styles above); centered on its ink
+  dl->AddText(font, text_size,
+              InkCenteredPos(font, text_size, label, ImVec2(center.x - radius, center.y - radius),
+                             ImVec2(center.x + radius, center.y + radius)),
               gold, label);
 }
 
@@ -505,32 +1122,65 @@ static void DrawPadButton(ImDrawList* dl, ImFont* font, float text_size, ImVec2 
 // controller buttons when it detects input from one") its A button instead,
 // switching with the device as the game's prompts do; `alpha` fades it in
 // and out (cutscene_skip.cpp).
+// [claude-9b-think] 2026-10-27 UNTESTED (owner 13:20: "the space to skip will cover subtitles a lot of the time";
+// 13:21: held to skip). Smaller (18 px at 1080p, was 24), in the bottom-right corner of the HUD's title-safe area
+// (5% in from its right and bottom edges; the HUD area is the 16:9 part of a wider picture) and right-aligned, clear
+// of the game's centered lines (cod3_skip_prompt_position bottom_center: centered at 86% of the height, as before).
+// "Hold to skip" while cod3_skip_hold_ms asks for a hold, with the hold's progress (CutsceneSkip::HoldProgress) as
+// a bar along the inside of the key cap's bottom edge, or a ring around a controller's button.
 static void DrawSkipPrompt(ImGuiIO& io, float alpha) {
-  const float scale = std::max(0.6f, io.DisplaySize.y / 1080.0f);
-  const float size = 24.0f * scale;
+  const HudArea area = CurrentHudArea(io);
+  if (area.width < 1.0f || area.height < 1.0f) return;
+  const bool corner = Get("cod3_skip_prompt_position") != "bottom_center";
+  const float scale = std::max(0.6f, area.height / 1080.0f);
+  const float size = 18.0f * scale;
   ImFont* font = FontFor(size);
   const cod3::prompts::Look look = cod3::prompts::FirstPlayerLook();
   const bool keys = look == cod3::prompts::Look::kKeys;
+  const float hold = cod3::CutsceneSkip::Get().HoldProgress();  // < 0: nothing held
   const char* key = "SPACE";
-  const char* label = "Skip";
+  const char* label = GetInt("cod3_skip_hold_ms", 0) > 0 ? "Hold to skip" : "Skip";
   const ImVec2 key_ext = font->CalcTextSizeA(size * 0.8f, FLT_MAX, 0.0f, key);
   const ImVec2 label_ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, label);
-  const float pad_x = 10.0f * scale, pad_y = 4.0f * scale, gap = 12.0f * scale;
+  const float pad_x = 8.0f * scale, pad_y = 3.0f * scale, gap = 10.0f * scale;
   const float key_h = std::max(key_ext.y, label_ext.y) + 2 * pad_y;
   const float key_w = keys ? key_ext.x + 2 * pad_x : key_h;  // the button is round
   const float total = key_w + gap + label_ext.x;
-  const float x = std::floor((io.DisplaySize.x - total) * 0.5f);
-  const float y = std::floor(io.DisplaySize.y * 0.86f);
+  float x, y;
+  if (corner) {
+    x = std::floor(area.x + area.width * 0.95f - total);
+    y = std::floor(area.y + area.height * 0.95f - key_h);
+  } else {
+    x = std::floor(area.x + (area.width - total) * 0.5f);
+    y = std::floor(area.y + area.height * 0.86f);
+  }
   const int a = static_cast<int>(alpha * 255);
-  const ImU32 gold = IM_COL32(214, 172, 104, a);
+  const ImU32 gold = GlyphColor(kGlyphAccent, a);  // [claude-9b-think] the label, the bar and the ring too
   const ImU32 shadow = IM_COL32(0, 0, 0, a * 3 / 4);
   ImDrawList* dl = ImGui::GetForegroundDrawList();
-  if (keys)
+  if (keys) {
     DrawKeyCapBox(dl, font, size * 0.8f, ImVec2(x, y), ImVec2(x + key_w, y + key_h), key, a, scale);
-  else
-    DrawPadButton(dl, font, size * 0.8f, ImVec2(x + key_w * 0.5f, y + key_h * 0.5f), key_h * 0.5f, look, a, scale);
-  // Label.
-  const ImVec2 lp(x + key_w + gap, y + (key_h - label_ext.y) * 0.5f);
+    if (hold >= 0.0f) {  // the hold: a bar filling from the left along the cap's bottom edge, inside it
+      const float in = std::floor(3.0f * scale), bar = std::max(2.0f, std::floor(3.0f * scale));
+      const float x0 = x + in, x1 = x + key_w - in;
+      if (hold > 0.0f)
+        dl->AddRectFilled(ImVec2(x0, y + key_h - in - bar), ImVec2(x0 + (x1 - x0) * hold, y + key_h - in), gold,
+                          bar * 0.5f);
+    }
+  } else {
+    const ImVec2 c(x + key_w * 0.5f, y + key_h * 0.5f);
+    DrawPadButton(dl, font, size * 0.8f, c, key_h * 0.5f, look, a, scale);
+    if (hold > 0.0f) {  // the hold: a ring around the button, clockwise from the top
+      constexpr float kPi = 3.14159265f;
+      const float r = key_h * 0.5f + 3.0f * scale;
+      dl->PathArcTo(c, r, -0.5f * kPi, -0.5f * kPi + 2.0f * kPi * hold, 40);
+      dl->PathStroke(gold, 0, std::max(2.0f, 2.5f * scale));
+    }
+  }
+  // Label. [claude-9b-think] its capitals centered on the cap's middle (InkCenteredPos), was its line box.
+  const float label_x = x + key_w + gap;
+  const ImVec2 lp(label_x,
+                  InkCenteredPos(font, size, label, ImVec2(label_x, y), ImVec2(label_x + label_ext.x, y + key_h)).y);
   dl->AddText(font, size, ImVec2(lp.x + 2, lp.y + 2), shadow, label);
   dl->AddText(font, size, lp, gold, label);
 }
@@ -578,17 +1228,45 @@ static void DrawPromptKeyCaps(ImGuiIO& io) {
     ImVec2 p1(area.x + cap.x1 * sx, area.y + cap.y1 * sy);
     const float h = p1.y - p0.y;
     if (h < 4.0f || p1.x - p0.x < 4.0f) continue;
-    // A little inside the line's height, as tall as the text's capitals.
-    p0.y += std::floor(h * 0.06f);
-    p1.y -= std::floor(h * 0.06f);
-    const float scale = std::max(0.5f, (p1.y - p0.y) / 37.0f);  // "SPACE Skip"'s cap is 37 px tall at 1080p
-    float text_size = (p1.y - p0.y) * 0.62f;
+    // [claude-9b-think] 2026-10-27 UNTESTED (owner, Part B: the TAB cap was ~80x28 px next to text ~16 px tall at
+    // 1280x720). The cap was the line's whole height (less 6% top and bottom) and the whole room the game keeps for
+    // "[NAME]" in its own font; now it is 1.3x the text's capitals tall, centered on their middle, and as wide as our
+    // name plus its margins (at least square), centered in the room. Measured in c9b-test-pr-look-s40.png (1280x720):
+    // the line is 36 px, the old cap rows 224-255 and 514-595, the game's capitals ("P" of Press) rows 232-249: the
+    // capitals are 0.47 of the line, their middle 0.53 of it down. Now about 22 px tall, TAB about 41 px wide.
+    constexpr float kCapitals = 0.47f, kCapitalsMiddle = 0.53f, kCapTall = 1.3f;
+    const float scale = std::max(0.5f, h * 0.88f / 37.0f);  // as before: the edge and corners keep their width
+    // [claude-9b-think] 2026-10-27 UNTESTED cod3_key_cap_scale (owner 15:01): the cap's height times the scale, but
+    // at most 0.95 of the line and kept inside it, so it never reaches the line above or below (the line ~36 px, the
+    // capitals ~17 px at 1080p; 1.55 is the tallest scale that fits).
+    const float cap_scale = std::clamp(float(GetDouble("cod3_key_cap_scale", 1.0)), 0.8f, 1.8f);
+    const float cap_h = std::max(4.0f, std::round(std::min(h * kCapitals * kCapTall * cap_scale, h * 0.95f)));
+    const float cap_top = std::clamp(h * kCapitalsMiddle - cap_h * 0.5f, 0.0f, std::max(0.0f, h - cap_h));
+    p0.y = std::floor(p0.y + cap_top);
+    p1.y = p0.y + cap_h;
+    // Our name's capitals about 0.55 of the cap (the overlay font's capitals are half its size: TAB's were 10 px at
+    // 19.8), narrowed to fit a small room as before.
+    float text_size = cap_h * 1.1f;
     ImFont* font = FontFor(text_size);
-    const float room = (p1.x - p0.x) - 8.0f * scale;
-    const float wide = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, cap.name.c_str()).x;
-    if (wide > room && room > 0.0f) text_size *= std::max(0.6f, room / wide);
-    DrawKeyCapBox(dl, font, text_size, ImVec2(std::floor(p0.x), std::floor(p0.y)), ImVec2(std::floor(p1.x), std::floor(p1.y)),
-                  cap.name.c_str(), a, scale);
+    const float margin = std::floor(cap_h * 0.3f);
+    const float room = p1.x - p0.x;
+    float wide = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, cap.name.c_str()).x;
+    if (!cap.picture && wide > room - 2 * margin && room > 2 * margin) {
+      text_size *= std::max(0.6f, (room - 2 * margin) / wide);
+      wide = font->CalcTextSizeA(text_size, FLT_MAX, 0.0f, cap.name.c_str()).x;
+    }
+    // [claude-9b-think] a fitted room (button_prompts.cpp FittedRoom) is the cap's own width: the cap fills it, so the
+    // words sit as close to it as the game's own spacing puts them.
+    const float w = cap.fitted ? std::floor(std::max(room, 4.0f))
+                               : std::floor(std::min(std::max(wide + 2 * margin, cap_h), std::max(room, cap_h)));
+    const float x0 = std::floor(p0.x + (room - w) * 0.5f);
+    const ImVec2 q0(x0, p0.y), q1(x0 + w, p1.y);
+    // [claude-9b-think] our pictures (mouse buttons, controller styles) in the room the game kept for them.
+    if (cap.picture) {
+      DrawPromptPicture(dl, cap, q0, q1, a, scale);
+      continue;
+    }
+    DrawKeyCapBox(dl, font, text_size, q0, q1, cap.name.c_str(), a, scale);
   }
 }
 
@@ -863,6 +1541,102 @@ static bool ResetButton(const char* id, const char* what) {
   return confirmed;
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED the prompt pictures' colors in F2 > Game > Prompts (owner 13:59). One row: the
+// color picker and "Default", which puts just this color back ([claude-setup] the default in its tooltip).
+static bool GlyphColorRow(int id) {
+  const GlyphColorSetting& g = kGlyphColorSettings[id];
+  const bool alpha = std::string_view(g.def).size() == 8;  // the fill and Nintendo's buttons: an opacity of their own
+  const uint32_t cur = GlyphSettingRgba(id), def = GlyphDefaultRgba(id);  // [claude-setup] the setting itself
+  auto floats = [](uint32_t v, float* c) {
+    for (int i = 0; i < 4; ++i) c[i] = float((v >> (24 - 8 * i)) & 0xFF) / 255.0f;
+  };
+  float c[4], d[4];
+  floats(cur, c);
+  floats(def, d);
+  bool changed = false;
+  ImGui::PushID(g.cvar);
+  // [claude-setup] 2026-11-03 (owner: "one of the keycap color settings doesn't change anything. It's like it's
+  // opacity, but it's just a checkerboard"): ImGui 1.92 previews a see-through color over a checkerboard, so the
+  // Cap fill (#14100A at 80 %) looked like a dark checkerboard, and the default's swatch beside it did nothing when
+  // clicked. Now a color with an opacity of its own shows solid on the swatch's left half and see-through on its
+  // right, and the default is shown in the Default button's tooltip instead of a swatch of its own.
+  const ImGuiColorEditFlags flags =
+      alpha ? ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf : ImGuiColorEditFlags_NoAlpha;
+  ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x * 0.5f);
+  if (alpha ? ImGui::ColorEdit4(g.label, c, flags) : ImGui::ColorEdit3(g.label, c, flags)) {
+    rex::cvar::SetFlagByName(g.cvar, HexColor(c, alpha));
+    // [claude-setup] 2026-11-03 a color picked is meant to be seen: Button colors goes to Custom.
+    if (CurrentGlyphMode() != GlyphMode::kCustom) rex::cvar::SetFlagByName("cod3_glyph_color_mode", "custom");
+    changed = true;
+  }
+  ImGui::SameLine();
+  ImGui::BeginDisabled(cur == def);
+  if (ImGui::SmallButton("Default")) {
+    ResetSettings({g.cvar});
+    changed = true;
+  }
+  ImGui::EndDisabled();
+  if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+    ImGui::BeginTooltip();
+    ImGui::ColorButton("##default", ImVec4(d[0], d[1], d[2], d[3]), flags | ImGuiColorEditFlags_NoTooltip,
+                       ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()));
+    ImGui::SameLine();
+    if (cur == def)
+      ImGui::Text("Default: #%s (in use)", g.def);
+    else
+      ImGui::Text("Default: #%s", g.def);
+    ImGui::EndTooltip();
+  }
+  ImGui::PopID();
+  return changed;
+}
+
+// Every prompt picture color back to its default ("Reset colors", and the Game tab's reset).
+static void ResetGlyphColors() {
+  for (const GlyphColorSetting& g : kGlyphColorSettings) ResetSettings({g.cvar});
+}
+
+// A preview row on a scene-grey band: a key cap, the mouse and controller pictures as the prompts draw them now.
+static void DrawGlyphPreview() {
+  using cod3::prompts::Look;
+  const float h = std::floor(ImGui::GetFrameHeight() * 1.3f), pad = std::floor(h * 0.3f);
+  const float scale = std::max(0.5f, h / 37.0f);
+  ImDrawList* dl = ImGui::GetWindowDrawList();
+  const ImVec2 o = ImGui::GetCursorScreenPos();
+  struct Item {
+    Look look;
+    const char* name;
+    bool picture;
+    float width;  // in heights
+  };
+  static constexpr Item kItems[] = {{Look::kKeys, "TAB", false, 1.9f}, {Look::kKeys, "1", true, 1.0f},
+                                    {Look::kPlayStation, "x", true, 1.0f}, {Look::kPlayStation, "o", true, 1.0f},
+                                    {Look::kPlayStation, "s", true, 1.0f}, {Look::kPlayStation, "t", true, 1.0f},
+                                    {Look::kGameCube, "A", true, 1.0f},    {Look::kGameCube, "B", true, 1.0f},
+                                    {Look::kGameCube, "X", true, 1.0f},    {Look::kGameCube, "Z", true, 1.4f},
+                                    {Look::kNintendo, "A", true, 1.0f},    {Look::kNintendo, "B", true, 1.0f}};
+  float w = pad;
+  for (const Item& it : kItems) w += std::floor(h * it.width) + pad;
+  dl->AddRectFilled(o, ImVec2(o.x + w, o.y + h + 2 * pad), IM_COL32(86, 92, 84, 255), 4.0f);
+  float x = o.x + pad;
+  for (const Item& it : kItems) {
+    const float iw = std::floor(h * it.width);
+    const ImVec2 p0(x, o.y + pad), p1(x + iw, o.y + pad + h);
+    if (it.picture) {
+      cod3::prompts::KeyCap cap{};
+      cap.look = it.look;
+      cap.name = it.name;
+      cap.picture = true;
+      DrawPromptPicture(dl, cap, p0, p1, 255, scale);
+    } else {
+      const float text_size = h * 0.6f;
+      DrawKeyCapBox(dl, FontFor(text_size), text_size, p0, p1, it.name, 255, scale);
+    }
+    x += iw + pad;
+  }
+  ImGui::Dummy(ImVec2(w, h + 2 * pad));
+}
+
 void SettingsWindow::DrawVideo() {
   if (ResetButton("reset_video", "video settings")) {
     auto& engine = cod3::Engine::Get();
@@ -870,13 +1644,16 @@ void SettingsWindow::DrawVideo() {
                                       "cod3_render_percent", "cod3_aspect_ratio",
                                       "vulkan_allow_present_mode_immediate",
                                       "d3d12_allow_variable_refresh_rate_and_tearing", "present_letterbox",
-                                      "swap_post_effect", "native_2x_msaa", "present_effect",
-                                      "anisotropic_override", "cod3_hd_textures", "readback_resolve",
+                                      "swap_post_effect", "present_effect",
+                                      "anisotropic_override", "cod3_hd_textures",
                                       "cod3_max_fps", "cod3_shadow_quality", "cod3_color_space",
                                       "display_hdr", "display_hdr_paper_white", "display_hdr_peak",
                                       "cod3_refresh_rate", "cod3_live_resolution", "cod3_graphics_api",
                                       cod3::post_effects::kDepthOfField,     // [post-effects]
                                       cod3::post_effects::kMotionBlur});     // [post-effects]
+#if defined(COD3_MP)
+    restart_needed_ |= ResetSettings({"cod3mp_split_shadows"});  // [claude-9b-think] F2 > Video > Shadows
+#endif
     if (engine.GameReady()) {
       engine.SetMaxFps(REXCVAR_GET(cod3_max_fps));
       engine.SetDrawFps(0);
@@ -897,7 +1674,7 @@ void SettingsWindow::DrawVideo() {
       {"Frame rate", &SettingsWindow::DrawVideoFrameRate},
       {"Colors", &SettingsWindow::DrawVideoColors},
       {"Quality", &SettingsWindow::DrawVideoQuality},
-      {"Accuracy", &SettingsWindow::DrawVideoAccuracy},
+      // [claude-9b] 2026-10-27 "Accuracy" (the resolve readback) moved to EMULATION > GPU.
   };
   for (const Page& page : kPages) {
     if (!ImGui::BeginTabItem(page.label)) continue;
@@ -909,26 +1686,8 @@ void SettingsWindow::DrawVideo() {
 
 // Video > Display: the window, the screen it's on and how pictures reach it.
 void SettingsWindow::DrawVideoDisplay() {
-  // [acct2-decomp] Who draws, as a toggle (owner 2026-10-24 23:45: "Please make
-  // sure the option for emulation/native is a toggle"). Off: cod3_renderer
-  // "xenos", the emulated Xbox 360 GPU (the default). On: "rust", the native
-  // Rust renderer with the GPU emulation off (render/rust_renderer.h, acct2-main's
-  // setting; nothing about it changes here). Both programs; after a restart.
-  if (Has("cod3_renderer")) {
-    bool native = Get("cod3_renderer") == "rust";
-    // [claude-9b] Greyed out for now (owner 2026-10-26: "The F2 \"Native Renderer\" option/toggle
-    // needs to be grayed out for right now as it's not ready yet"): only turning it off is offered.
-    const bool can_turn_on = false;
-    ImGui::BeginDisabled(!can_turn_on && !native);
-    if (ImGui::Checkbox("Native renderer (no GPU emulation)", &native)) {
-      rex::cvar::SetFlagByName("cod3_renderer", native ? "rust" : "xenos");
-      restart_needed_ = true;
-      dirty_ = true;
-    }
-    ImGui::EndDisabled();
-    Help("Not ready yet: the native Rust renderer is still being written, so the emulated Xbox 360 "
-         "GPU draws the game. If it was turned on earlier, untick it here (applies after a restart).");
-  }
+  // [claude-9b] 2026-10-27 the "Native renderer" toggle moved to EMULATION > GPU (owner 17:09: "make a
+  // emulation tab in the f2 menu for the emulation toggles").
 #ifdef _WIN32
   {
     // Both renderers are built into Windows builds; Linux only has Vulkan
@@ -1427,12 +2186,7 @@ void SettingsWindow::DrawVideoQuality() {
     Help("Smooths jagged edges after the picture is drawn. Costs very little; Extreme smooths more "
          "and softens the picture a bit more. Applies after a restart.");
   }
-  dirty_ |= CvarCheckbox("Draw the game's 2x MSAA as real 2x (faster)", "native_2x_msaa",
-                         &restart_needed_);
-  Help("How the game's own 2x MSAA is drawn (it's on whenever it fits the emulated video memory: "
-       "always with Vulkan). On: your GPU's 2x MSAA. Off: 4x MSAA keeping two of the samples, which "
-       "places them exactly like the Xbox 360 but is about twice the work for the GPU. Leave it "
-       "on. Applies after a restart.");
+  // [claude-9b] 2026-10-27 "Draw the game's 2x MSAA as real 2x" moved to EMULATION > GPU.
   {
     // FSR 2 / 3 aren't offered (owner 2026-10-19): the game gives them no depth
     // or motion vectors, so they can't work as meant. A value already saved (a
@@ -1507,6 +2261,18 @@ void SettingsWindow::DrawVideoQuality() {
          "as sharp. Off removes them and keeps the sunlight (applies at once). The game's speed "
          "doesn't change.");
   }
+#if defined(COD3_MP)
+  {
+    // [claude-9b-think] 2026-10-27 UNTESTED game/shadows.cpp cod3mp_split_shadows (FINDINGS-SHADOWS 1b): with 2-4
+    // local players, how many shadow maps each view aims at nearby soldiers and vehicles.
+    const char* v[] = {"game", "nearest", "off"};
+    const char* n[] = {"As the game", "Nearest group only", "Off"};
+    if (CvarCombo("Split-screen shadows", "cod3mp_split_shadows", v, n, 3, &restart_needed_)) dirty_ = true;
+    Help("Split screen only. Each view draws a shadow map for the nearest group of soldiers or vehicles and one "
+         "for the next group. Nearest group only skips the second; Off skips both (the sunlight stays, nothing "
+         "moving casts a shadow). Fewer maps make split screen faster. Applies at once.");
+  }
+#endif
 
   // [post-effects] The game's own depth of field and motion blur on or off
   // (game/post_effects.h); both apply at once, in the campaign and in
@@ -1534,27 +2300,21 @@ void SettingsWindow::DrawVideoQuality() {
        "restart.");
 }
 
-// Video > Accuracy: how closely the emulated GPU follows the console.
-void SettingsWindow::DrawVideoAccuracy() {
-  {
-    const char* v[] = {"none", "fast", "some", "full"};
-    const char* n[] = {"Off", "Fast (recommended)", "On cache miss", "Full (accurate, slow)"};
-    dirty_ |= CvarCombo("Resolve readback (lens-flare fix)", "readback_resolve", v, n, 4,
-                        &restart_needed_);
-    Help("Copies some of the emulated GPU's results back so the game can read them. Without it, "
-         "lens flares and the sun shine through walls. Fast is the best balance; Full is exact but "
-         "slow. If smoke and explosions stutter, try On cache miss or Off and compare.");
-  }
-}
-
 void SettingsWindow::DrawGame() {
   auto& engine = cod3::Engine::Get();
   if (ResetButton("reset_game", "game settings")) {
     engine.SetFovSettings(cod3::fov::kDefaultFov, cod3::fov::kDefaultScale);
     // Aim assist follows the game's Sticky Aim again.
-    ResetSettings({"cod3_aim_assist", "cod3_skip_movies", "cod3_skip_prompt",
-                   cod3::viewmodel::kOffsetX, cod3::viewmodel::kOffsetY, cod3::viewmodel::kOffsetZ,
-                   cod3::viewmodel::kPreset, "cod3_vehicle_fov_scale"});  // [claude-9b]
+    // [claude-9b-think] Game > Prompts' rows (from CONTROLS: the button prompts and the battle actions) and the
+    // letterbox, skip prompt position and hold.
+    restart_needed_ |= ResetSettings({"cod3_aim_assist", "cod3_skip_movies", "cod3_skip_prompt",
+                                      cod3::viewmodel::kOffsetX, cod3::viewmodel::kOffsetY, cod3::viewmodel::kOffsetZ,
+                                      cod3::viewmodel::kPreset, "cod3_vehicle_fov_scale",  // [claude-9b]
+                                      "cod3_key_prompts", "cod3_key_caps", "cod3_glyph_style", "cod3_glyph_color_mode",
+                                      "cod3_key_cap_scale",  // [claude-9b-think]
+                                      "cod3_qte_style", "cod3_qte_spinner_with_pad", "cod3_qte_spinner_scale",
+                                      "cod3_letterbox", "cod3_skip_prompt_position", "cod3_skip_hold_ms"});
+    ResetGlyphColors();  // [claude-9b-think] the prompt pictures' colors
     dirty_ = true;
   }
   // [claude-9b] Subtabs (owner 2026-10-20: "please add subtabs for whats under game in F2"),
@@ -1665,14 +2425,24 @@ void SettingsWindow::DrawGame() {
     }
     ImGui::EndTabItem();
   }
+  // [claude-9b-think] 2026-10-27 UNTESTED Game > Prompts (owner 13:28, 13:29): campaign and multiplayer.
+  if (ImGui::BeginTabItem("Prompts")) {
+    DrawGamePrompts();
+    ImGui::EndTabItem();
+  }
 #if !defined(COD3_MP)  // [mp] multiplayer plays no films; aim assist is per profile there (later)
   if (ImGui::BeginTabItem("Cutscenes")) {
     dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
     Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
          "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
-         "level has loaded). Without it, press Space, Enter or Escape, or click, to skip one.");
-    dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
-    Help("Shows \"SPACE Skip\" at the bottom of the screen while a cutscene can be skipped.");
+         "level has loaded). Without it, hold Space, Enter or Escape, the left mouse button or the "
+         "controller's A to skip one (Prompts: how long).");
+    // [claude-9b-think] 2026-10-27 UNTESTED (owner 13:19) game/ultrawide.cpp cod3_letterbox.
+    dirty_ |= CvarCheckbox("Cinematic letterbox bars", "cod3_letterbox", &restart_needed_);
+    Help("The black bars at the top and bottom of the screen during the levels' scripted in-game scenes. Off: "
+         "the scene fills the screen; the scene itself is unchanged (the HUD stays hidden, the weapon put away, "
+         "the subtitles where the game puts them).");
+    ImGui::TextDisabled("The skip prompt and the hold to skip: the Prompts tab.");
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("Aim")) {
@@ -1718,17 +2488,19 @@ void SettingsWindow::DrawGame() {
                                                   ImGuiInputTextFlags_EnterReturnsTrue);
     editing = ImGui::IsItemActive();
     if (entered || ImGui::IsItemDeactivatedAfterEdit()) {
-      std::string typed = name;
-      for (char& c : typed)
-        if (static_cast<unsigned char>(c) < 32 || static_cast<unsigned char>(c) > 126 || c == '"' || c == '\\') c = ' ';
-      rex::cvar::SetFlagByName("user_name", typed);
+      // [claude-setup] 2026-11-03 Made safe by the game's name rule (game/color_codes.h SanitizeName; owner: "these
+      // user supplied entries need to be safe guarded too"); the SDK applies the same rule when the game asks.
+      rex::cvar::SetFlagByName("user_name", cod3::color_codes::SanitizeName(name, 15));
       restart_needed_ = true;
       dirty_ = true;
       editing = false;
     }
     Help("Your name in the game, up to 15 characters (the gamertag's room): the name others see in "
          "multiplayer and the game's name setting. Empty: \"User\", the profile's own. The game reads "
-         "it when it starts.");
+         "it when it starts. Colors as in World at War: ^0 black, ^1 red, ^2 green, ^3 yellow, ^4 blue, ^5 cyan, "
+         "^6 orange, ^7 white, ^8 and ^9 the team colors, ^: a rainbow; each code colors the letters after it and "
+         "counts in the 15. Quotes, \\, % and ; are left out.");
+    NameShowsAs(name, 15);
     // [claude-9b] 2026-10-27 Split-screen players 2-4 (owner 2026-10-26: "Player names: setup tool and per
     // split-screen player"): SDK patch 0074's user_name_2..4, the names XamUserGetName gives the game for
     // users 1-3 (no one is signed in for them).
@@ -1745,20 +2517,17 @@ void SettingsWindow::DrawGame() {
                                                    ImGuiInputTextFlags_EnterReturnsTrue);
         other_editing[i] = ImGui::IsItemActive();
         if (done || ImGui::IsItemDeactivatedAfterEdit()) {
-          std::string typed = others[i];
-          std::string clean;
-          for (char c : typed) {
-            const unsigned char u = static_cast<unsigned char>(c);
-            if (u >= 32 && u <= 126 && c != '"' && c != '\\' && c != '%' && c != '^') clean += c;
-          }
-          rex::cvar::SetFlagByName(kNames[i], clean);
+          // [claude-setup] 2026-11-03 The game's name rule, color codes included (SDK patch 0165 lets them through).
+          rex::cvar::SetFlagByName(kNames[i], cod3::color_codes::SanitizeName(others[i], 14));
           restart_needed_ = true;
           dirty_ = true;
           other_editing[i] = false;
         }
+        NameShowsAs(others[i], 14);
       }
-      Help("The names of split-screen players 2 to 4 in multiplayer, up to 14 characters each. Empty: "
-           "the game's own \"Player 2\" and so on. The game reads them when it starts.");
+      Help("The names of split-screen players 2 to 4 in multiplayer, up to 14 characters each, with the same "
+           "colors as the player name. Empty: the game's own \"Player 2\" and so on. The game reads them when it "
+           "starts.");
     }
     // [claude-9b] 2026-10-27 The player order (owner 2026-10-26: "player order 1-4 in F2"): which
     // player each controller plays as, by the order the controllers connected (SDK patch 0071's
@@ -1826,6 +2595,115 @@ void SettingsWindow::DrawGame() {
     ImGui::EndTabItem();
   }
   ImGui::EndTabBar();
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED Game > Prompts (owner 13:28, 13:29: "The glyphs should be under gameplay"):
+// how the game's prompts show keys and controller buttons and the battle actions' prompts (both were on CONTROLS),
+// and in the campaign the cutscene skip prompt. Names, behavior and help as they were; the Game tab's reset covers
+// them.
+void SettingsWindow::DrawGamePrompts() {
+  Section("Button prompts");
+  // Button prompts (game/button_prompts.h).
+  dirty_ |= CvarCheckbox("Show keys in button prompts", "cod3_key_prompts", &restart_needed_);
+  Help("While you play with the keyboard and mouse, the game's prompts show the key to press "
+       "([R], [ENTER]) instead of a controller button. Pressing a controller button brings the "
+       "buttons back.");
+  // [acct2-decomp] The keys as key caps, like "SPACE Skip".
+  dirty_ |= CvarCheckbox("Keys as key caps", "cod3_key_caps", &restart_needed_);
+  Help("Draws the keys in the game's prompts as key caps, like the \"SPACE Skip\" prompt, mouse "
+       "buttons as a small mouse, and the PlayStation, Nintendo and GameCube buttons as pictures. Off: "
+       "the names in brackets ([R], [CROSS]).");
+  // [claude-9b-think] 2026-10-27 UNTESTED (owner 15:01): the caps' size; the text keeps room for them.
+  if (Has("cod3_key_cap_scale")) {
+    if (!GetBool("cod3_key_caps")) ImGui::BeginDisabled();
+    float cap_scale = static_cast<float>(GetDouble("cod3_key_cap_scale", 1.0));
+    if (SliderFloatBox("Key cap size", &cap_scale, 0.8f, 1.8f, "%.2f")) {
+      rex::cvar::SetFlagByName("cod3_key_cap_scale", std::to_string(std::clamp(cap_scale, 0.8f, 1.8f)));
+      dirty_ = true;
+    }
+    if (!GetBool("cod3_key_caps")) ImGui::EndDisabled();
+    Help("How big the key caps and button pictures are in the game's prompts (1: a little taller than the "
+         "text's capital letters). The text keeps room for them, so bigger caps can move words to the next line "
+         "(texts already on screen follow within a second). They stop short of the lines above and below.");
+  }
+  {
+    // [mp-menus] auto: each player's own controller (split screen too).
+    // [claude-9b-think] playstation2: the PS2 style (a choice only; auto shows a PlayStation pad the PS4/5 style).
+    const char* v[] = {"auto", "xbox", "playstation", "playstation2", "nintendo", "gamecube"};
+    const char* n[] = {"Each controller's own", "Xbox 360 (the game's own)", "PlayStation 4 / 5",
+                       "PlayStation 2", "Nintendo Switch", "GameCube"};
+    dirty_ |= CvarCombo("Controller button style", "cod3_glyph_style", v, n, 6, &restart_needed_);
+    Help("How the prompts show controller buttons. Each controller's own: every player sees the "
+         "buttons of the controller in their hands (an Xbox pad the game's pictures, a "
+         "PlayStation pad the PlayStation 4 / 5 style, a Switch pad its own). The other choices "
+         "show one style to everyone. PlayStation, Nintendo and GameCube buttons are simple "
+         "pictures of our own (with \"Keys as key caps\" on; else their names).");
+  }
+  {
+    // [claude-setup] 2026-11-03 (owner ~09:55: by default the buttons as the original, a toggle for customized
+    // colors; ~10:00: "also add rainbow option"): was the "Colored controller buttons" checkbox (off: gold).
+    // [claude-setup] 2026-11-03 (owner: "similar to ^: from WAW"; asked, "Both as choices"): Rainbow (^ colors).
+    const char* v[] = {"original", "custom", "rainbow", "rainbow_codes", "gold"};
+    const char* n[] = {"Original (like the controller's own)", "Custom (the colors below)", "Rainbow (smooth)",
+                       "Rainbow (^ colors)", "Gold, like the key caps"};
+    dirty_ |= CvarCombo("Button colors", "cod3_glyph_color_mode", v, n, 5, &restart_needed_);
+    Help("Original: the PlayStation, Nintendo and GameCube buttons in colors close to the controller's own, the "
+         "key caps in the game's menu gold. Custom: the colors below. Rainbow (smooth): the buttons and the key "
+         "caps' edge fade slowly round the rainbow. Rainbow (^ colors): they step through World at War's ^ colors "
+         "(red, orange, yellow, green, cyan, blue) twice a second, like its rainbow names. Gold: the controller "
+         "buttons in the key caps' gold style too.");
+  }
+  // [claude-9b-think] 2026-10-27 UNTESTED the pictures' colors (owner 13:59), like the crosshair's own colors.
+  ImGui::Spacing();
+  ImGui::TextUnformatted("Colors");
+  if (CurrentGlyphMode() != GlyphMode::kCustom)
+    ImGui::TextDisabled("Used with Button colors \"Custom\"; changing one switches to it.");
+  dirty_ |= GlyphColorRow(kGlyphAccent);
+  Help("The key caps' edge and name, the mouse and the skip prompt (the game's menu gold by default). Default puts "
+       "it back (hold the pointer over it to see the default).");
+  dirty_ |= GlyphColorRow(kGlyphFill);
+  Help("The inside of the key caps, and how see-through it is: A (or the picker's last bar) from 255, solid, to 0, "
+       "clear. The swatch shows the color solid on its left half and as it is drawn, over a checkerboard, on its "
+       "right. The preview below shows the result.");
+  if (ImGui::TreeNode("Each button's color")) {
+    ImGui::TextDisabled("PlayStation (the shapes)");
+    for (int id : {kPsCross, kPsCircle, kPsSquare, kPsTriangle}) dirty_ |= GlyphColorRow(id);
+    ImGui::TextDisabled("GameCube");
+    for (int id : {kGcA, kGcB, kGcX, kGcY, kGcZ}) dirty_ |= GlyphColorRow(id);
+    ImGui::TextDisabled("Nintendo (the dark grey by default)");
+    for (int id : {kNxA, kNxB, kNxX, kNxY}) dirty_ |= GlyphColorRow(id);
+    ImGui::TreePop();
+  }
+  if (ImGui::Button("Reset colors")) {
+    ResetGlyphColors();
+    dirty_ = true;
+  }
+  ImGui::SameLine();
+  ImGui::TextDisabled("Every color above back to its default.");
+  DrawGlyphPreview();
+  dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h): the stick actions' prompts
+#if !defined(COD3_MP)
+  Section("Cutscene skip prompt");
+  dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
+  Help("Shows \"SPACE Skip\" (a controller's button while you use one) while a level's briefing can be "
+       "skipped: for 4 seconds when it starts and again for 4 seconds after any key or button press.");
+  {
+    const char* v[] = {"corner", "bottom_center"};
+    const char* n[] = {"Bottom-right corner", "Bottom center"};
+    dirty_ |= CvarCombo("Skip prompt position", "cod3_skip_prompt_position", v, n, 2, &restart_needed_);
+    Help("The corner keeps it out of the subtitles' way; bottom center is where it was.");
+  }
+  if (Has("cod3_skip_hold_ms")) {
+    int ms = std::clamp(GetInt("cod3_skip_hold_ms", 1000), 0, 5000);
+    if (SliderIntBox("Hold to skip", &ms, 0, 5000, "%d ms")) {
+      rex::cvar::SetFlagByName("cod3_skip_hold_ms", std::to_string(std::clamp(ms, 0, 5000)));
+      dirty_ = true;
+    }
+    Help("How long Space, Enter, Escape, the left mouse button or the controller's A / START is held to skip; "
+         "the prompt fills while you hold, and letting go early cancels. While the prompt is hidden, the first "
+         "press only shows it. 0: a press skips at once.");
+  }
+#endif
 }
 
 // [claude-9b] SOUND, right next to VIDEO (owner 2026-10-21: "sound needs to be right next to
@@ -1899,7 +2777,29 @@ void SettingsWindow::DrawCrosshair() {
                    "cod3_crosshair_color_friendly", "cod3_crosshair_color_dead"});
     changed = true;
   }
-  {
+  bool per_player = false;
+#if defined(COD3_MP)
+  // [claude-setup] 2026-11-03 split screen: one box per local player, each that player's own switch (LocalCrosshairs).
+  if (uint8_t* base = GuestBase()) {
+    const std::vector<LocalCrosshair> players = LocalCrosshairs(base);
+    if (players.size() > 1) {
+      per_player = true;
+      ImGui::TextUnformatted("Show crosshair");
+      for (const LocalCrosshair& p : players) {
+        ImGui::SameLine();
+        bool on = cod3::guest::ReadU8(base, p.byte) != 0;
+        char label[40];
+        std::snprintf(label, sizeof(label), "Player %u##show_crosshair_%u", p.player + 1, p.player);
+        if (ImGui::Checkbox(label, &on)) cod3::guest::WriteU8(base, p.byte, on ? 1 : 0);
+      }
+      Help("Each split-screen player's own crosshair switch, the same as that player's Options > Gameplay > "
+           "Crosshair: off hides that player's crosshair, the game's and the custom one, on their part of the "
+           "screen only. Player 1's is remembered as before; for the others, set it in their own Options to keep "
+           "it after the game closes.");
+    }
+  }
+#endif
+  if (!per_player) {
     // [claude-9b] The game's own crosshair switch (owner 2026-10-26: "F2 crosshair menu should have a
     // toggle box for show crosshair that reflects the in-game one menu toggle"): Options > Gameplay >
     // Crosshair, read from the game every time F2 draws, so both places always agree.
@@ -2042,39 +2942,40 @@ void SettingsWindow::DrawCrosshair() {
   if (changed) dirty_ = true;
 }
 
+// [claude-9b-think] 2026-10-27 UNTESTED CONTROLS in subtabs (owner 13:28, 13:29): Mouse, Controller, Per weapon and
+// Key bindings, each with its own reset. The button prompts and the battle actions moved to Game > Prompts.
 void SettingsWindow::DrawControls() {
+  if (!ImGui::BeginTabBar("##controls_views")) return;
+  if (ImGui::BeginTabItem("Mouse")) {
+    DrawControlsMouse();
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Controller")) {
+    DrawControlsController();
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Per weapon")) {
+    DrawControlsPerWeapon();
+    ImGui::EndTabItem();
+  }
+  if (ImGui::BeginTabItem("Key bindings")) {
+    DrawControlsKeys();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
+void SettingsWindow::DrawControlsMouse() {
   if (ResetButton("reset_mouse", "mouse settings")) {
     // cod3_raw_mouse first: mnk_mouse's default depends on it.
     restart_needed_ |= ResetSettings({"mnk_mode", "cod3_raw_mouse", "mnk_mouse", "cod3_sensitivity",
                                       "cod3_zoom_sensitivity", "cod3_invert_mouse", "cod3_m_yaw",
-                                      "cod3_m_pitch", "mnk_sensitivity", "cod3_key_prompts",
-                                      "cod3_glyph_style", "cod3_key_caps",  // [acct2-decomp] key caps
+                                      "cod3_m_pitch",
                                       "cod3_mouse_game_sensitivity"});  // [claude-9b]
     dirty_ = true;
   }
   dirty_ |= CvarCheckbox("Keyboard & mouse", "mnk_mode", &restart_needed_);
   Help("Play with keyboard and mouse. A controller keeps working either way.");
-  // Button prompts (game/button_prompts.h).
-  dirty_ |= CvarCheckbox("Show keys in button prompts", "cod3_key_prompts", &restart_needed_);
-  Help("While you play with the keyboard and mouse, the game's prompts show the key to press "
-       "([R], [ENTER]) instead of a controller button. Pressing a controller button brings the "
-       "buttons back.");
-  // [acct2-decomp] The keys as key caps, like "SPACE Skip".
-  dirty_ |= CvarCheckbox("Keys as key caps", "cod3_key_caps", &restart_needed_);
-  Help("Draws the keys in the game's prompts as key caps, like the \"SPACE Skip\" prompt. Off: "
-       "the key's name in brackets ([R]).");
-  {
-    // [mp-menus] auto: each player's own controller (split screen too).
-    const char* v[] = {"auto", "xbox", "playstation", "nintendo", "gamecube"};
-    const char* n[] = {"Each controller's own", "Xbox 360 (the game's own)", "PlayStation",
-                       "Nintendo Switch", "GameCube"};
-    dirty_ |= CvarCombo("Controller button style", "cod3_glyph_style", v, n, 5, &restart_needed_);
-    Help("How the prompts show controller buttons. Each controller's own: every player sees the "
-         "buttons of the controller in their hands (an Xbox pad the game's pictures, a "
-         "PlayStation pad [CROSS], a Switch pad [B] for the bottom button). The other choices "
-         "show one style to everyone. PlayStation, Nintendo and GameCube show the button names "
-         "for now.");
-  }
 
   // One choice for the two underlying switches: raw aim (ours) or the SDK's
   // mouse-to-right-stick emulation. Never both, or the view turns twice.
@@ -2098,6 +2999,11 @@ void SettingsWindow::DrawControls() {
         REXCVAR_SET(cod3_sensitivity, static_cast<double>(sens));
         dirty_ = true;
       }
+      // [claude-9b-think] The readout right under the sensitivity it follows.
+      float cm360 = 0.0f;
+      if (REXCVAR_GET(cod3_m_yaw) != 0.0 && sens > 0.0f)
+        cm360 = static_cast<float>(360.0 / (sens * std::abs(REXCVAR_GET(cod3_m_yaw))));
+      ImGui::Text("%.0f mouse counts per full turn", cm360);
       Help("The same number as World at War's sensitivity setting (its default is 5).");
       float zoom = static_cast<float>(REXCVAR_GET(cod3_zoom_sensitivity));
       if (ImGui::SliderFloat("ADS sensitivity multiplier", &zoom, 0.1f, 2.0f, "%.2f")) {
@@ -2105,7 +3011,7 @@ void SettingsWindow::DrawControls() {
         dirty_ = true;
       }
       Help("Extra factor while aiming down the sights. The aim already slows down with the zoom; "
-           "below 1 slows it more, above 1 less.");
+           "below 1 slows it more, above 1 less. Every weapon; Per weapon has each weapon's own.");
       bool inv = cod3::MouseLook::MouseInverted();
       if (ImGui::Checkbox("Invert vertical", &inv)) {
         cod3::MouseLook::SetMouseInverted(inv);
@@ -2113,6 +3019,14 @@ void SettingsWindow::DrawControls() {
       }
       Help("Pushing the mouse forward looks down. The game's own Invert aim option (Options > "
            "Controls) inverts the controller and the mouse; this box shows the mouse as it is.");
+      // [claude-9b] Owner 2026-10-26: the game's Horizontal / Vertical rows are the controller's only.
+      dirty_ |= CvarCheckbox("Game's horizontal / vertical rows scale the mouse too", "cod3_mouse_game_sensitivity",
+                             &restart_needed_);
+      Help("Off (default): the mouse uses only the sensitivity above; the game's Options > Controls "
+           "Horizontal / Vertical sensitivity rows are the controller's. On: those rows scale the mouse "
+           "too (25 = 1x), as in earlier versions. The game's Invert aim flips both either way. The "
+           "mouse is held by the game only during gameplay; menus, the console and this window get a "
+           "normal cursor.");
       if (ImGui::TreeNode("Advanced (m_yaw / m_pitch)")) {
         float yaw = static_cast<float>(REXCVAR_GET(cod3_m_yaw));
         float pitch = static_cast<float>(REXCVAR_GET(cod3_m_pitch));
@@ -2128,35 +3042,55 @@ void SettingsWindow::DrawControls() {
              "uses 0.022 for both.");
         ImGui::TreePop();
       }
-      float cm360 = 0.0f;
-      if (REXCVAR_GET(cod3_m_yaw) != 0.0 && sens > 0.0f)
-        cm360 = static_cast<float>(360.0 / (sens * std::abs(REXCVAR_GET(cod3_m_yaw))));
-      ImGui::Text("%.0f mouse counts per full turn", cm360);
-      // [claude-9b] Owner 2026-10-26: the game's Horizontal / Vertical rows are the controller's only.
-      dirty_ |= CvarCheckbox("Game's horizontal / vertical rows scale the mouse too", "cod3_mouse_game_sensitivity",
-                             &restart_needed_);
-      Help("Off (default): the mouse uses only the sensitivity above; the game's Options > Controls "
-           "Horizontal / Vertical sensitivity rows are the controller's. On: those rows scale the mouse "
-           "too (25 = 1x), as in earlier versions. The game's Invert aim flips both either way. The "
-           "mouse is held by the game only during gameplay; menus, the console and this window get a "
-           "normal cursor.");
-    } else if (mode == 1 && Has("mnk_sensitivity")) {
-      float sens = static_cast<float>(GetDouble("mnk_sensitivity", 1.0));
-      if (ImGui::SliderFloat("Stick sensitivity", &sens, 0.05f, 10.0f, "%.2f",
-                             ImGuiSliderFlags_Logarithmic)) {
-        char buf[32];
-        std::snprintf(buf, sizeof(buf), "%.3f", sens);
-        rex::cvar::SetFlagByName("mnk_sensitivity", buf);
-        dirty_ = true;
-      }
-      Help("How far a mouse movement pushes the emulated right stick.");
+    } else if (mode == 1) {
+      // [claude-9b-think] mnk_sensitivity's row is on the Controller tab (owner 13:28).
+      ImGui::TextDisabled("Its speed: Stick sensitivity, on the Controller tab.");
     }
   }
-  // [claude-9b] Sensitivity per weapon right under the mouse's own (owner 2026-10-26: "the sliders for
-  // individual weapons sensitivity need to be organized with other sensitivity controls").
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED The Controller subtab (owner 13:28: "Stick sensitivity (mnk_sensitivity) and
+// anything controller-only"). mnk_sensitivity is the SDK's mouse-to-right-stick factor: it applies only with Mouse
+// aim set to Right-stick emulation (it was shown under that choice). A controller's own settings are the game's.
+void SettingsWindow::DrawControlsController() {
+  if (ResetButton("reset_controller", "controller settings")) {
+    restart_needed_ |= ResetSettings({"mnk_sensitivity"});
+    dirty_ = true;
+  }
+  if (Has("mnk_sensitivity")) {
+    float sens = static_cast<float>(GetDouble("mnk_sensitivity", 1.0));
+    if (ImGui::SliderFloat("Stick sensitivity", &sens, 0.05f, 10.0f, "%.2f",
+                           ImGuiSliderFlags_Logarithmic)) {
+      char buf[32];
+      std::snprintf(buf, sizeof(buf), "%.3f", sens);
+      rex::cvar::SetFlagByName("mnk_sensitivity", buf);
+      dirty_ = true;
+    }
+    Help("How far a mouse movement pushes the emulated right stick: only with Mouse aim set to Right-stick "
+         "emulation (Mouse tab).");
+    if (REXCVAR_GET(cod3_raw_mouse) || !GetBool("mnk_mouse"))
+      ImGui::TextDisabled("Not in use now: Mouse aim isn't Right-stick emulation.");
+  }
+  ImGui::Spacing();
+  Help("A controller's own stick speed, Invert aim and layout are the game's Options > Controls; Sticky Aim is "
+       "Game > Aim (Options > Gameplay in the game); each weapon's speed, the Per weapon tab; how the prompts "
+       "show its buttons, Game > Prompts.");
+}
+
+// [claude-9b-think] 2026-10-27 UNTESTED Per weapon (owner 13:28): the table (mouse and controller alike), and once
+// how it adds to the mouse's ADS multiplier (game/mouse_look.cpp: sensitivity x the zoom's own slow-down x the ADS
+// multiplier while aimed, x the weapon's percentage, hip blending into aiming as the sights come up).
+void SettingsWindow::DrawControlsPerWeapon() {
+  // [claude-9b] Sensitivity per weapon (owner 2026-10-26: "the sliders for individual weapons sensitivity need
+  // to be organized with other sensitivity controls").
   dirty_ |= cod3::aimsens::DrawF2Section();  // sensitivity per weapon, hip and aiming (game/aim_sensitivity.h)
-  dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h)
-  Section("Key bindings");
+  Help("With the mouse, aiming down the sights uses both: the Mouse tab's ADS sensitivity multiplier (every "
+       "weapon) times Aiming here (the weapon in hand); 0.8 there and 50% here turn at 0.4x the zoom's own speed. "
+       "A controller uses only this table.");
+}
+
+// [claude-9b-think] The Key bindings subtab: as it was (the section's title is the tab's).
+void SettingsWindow::DrawControlsKeys() {
   if (ResetButton("reset_binds", "key bindings")) {
     restart_needed_ |= ResetSettings(
         {"keybind_a", "keybind_b", "keybind_x", "keybind_y", "keybind_left_trigger", "keybind_right_trigger",
@@ -2276,7 +3210,52 @@ static bool ApplyLowEndPreset() {
       {"d3d12_pipeline_creation_threads", threads},
       {"async_shader_compilation", "true"},
       {"store_shaders", "true"},
+      // [claude-9b] 2026-10-27 (owner 18:13: "refine the potato pc preset with the new optimizations"). On a
+      // small PC the GPU emulation thread is the limit (REA suite potato: 3-7 ms a frame against the main
+      // thread's 1.5-2.6; two cores cost 20-28%), so fewer draws and less spinning count most.
+      // Model shadows off: fewer draws (Saint-Lo +8-10% fps, the card 8-17% less busy, c9b-potato8); the
+      // sunlight on the ground stays. Covers split screen too.
+      {"cod3_shadow_quality", "off"},
+      // Split screen (cod3mp only, UNTESTED until s151): grass ends at 60% of its distance in each view.
+      {"cod3mp_split_grass", "60"},
+      // The game's full-screen blur passes (depth of field while aiming, motion trails).
+      {"cod3_depth_of_field", "false"},
+      {"cod3_motion_blur", "false"},
+      // Waits sleep instead of spinning: on 2-4 cores a spinning thread takes the GPU emulation's core.
+      {"cod3_job_wait_sleeps", "true"},
+      {"cod3_gpu_wait_sleeps", "true"},
+      {"global_lock_spin_us", "-1"},  // automatic: no spinning below 6 logical CPUs
+      {"gpu_idle_spin_count", "-1"},  // same
+      // The GPU emulation's speed-ups and the native code back on (they're on by default; F2 > EMULATION can
+      // turn them off for a comparison).
+      {"vulkan_reuse_draw_state", "true"},
+      {"vulkan_skip_unchanged_fetch_constants", "true"},
+      {"vulkan_sampler_cache", "true"},
+      {"vulkan_reuse_texture_descriptors", "true"},
+      {"vulkan_dynamic_constant_offsets", "true"},
+      {"vulkan_resolve_into_textures", "true"},  // the card 7-32% less busy (SDK 0062)
+      {"vulkan_texture_memo", "true"},           // when this build has SDK 0135
+      {"readback_resolve_cpu_reads_only", "true"},
+      {"readback_resolve_cpu_pages_only", "true"},
+      {"readback_resolve_full_deferred", "true"},
+      {"texture_replacement_async", "true"},
+      {"cod3_native_crt", "true"},
+      {"cod3_native_math", "true"},
+      {"cod3_native_printf", "true"},
+      {"cod3_native_strtol", "true"},
+      {"cod3_native_lzo", "true"},
+      {"cod3_native_fmod", "true"},
+      {"cod3_native_fmod_mix", "true"},
+      {"cod3_native_resampler", "true"},
+      {"xma_restart_without_reopen", "true"},
+      // Checks and counters that only tests need.
+      {"vulkan_reuse_draw_state_verify", "false"},
+      {"vulkan_texture_memo_verify", "false"},
+      {"vulkan_log_state_reuse", "false"},
+      {"cod3_native_crt_counts", "false"},
+      {"cod3_heap_check", "false"},
       {"cod3_perf_overlay", "false"},
+      {"cod3_perf_log", "0"},
       {"cod3_log_detail", "normal"},
   };
   bool restart = false;
@@ -2292,6 +3271,9 @@ static bool ApplyLowEndPreset() {
         continue;
     }
     if (name == "anisotropic_override" && before == "0") continue;
+    if (name == "cod3mp_split_grass" && std::atoi(before.c_str()) > 0 &&
+        std::atoi(before.c_str()) < std::atoi(c.value.c_str()))
+      continue;  // [claude-9b] already shorter
     if (name.ends_with("_pipeline_creation_threads") && !before.empty() && before != "-1" &&
         std::atoi(before.c_str()) < std::atoi(c.value.c_str()))
       continue;
@@ -2305,11 +3287,8 @@ static bool ApplyLowEndPreset() {
 
 void SettingsWindow::DrawPerformance() {
   if (ResetButton("reset_perf", "performance settings")) {
-    restart_needed_ |= ResetSettings({"vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads",
-                                      "async_shader_compilation", "store_shaders",
-                                      "render_target_path_vulkan", "render_target_path_d3d12",
-                                      "cod3_perf_overlay", "cod3_perf_log",
-                                      "clear_memory_page_state"});
+    // [claude-9b] 2026-10-27 the shader, render target and memory settings moved to EMULATION (its own reset).
+    restart_needed_ |= ResetSettings({"cod3_perf_overlay", "cod3_perf_log"});
     dirty_ = true;
   }
   Section("Low-end PC");
@@ -2322,6 +3301,11 @@ void SettingsWindow::DrawPerformance() {
     ImGui::BulletText("HD textures off; the game's 2x MSAA drawn as real 2x");
     ImGui::BulletText("Geometry the game hasn't changed isn't sent to the GPU again every frame");
     ImGui::BulletText("%d shader build thread(s), shaders kept on disk", LowEndShaderThreads());
+    // [claude-9b] 2026-10-27 the new parts (owner 18:13).
+    ImGui::BulletText("Model shadows off (the sunlight stays); depth of field and motion blur off");
+    if (cod3::kMultiplayer) ImGui::BulletText("Split screen: grass drawn to 60%% of its distance");
+    ImGui::BulletText("Waiting threads sleep instead of spinning, so the GPU emulation keeps its core");
+    ImGui::BulletText("Every EMULATION speed-up and native code switch on; test checks off");
     ImGui::BulletText("Frame cost overlay off, normal log detail");
     ImGui::TextDisabled("The game's speed, the frame rate limit, V-Sync and the lens-flare fix "
                         "don't change.");
@@ -2334,10 +3318,10 @@ void SettingsWindow::DrawPerformance() {
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
-  Help("Changes the options in Video and on this page that cost the most on a slow PC, for the "
+  Help("Changes the options in Video, EMULATION and on this page that cost the most on a slow PC, for the "
        "least difference on screen. Each can still be changed back by hand; most apply after a "
-       "restart. If something in the world goes missing or stops updating afterwards, set "
-       "clear_memory_page_state = true in cod3.toml.");
+       "restart. If something in the world goes missing or stops updating afterwards, turn on "
+       "EMULATION > GPU > \"Re-send all memory the game wrote, every frame\".");
   Section("Logging");
   {
     const char* v[] = {"normal", "verbose", "debug"};
@@ -2452,7 +3436,83 @@ void SettingsWindow::DrawPerformance() {
     ImGui::TextUnformatted(pc.c_str());
     ImGui::TreePop();
   }
-  ImGui::Separator();
+  // [claude-9b] 2026-10-27 render target emulation and the shader settings moved to EMULATION.
+}
+
+// [claude-9b] 2026-10-27 EMULATION (owner 17:09: "make a emulation tab in the f2 menu for the emulation
+// toggles"): every setting about how the Xbox 360 is emulated, or which of the game's own code runs as native
+// code instead, in one place. Moved here: the native renderer toggle (was Video > Display), the resolve
+// readback (was Video > Accuracy), real 2x MSAA (was Video > Quality), render target emulation and the shader
+// settings (were PERFORMANCE). New rows for settings that had none (the SDK's speed-ups and the native code
+// switches). A row only shows when this build has its setting (Has()), so builds without an SDK patch, the
+// other graphics API and cod3mp all work.
+static constexpr const char* kEmulationSettings[] = {
+    "cod3_renderer", "render_target_path_vulkan", "render_target_path_d3d12", "readback_resolve",
+    "readback_resolve_cpu_reads_only", "readback_resolve_cpu_pages_only", "readback_resolve_full_deferred",
+    "native_2x_msaa", "clear_memory_page_state",
+    // GPU speed-ups (SDK patches)
+    "vulkan_reuse_draw_state", "vulkan_skip_unchanged_fetch_constants", "vulkan_sampler_cache",
+    "vulkan_reuse_texture_descriptors", "vulkan_dynamic_constant_offsets", "vulkan_resolve_into_textures",
+    "vulkan_vertex_refetch", "vulkan_texture_memo", "texture_replacement_async",
+    "vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads", "async_shader_compilation",
+    "store_shaders",
+    // Native code
+    "cod3_native_crt", "cod3_native_math", "cod3_native_printf", "cod3_native_strtol", "cod3_native_lzo",
+    "cod3_job_wait_sleeps", "cod3_gpu_wait_sleeps",
+    // Sound
+    "cod3_native_fmod", "cod3_native_fmod_mix", "cod3_native_resampler", "xma_restart_without_reopen",
+    "audio_pace_callbacks",
+};
+
+void SettingsWindow::DrawEmulation() {
+  if (ResetButton("reset_emulation", "emulation settings")) {
+    for (const char* name : kEmulationSettings) restart_needed_ |= ResetSettings({name});
+    dirty_ = true;
+  }
+  Help("How the Xbox 360 is emulated, and which parts of the game run as native PC code. The defaults are "
+       "the tested, fastest choices. Change these to compare, or when something looks wrong; most apply "
+       "after a restart.");
+  if (!ImGui::BeginTabBar("##emulation_views")) return;
+  struct Page {
+    const char* label;
+    void (SettingsWindow::*draw)();
+  };
+  static constexpr Page kPages[] = {
+      {"GPU", &SettingsWindow::DrawEmulationGpu},
+      {"GPU speed-ups", &SettingsWindow::DrawEmulationSpeedups},
+      {"Native code", &SettingsWindow::DrawEmulationNative},
+      {"Sound", &SettingsWindow::DrawEmulationSound},
+  };
+  for (const Page& page : kPages) {
+    if (!ImGui::BeginTabItem(page.label)) continue;
+    (this->*page.draw)();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
+// EMULATION > GPU: how the Xbox 360's graphics chip and its memory are emulated.
+void SettingsWindow::DrawEmulationGpu() {
+  // [acct2-decomp] Who draws, as a toggle (owner 2026-10-24 23:45: "Please make
+  // sure the option for emulation/native is a toggle"). Off: cod3_renderer
+  // "xenos", the emulated Xbox 360 GPU (the default). On: "rust", the native
+  // Rust renderer with the GPU emulation off (render/rust_renderer.h, acct2-main's
+  // setting; nothing about it changes here). Both programs; after a restart.
+  if (Has("cod3_renderer")) {
+    bool native = Get("cod3_renderer") == "rust";
+    // [claude-9b] Greyed out for now (owner 2026-10-26: "The F2 \"Native Renderer\" option/toggle
+    // needs to be grayed out for right now as it's not ready yet"): only turning it off is offered.
+    const bool can_turn_on = false;
+    ImGui::BeginDisabled(!can_turn_on && !native);
+    if (ImGui::Checkbox("Native renderer (no GPU emulation)", &native)) {
+      rex::cvar::SetFlagByName("cod3_renderer", native ? "rust" : "xenos");
+      restart_needed_ = true;
+      dirty_ = true;
+    }
+    ImGui::EndDisabled();
+    Help("Not ready yet: the native Rust renderer is still being written, so the emulated Xbox 360 "
+         "GPU draws the game. If it was turned on earlier, untick it here (applies after a restart).");
+  }
   {
     // How the Xbox 360's EDRAM (the GPU's own render memory) is emulated.
     const char* v[] = {"", "fbo", "fsi"};
@@ -2472,7 +3532,77 @@ void SettingsWindow::DrawPerformance() {
          "but every pixel does more work. Busy scenes with many transfers may run faster with it. "
          "Applies after a restart.");
   }
-  ImGui::Separator();
+  dirty_ |= CvarCheckbox("Draw the game's 2x MSAA as real 2x (faster)", "native_2x_msaa",
+                         &restart_needed_);
+  Help("How the game's own 2x MSAA is drawn (it's on whenever it fits the emulated video memory: "
+       "always with Vulkan). On: your GPU's 2x MSAA. Off: 4x MSAA keeping two of the samples, which "
+       "places them exactly like the Xbox 360 but is about twice the work for the GPU. Leave it "
+       "on. Applies after a restart.");
+
+  Section("Resolve readback");
+  {
+    const char* v[] = {"none", "fast", "some", "full"};
+    const char* n[] = {"Off", "Fast (recommended)", "On cache miss", "Full (accurate, slow)"};
+    dirty_ |= CvarCombo("Resolve readback (lens-flare fix)", "readback_resolve", v, n, 4,
+                        &restart_needed_);
+    Help("Copies some of the emulated GPU's results back so the game can read them. Without it, "
+         "lens flares and the sun shine through walls. Fast is the best balance; Full is exact but "
+         "slow. If smoke and explosions stutter, try On cache miss or Off and compare.");
+  }
+  dirty_ |= CvarCheckbox("Only the results the game reads", "readback_resolve_cpu_reads_only", &restart_needed_);
+  Help("Copies back only the results the game's own code reads, not every one. Off copies them all, as the "
+       "emulator first did (slower, the same picture).");
+  dirty_ |= CvarCheckbox("Only the parts the game reads", "readback_resolve_cpu_pages_only", &restart_needed_);
+  Help("Of those, copies only the pieces of memory the game reads. Off copies each result whole.");
+  dirty_ |= CvarCheckbox("Full readback without waiting", "readback_resolve_full_deferred", &restart_needed_);
+  Help("With Full, the GPU emulation doesn't stop at each copy to wait for the graphics card. Off waits "
+       "there, as before (slower).");
+
+  Section("Memory");
+  dirty_ |= CvarCheckbox("Re-send all memory the game wrote, every frame", "clear_memory_page_state",
+                         &restart_needed_);
+  Help("Off (default): only memory the game changed since the last frame is sent to the emulated GPU "
+       "again. On: everything the game's code ever wrote is sent again every frame. Slower; turn it on "
+       "only if something in the world goes missing or stops updating.");
+}
+
+// EMULATION > GPU speed-ups: shortcuts our SDK patches added to the GPU emulation. Each one is on by default
+// and was checked to draw the same picture; turning one off is for comparing, or for a picture problem.
+void SettingsWindow::DrawEmulationSpeedups() {
+  if (!Has("vulkan_reuse_draw_state") && !Has("vulkan_sampler_cache"))
+    ImGui::TextDisabled("Most of these are Vulkan only, and this build doesn't have them.");
+  else if (Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12")
+    ImGui::TextDisabled("The Vulkan rows below do nothing with Direct3D 12 (Video > Display > Graphics API).");
+  dirty_ |= CvarCheckbox("Reuse the last draw's state when nothing changed", "vulkan_reuse_draw_state",
+                         &restart_needed_);
+  Help("A draw that changes no setting reuses everything the previous draw set up, instead of setting it "
+       "all up again. The biggest of these: about 9-16% more frames in 4-player split screen.");
+  dirty_ |= CvarCheckbox("Skip slots the game rewrote unchanged", "vulkan_skip_unchanged_fetch_constants",
+                         &restart_needed_);
+  Help("When the game writes a texture or geometry slot with the value it already had, nothing is looked "
+       "up again.");
+  dirty_ |= CvarCheckbox("Cache texture samplers", "vulkan_sampler_cache", &restart_needed_);
+  Help("Keeps each texture filter setting once it's worked out, instead of working it out for every draw.");
+  dirty_ |= CvarCheckbox("Reuse texture sets", "vulkan_reuse_texture_descriptors", &restart_needed_);
+  Help("A draw that uses the same textures as an earlier one in the frame reuses that one's set.");
+  dirty_ |= CvarCheckbox("Draw constants without copying", "vulkan_dynamic_constant_offsets", &restart_needed_);
+  Help("Points the graphics card at each draw's constants with an offset instead of setting up a new "
+       "binding for every draw.");
+  dirty_ |= CvarCheckbox("Copy resolved pictures straight into textures", "vulkan_resolve_into_textures",
+                         &restart_needed_);
+  Help("When the game turns a finished picture into a texture, it's copied there directly instead of "
+       "through the emulated memory.");
+  dirty_ |= CvarCheckbox("Re-check rewritten geometry", "vulkan_vertex_refetch", &restart_needed_);
+  Help("Sends geometry to the graphics card again when the game rewrote it in place, even at the same "
+       "address. Fixes a rare one-frame wrong model.");
+  dirty_ |= CvarCheckbox("Remember each draw's textures", "vulkan_texture_memo", &restart_needed_);
+  Help("When a draw's textures haven't changed since the last draw, the same textures and filters are used "
+       "without looking them up again.");
+  dirty_ |= CvarCheckbox("Load HD textures in the background", "texture_replacement_async", &restart_needed_);
+  Help("Reads the HD texture files on their own thread, so the GPU emulation doesn't stop for them. Off "
+       "reads them on the GPU thread (stutters when new textures appear).");
+
+  Section("Shaders");
   unsigned hw = std::max(1u, std::thread::hardware_concurrency());
   ImGui::Text("Logical CPUs: %u", hw);
   for (const char* cvar : {"vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads"}) {
@@ -2484,8 +3614,8 @@ void SettingsWindow::DrawPerformance() {
       restart_needed_ = true;
       dirty_ = true;
     }
-    Help("CPU threads that build GPU shaders the first time a new effect appears. Auto uses all "
-         "but one. Applies after a restart.");
+    Help("CPU threads that turn the Xbox 360's shaders into your graphics card's the first time a new "
+         "effect appears. Auto uses all but one. Applies after a restart.");
   }
   dirty_ |= CvarCheckbox("Asynchronous shader compilation", "async_shader_compilation",
                          &restart_needed_);
@@ -2494,8 +3624,51 @@ void SettingsWindow::DrawPerformance() {
        "effect.");
   dirty_ |= CvarCheckbox("Store shader cache on disk", "store_shaders", &restart_needed_);
   Help("Saves built shaders, so the next session doesn't stutter on effects you've already seen.");
-  Help("The recompiled game keeps the Xbox 360's own thread layout; these settings only control "
-       "the extra threads used for shader work.");
+}
+
+// EMULATION > Native code: parts of the game's own code that run as hand-written PC code instead of the
+// translated Xbox 360 code. Each one is checked against the game's code; turning one off runs the game's own
+// code there again.
+void SettingsWindow::DrawEmulationNative() {
+  Help("Parts of the game's own code that run as hand-written PC code instead of the translated Xbox 360 "
+       "code. Each gives exactly what the game's code gives (checked against it). Untick one to run the game's "
+       "own code there again, for comparing.");
+  dirty_ |= CvarCheckbox("Memory and text functions", "cod3_native_crt", &restart_needed_);
+  Help("Copying, filling and comparing memory and text (memcpy, memset, strcmp and the like).");
+  dirty_ |= CvarCheckbox("Math functions", "cod3_native_math", &restart_needed_);
+  Help("Square roots, sines, powers and the other math library functions.");
+  dirty_ |= CvarCheckbox("Text formatting", "cod3_native_printf", &restart_needed_);
+  Help("Building text from numbers and words (sprintf and the like).");
+  dirty_ |= CvarCheckbox("Reading numbers from text", "cod3_native_strtol", &restart_needed_);
+  Help("Turning text into numbers (strtol, atoi and the like).");
+  dirty_ |= CvarCheckbox("Level file unpacking", "cod3_native_lzo", &restart_needed_);
+  Help("Unpacking the level files while a level loads (LZO).");
+
+  Section("Waiting");
+  dirty_ |= CvarCheckbox("Sleep while waiting for the game's own jobs", "cod3_job_wait_sleeps",
+                         &restart_needed_);
+  Help("While the game waits for its own jobs (the render job, every frame), its thread sleeps until the "
+       "job queue changes instead of checking it over and over, which leaves CPU time for the rest.");
+  dirty_ |= CvarCheckbox("Sleep while waiting for the GPU emulation", "cod3_gpu_wait_sleeps", &restart_needed_);
+  Help("While the game waits for the graphics emulation, its thread sleeps instead of keeping a CPU core "
+       "busy.");
+}
+
+// EMULATION > Sound: the sound engine's busiest parts as native code, and how the Xbox 360's sound chip is
+// emulated.
+void SettingsWindow::DrawEmulationSound() {
+  dirty_ |= CvarCheckbox("Native reverb (FMOD)", "cod3_native_fmod", &restart_needed_);
+  Help("The sound engine's reverb, which was half of its work, as native code.");
+  dirty_ |= CvarCheckbox("Native mixing (FMOD)", "cod3_native_fmod_mix", &restart_needed_);
+  Help("Mixing each sound into the speakers, as native code.");
+  dirty_ |= CvarCheckbox("Native resampling (FMOD)", "cod3_native_resampler", &restart_needed_);
+  Help("Changing each sound's pitch and rate, as native code.");
+  dirty_ |= CvarCheckbox("Reuse the sound decoder on a restart", "xma_restart_without_reopen", &restart_needed_);
+  Help("When a sound starts again, the emulated sound chip's decoder is reset instead of built again. Much "
+       "less work for the sound thread.");
+  dirty_ |= CvarCheckbox("Steady sound timing", "audio_pace_callbacks", &restart_needed_);
+  Help("Hands sound to your speakers in evenly spaced pieces instead of bursts. Off can make sounds "
+       "repeat.");
 }
 
 // What the console has saved (seta, and changes to com_maxfps, cg_drawFPS,
@@ -2619,6 +3792,7 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
         {"GAME", &SettingsWindow::DrawGame},
         {"CROSSHAIR", &SettingsWindow::DrawCrosshair}, {"CONTROLS", &SettingsWindow::DrawControls},
         {"INTERFACE", &SettingsWindow::DrawInterface}, {"PERFORMANCE", &SettingsWindow::DrawPerformance},
+        {"EMULATION", &SettingsWindow::DrawEmulation},  // [claude-9b] 2026-10-27
         {"CONSOLE", &SettingsWindow::DrawConsole},
     };
     ImGui::PushFont(BoldFont(), 0.0f);

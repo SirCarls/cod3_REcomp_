@@ -237,6 +237,17 @@ pub fn keep_original(name: &str, width: u32, height: u32) -> bool {
         || width.min(height) <= 8
 }
 
+/// [claude-9b-think] 2026-10-27 UNTESTED (Part D). True for textures packed
+/// whatever their kind: picture atlases the setup tool upscales cell by cell
+/// (`c3w/atlas_cells.py`), today the Xbox 360 button font
+/// (`i_button_icons_xe_<language>`, 32 x 32 cells). No material names a
+/// font's picture, so its kind is `unknown`, which isn't packed by default.
+/// Its mip levels don't mix cells: the 2 x 2 box filter stays inside a
+/// power-of-two cell until the cell is smaller than a texel.
+pub fn packed_whatever_kind(name: &str) -> bool {
+    name.to_ascii_lowercase().starts_with("i_button_icons_xe")
+}
+
 /// The PNG name (without extension) for a picture saved under `name` that
 /// isn't the one saved as `<name>.png`.
 pub fn variant_file(name: &str, key: u64) -> String {
@@ -903,7 +914,8 @@ pub fn pack(
             kept_original += 1;
             continue;
         }
-        if !kinds.contains(&line.kind) {
+        // [claude-9b-think] UNTESTED: picture atlases whatever their kind.
+        if !kinds.contains(&line.kind) && !packed_whatever_kind(&line.name) {
             kind_skipped += 1;
             continue;
         }

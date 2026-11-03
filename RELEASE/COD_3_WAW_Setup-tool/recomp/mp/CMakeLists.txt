@@ -63,6 +63,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/relaunch.cpp
     ${COD3_SRC}/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     ${COD3_SRC}/game/render_resolution.cpp
+    ${COD3_SRC}/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes checked (split screen's 2-4 views share one frame's lists)
     ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
@@ -76,6 +77,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip, _2 to _4)
     ${COD3_SRC}/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, per player
     ${COD3_SRC}/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz
+    ${COD3_SRC}/game/movement/rules.cpp  # [claude-9b-think] the movement rules' plain logic (stage 1: the match decision)
+    ${COD3_SRC}/game/movement/hooks_mp.cpp  # [claude-9b-think] stage 1: movement settings, decision and logs; moves nothing
     ${COD3_SRC}/game/watchdog.cpp
     ${COD3_SRC}/game/mp/campaign_only.cpp
     ${COD3_SRC}/game/mp/campaign_stubs.cpp
@@ -85,6 +88,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/options_mp.cpp  # [mp-menus] FIELD OF VIEW and FOV SCALE on Options > Gameplay; [menus-categories] Pause > OPTIONS as category pages
     ${COD3_SRC}/game/mp/session.cpp
     ${COD3_SRC}/game/mp/test_autojoin_mp.cpp  # [claude-9b] tests: each local player joins a team and picks a class (cod3_test_autojoin)
+    ${COD3_SRC}/game/mp/test_syslink_mp.cpp  # [claude-9b-think] tests: host or join a system link match from the front end (cod3_test_syslink)
     ${COD3_SRC}/game/mp/pose_debug_mp.cpp  # [claude-9b] rival players' poses between draws, measurement (cod3_debug_pose_mp)
     ${COD3_SRC}/game/mp/server_step_mp.cpp  # [claude-9b] the host's game in fixed updates (cod3mp_server_hz, off until tested)
     ${COD3_SRC}/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start

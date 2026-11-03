@@ -23,4 +23,11 @@ int RideViewOffset(uint8_t* base, const float cam[3], float out[3]);
 // [claude-9b-think] 2026-10-27 UNTESTED True while the player rides a vehicle and cod3_server_smooth_ride is on.
 bool PlayerRides(uint8_t* base);
 
+// [claude-9b-think] 2026-11-02 UNTESTED (cod3_move_hz_sync) The offset (ms, 0 or more) to add to the movement steps'
+// ends (rules.h MoveStepEndAfter, on the usercmd clock) so that the game's updates end on step ends: each update then
+// sees exactly one more step of cod3_move_hz (more when move_hz is a multiple of cod3_server_hz). 0 when the setting is
+// off, the game isn't in fixed updates (cod3_server_hz 0, none run yet), or move_hz isn't a multiple of the update
+// rate. Game thread only (the usercmd's Pmove).
+int MoveStepPhase(uint8_t* base, int move_hz);
+
 }  // namespace cod3::server_step

@@ -183,6 +183,7 @@ void Trace(uint8_t* base, int slot, uint32_t object, const char* what) {
 namespace cod3::mp_test {
 
 void EachFrame(uint8_t* base) {
+  SyslinkFrame(base);  // [claude-9b-think] 2026-11-02 UNTESTED tests: cod3_test_syslink (test_syslink_mp.cpp)
   if (!REXCVAR_GET(cod3_debug_menu_pages)) return;
   const uint32_t fe = g::ReadU32(base, kFeManager + kFeFrontEnd);
   uint32_t page = 0;

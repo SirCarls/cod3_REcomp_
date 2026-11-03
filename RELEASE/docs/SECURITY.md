@@ -69,6 +69,14 @@ change what you see on your own screen.
   other files is refused.
 - Commands are started directly, never through a shell, so file names can't
   turn into commands.
+- **Its own updates** ([UPDATES.md](UPDATES.md)) are checked only when you
+  allow it (it asks once), downloaded only when you approve, and used only
+  with the project's signature: every release is signed on the owner's PC
+  with an Ed25519 key that is never on GitHub, and lists each file's size
+  and SHA-256. A release that isn't signed with a key the tool came with,
+  that is older than yours, or that would write outside the project folder
+  or into `input/`, `output/`, `work/`, `config/` or `dev/` is refused. The
+  files it replaces are kept, so it can be undone.
 
 ## Limits
 

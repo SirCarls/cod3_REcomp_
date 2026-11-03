@@ -93,6 +93,7 @@ set(COD3_SOURCES
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
+    src/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes and the effects pool checked (campaign only)
     src/game/script_fiber.cpp
     src/game/script_threads.cpp
     src/game/settings_sync.cpp

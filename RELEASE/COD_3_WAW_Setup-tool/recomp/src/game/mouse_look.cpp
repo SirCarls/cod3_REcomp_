@@ -44,7 +44,8 @@ REXCVAR_DEFINE_BOOL(cod3_mouse_game_sensitivity, false, "cod3/Mouse",
 // frame. With this on, each batch is spread over the time since the batch before (at most 8 ms), and a usercmd takes
 // the motion up to "now less one batch interval" (on average, at most 8 ms). Every frame then turns by its own share,
 // at any frame rate. The total turn is unchanged (every count is applied); the cost is up to one batch interval of delay.
-REXCVAR_DEFINE_BOOL(cod3_mouse_resample, false, "cod3/Mouse",
+// [claude-9b] 2026-11-02: on by default (the owner confirmed the smoother turning).
+REXCVAR_DEFINE_BOOL(cod3_mouse_resample, true, "cod3/Mouse",
                     "Even mouse turning at high frame rates: the mouse's motion is spread over the time it arrived in, "
                     "so every frame turns by its share (up to a few milliseconds later); off: each frame takes what "
                     "arrived since the last one")

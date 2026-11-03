@@ -96,6 +96,11 @@ REXCVAR_DEFINE_BOOL(cod3_debug_binds, false, "cod3",
 REXCVAR_DEFINE_STRING(cod3_test_vehicle_hold, "", "cod3",
                       "Test switch, from the command line only: Vehicle actions (tank_gun, veh_gas ...) held as if "
                       "their keys were down while you drive; empty = none");
+// [claude-9b-think] 2026-10-29 UNTESTED
+REXCVAR_DEFINE_BOOL(cod3_binds_scores_pad, true, "cod3/Binds",
+                    "Campaign: the objectives / scores key holds the controller's BACK while it is down, so the "
+                    "Mission Objectives page stays up as long as the key is held; false = it sends +scores as "
+                    "text (the page closes again after a moment)");
 REXCVAR_DEFINE_INT32(cod3_binds_version, 0, "cod3",
                      "Which one-time changes of the key binds have run (set by the game)");
 REXCVAR_DEFINE_INT32(cod3mp_binds_version, 0, "cod3",
@@ -527,6 +532,12 @@ bool Continuous(Action action) {
   }
 }
 
+// [claude-9b] 2026-10-27 (owner 10:07: "the holding of tab still seems to be a bug"; 10:18: "it quickly closes after
+// pressing and holding"). The objectives / scores key: its press opens the game's Mission Objectives page, a game menu,
+// so the game stops taking presses and every held action was let go, which closed the page again (the controller's
+// Back, held, keeps it open: run c9b-test-tab2-t2). Held through a game menu like that Back; let go with its key.
+bool KeptThroughMenus(int action) { return action == int(Action::kScores); }
+
 class Listener final : public rex::ui::WindowInputListener, public rex::ui::WindowListener {
  public:
   rex::ui::Window* window = nullptr;
@@ -562,7 +573,7 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   // Every UI frame.
   void Update() {
     const bool blocked = Blocked() || (window && !window->HasFocus());
-    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened, or the keys were turned off");
+    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened, or the keys were turned off", OnlyAGameMenu());
     blocked_ = blocked;
     // The game let every action go (a menu flickered up for a moment): keys
     // still held, now in play again, press their held actions again (the
@@ -578,10 +589,12 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
     }
   }
 
-  void ReleaseAll(const char* why) {
+  // [claude-9b] keep_menu_held: a game menu alone blocks the keys; the objectives / scores key stays held.
+  void ReleaseAll(const char* why, bool keep_menu_held = false) {
     bool any = false;
     for (size_t code = 0; code < kKeyCodeCount; ++code) {
       if (!pressed_[code]) continue;
+      if (keep_menu_held && KeptThroughMenus((pressed_[code] & 0xFF) - 1)) continue;  // [claude-9b]
       Push({uint8_t((pressed_[code] & 0xFF) - 1), uint8_t(pressed_[code] >> 8), Kind::kUp, uint16_t(code)});
       pressed_[code] = 0;
       any = true;
@@ -608,9 +621,16 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
            (overlay_open && overlay_open()) || !g_in_play.load(std::memory_order_relaxed);
   }
 
+  // [claude-9b] Blocked only because the game isn't taking presses (a game menu): keys on, no overlay, focus.
+  bool OnlyAGameMenu() const {
+    return g_mnk_mode.load(std::memory_order_relaxed) && REXCVAR_GET(cod3_binds_actions) &&
+           !(overlay_open && overlay_open()) && !(window && !window->HasFocus()) &&
+           !g_in_play.load(std::memory_order_relaxed);
+  }
+
   bool Acting() {
     const bool blocked = Blocked();
-    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened");
+    if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened", OnlyAGameMenu());
     blocked_ = blocked || (window && !window->HasFocus());
     return !blocked_;
   }
@@ -1093,6 +1113,23 @@ void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) 
     if (Debug()) REXLOG_INFO("cod3: binds: {} not delivered ({})", Def(action).id, why);
     return;
   }
+  // [claude-9b-think] 2026-10-29 UNTESTED (owner 13:05: "I press and hold and the objectives flash for a second").
+  // The campaign's +scores (CG_ScoresDown_f 0x8243B1D8) only opens the Mission Objectives page (InGameMenuSystem
+  // page 3); -scores doesn't close it. The page closes itself as soon as the controller's BACK isn't held
+  // (0x824CB5E0: BACK held on the active pad, else the page goes), so a text +scores showed it only briefly.
+  // The key holds the controller button bound to +scores (BACK) instead, as long as the key is down: the game's
+  // own pad poll presses +scores, and the page stays up until the key is let go, at any frame rate.
+  if constexpr (!cod3::kMultiplayer) {
+    if (action == Action::kScores && REXCVAR_GET(cod3_binds_scores_pad)) {
+      if (const PadInput* p = PadInputFor(base, cl, action, /*skip_vehicle=*/true)) {
+        slot = {Mode::kPad, p->button, p->trigger, g_poll, tap, false};
+        if (Debug())
+          REXLOG_INFO("cod3: binds: {} down -> the controller's {} held (the objectives page)", Def(action).id,
+                      p->name);
+        return;
+      }
+    }
+  }
   PressDirect(a, s, tap);
 }
 
@@ -1118,10 +1155,12 @@ void Release(int a, int s) {
 
 // Every action held through the game's commands lets go (a menu opened);
 // controller buttons pressed for an interaction go too.
-void ReleaseEverything(const char* why) {
+// [claude-9b] keep_menu_held: a game menu opened; the objectives / scores action stays held (KeptThroughMenus).
+void ReleaseEverything(const char* why, bool keep_menu_held = false) {
   bool any = false;
   for (int a = 0; a < kActionCount; ++a)
     for (int s = 0; s < kSlots; ++s) {
+      if (keep_menu_held && KeptThroughMenus(a)) continue;  // [claude-9b]
       Slot& slot = g_slots[a][s];
       if (slot.mode == Mode::kDirect) {
         ReleaseDirect(a, s);
@@ -1165,7 +1204,8 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
   const char* why = "turned off (cod3_binds_actions)";
   const bool in_play = REXCVAR_GET(cod3_binds_actions) && PollTakesPresses(ctx, base, cl, &why);
   g_in_play.store(in_play, std::memory_order_relaxed);
-  if (g_was_in_play && !in_play) ReleaseEverything(why);
+  // [claude-9b] a game menu (the objectives page the scores key opened, among others) keeps that key's action held.
+  if (g_was_in_play && !in_play) ReleaseEverything(why, std::string_view(why) == "a game menu is open");
   if (in_play != g_was_in_play && Debug())
     REXLOG_INFO("cod3: binds: keys {} ({})", in_play ? "call the game's actions" : "press the controller rows",
                 in_play ? "in play" : why);

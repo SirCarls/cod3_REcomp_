@@ -19,6 +19,7 @@
 #include <pthread.h>
 #endif
 
+#include "game/list_memory.h"  // [claude-9b-think]
 #include "game/thread_profiler.h"
 #include "game/viewmodel_flip.h"
 
@@ -95,6 +96,8 @@ REX_HOOK_RAW(sub_82130980) {
 REX_EXTERN(__imp__sub_8214F770);
 REX_HOOK_RAW(sub_8214F770) {
   const uint64_t wall0 = NowMicros(), cpu0 = ThreadCpuMicros();
+  // [claude-9b-think] 2026-11-02 The node's callbacks and links checked first (list_memory.cpp, cod3_render_node_guard).
+  cod3::list_memory::CheckNode(base);
   // [claude-9b] 2026-10-27 The left-handed weapon (viewmodel_flip.cpp): its scene is drawn with the culling turned.
   // Called from here because a function can have only one hook; cod3mp's back end is hooked in viewmodel_flip.cpp.
   const bool flip_turned = cod3::viewmodel::BeginScene(base);

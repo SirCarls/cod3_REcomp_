@@ -1,0 +1,1024 @@
+[rexglue-native] SDK 0308, released in setup tool 2.31.0 (2026-11-04; owner 04:35 "please start syncing
+with release"). Native resolves at a draw resolution scale, color (Vulkan; on top of 0302; only with
+native_render_targets on). New setting native_resolves_at_draw_scale (GPU, default off, applies at once).
+Off, nothing changes; at a draw resolution scale of 1 nothing changes either.
+
+With it on and a draw resolution scale above 1 (0014), a 32bpp 8888 color resolve without MSAA into a
+scaled texture that already exists goes straight from the render target: one compute pass over the area's
+host pixels (render_target_cache_native_scaled.cpp) writes each host pixel's word into the scaled resolve
+buffer where the scaled resolve shader puts it (its layout and half-pixel gap fill), so the CPU readback,
+aliases and textures made later get the EDRAM path's words, and shared memory gets the words the readback
+takes, so the game's CPU reads see the same bytes as without it. The scaled texture is filled by an image
+copy. Anything else takes the old path and logs the reason once.
+
+Tested by rexglue-native-test on the owner's PC (2026-11-03/04), on the 2.26.0 release SDK with
+0308 + 0309 + the async submit chain: at 2x and 3x (saint_lo, mp_merv, 4-player split screen at 2x) and
+across live rescales; texture loads 0 MB a frame (xenos at 2x: 48.5 MB for one player, about 116 MB for
+four), pictures within the run-to-run noise, VRAM unchanged, the Vulkan validation layer with sync
+validation showing no new id (dev/agents/rexglue-native/R3-SCALE-ASYNC.md, R4-SCALE-TIMING.md,
+R5-RELEASE-CANDIDATE.md; the draft's notes: DRAFTS-0308-0309.md).
+
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -857,6 +857,16 @@
+       // [rexglue-native] SDK 0302-r3: NativeResolveLinearDepth - the depth
+       // texels as the texture's load shader makes them from the 32-bit word.
+       uint32_t linear_depth : 2;
++      // [rexglue-native] SDK 0308: the pipelines of NativeResolveScaled only
++      // (all 0 for those of NativeResolve): the draw resolution scale - 1 on
++      // each axis, whether the resolve fills the half-pixel offset gap
++      // (ResolveEdramInfo::fill_half_pixel_offset), and whether the resolve
++      // readback's downscale takes the middle of each scaled block
++      // (readback_resolve_half_pixel_offset).
++      uint32_t scale_x_minus_1 : 3;
++      uint32_t scale_y_minus_1 : 3;
++      uint32_t fill_half_pixel_offset : 1;
++      uint32_t readback_half_pixel_offset : 1;
+     };
+     NativeResolvePipelineKey() : key(0) { static_assert_size(*this, sizeof(key)); }
+     struct Hasher {
+@@ -895,6 +905,22 @@
+   bool NativeResolve(const draw_util::ResolveInfo& resolve_info,
+                      VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache);
+ 
++  // [rexglue-native] SDK 0308: native resolves with a draw resolution scale
++  // (render_target_cache_native_scaled.cpp, native_resolves_at_draw_scale).
++  // One compute pass over the resolve's host pixels reads the render target
++  // at the scale and writes exactly what the EDRAM path would have: the scaled
++  // words into the scaled resolve buffer (the resolve shader's layout and its
++  // half-pixel fill), and the guest-resolution words the resolve readback's
++  // downscale would take from them into shared memory. The scaled texture the
++  // game samples is then copied from the render target. Returns false, having
++  // done nothing that matters, for anything else (the EDRAM path does it).
++  bool NativeResolveScaled(const draw_util::ResolveInfo& resolve_info,
++                           VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache);
++  VkPipeline GetNativeResolveScaledPipeline(NativeResolvePipelineKey key);
++  // Called from Initialize and Shutdown.
++  void InitializeNativeResolveScaled();
++  void ShutdownNativeResolveScaled();
++
+   bool gamma_render_target_as_unorm16_ = false;
+ 
+   bool depth_unorm24_vulkan_format_supported_ = false;
+@@ -947,6 +973,14 @@
+   VkPipelineLayout native_resolve_pipeline_layout_depth_ = VK_NULL_HANDLE;
+   std::unordered_map<NativeResolvePipelineKey, VkPipeline, NativeResolvePipelineKey::Hasher>
+       native_resolve_pipelines_;
++  // [rexglue-native] SDK 0308: set 0 - two storage buffers (shared memory, the
++  // scaled resolve buffer), set 1 - the render target's sampled image(s), set
++  // 2 - one storage buffer (linear texels, SDK 0309); push constants:
++  // NativeResolvePushConstant. VK_NULL_HANDLE pipelines if failed.
++  VkPipelineLayout native_resolve_scaled_pipeline_layout_color_ = VK_NULL_HANDLE;
++  VkPipelineLayout native_resolve_scaled_pipeline_layout_depth_ = VK_NULL_HANDLE;
++  std::unordered_map<NativeResolvePipelineKey, VkPipeline, NativeResolvePipelineKey::Hasher>
++      native_resolve_scaled_pipelines_;
+ 
+   // Temporary storage for Resolve.
+   std::vector<Transfer> clear_transfers_[2];
+diff --git a/include/rex/graphics/vulkan/texture_cache.h b/include/rex/graphics/vulkan/texture_cache.h
+--- a/include/rex/graphics/vulkan/texture_cache.h
++++ b/include/rex/graphics/vulkan/texture_cache.h
+@@ -188,10 +188,14 @@
+   };
+   // copy_dest_base as draw_util::ResolveInfo has it (moved to the 32x32 tile
+   // the resolve starts in), offset_x/y within that tile, in texels.
++  // [rexglue-native] SDK 0308: scaled - with a draw resolution scale, only the
++  // textures made from scaled resolve memory (their images are the scale times
++  // bigger; dest_x/y and width/height stay in guest texels).
+   bool FindNativeResolveDestination(uint32_t copy_dest_base, uint32_t dest_pitch_texels,
+                                     xenos::TextureFormat format, xenos::Endian endianness,
+                                     uint32_t offset_x, uint32_t offset_y, uint32_t width,
+-                                    uint32_t height, NativeResolveDestination& destination_out);
++                                    uint32_t height, NativeResolveDestination& destination_out,
++                                    bool scaled = false);
+   // To be called before the range is marked as resolved (that makes every
+   // texture over it outdated). linear_red_blue_swap_out: for kBuffer, whether
+   // the linear texels must have red and blue swapped against the render
+@@ -210,6 +214,17 @@
+                                              uint32_t source_y);
+   void CopyBufferIntoNativeResolveDestination(const NativeResolveDestination& destination,
+                                               VkBuffer buffer);
++  // [rexglue-native] SDK 0308: as CopyImageIntoNativeResolveDestination, into
++  // a texture made from scaled resolve memory (FindNativeResolveDestination
++  // with scaled), from a render target at the same draw resolution scale.
++  // source_x/y in host pixels. The first fill_x columns and fill_y rows of the
++  // destination get the column and row after them, as the scaled resolve
++  // shader fills the half-pixel offset gap (0 for none).
++  void CopyImageIntoNativeResolveDestinationScaled(
++      const NativeResolveDestination& destination, bool red_blue_swap, VkImage source_image,
++      VkPipelineStageFlags source_stage_mask, VkAccessFlags source_access_mask,
++      VkImageLayout source_layout, uint32_t source_x, uint32_t source_y, uint32_t fill_x,
++      uint32_t fill_y);
+ 
+  protected:
+   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -52,6 +52,7 @@
+     vulkan/primitive_processor.cpp
+     vulkan/render_target_cache.cpp
+     vulkan/render_target_cache_native.cpp  # [rexglue-native] SDK 0302
++    vulkan/render_target_cache_native_scaled.cpp  # [rexglue-native] SDK 0308
+     vulkan/shader.cpp
+     vulkan/shared_memory.cpp
+     vulkan/texture_cache.cpp
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -665,6 +665,8 @@
+                                         &native_resolve_pipeline_layout_color_);
+   create_native_resolve_pipeline_layout(descriptor_set_layout_sampled_image_x2_,
+                                         &native_resolve_pipeline_layout_depth_);
++  // [rexglue-native] SDK 0308: those of native resolves with a resolution scale.
++  InitializeNativeResolveScaled();
+ 
+   // Resolve copy pipelines.
+   for (size_t i = 0; i < size_t(draw_util::ResolveCopyShaderIndex::kCount); ++i) {
+@@ -1083,6 +1085,7 @@
+                                          native_resolve_pipeline_layout_depth_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+                                          native_resolve_pipeline_layout_color_);
++  ShutdownNativeResolveScaled();  // [rexglue-native] SDK 0308
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+                                          direct_resolve_pipeline_layout_depth_);
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
+@@ -1259,9 +1262,13 @@
+   // [rexglue-native] SDK 0302: a native resolve first (before the clear that
+   // may follow), the EDRAM emulation's dump and resolve shader otherwise.
+   bool native_resolved = false;
+-  if (resolve_info.copy_dest_extent_length && IsNativeRenderTargets() && !draw_resolution_scaled &&
++  if (resolve_info.copy_dest_extent_length && IsNativeRenderTargets() &&
+       GetPath() == Path::kHostRenderTargets) {
+-    native_resolved = NativeResolve(resolve_info, shared_memory, texture_cache);
++    // [rexglue-native] SDK 0308: with a resolution scale, NativeResolveScaled
++    // (it does nothing unless native_resolves_at_draw_scale is on).
++    native_resolved = draw_resolution_scaled
++                          ? NativeResolveScaled(resolve_info, shared_memory, texture_cache)
++                          : NativeResolve(resolve_info, shared_memory, texture_cache);
+     if (native_resolved) {
+       written_address_out = resolve_info.copy_dest_extent_start;
+       written_length_out = resolve_info.copy_dest_extent_length;
+diff --git a/src/graphics/vulkan/render_target_cache_native_scaled.cpp b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+@@ -0,0 +1,757 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2022 Ben Vanik. All rights reserved.                             *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ *
++ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
++ */
++
++// [rexglue-native] SDK 0308: native resolves with a draw resolution scale
++// (VulkanRenderTargetCache::NativeResolveScaled in render_target_cache.h).
++//
++// With native render targets (0301) and a draw resolution scale above 1 (0014),
++// the EDRAM path dumps the render target into the scaled EDRAM buffer, and a
++// scaled resolve shader writes every host pixel of the area into the scaled
++// resolve buffer. Guest memory isn't written at all: the game's CPU gets the
++// resolve through the resolve readback (0024/0049/0050), whose downscale
++// shader (resolve_downscale.cs.glsl) takes one 32-bit word of the scaled
++// resolve buffer for each guest one. Textures made from that memory are
++// "scaled resolve" textures loaded from the scaled resolve buffer.
++//
++// Here (native_resolves_at_draw_scale, off by default), for a 32bpp color
++// resolve without MSAA, one compute pass over the area's host pixels reads the
++// render target and writes:
++// - each host pixel's word into the scaled resolve buffer where the scaled
++//   resolve shader (resolve_fast_32bpp_1x2xmsaa_scaled_cs) puts it, including
++//   its fill of the half-pixel offset gap, so the readback, and anything made
++//   from that memory later, gets exactly what the EDRAM path gives;
++// - the words the readback's downscale takes from there into shared memory, at
++//   their guest addresses, so shared memory holds the bytes the game's CPU is
++//   given.
++// The scaled texture the game samples is then copied from the render target
++// (with the same gap fill), so it isn't loaded again from the scaled resolve
++// buffer. Anything else, and a resolve with no scaled texture yet (0309 does
++// those too), goes the EDRAM way.
++//
++// The layouts, as read from the SPIR-V disassemblies in the generated
++// shaders/vulkan_spirv headers (see DRAFTS-0308-0309.md in the project's
++// dev/agents/rexglue-native):
++// - Scaled resolve buffer, 32bpp: each 16-byte group of 4 guest texels at
++//   the 32bpp tiled offset T (texture_util::GetTiledOffset2D) takes the bytes
++//   T * scale_x * scale_y onwards, as scale_x * scale_y strips of 4 host
++//   pixels: host pixel (x, y) of the destination (the destination's own
++//   texels times the scale) is word ((x / 4) % scale_x * scale_y +
++//   y % scale_y) * 4 + x % 4 of the group of guest texel
++//   ((x / 4 / scale_x) * 4, y / scale_y). texture_load_32bpb_scaled reads it
++//   the same way.
++// - Half-pixel offset fill (ResolveEdramInfo::fill_half_pixel_offset): the
++//   first scale_x / 2 host columns and scale_y / 2 host rows of the area are
++//   read from the column and the row after them.
++// - Readback downscale: guest word i of a 4 KB tile is word
++//   i * scale_x * scale_y + o of the tile's scaled bytes, o = 0, or
++//   scale_x / 2 + scale_y / 2 * scale_x with readback_resolve_half_pixel_offset.
++//   So in each group's block, guest texel j is word j * scale_x * scale_y + o.
++//   (That isn't always the host pixel of guest texel j - at 2x without the
++//   offset, texels 1 and 3 get the second row of texels 0 and 2 - but it is
++//   what the game's CPU sees today, so it's what shared memory gets.)
++
++#include <algorithm>
++#include <cstddef>
++#include <cstdint>
++#include <utility>
++#include <vector>
++
++#include <SPIRV/GLSL.std.450.h>
++
++#include <rex/assert.h>
++#include <rex/cvar.h>
++#include <rex/graphics/flags.h>
++#include <rex/graphics/native_census.h>
++#include <rex/graphics/pipeline/shader/spirv_builder.h>
++#include <rex/graphics/pipeline/shader/spirv_translator.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/util/draw.h>
++#include <rex/graphics/vulkan/command_processor.h>
++#include <rex/graphics/vulkan/deferred_command_buffer.h>
++#include <rex/graphics/vulkan/render_target_cache.h>
++#include <rex/graphics/vulkan/shared_memory.h>
++#include <rex/graphics/vulkan/texture_cache.h>
++#include <rex/graphics/xenos.h>
++#include <rex/logging.h>
++#include <rex/ui/vulkan/util.h>
++
++REXCVAR_DEFINE_BOOL(native_resolves_at_draw_scale, false, "GPU",
++                    "native_render_targets with a draw resolution scale above 1: a 32bpp color "
++                    "resolve without MSAA goes straight from the render target into the scaled "
++                    "resolve memory, guest memory and the scaled texture the game samples (no "
++                    "EDRAM dump, the same bytes as the EDRAM path). Applies at once");
++
++// Defined in render_target_cache.cpp.
++REXCVAR_DECLARE(bool, vulkan_resolve_into_textures);
++
++namespace rex::graphics::vulkan {
++
++void VulkanRenderTargetCache::InitializeNativeResolveScaled() {
++  if (!IsDrawResolutionScaled()) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  // Set 0: shared memory and the scaled resolve buffer; set 1: the render
++  // target; set 2: linear texels (SDK 0309).
++  auto create_pipeline_layout = [&](VkDescriptorSetLayout source_layout,
++                                    VkPipelineLayout* pipeline_layout_out) {
++    VkDescriptorSetLayout descriptor_set_layouts[] = {
++        command_processor_.GetSingleTransientDescriptorLayout(
++            VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferPairCompute),
++        source_layout,
++        command_processor_.GetSingleTransientDescriptorLayout(
++            VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute),
++    };
++    VkPushConstantRange push_constant_range;
++    push_constant_range.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
++    push_constant_range.offset = 0;
++    push_constant_range.size = sizeof(uint32_t) * kNativeResolvePushConstantCount;
++    VkPipelineLayoutCreateInfo pipeline_layout_create_info;
++    pipeline_layout_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
++    pipeline_layout_create_info.pNext = nullptr;
++    pipeline_layout_create_info.flags = 0;
++    pipeline_layout_create_info.setLayoutCount =
++        uint32_t(sizeof(descriptor_set_layouts) / sizeof(descriptor_set_layouts[0]));
++    pipeline_layout_create_info.pSetLayouts = descriptor_set_layouts;
++    pipeline_layout_create_info.pushConstantRangeCount = 1;
++    pipeline_layout_create_info.pPushConstantRanges = &push_constant_range;
++    if (dfn.vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr,
++                                   pipeline_layout_out) != VK_SUCCESS) {
++      *pipeline_layout_out = VK_NULL_HANDLE;
++    }
++  };
++  create_pipeline_layout(descriptor_set_layout_sampled_image_,
++                         &native_resolve_scaled_pipeline_layout_color_);
++  create_pipeline_layout(descriptor_set_layout_sampled_image_x2_,
++                         &native_resolve_scaled_pipeline_layout_depth_);
++}
++
++void VulkanRenderTargetCache::ShutdownNativeResolveScaled() {
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  for (const auto& pipeline_pair : native_resolve_scaled_pipelines_) {
++    if (pipeline_pair.second != VK_NULL_HANDLE) {
++      dfn.vkDestroyPipeline(device, pipeline_pair.second, nullptr);
++    }
++  }
++  native_resolve_scaled_pipelines_.clear();
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
++                                         native_resolve_scaled_pipeline_layout_depth_);
++  ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipelineLayout, device,
++                                         native_resolve_scaled_pipeline_layout_color_);
++}
++
++bool VulkanRenderTargetCache::NativeResolveScaled(const draw_util::ResolveInfo& resolve_info,
++                                                  VulkanSharedMemory& shared_memory,
++                                                  VulkanTextureCache& texture_cache) {
++  if (!REXCVAR_GET(native_resolves_at_draw_scale)) {
++    return false;
++  }
++  // Why a resolve is done the EDRAM emulation's way instead, logged once for
++  // each reason.
++  static uint32_t reasons_logged = 0;
++  auto skip = [](uint32_t reason, const char* why) -> bool {
++    if (!(reasons_logged & (uint32_t(1) << reason))) {
++      reasons_logged |= uint32_t(1) << reason;
++      REXGPU_INFO(
++          "native_resolves_at_draw_scale: a resolve done the EDRAM emulation's way: {}", why);
++    }
++    return false;
++  };
++
++  const uint32_t scale_x = draw_resolution_scale_x();
++  const uint32_t scale_y = draw_resolution_scale_y();
++  // 3 bits each in the pipeline key (draw_util::ResolveCoordinateInfo has 3
++  // bits too).
++  if (scale_x > 7 || scale_y > 7 || (scale_x <= 1 && scale_y <= 1)) {
++    return skip(0, "a draw resolution scale outside 1...7");
++  }
++  const bool is_depth = resolve_info.IsCopyingDepth();
++  if (is_depth) {
++    return skip(1, "depth");
++  }
++  const draw_util::ResolveEdramInfo& edram_info = resolve_info.color_edram_info;
++  const reg::RB_COPY_DEST_INFO dest_info = resolve_info.copy_dest_info;
++  const draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
++      resolve_info.copy_dest_coordinate_info;
++  if (edram_info.msaa_samples != xenos::MsaaSamples::k1X || edram_info.format_is_64bpp) {
++    return skip(2, "MSAA or 64bpp");
++  }
++  if (dest_info.copy_dest_array ||
++      uint32_t(dest_info.copy_dest_endian) > uint32_t(xenos::Endian128::k16in32)) {
++    return skip(3, "an array destination, or 64-bit or 128-bit endian swapping");
++  }
++  if (xenos::ColorRenderTargetFormat(edram_info.format) !=
++          xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
++      dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8 ||
++      dest_info.copy_dest_exp_bias) {
++    return skip(4, "color other than 8888 to 8888, or an exponent bias");
++  }
++  const uint32_t dest_pitch_texels = uint32_t(dest_coordinates.pitch_aligned_div_32)
++                                     << xenos::kTextureTileWidthHeightLog2;
++  const uint32_t dest_offset_x = uint32_t(dest_coordinates.offset_x_div_8)
++                                 << xenos::kResolveAlignmentPixelsLog2;
++  const uint32_t dest_offset_y = uint32_t(dest_coordinates.offset_y_div_8)
++                                 << xenos::kResolveAlignmentPixelsLog2;
++  // The destination base is moved to the 32x32 tile the resolve starts in, the
++  // offsets are within it. At a 4 KB page: the descriptors of both buffers
++  // start there (the scaled one at the base times the scale).
++  if (!dest_pitch_texels || dest_offset_x >= 32 || dest_offset_y >= 32 ||
++      (resolve_info.copy_dest_base & 0xFFF)) {
++    return skip(5, "no destination pitch, an offset outside the first tile, or a base not at a "
++                   "4 KB page");
++  }
++
++  uint32_t source_x, source_y;
++  RenderTarget* source_render_target =
++      FindResolveSourceRenderTarget(resolve_info, source_x, source_y);
++  if (!source_render_target) {
++    return skip(6, "no render target with the resolve's base, pitch and format");
++  }
++  // Created by a resolve clear and not cleared yet (normally done already).
++  PerformNativeInitialClears();
++  auto& vulkan_rt = *static_cast<VulkanRenderTarget*>(source_render_target);
++  const RenderTargetKey rt_key = vulkan_rt.key();
++  // In guest pixels (the render target's image is the scale times bigger).
++  const uint32_t width = uint32_t(resolve_info.coordinate_info.width_div_8)
++                         << xenos::kResolveAlignmentPixelsLog2;
++  const uint32_t height = resolve_info.height_div_8 << xenos::kResolveAlignmentPixelsLog2;
++  if (!width || !height || source_x + width > rt_key.GetWidth() ||
++      source_y + height >
++          GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples)) {
++    return skip(7, "the area is outside its render target");
++  }
++  bool source_is_uint = false;
++  GetColorOwnershipTransferVulkanFormat(rt_key.GetColorFormat(), rt_key.msaa_samples,
++                                        &source_is_uint);
++  const bool red_blue_swap = dest_info.copy_dest_swap;
++  // The half-pixel offset gap the scaled resolve shader fills, in host pixels.
++  const bool fill_half_pixel_offset = edram_info.fill_half_pixel_offset != 0;
++  const uint32_t fill_x = fill_half_pixel_offset ? (scale_x >> 1) : 0;
++  const uint32_t fill_y = fill_half_pixel_offset ? (scale_y >> 1) : 0;
++
++  // The scaled texture the game samples the surface as. Without one, the EDRAM
++  // path (the texture made later loads from the scaled resolve buffer).
++  if (!REXCVAR_GET(vulkan_resolve_into_textures)) {
++    return skip(8, "vulkan_resolve_into_textures is off");
++  }
++  VulkanTextureCache::NativeResolveDestination texture_destination;
++  if (!texture_cache.FindNativeResolveDestination(
++          resolve_info.copy_dest_base, dest_pitch_texels, xenos::TextureFormat::k_8_8_8_8,
++          xenos::Endian(dest_info.copy_dest_endian), dest_offset_x, dest_offset_y, width, height,
++          texture_destination, true)) {
++    return skip(9, "no scaled texture of that address, pitch and format yet");
++  }
++  // Before the range is marked as resolved below.
++  bool linear_red_blue_swap;
++  if (texture_cache.GetNativeResolveCopy(texture_destination, false, red_blue_swap,
++                                         linear_red_blue_swap) !=
++      VulkanTextureCache::NativeResolveCopy::kImage) {
++    return skip(10, "a scaled texture written in part while outdated, or with red and blue the "
++                    "other way");
++  }
++
++  // The scaled resolve memory, as the EDRAM path takes it (16-byte aligned
++  // lengths, as its fast 32bpp shader writes).
++  const uint32_t copy_dest_range_length = resolve_info.copy_dest_extent_start -
++                                          resolve_info.copy_dest_base +
++                                          resolve_info.copy_dest_extent_length;
++  uint64_t scaled_base, scaled_range_length, scaled_use_start, scaled_use_length;
++  if (!texture_cache.GetScaledResolveRange(resolve_info.copy_dest_base, copy_dest_range_length, 4,
++                                           scaled_base, scaled_range_length) ||
++      !texture_cache.GetScaledResolveRange(resolve_info.copy_dest_extent_start,
++                                           resolve_info.copy_dest_extent_length, 4,
++                                           scaled_use_start, scaled_use_length) ||
++      !scaled_range_length || texture_cache.scaled_resolve_buffer() == VK_NULL_HANDLE) {
++    return skip(11, "no scaled resolve memory for the destination");
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  if (scaled_range_length > uint64_t(vulkan_device->properties().maxStorageBufferRange)) {
++    return skip(12, "a scaled destination larger than a storage buffer binding can be");
++  }
++
++  NativeResolvePipelineKey pipeline_key;
++  pipeline_key.resource_format = rt_key.resource_format;
++  pipeline_key.is_depth = 0;
++  pipeline_key.source_is_uint = uint32_t(source_is_uint);
++  pipeline_key.endian = uint32_t(dest_info.copy_dest_endian);
++  pipeline_key.red_blue_swap = uint32_t(red_blue_swap);
++  pipeline_key.scale_x_minus_1 = scale_x - 1;
++  pipeline_key.scale_y_minus_1 = scale_y - 1;
++  pipeline_key.fill_half_pixel_offset = uint32_t(fill_half_pixel_offset);
++  // As VulkanCommandProcessor::RecordResolveReadbackCopy gives it to the
++  // downscale (the scale is above 1 here).
++  pipeline_key.readback_half_pixel_offset =
++      uint32_t(REXCVAR_GET(readback_resolve_half_pixel_offset));
++  VkPipeline pipeline = GetNativeResolveScaledPipeline(pipeline_key);
++  if (pipeline == VK_NULL_HANDLE) {
++    return skip(13, "no native scaled resolve pipeline");
++  }
++
++  // The destination memory, at both resolutions.
++  if (!shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
++                                  resolve_info.copy_dest_extent_length)) {
++    return skip(14, "the destination memory couldn't be obtained");
++  }
++  if (!texture_cache.CommitScaledResolveRange(resolve_info.copy_dest_base, copy_dest_range_length,
++                                              4)) {
++    return skip(15, "the scaled destination memory couldn't be obtained");
++  }
++  VkDescriptorSet descriptor_set_buffers = command_processor_.AllocateSingleTransientDescriptor(
++      VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferPairCompute);
++  if (descriptor_set_buffers == VK_NULL_HANDLE) {
++    return skip(16, "no descriptor set");
++  }
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  VkDescriptorBufferInfo buffer_infos[2];
++  buffer_infos[0].buffer = shared_memory.buffer();
++  buffer_infos[0].offset = resolve_info.copy_dest_base;
++  buffer_infos[0].range = copy_dest_range_length;
++  buffer_infos[1].buffer = texture_cache.scaled_resolve_buffer();
++  buffer_infos[1].offset = VkDeviceSize(scaled_base);
++  buffer_infos[1].range = VkDeviceSize(scaled_range_length);
++  VkWriteDescriptorSet descriptor_writes[2];
++  for (uint32_t i = 0; i < 2; ++i) {
++    VkWriteDescriptorSet& descriptor_write = descriptor_writes[i];
++    descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++    descriptor_write.pNext = nullptr;
++    descriptor_write.dstSet = descriptor_set_buffers;
++    descriptor_write.dstBinding = i;
++    descriptor_write.dstArrayElement = 0;
++    descriptor_write.descriptorCount = 1;
++    descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++    descriptor_write.pImageInfo = nullptr;
++    descriptor_write.pBufferInfo = &buffer_infos[i];
++    descriptor_write.pTexelBufferView = nullptr;
++  }
++  dfn.vkUpdateDescriptorSets(device, 2, descriptor_writes, 0, nullptr);
++
++  // The render target: from its last use to a compute shader read (as the
++  // EDRAM dump does).
++  command_processor_.PushImageMemoryBarrier(
++      vulkan_rt.image(), ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT),
++      vulkan_rt.current_stage_mask(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++      vulkan_rt.current_access_mask(), VK_ACCESS_SHADER_READ_BIT, vulkan_rt.current_layout(),
++      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  vulkan_rt.SetUsage(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT,
++                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
++                    std::pair<uint32_t, uint32_t>(resolve_info.copy_dest_extent_start,
++                                                  resolve_info.copy_dest_extent_length));
++  texture_cache.UseScaledResolveBufferForWrite(scaled_use_start, scaled_use_length);
++
++  DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
++  command_processor_.BindExternalComputePipeline(pipeline);
++  VkDescriptorSet descriptor_sets[2] = {descriptor_set_buffers,
++                                        vulkan_rt.GetDescriptorSetTransferSource()};
++  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
++                                         native_resolve_scaled_pipeline_layout_color_, 0, 2,
++                                         descriptor_sets, 0, nullptr);
++  uint32_t push_constants[kNativeResolvePushConstantCount];
++  // In guest pixels: the shader multiplies them by the scale.
++  push_constants[kNativeResolvePushConstantSource] = source_x | (source_y << 16);
++  push_constants[kNativeResolvePushConstantDestOrigin] = dest_offset_x | (dest_offset_y << 16);
++  push_constants[kNativeResolvePushConstantDestPitchTiles] =
++      dest_pitch_texels >> xenos::kTextureTileWidthHeightLog2;
++  push_constants[kNativeResolvePushConstantLinearSize] = 0;
++  command_buffer.CmdVkPushConstants(native_resolve_scaled_pipeline_layout_color_,
++                                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants),
++                                    push_constants);
++  command_processor_.SubmitBarriers(true);
++  // 8x8 host pixels per group; the area is whole 8x8 guest blocks.
++  command_buffer.CmdVkDispatch((width * scale_x) >> 3, (height * scale_y) >> 3, 1);
++
++  // Every texture over the range is outdated now, the range valid in shared
++  // memory and its pages scaled resolve memory, as after the EDRAM path - the
++  // texture written below is up to date again after it.
++  texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
++                                    resolve_info.copy_dest_extent_length);
++
++  texture_cache.CopyImageIntoNativeResolveDestinationScaled(
++      texture_destination, red_blue_swap, vulkan_rt.image(), vulkan_rt.current_stage_mask(),
++      vulkan_rt.current_access_mask(), vulkan_rt.current_layout(), source_x * scale_x,
++      source_y * scale_y, fill_x, fill_y);
++  vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++
++  if (native_census::Active()) {
++    native_census::Counters& census = native_census::Get();
++    ++census.native_resolves;
++    ++census.native_into_texture_image;
++  }
++
++  static bool logged = false;
++  if (!logged) {
++    logged = true;
++    REXGPU_INFO(
++        "native_resolves_at_draw_scale: the first native color resolve at {}x{}, {}x{} to "
++        "0x{:08X} (half-pixel gap fill {}, readback half-pixel offset {})",
++        scale_x, scale_y, width, height, resolve_info.copy_dest_base,
++        fill_half_pixel_offset ? "on" : "off",
++        pipeline_key.readback_half_pixel_offset ? "on" : "off");
++  }
++  return true;
++}
++
++VkPipeline VulkanRenderTargetCache::GetNativeResolveScaledPipeline(
++    NativeResolvePipelineKey key) {
++  auto pipeline_it = native_resolve_scaled_pipelines_.find(key);
++  if (pipeline_it != native_resolve_scaled_pipelines_.end()) {
++    return pipeline_it->second;
++  }
++  VkPipelineLayout pipeline_layout = key.is_depth ? native_resolve_scaled_pipeline_layout_depth_
++                                                  : native_resolve_scaled_pipeline_layout_color_;
++  if (pipeline_layout == VK_NULL_HANDLE || key.is_depth || key.linear) {
++    native_resolve_scaled_pipelines_.emplace(key, VkPipeline(VK_NULL_HANDLE));
++    return VK_NULL_HANDLE;
++  }
++
++  const uint32_t scale_x = key.scale_x_minus_1 + 1;
++  const uint32_t scale_y = key.scale_y_minus_1 + 1;
++  const uint32_t scale_area = scale_x * scale_y;
++  // The half-pixel offset gap the scaled resolve shader fills.
++  const uint32_t fill_x = key.fill_half_pixel_offset ? (scale_x >> 1) : 0;
++  const uint32_t fill_y = key.fill_half_pixel_offset ? (scale_y >> 1) : 0;
++  // The word of each guest texel's place in the scaled block the readback
++  // downscale takes (block_sample_offset in resolve_downscale.cs.glsl).
++  const uint32_t readback_word =
++      key.readback_half_pixel_offset ? (scale_x >> 1) + (scale_y >> 1) * scale_x : 0;
++
++  std::vector<spv::Id> id_vector_temp;
++
++  SpirvBuilder builder(spv::Spv_1_0, (SpirvShaderTranslator::kSpirvMagicToolId << 16) | 1, nullptr);
++  spv::Id ext_inst_glsl_std_450 = builder.import("GLSL.std.450");
++  (void)ext_inst_glsl_std_450;
++  builder.addCapability(spv::CapabilityShader);
++  builder.setMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
++  builder.setSource(spv::SourceLanguageUnknown, 0);
++
++  spv::Id type_void = builder.makeVoidType();
++  spv::Id type_bool = builder.makeBoolType();
++  spv::Id type_int = builder.makeIntType(32);
++  spv::Id type_int2 = builder.makeVectorType(type_int, 2);
++  spv::Id type_uint = builder.makeUintType(32);
++  spv::Id type_uint3 = builder.makeVectorType(type_uint, 3);
++  spv::Id type_float = builder.makeFloatType(32);
++
++  // Write-only arrays of 32-bit words.
++  auto make_storage_buffer = [&](uint32_t set, uint32_t binding, const char* type_name,
++                                 const char* variable_name) -> spv::Id {
++    id_vector_temp.clear();
++    id_vector_temp.push_back(builder.makeRuntimeArray(type_uint));
++    // Storage buffers have std430 packing, no padding to 4-component vectors.
++    builder.addDecoration(id_vector_temp.back(), spv::DecorationArrayStride,
++                          int(sizeof(uint32_t)));
++    spv::Id type_buffer = builder.makeStructType(id_vector_temp, type_name);
++    builder.addMemberName(type_buffer, 0, "words");
++    builder.addMemberDecoration(type_buffer, 0, spv::DecorationNonReadable);
++    builder.addMemberDecoration(type_buffer, 0, spv::DecorationOffset, 0);
++    // Block since SPIR-V 1.3, but since SPIR-V 1.0 is generated, it's
++    // BufferBlock.
++    builder.addDecoration(type_buffer, spv::DecorationBufferBlock);
++    // StorageBuffer since SPIR-V 1.3, but since SPIR-V 1.0 is generated, it's
++    // Uniform.
++    spv::Id buffer = builder.createVariable(spv::NoPrecision, spv::StorageClassUniform,
++                                            type_buffer, variable_name);
++    builder.addDecoration(buffer, spv::DecorationDescriptorSet, int(set));
++    builder.addDecoration(buffer, spv::DecorationBinding, int(binding));
++    return buffer;
++  };
++  // Set 0: binding 0 - shared memory from the destination base, binding 1 -
++  // the scaled resolve buffer from the destination base times the scale area.
++  spv::Id guest_buffer =
++      make_storage_buffer(0, 0, "XeNativeResolveScaledGuest", "xe_native_resolve_scaled_guest");
++  spv::Id scaled_buffer = make_storage_buffer(0, 1, "XeNativeResolveScaledScaled",
++                                              "xe_native_resolve_scaled_scaled");
++  // Set 1: the render target, its transfer source descriptor set.
++  bool source_is_uint = key.source_is_uint != 0;
++  spv::Id source_component_type = source_is_uint ? type_uint : type_float;
++  spv::Id source_texture = builder.createVariable(
++      spv::NoPrecision, spv::StorageClassUniformConstant,
++      builder.makeImageType(source_component_type, spv::Dim2D, false, false, false, 1,
++                            spv::ImageFormatUnknown),
++      "xe_native_resolve_scaled_source");
++  builder.addDecoration(source_texture, spv::DecorationDescriptorSet, 1);
++  builder.addDecoration(source_texture, spv::DecorationBinding, 0);
++  // Push constants.
++  id_vector_temp.clear();
++  id_vector_temp.reserve(kNativeResolvePushConstantCount);
++  for (uint32_t i = 0; i < kNativeResolvePushConstantCount; ++i) {
++    id_vector_temp.push_back(type_uint);
++  }
++  spv::Id type_push_constants =
++      builder.makeStructType(id_vector_temp, "XeNativeResolveScaledPushConstants");
++  builder.addMemberName(type_push_constants, kNativeResolvePushConstantSource, "source");
++  builder.addMemberName(type_push_constants, kNativeResolvePushConstantDestOrigin, "dest_origin");
++  builder.addMemberName(type_push_constants, kNativeResolvePushConstantDestPitchTiles,
++                        "dest_pitch_tiles");
++  builder.addMemberName(type_push_constants, kNativeResolvePushConstantLinearSize, "linear_size");
++  for (uint32_t i = 0; i < kNativeResolvePushConstantCount; ++i) {
++    builder.addMemberDecoration(type_push_constants, i, spv::DecorationOffset,
++                                int(sizeof(uint32_t) * i));
++  }
++  builder.addDecoration(type_push_constants, spv::DecorationBlock);
++  spv::Id push_constants =
++      builder.createVariable(spv::NoPrecision, spv::StorageClassPushConstant, type_push_constants,
++                             "xe_native_resolve_scaled_push_constants");
++
++  // gl_GlobalInvocationID input.
++  spv::Id input_global_invocation_id = builder.createVariable(
++      spv::NoPrecision, spv::StorageClassInput, type_uint3, "gl_GlobalInvocationID");
++  builder.addDecoration(input_global_invocation_id, spv::DecorationBuiltIn,
++                        spv::BuiltInGlobalInvocationId);
++
++  // Begin the main function.
++  std::vector<spv::Id> main_param_types;
++  std::vector<std::vector<spv::Decoration>> main_precisions;
++  spv::Block* main_entry;
++  spv::Function* main_function = builder.makeFunctionEntry(
++      spv::NoPrecision, type_void, "main", main_param_types, main_precisions, &main_entry);
++
++  spv::Id const_uint_0 = builder.makeUintConstant(0);
++  spv::Id const_uint_8 = builder.makeUintConstant(8);
++  spv::Id const_uint_16 = builder.makeUintConstant(16);
++  auto load_push_constant = [&](uint32_t index) -> spv::Id {
++    id_vector_temp.clear();
++    id_vector_temp.push_back(builder.makeIntConstant(int(index)));
++    return builder.createLoad(
++        builder.createAccessChain(spv::StorageClassPushConstant, push_constants, id_vector_temp),
++        spv::NoPrecision);
++  };
++  auto low_16 = [&](spv::Id value) -> spv::Id {
++    return builder.createTriOp(spv::OpBitFieldUExtract, type_uint, value, const_uint_0,
++                               const_uint_16);
++  };
++  auto high_16 = [&](spv::Id value) -> spv::Id {
++    return builder.createBinOp(spv::OpShiftRightLogical, type_uint, value, const_uint_16);
++  };
++  auto swap_red_blue = [&](spv::Id value) -> spv::Id {
++    spv::Id red = builder.createTriOp(spv::OpBitFieldUExtract, type_uint, value, const_uint_0,
++                                      const_uint_8);
++    spv::Id blue = builder.createTriOp(spv::OpBitFieldUExtract, type_uint, value, const_uint_16,
++                                       const_uint_8);
++    value = builder.createQuadOp(spv::OpBitFieldInsert, type_uint, value, blue, const_uint_0,
++                                 const_uint_8);
++    return builder.createQuadOp(spv::OpBitFieldInsert, type_uint, value, red, const_uint_16,
++                                const_uint_8);
++  };
++  auto uint_and = [&](spv::Id value, uint32_t mask) -> spv::Id {
++    return builder.createBinOp(spv::OpBitwiseAnd, type_uint, value, builder.makeUintConstant(mask));
++  };
++  auto uint_shl = [&](spv::Id value, uint32_t shift) -> spv::Id {
++    return builder.createBinOp(spv::OpShiftLeftLogical, type_uint, value,
++                               builder.makeUintConstant(shift));
++  };
++  auto uint_shr = [&](spv::Id value, uint32_t shift) -> spv::Id {
++    return builder.createBinOp(spv::OpShiftRightLogical, type_uint, value,
++                               builder.makeUintConstant(shift));
++  };
++  auto uint_add = [&](spv::Id a, spv::Id b) -> spv::Id {
++    return builder.createBinOp(spv::OpIAdd, type_uint, a, b);
++  };
++  auto uint_mul = [&](spv::Id value, uint32_t factor) -> spv::Id {
++    if (factor == 1) {
++      return value;
++    }
++    return builder.createBinOp(spv::OpIMul, type_uint, value, builder.makeUintConstant(factor));
++  };
++  auto uint_div = [&](spv::Id value, uint32_t divisor) -> spv::Id {
++    if (divisor == 1) {
++      return value;
++    }
++    return builder.createBinOp(spv::OpUDiv, type_uint, value, builder.makeUintConstant(divisor));
++  };
++  auto uint_mod = [&](spv::Id value, uint32_t divisor) -> spv::Id {
++    if (divisor == 1) {
++      return const_uint_0;
++    }
++    return builder.createBinOp(spv::OpUMod, type_uint, value, builder.makeUintConstant(divisor));
++  };
++  // max(value, minimum), for the half-pixel offset gap fill.
++  auto uint_at_least = [&](spv::Id value, uint32_t minimum) -> spv::Id {
++    if (!minimum) {
++      return value;
++    }
++    spv::Id minimum_id = builder.makeUintConstant(minimum);
++    return builder.createTriOp(
++        spv::OpSelect, type_uint,
++        builder.createBinOp(spv::OpULessThan, type_bool, value, minimum_id), minimum_id, value);
++  };
++  // The 32bpp tiled offset in bytes (texture_util::GetTiledOffset2D with 4
++  // bytes per block, as SDK 0302's native resolve and the resolve shaders).
++  auto tiled_offset_32bpp = [&](spv::Id tile_x, spv::Id tile_y, spv::Id pitch_tiles) -> spv::Id {
++    // macro = ((x >> 5) + (y >> 5) * (pitch >> 5)) << 9
++    spv::Id tiled_macro = uint_shl(
++        uint_add(uint_shr(tile_x, 5),
++                 builder.createBinOp(spv::OpIMul, type_uint, uint_shr(tile_y, 5), pitch_tiles)),
++        9);
++    // micro = ((x & 7) + ((y & 0xE) << 2)) << 2
++    spv::Id tiled_micro =
++        uint_shl(uint_add(uint_and(tile_x, 7), uint_shl(uint_and(tile_y, 0xE), 2)), 2);
++    // offset = macro + ((micro & ~0xF) << 1) + (micro & 0xF) + ((y & 1) << 4)
++    spv::Id tiled_offset =
++        uint_add(uint_add(tiled_macro, uint_shl(uint_and(tiled_micro, ~uint32_t(0xF)), 1)),
++                 uint_add(uint_and(tiled_micro, 0xF), uint_shl(uint_and(tile_y, 1), 4)));
++    // ((offset & ~0x1FF) << 3) + ((y & 16) << 7) + ((offset & 0x1C0) << 2) +
++    // ((((y & 8) >> 2) + (x >> 3)) & 3) << 6) + (offset & 0x3F)
++    return uint_add(
++        uint_add(uint_shl(uint_and(tiled_offset, ~uint32_t(0x1FF)), 3),
++                 uint_shl(uint_and(tile_y, 16), 7)),
++        uint_add(uint_add(uint_shl(uint_and(tiled_offset, 0x1C0), 2),
++                          uint_shl(uint_and(uint_add(uint_shr(uint_and(tile_y, 8), 2),
++                                                     uint_shr(tile_x, 3)),
++                                            3),
++                                   6)),
++                 uint_and(tiled_offset, 0x3F)));
++  };
++  auto store_word = [&](spv::Id buffer, spv::Id word_index, spv::Id value) {
++    id_vector_temp.clear();
++    // The only SSBO structure member.
++    id_vector_temp.push_back(builder.makeIntConstant(0));
++    id_vector_temp.push_back(builder.createUnaryOp(spv::OpBitcast, type_int, word_index));
++    builder.createStore(value,
++                        builder.createAccessChain(spv::StorageClassUniform, buffer, id_vector_temp));
++  };
++
++  // The host pixel of the resolve's area this invocation writes.
++  spv::Id global_invocation_id = builder.createLoad(input_global_invocation_id, spv::NoPrecision);
++  spv::Id x = builder.createCompositeExtract(global_invocation_id, type_uint, 0);
++  spv::Id y = builder.createCompositeExtract(global_invocation_id, type_uint, 1);
++
++  // Load the render target's sample, with the first columns and rows of the
++  // area taken from the first ones past the half-pixel offset gap.
++  spv::Id source_xy = load_push_constant(kNativeResolvePushConstantSource);
++  spv::Builder::TextureParameters source_texture_parameters = {};
++  source_texture_parameters.sampler = builder.createLoad(source_texture, spv::NoPrecision);
++  id_vector_temp.clear();
++  id_vector_temp.push_back(builder.createUnaryOp(
++      spv::OpBitcast, type_int,
++      uint_add(uint_mul(low_16(source_xy), scale_x), uint_at_least(x, fill_x))));
++  id_vector_temp.push_back(builder.createUnaryOp(
++      spv::OpBitcast, type_int,
++      uint_add(uint_mul(high_16(source_xy), scale_y), uint_at_least(y, fill_y))));
++  source_texture_parameters.coords = builder.createCompositeConstruct(type_int2, id_vector_temp);
++  source_texture_parameters.lod = builder.makeIntConstant(0);
++  spv::Id source_vec4 = builder.createTextureCall(
++      spv::NoPrecision, builder.makeVectorType(source_component_type, 4), false, true, false, false,
++      false, source_texture_parameters, spv::ImageOperandsMaskNone);
++
++  // Pack it into the 32-bit word the EDRAM holds (as the EDRAM dump does):
++  // 8_8_8_8, red in 0:7 to alpha in 24:31.
++  spv::Id packed;
++  {
++    spv::Id unorm_round_offset = builder.makeFloatConstant(0.5f);
++    spv::Id unorm_scale = builder.makeFloatConstant(255.0f);
++    auto component_uint = [&](uint32_t i) -> spv::Id {
++      spv::Id component = builder.createCompositeExtract(source_vec4, source_component_type, i);
++      if (source_is_uint) {
++        return component;
++      }
++      return builder.createUnaryOp(
++          spv::OpConvertFToU, type_uint,
++          builder.createBinOp(spv::OpFAdd, type_float,
++                              builder.createBinOp(spv::OpFMul, type_float, component, unorm_scale),
++                              unorm_round_offset));
++    };
++    packed = component_uint(0);
++    for (uint32_t i = 1; i < 4; ++i) {
++      packed = builder.createQuadOp(spv::OpBitFieldInsert, type_uint, packed, component_uint(i),
++                                    builder.makeUintConstant(8 * i), const_uint_8);
++    }
++  }
++
++  // The word in memory: red and blue swapped if asked, then endian.
++  spv::Id dest_value = key.red_blue_swap ? swap_red_blue(packed) : packed;
++  switch (xenos::Endian128(key.endian)) {
++    case xenos::Endian128::k8in16:
++    case xenos::Endian128::k8in32:
++      dest_value = builder.createBinOp(spv::OpBitwiseOr, type_uint,
++                                       uint_shl(uint_and(dest_value, 0x00FF00FF), 8),
++                                       uint_and(uint_shr(dest_value, 8), 0x00FF00FF));
++      if (xenos::Endian128(key.endian) == xenos::Endian128::k8in32) {
++        dest_value = builder.createBinOp(spv::OpBitwiseOr, type_uint, uint_shl(dest_value, 16),
++                                         uint_shr(dest_value, 16));
++      }
++      break;
++    case xenos::Endian128::k16in32:
++      dest_value = builder.createBinOp(spv::OpBitwiseOr, type_uint, uint_shl(dest_value, 16),
++                                       uint_shr(dest_value, 16));
++      break;
++    default:
++      break;
++  }
++
++  // Where the scaled resolve shader puts this host pixel: relative to the
++  // destination base, which the resolve moved to the 32x32 tile it starts in,
++  // the destination's host pixel is the origin in that tile times the scale
++  // plus the area's pixel.
++  spv::Id dest_origin = load_push_constant(kNativeResolvePushConstantDestOrigin);
++  spv::Id dest_x = uint_add(uint_mul(low_16(dest_origin), scale_x), x);
++  spv::Id dest_y = uint_add(uint_mul(high_16(dest_origin), scale_y), y);
++  spv::Id dest_x_div_4 = uint_shr(dest_x, 2);
++  // The 4-texel group of guest texels, and the strip of 4 host pixels in its
++  // scaled block.
++  spv::Id guest_x = uint_shl(uint_div(dest_x_div_4, scale_x), 2);
++  spv::Id guest_y = uint_div(dest_y, scale_y);
++  spv::Id block_strip = uint_add(uint_mul(uint_mod(dest_x_div_4, scale_x), scale_y),
++                                 uint_mod(dest_y, scale_y));
++  // The word in the block: the strip's 4 words, then the pixel in the strip.
++  spv::Id block_word = uint_add(uint_shl(block_strip, 2), uint_and(dest_x, 3));
++  spv::Id dest_pitch_tiles = load_push_constant(kNativeResolvePushConstantDestPitchTiles);
++  // The group's first guest word (its tiled offset is a multiple of 16 bytes).
++  spv::Id group_word = uint_shr(tiled_offset_32bpp(guest_x, guest_y, dest_pitch_tiles), 2);
++  store_word(scaled_buffer, uint_add(uint_mul(group_word, scale_area), block_word), dest_value);
++
++  // If the resolve readback's downscale takes this word for one of the
++  // group's guest texels, the guest word of that texel.
++  spv::Id readback_taken = builder.createBinOp(spv::OpIEqual, type_bool,
++                                               uint_mod(block_word, scale_area),
++                                               builder.makeUintConstant(readback_word));
++  SpirvBuilder::IfBuilder readback_taken_if(readback_taken, spv::SelectionControlMaskNone,
++                                            builder);
++  {
++    store_word(guest_buffer, uint_add(group_word, uint_div(block_word, scale_area)), dest_value);
++  }
++  readback_taken_if.makeEndIf();
++
++  // End the main function and make it the entry point.
++  builder.leaveFunction();
++  builder.addExecutionMode(main_function, spv::ExecutionModeLocalSize, 8, 8, 1);
++  spv::Instruction* entry_point =
++      builder.addEntryPoint(spv::ExecutionModelGLCompute, main_function, "main");
++  // Bindings only need to be added to the entry point's interface starting with
++  // SPIR-V 1.4 - emitting 1.0 here, so only inputs / outputs.
++  entry_point->addIdOperand(input_global_invocation_id);
++
++  // Serialize the shader code.
++  std::vector<unsigned int> shader_code;
++  builder.dump(shader_code);
++
++  // Create the pipeline, and store the handle even if creation fails not to try
++  // to create it again later.
++  VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
++      command_processor_.GetVulkanDevice(), pipeline_layout,
++      reinterpret_cast<const uint32_t*>(shader_code.data()), sizeof(uint32_t) * shader_code.size());
++  if (pipeline == VK_NULL_HANDLE) {
++    REXGPU_ERROR(
++        "VulkanRenderTargetCache: Failed to create a native scaled resolve pipeline (key "
++        "0x{:08X})",
++        key.key);
++  }
++  native_resolve_scaled_pipelines_.emplace(key, pipeline);
++  return pipeline;
++}
++
++}  // namespace rex::graphics::vulkan
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -2769,9 +2769,10 @@
+ bool VulkanTextureCache::FindNativeResolveDestination(
+     uint32_t copy_dest_base, uint32_t dest_pitch_texels, xenos::TextureFormat format,
+     xenos::Endian endianness, uint32_t offset_x, uint32_t offset_y, uint32_t width,
+-    uint32_t height, NativeResolveDestination& destination_out) {
++    uint32_t height, NativeResolveDestination& destination_out, bool scaled) {
+   destination_out = NativeResolveDestination();
+-  if (IsDrawResolutionScaled() || !width || !height || (copy_dest_base & 0xFFF) ||
++  // [rexglue-native] SDK 0308: scaled textures only with a resolution scale.
++  if (IsDrawResolutionScaled() != scaled || !width || !height || (copy_dest_base & 0xFFF) ||
+       !dest_pitch_texels || (dest_pitch_texels & 31) || offset_x >= 32 || offset_y >= 32) {
+     return false;
+   }
+@@ -2782,9 +2783,9 @@
+   auto is_candidate = [&](const Texture& texture) -> bool {
+     const TextureKey& key = texture.key();
+     if (!key.is_valid || !key.tiled || key.dimension != xenos::DataDimension::k2DOrStacked ||
+-        key.depth_or_array_size_minus_1 || key.scaled_resolve || key.signed_separate ||
+-        key.pitch != pitch_tiles || key.format != format || key.endianness != endianness ||
+-        key.base_page > dest_page) {
++        key.depth_or_array_size_minus_1 || bool(key.scaled_resolve) != scaled ||
++        key.signed_separate || key.pitch != pitch_tiles || key.format != format ||
++        key.endianness != endianness || key.base_page > dest_page) {
+       return false;
+     }
+     // A base level of 16 texels or less may be in the packed mip tail.
+@@ -3003,6 +3004,70 @@
+   MarkTextureUpToDate(texture);
+ }
+ 
++// [rexglue-native] SDK 0308: a native resolve with a draw resolution scale.
++
++void VulkanTextureCache::CopyImageIntoNativeResolveDestinationScaled(
++    const NativeResolveDestination& destination, bool red_blue_swap, VkImage source_image,
++    VkPipelineStageFlags source_stage_mask, VkAccessFlags source_access_mask,
++    VkImageLayout source_layout, uint32_t source_x, uint32_t source_y, uint32_t fill_x,
++    uint32_t fill_y) {
++  if (!destination.texture || !destination.width || !destination.height) {
++    return;
++  }
++  VulkanTexture& texture = *static_cast<VulkanTexture*>(destination.texture);
++  const uint32_t scale_x = draw_resolution_scale_x();
++  const uint32_t scale_y = draw_resolution_scale_y();
++  // In host pixels.
++  const uint32_t dest_x = destination.dest_x * scale_x;
++  const uint32_t dest_y = destination.dest_y * scale_y;
++  const uint32_t width = destination.width * scale_x;
++  const uint32_t height = destination.height * scale_y;
++  // A whole 8x8 block at least is copied, the gap is less than a guest pixel.
++  fill_x = std::min(fill_x, width - 1);
++  fill_y = std::min(fill_y, height - 1);
++  command_processor_.PushImageMemoryBarrier(
++      source_image, ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT),
++      source_stage_mask, VK_PIPELINE_STAGE_TRANSFER_BIT, source_access_mask,
++      VK_ACCESS_TRANSFER_READ_BIT, source_layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++  BeginNativeResolveTextureWrite(texture);
++  command_processor_.SubmitBarriers(true);
++  // The area past the gap as it is; then each column of the gap from the first
++  // column after it, each row of the gap from the first row after it, and each
++  // pixel of the corner from the first pixel after both (none overlap in the
++  // texture, as one copy command requires).
++  const uint32_t region_count = (fill_x + 1) * (fill_y + 1);
++  VkImageCopy* regions = command_processor_.deferred_command_buffer().CmdCopyImageEmplace(
++      source_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture.image(),
++      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, region_count);
++  uint32_t region_index = 0;
++  for (uint32_t gap_y = 0; gap_y <= fill_y; ++gap_y) {
++    // gap_y == fill_y: the rows past the gap.
++    for (uint32_t gap_x = 0; gap_x <= fill_x; ++gap_x) {
++      VkImageCopy& region = regions[region_index++];
++      region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++      region.srcSubresource.mipLevel = 0;
++      region.srcSubresource.baseArrayLayer = 0;
++      region.srcSubresource.layerCount = 1;
++      region.srcOffset.x = int32_t(source_x + fill_x);
++      region.srcOffset.y = int32_t(source_y + fill_y);
++      region.srcOffset.z = 0;
++      region.dstSubresource = region.srcSubresource;
++      region.dstOffset.x = int32_t(dest_x + gap_x);
++      region.dstOffset.y = int32_t(dest_y + gap_y);
++      region.dstOffset.z = 0;
++      region.extent.width = gap_x < fill_x ? 1 : width - fill_x;
++      region.extent.height = gap_y < fill_y ? 1 : height - fill_y;
++      region.extent.depth = 1;
++    }
++  }
++  // Only when the whole texture is written (GetNativeResolveCopy).
++  if (texture.red_blue_swapped() != red_blue_swap) {
++    texture.set_red_blue_swapped(red_blue_swap);
++    RecheckTextureBindings();
++  }
++  MarkTextureUpToDate(texture);
++}
++
+ bool VulkanTextureCache::Initialize() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();

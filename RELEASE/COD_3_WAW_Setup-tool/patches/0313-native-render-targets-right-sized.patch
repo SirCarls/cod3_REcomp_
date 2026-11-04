@@ -1,0 +1,744 @@
+[rexglue-native] SDK 0313, released in setup tool 2.31.0 (2026-11-04): right-sized native render targets
+(Vulkan; only with native_render_targets on). Draft name 0310 (drafts/0310-native-render-targets-right-sized
+.UNTESTED.patch, 50cba0ef). New setting native_render_targets_right_sized (GPU, default off, read at start).
+Off, nothing changes; xenos mode is not affected.
+
+A native render target without MSAA is made only as tall as the draw it's made for may write (its scissor,
+and with clipping its viewport, rounded up to 64 rows) instead of the whole EDRAM below its base
+(1920x2736 or 1280x4096 at 32bpp, about 20 MiB times the scale squared). When a later draw, native resolve
+or resolve clear needs more rows, a taller image of the same key replaces it (old rows copied, new rows
+cleared as a new target starts; every pointer to it stays valid; the old image is freed once the GPU is done
+with it). Targets grow, never shrink; a growth costs a one-off few milliseconds. MSAA targets and formats
+that can't be copied keep the full height; anything that fails takes the old path and is logged.
+
+Tested (R5-RELEASE-CANDIDATE.md): saint_lo at 1x, 2x, 3x and 4-player mp_merv at 2x, 0 errors, the Vulkan
+validation layer with sync validation showing no new id.
+
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -53,6 +53,7 @@
+     vulkan/render_target_cache.cpp
+     vulkan/render_target_cache_native.cpp  # [rexglue-native] SDK 0302
+     vulkan/render_target_cache_native_scaled.cpp  # [rexglue-native] SDK 0308
++    vulkan/render_target_cache_native_sized.cpp  # [rexglue-native] SDK 0310
+     vulkan/shader.cpp
+     vulkan/shared_memory.cpp
+     vulkan/texture_cache.cpp
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -13,13 +13,17 @@
+ #include <array>
+ #include <cstdint>
+ #include <cstring>
++#include <deque>  // [rexglue-native] SDK 0310
+ #include <functional>
+ #include <memory>
+ #include <optional>
+ #include <unordered_map>
++#include <utility>  // [rexglue-native] SDK 0310
++#include <vector>   // [rexglue-native] SDK 0310
+
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/pipeline/render_target/cache.h>
++#include <rex/graphics/util/draw_extent_estimator.h>  // [rexglue-native] SDK 0310
+ #include <rex/graphics/vulkan/shared_memory.h>
+ #include <rex/graphics/vulkan/texture_cache.h>
+ #include <rex/graphics/xenos.h>
+@@ -372,6 +376,28 @@
+     uint32_t native_contents_generation() const { return native_contents_generation_; }
+     void BumpNativeContentsGeneration() { ++native_contents_generation_; }
+
++    // [rexglue-native] SDK 0310 (native_render_targets_right_sized): the
++    // guest pixel rows the image has (0: GetRenderTargetHeight's, made as
++    // without the setting).
++    uint32_t native_rows() const { return native_rows_; }
++    void SetNativeRows(uint32_t rows) { native_rows_ = rows; }
++    // Exchanges the image, its views and its descriptor set (and the rows)
++    // with those of another render target of the same key: a taller one made
++    // to be swapped in, which then holds the old image until the GPU is done
++    // with it (its destructor frees them). The usage state is not exchanged.
++    void SwapNativeImage(VulkanRenderTarget& other) {
++      std::swap(image_, other.image_);
++      std::swap(memory_, other.memory_);
++      std::swap(view_depth_color_, other.view_depth_color_);
++      std::swap(view_depth_stencil_, other.view_depth_stencil_);
++      std::swap(view_stencil_, other.view_stencil_);
++      std::swap(view_srgb_, other.view_srgb_);
++      std::swap(view_color_transfer_separate_, other.view_color_transfer_separate_);
++      std::swap(descriptor_set_index_transfer_source_,
++                other.descriptor_set_index_transfer_source_);
++      std::swap(native_rows_, other.native_rows_);
++    }
++
+    private:
+     VulkanRenderTargetCache& render_target_cache_;
+
+@@ -398,6 +424,7 @@
+     uint32_t temporary_sort_index_ = 0;
+
+     uint32_t native_contents_generation_ = 0;  // [rexglue-native] SDK 0309
++    uint32_t native_rows_ = 0;                 // [rexglue-native] SDK 0310
+   };
+
+   struct FramebufferKey {
+@@ -1051,6 +1078,61 @@
+   // yet (PerformNativeInitialClears).
+   std::vector<RenderTarget*> native_initial_clears_;
+
++  // [rexglue-native] SDK 0310: right-sized native render targets
++  // (render_target_cache_native_sized.cpp, native_render_targets_right_sized,
++  // native mode only). A render target without MSAA is made only as tall as
++  // the draw it's made for needs (the rows its scissor, and with clipping its
++  // viewport, let it write), rounded up; when a later draw, resolve or clear
++  // needs more rows, it's made taller: a taller image of the same key, the old
++  // rows copied into it and the new ones cleared as a new render target
++  // starts, swapped in, the old one destroyed once the GPU is done with it.
++  // Never made shorter; never taller than GetRenderTargetHeight.
++  void InitializeNativeRightSized();
++  void ShutdownNativeRightSized();
++  // The guest pixel rows the render target's image has.
++  uint32_t GetRenderTargetRows(const RenderTarget& render_target) const;
++  // For CreateRenderTarget: the rows to make the key with (native_rows_wanted_
++  // rounded up), 0 for the full height as without the setting (setting off,
++  // MSAA, a format that can't be copied).
++  uint32_t GetNativeRowsToCreate(RenderTargetKey key);
++  bool IsNativeTransferFormat(VkFormat format);
++  // The rows a draw may write (0 if it binds no render target).
++  uint32_t GetNativeDrawRows(bool is_rasterization_done,
++                             reg::RB_DEPTHCONTROL normalized_depth_control,
++                             uint32_t normalized_color_mask, const Shader& vertex_shader);
++  // Makes the render target (if right-sized) at least `rows` tall; false if a
++  // taller one couldn't be made. `reason` is for the log.
++  bool EnsureNativeRenderTargetRows(RenderTarget* render_target, uint32_t rows,
++                                    const char* reason);
++  bool EnsureNativeRenderTargetsRows(RenderTarget* const* render_targets, uint32_t count,
++                                     uint32_t rows);
++  // The rows of the shortest attachment of a framebuffer.
++  uint32_t GetNativeFramebufferRows(RenderPassKey render_pass_key,
++                                    const RenderTarget* const* depth_and_color_render_targets) const;
++  // Drops every framebuffer (they reference the old views), destroyed once the
++  // GPU is done with them.
++  void RetireNativeFramebuffers();
++  void DestroyRetiredNativeRenderTargets(uint64_t completed_submission);
++  uint64_t GetNativeRowsBytes(RenderTargetKey key, uint32_t rows) const;
++  void NoteNativeRenderTargetMade(RenderTargetKey key, uint32_t rows);
++  void LogNativeRows(RenderTargetKey key, uint32_t old_rows, uint32_t new_rows,
++                     const char* reason);
++  const memory::Memory* native_memory_ = nullptr;
++  bool native_right_sized_ = false;
++  // The rows CreateRenderTarget makes a right-sized render target with.
++  uint32_t native_rows_wanted_ = 0;
++  // CreateRenderTarget is making a taller image for an existing one.
++  bool native_rows_growing_ = false;
++  // Made in InitializeNativeRightSized: the base class's own is private.
++  std::unique_ptr<DrawExtentEstimator> native_draw_extent_estimator_;
++  // By the submission after which the GPU is done with them.
++  std::deque<std::pair<uint64_t, VulkanRenderTarget*>> native_retired_render_targets_;
++  std::deque<std::pair<uint64_t, VkFramebuffer>> native_retired_framebuffers_;
++  std::vector<std::pair<VkFormat, bool>> native_rows_transfer_formats_;
++  uint64_t native_rows_bytes_ = 0;
++  uint64_t native_rows_bytes_full_ = 0;
++  uint32_t native_rows_log_lines_ = 0;
++
+   // Temporary storage for PerformTransfersAndResolveClears.
+   std::vector<TransferInvocation> current_transfer_invocations_;
+
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -205,7 +205,8 @@
+                                                  uint32_t draw_resolution_scale_y,
+                                                  VulkanCommandProcessor& command_processor)
+     : RenderTargetCache(register_file, memory, draw_resolution_scale_x, draw_resolution_scale_y),
+-      command_processor_(command_processor) {}
++      command_processor_(command_processor),
++      native_memory_(&memory) {}  // [rexglue-native] SDK 0310
+
+ VulkanRenderTargetCache::~VulkanRenderTargetCache() {
+   Shutdown(true);
+@@ -1028,6 +1029,7 @@
+   if (IsNativeRenderTargets()) {
+     REXGPU_INFO("VulkanRenderTargetCache: native render targets (native_render_targets)");
+   }
++  InitializeNativeRightSized();  // [rexglue-native] SDK 0310
+   return true;
+ }
+
+@@ -1042,6 +1044,9 @@
+   // already too late.
+   native_initial_clears_.clear();  // [rexglue-native] SDK 0301
+   DestroyAllRenderTargets(true);
++  // [rexglue-native] SDK 0310: the images right-sized render targets were
++  // made taller from (before the descriptor set pools go).
++  ShutdownNativeRightSized();
+
+   ui::vulkan::util::DestroyAndNullHandle(dfn.vkDestroyPipeline, device,
+                                          resolve_fsi_clear_64bpp_pipeline_);
+@@ -1191,6 +1196,11 @@
+   if (transfer_vertex_buffer_pool_) {
+     transfer_vertex_buffer_pool_->Reclaim(command_processor_.GetCompletedSubmission());
+   }
++  // [rexglue-native] SDK 0310: what right-sized render targets were made
++  // taller from, once the GPU is done with it.
++  if (native_right_sized_) {
++    DestroyRetiredNativeRenderTargets(command_processor_.GetCompletedSubmission());
++  }
+ }
+
+ void VulkanRenderTargetCache::EndSubmission() {
+@@ -1446,6 +1456,17 @@
+         bool clear_prepared = PrepareHostRenderTargetsResolveClear(
+             resolve_info, clear_rectangle, clear_render_targets[0], clear_transfers_[0],
+             clear_render_targets[1], clear_transfers_[1]);
++        // [rexglue-native] SDK 0310: right-sized render targets as tall as the
++        // cleared area first (one that can't be made so is left out).
++        if (clear_prepared && native_right_sized_) {
++          for (RenderTarget*& clear_render_target : clear_render_targets) {
++            if (!EnsureNativeRenderTargetRows(
++                    clear_render_target, clear_rectangle.y_pixels + clear_rectangle.height_pixels,
++                    "a clear")) {
++              clear_render_target = nullptr;
++            }
++          }
++        }
+         // [rexglue-native] SDK 0301: a render target created just now for the
+         // clear starts cleared as a whole first.
+         PerformNativeInitialClears();
+@@ -1522,10 +1543,21 @@
+ bool VulkanRenderTargetCache::Update(bool is_rasterization_done,
+                                      reg::RB_DEPTHCONTROL normalized_depth_control,
+                                      uint32_t normalized_color_mask, const Shader& vertex_shader) {
++  // [rexglue-native] SDK 0310: with right-sized native render targets, the rows
++  // this draw may write, for those the base Update makes for it and for all
++  // bound below.
++  uint32_t native_draw_rows = 0;
++  if (native_right_sized_) {
++    native_draw_rows = GetNativeDrawRows(is_rasterization_done, normalized_depth_control,
++                                         normalized_color_mask, vertex_shader);
++    native_rows_wanted_ = native_draw_rows;
++  }
+   if (!RenderTargetCache::Update(is_rasterization_done, normalized_depth_control,
+                                  normalized_color_mask, vertex_shader)) {
++    native_rows_wanted_ = 0;  // [rexglue-native] SDK 0310
+     return false;
+   }
++  native_rows_wanted_ = 0;  // [rexglue-native] SDK 0310
+
+   auto rb_surface_info = register_file().Get<reg::RB_SURFACE_INFO>();
+
+@@ -1539,6 +1571,13 @@
+       RenderTarget* const* depth_and_color_render_targets =
+           last_update_accumulated_render_targets();
+
++      // [rexglue-native] SDK 0310: every bound one at least as tall as the draw
++      // needs (the framebuffer is as tall as its shortest attachment).
++      if (native_draw_rows &&
++          !EnsureNativeRenderTargetsRows(depth_and_color_render_targets,
++                                         1 + xenos::kMaxColorRenderTargets, native_draw_rows)) {
++        return false;
++      }
+       PerformNativeInitialClears();  // [rexglue-native] SDK 0301
+       // [rexglue-native] SDK 0309: drawn into from here on.
+       if (native_resolve_records_active_) {
+@@ -2052,6 +2091,14 @@
+     // the setting can change while the game runs).
+     image_create_info.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+   }
++  // [rexglue-native] SDK 0310: right-sized (render_target_cache_native_sized.cpp):
++  // only as tall as asked for so far, and a source and destination of copies
++  // (to be made taller).
++  const uint32_t native_rows = GetNativeRowsToCreate(key);
++  if (native_rows) {
++    image_create_info.extent.height = native_rows * draw_resolution_scale_y();
++    image_create_info.usage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++  }
+   if (image_create_info.format == VK_FORMAT_UNDEFINED) {
+     REXGPU_ERROR("VulkanRenderTargetCache: Unknown {} render target format {}",
+                  key.is_depth ? "depth" : "color", static_cast<uint32_t>(key.resource_format));
+@@ -2227,6 +2274,11 @@
+       new VulkanRenderTarget(key, *this, image, memory, view_depth_color, view_depth_stencil,
+                              view_stencil, view_srgb, view_color_transfer_separate,
+                              descriptor_set_index_transfer_source);
++  // [rexglue-native] SDK 0310
++  if (native_rows) {
++    render_target->SetNativeRows(native_rows);
++    NoteNativeRenderTargetMade(key, native_rows);
++  }
+   // [rexglue-native] SDK 0301: cleared before its first use
+   // (PerformNativeInitialClears), not here, as the caller may be in the middle
+   // of setting up the render targets of a draw.
+@@ -2258,7 +2310,8 @@
+     rectangle.x_pixels = 0;
+     rectangle.y_pixels = 0;
+     rectangle.width_pixels = key.GetWidth();
+-    rectangle.height_pixels = GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++    // [rexglue-native] SDK 0310: the rows it has (right-sized: maybe fewer).
++    rectangle.height_pixels = GetRenderTargetRows(*render_target);
+     PerformTransfersAndResolveClears(1, &render_target, &no_transfers, &clear_value, &rectangle);
+   }
+   native_initial_clears_.clear();
+@@ -2456,6 +2509,13 @@
+     host_extent.width =
+         RenderTargetKey::GetWidth(pitch_tiles_at_32bpp, render_pass_key.msaa_samples);
+     host_extent.height = GetRenderTargetHeight(pitch_tiles_at_32bpp, render_pass_key.msaa_samples);
++    // [rexglue-native] SDK 0310: right-sized attachments may be shorter - as
++    // tall as the shortest.
++    if (native_right_sized_) {
++      host_extent.height =
++          std::min(host_extent.height,
++                   GetNativeFramebufferRows(render_pass_key, depth_and_color_render_targets));
++    }
+   } else {
+     assert_zero(render_pass_key.depth_and_color_used);
+     // Still needed for occlusion queries.
+@@ -6333,8 +6393,10 @@
+   const uint32_t width = resolve_info.coordinate_info.width_div_8
+                          << xenos::kResolveAlignmentPixelsLog2;
+   const uint32_t height = resolve_info.height_div_8 << xenos::kResolveAlignmentPixelsLog2;
++  // [rexglue-native] SDK 0310: right-sized, the rows its image has.
+   const uint32_t rt_height =
+-      GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples);
++      native_right_sized_ ? GetRenderTargetRows(vulkan_rt)
++                          : GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples);
+   if (source_x + width > pitch_tiles * xenos::kEdramTileWidthSamples ||
+       source_y + height > rt_height) {
+     if (first_time(5)) {
+diff --git a/src/graphics/vulkan/render_target_cache_native.cpp b/src/graphics/vulkan/render_target_cache_native.cpp
+--- a/src/graphics/vulkan/render_target_cache_native.cpp
++++ b/src/graphics/vulkan/render_target_cache_native.cpp
+@@ -118,6 +118,14 @@
+           GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples)) {
+     return skip(5, "the area is outside its render target");
+   }
++  // [rexglue-native] SDK 0310: a right-sized render target is first made as
++  // tall as the area needs (rows it didn't have start cleared, as they would be
++  // in a full-height one where nothing drew).
++  if (native_right_sized_ &&
++      !EnsureNativeRenderTargetRows(&vulkan_rt, source_y + height, "a resolve")) {
++    return skip(9, "its render target couldn't be made tall enough "
++                   "(native_render_targets_right_sized)");
++  }
+   bool source_is_uint = false;
+   if (!is_depth) {
+     GetColorOwnershipTransferVulkanFormat(rt_key.GetColorFormat(), rt_key.msaa_samples,
+diff --git a/src/graphics/vulkan/render_target_cache_native_scaled.cpp b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+--- a/src/graphics/vulkan/render_target_cache_native_scaled.cpp
++++ b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+@@ -277,6 +277,13 @@
+           GetRenderTargetHeight(rt_key.pitch_tiles_at_32bpp, rt_key.msaa_samples)) {
+     return skip(7, "the area is outside its render target");
+   }
++  // [rexglue-native] SDK 0310: a right-sized render target is first made as
++  // tall as the area needs.
++  if (native_right_sized_ &&
++      !EnsureNativeRenderTargetRows(&vulkan_rt, source_y + height, "a resolve")) {
++    return skip(18, "its render target couldn't be made tall enough "
++                    "(native_render_targets_right_sized)");
++  }
+   bool source_is_uint = false;
+   if (!is_depth) {
+     GetColorOwnershipTransferVulkanFormat(rt_key.GetColorFormat(), rt_key.msaa_samples,
+diff --git a/src/graphics/vulkan/render_target_cache_native_sized.cpp b/src/graphics/vulkan/render_target_cache_native_sized.cpp
+new file mode 100644
+--- /dev/null
++++ b/src/graphics/vulkan/render_target_cache_native_sized.cpp
+@@ -0,0 +1,397 @@
++/**
++ ******************************************************************************
++ * Xenia : Xbox 360 Emulator Research Project                                 *
++ ******************************************************************************
++ * Copyright 2022 Ben Vanik. All rights reserved.                             *
++ * Released under the BSD license - see LICENSE in the root for more details. *
++ ******************************************************************************
++ *
++ * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
++ */
++
++// [rexglue-native] SDK 0310 (draft, UNTESTED): right-sized native render
++// targets (native_render_targets_right_sized, with native_render_targets).
++// The EDRAM emulation makes every host render target as tall as the EDRAM
++// below its base can hold (GetRenderTargetHeight: a 1920-wide one 2736 rows,
++// a 1280-wide one 4096), since the EDRAM's tiles may be aliased by any render
++// target. Native render targets don't alias, so each one only needs the rows
++// the game actually uses:
++// - made: the rows the draw it's made for may write (its scissor, and with
++//   clipping its viewport: the host doesn't draw lower), rounded up to 64;
++// - made taller (never shorter) when a later draw (every render target bound,
++//   since the framebuffer is as tall as its shortest attachment), a native
++//   resolve or a resolve clear needs more: a taller image of the same key is
++//   made, the old rows copied into it (vkCmdCopyImage) and the new ones
++//   cleared to what a new native render target starts with (0301), it's
++//   swapped into the render target object (pointers to it stay valid), and the
++//   old image and every framebuffer (they reference the old views) are
++//   destroyed once the GPU is done with them.
++// EDRAM-path resolves in native mode (the fallbacks) dump only tiles a render
++// target owns, and ownership never goes below what its draws and clears
++// asked for, so their rows are always there.
++// Not right-sized (made at the full height as without the setting): MSAA
++// render targets, formats the device can't copy, and anything with the
++// setting off. Without native_render_targets nothing here runs.
++
++#include <algorithm>
++#include <cstdint>
++#include <utility>
++#include <vector>
++
++#include <rex/assert.h>
++#include <rex/cvar.h>
++#include <rex/graphics/registers.h>
++#include <rex/graphics/vulkan/command_processor.h>
++#include <rex/graphics/vulkan/deferred_command_buffer.h>
++#include <rex/graphics/vulkan/render_target_cache.h>
++#include <rex/graphics/xenos.h>
++#include <rex/logging.h>
++#include <rex/math.h>
++#include <rex/ui/vulkan/util.h>
++
++// Read at the render target cache's Initialize (like native_render_targets).
++REXCVAR_DEFINE_BOOL(native_render_targets_right_sized, false, "GPU",
++                    "With native_render_targets: each render target without MSAA is made only as "
++                    "tall as the game's draws, resolves and clears of it need (made taller, its "
++                    "contents copied, when more is needed) instead of the whole height of the "
++                    "EDRAM below its base: less graphics card memory, the same pictures. Read at "
++                    "start")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++namespace rex::graphics::vulkan {
++
++namespace {
++// Guest pixel rows right-sized render targets are made in multiples of (4 EDRAM
++// tile rows): a 1013-row 1080p view takes 1024, a 720-row one 768.
++constexpr uint32_t kNativeRowsGranularity = 64;
++// Lines logged about made and grown render targets, at most.
++constexpr uint32_t kNativeRowsLogLines = 128;
++}  // namespace
++
++void VulkanRenderTargetCache::InitializeNativeRightSized() {
++  native_right_sized_ = false;
++  native_rows_wanted_ = 0;
++  native_rows_growing_ = false;
++  native_rows_transfer_formats_.clear();
++  native_rows_bytes_ = 0;
++  native_rows_bytes_full_ = 0;
++  native_rows_log_lines_ = 0;
++  if (!IsNativeRenderTargets() || GetPath() != Path::kHostRenderTargets ||
++      !REXCVAR_GET(native_render_targets_right_sized) || !native_memory_) {
++    return;
++  }
++  if (!native_draw_extent_estimator_) {
++    native_draw_extent_estimator_ =
++        std::make_unique<DrawExtentEstimator>(register_file(), *native_memory_);
++  }
++  native_right_sized_ = true;
++  REXGPU_INFO(
++      "VulkanRenderTargetCache: native render targets only as tall as used "
++      "(native_render_targets_right_sized)");
++}
++
++void VulkanRenderTargetCache::ShutdownNativeRightSized() {
++  // Shutdown is called with the GPU done with everything.
++  DestroyRetiredNativeRenderTargets(UINT64_MAX);
++  native_right_sized_ = false;
++  native_rows_wanted_ = 0;
++  native_rows_growing_ = false;
++}
++
++uint32_t VulkanRenderTargetCache::GetRenderTargetRows(const RenderTarget& render_target) const {
++  const uint32_t rows = static_cast<const VulkanRenderTarget&>(render_target).native_rows();
++  if (rows) {
++    return rows;
++  }
++  const RenderTargetKey key = render_target.key();
++  return GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++}
++
++bool VulkanRenderTargetCache::IsNativeTransferFormat(VkFormat format) {
++  if (format == VK_FORMAT_UNDEFINED) {
++    return false;
++  }
++  for (const auto& [known_format, supported] : native_rows_transfer_formats_) {
++    if (known_format == format) {
++      return supported;
++    }
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();
++  VkFormatProperties properties;
++  ifn.vkGetPhysicalDeviceFormatProperties(vulkan_device->physical_device(), format, &properties);
++  constexpr VkFormatFeatureFlags kNeeded =
++      VK_FORMAT_FEATURE_TRANSFER_SRC_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
++  const bool supported = (properties.optimalTilingFeatures & kNeeded) == kNeeded;
++  native_rows_transfer_formats_.emplace_back(format, supported);
++  if (!supported) {
++    REXGPU_INFO(
++        "native_render_targets_right_sized: Vulkan format {} can't be copied, its render targets "
++        "are made at the full height",
++        uint32_t(format));
++  }
++  return supported;
++}
++
++uint32_t VulkanRenderTargetCache::GetNativeRowsToCreate(RenderTargetKey key) {
++  if (!native_right_sized_ || key.msaa_samples != xenos::MsaaSamples::k1X) {
++    return 0;
++  }
++  const VkFormat format = key.is_depth ? GetDepthVulkanFormat(key.GetDepthFormat())
++                                       : GetColorVulkanFormat(key.GetColorFormat());
++  if (!IsNativeTransferFormat(format)) {
++    return 0;
++  }
++  const uint32_t full_rows = GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++  return std::min(full_rows,
++                  rex::align(std::max(native_rows_wanted_, uint32_t(1)), kNativeRowsGranularity));
++}
++
++uint32_t VulkanRenderTargetCache::GetNativeDrawRows(bool is_rasterization_done,
++                                                    reg::RB_DEPTHCONTROL normalized_depth_control,
++                                                    uint32_t normalized_color_mask,
++                                                    const Shader& vertex_shader) {
++  // What the base Update binds render targets for.
++  if (!is_rasterization_done || !native_draw_extent_estimator_ ||
++      !register_file().Get<reg::RB_SURFACE_INFO>().surface_pitch ||
++      (!normalized_depth_control.z_enable && !normalized_depth_control.stencil_enable &&
++       !normalized_color_mask)) {
++    return 0;
++  }
++  // Only the hard bounds, never the estimate from the vertices on the CPU
++  // (execute_unclipped_draw_vs_on_cpu): the host draws no lower than its
++  // scissor, which is the guest's, and with clipping than the viewport.
++  return native_draw_extent_estimator_->EstimateMaxY(false, vertex_shader);
++}
++
++bool VulkanRenderTargetCache::EnsureNativeRenderTargetsRows(RenderTarget* const* render_targets,
++                                                            uint32_t count, uint32_t rows) {
++  for (uint32_t i = 0; i < count; ++i) {
++    if (!EnsureNativeRenderTargetRows(render_targets[i], rows, "a draw")) {
++      return false;
++    }
++  }
++  return true;
++}
++
++bool VulkanRenderTargetCache::EnsureNativeRenderTargetRows(RenderTarget* render_target,
++                                                           uint32_t rows, const char* reason) {
++  if (!native_right_sized_ || !render_target) {
++    return true;
++  }
++  auto& vulkan_rt = *static_cast<VulkanRenderTarget*>(render_target);
++  const uint32_t old_rows = vulkan_rt.native_rows();
++  // Made at the full height (not right-sized), or tall enough.
++  if (!old_rows || rows <= old_rows) {
++    return true;
++  }
++  const RenderTargetKey key = vulkan_rt.key();
++  const uint32_t full_rows = GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++  if (old_rows >= full_rows) {
++    return true;
++  }
++  const uint32_t new_rows = std::min(full_rows, rex::align(rows, kNativeRowsGranularity));
++
++  // The render pass the command processor may be in uses a framebuffer
++  // dropped below.
++  command_processor_.SubmitBarriers(true);
++
++  // A render target of the same key, as tall as needed, made the usual way;
++  // only its image (views, descriptor set) is kept, swapped in below.
++  const uint32_t rows_wanted = native_rows_wanted_;
++  native_rows_wanted_ = new_rows;
++  native_rows_growing_ = true;
++  RenderTarget* const taller_base = CreateRenderTarget(key);
++  native_rows_growing_ = false;
++  native_rows_wanted_ = rows_wanted;
++  if (!taller_base) {
++    REXGPU_ERROR(
++        "native_render_targets_right_sized: couldn't make {} {} rows tall (for {}; it has {})",
++        key.GetDebugName(), new_rows, reason, old_rows);
++    return false;
++  }
++  // CreateRenderTarget queued it for the initial clear of new native render
++  // targets: not this one.
++  if (!native_initial_clears_.empty() && native_initial_clears_.back() == taller_base) {
++    native_initial_clears_.pop_back();
++  }
++  auto& taller = *static_cast<VulkanRenderTarget*>(taller_base);
++  if (taller.native_rows() != new_rows) {
++    // Not made right-sized after all (unexpected): never used, nothing to wait for.
++    REXGPU_ERROR("native_render_targets_right_sized: {} was made {} rows tall, not {}",
++                 key.GetDebugName(), GetRenderTargetRows(taller), new_rows);
++    delete taller_base;
++    return false;
++  }
++
++  // Not cleared yet (made since the last initial clears): nothing to copy, the
++  // initial clear clears the taller image as a whole.
++  const bool clear_pending =
++      std::find(native_initial_clears_.cbegin(), native_initial_clears_.cend(), render_target) !=
++      native_initial_clears_.cend();
++  const VkImageSubresourceRange subresource_range = ui::vulkan::util::InitializeSubresourceRange(
++      key.is_depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
++                   : VK_IMAGE_ASPECT_COLOR_BIT);
++  if (!clear_pending) {
++    command_processor_.PushImageMemoryBarrier(
++        vulkan_rt.image(), subresource_range, vulkan_rt.current_stage_mask(),
++        VK_PIPELINE_STAGE_TRANSFER_BIT, vulkan_rt.current_access_mask(), VK_ACCESS_TRANSFER_READ_BIT,
++        vulkan_rt.current_layout(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++    command_processor_.PushImageMemoryBarrier(
++        taller.image(), subresource_range, 0, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
++        VK_ACCESS_TRANSFER_WRITE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++    command_processor_.SubmitBarriers(true);
++    VkImageCopy* region = command_processor_.deferred_command_buffer().CmdCopyImageEmplace(
++        vulkan_rt.image(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, taller.image(),
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
++    region->srcSubresource.aspectMask = subresource_range.aspectMask;
++    region->srcSubresource.mipLevel = 0;
++    region->srcSubresource.baseArrayLayer = 0;
++    region->srcSubresource.layerCount = 1;
++    region->srcOffset.x = 0;
++    region->srcOffset.y = 0;
++    region->srcOffset.z = 0;
++    region->dstSubresource = region->srcSubresource;
++    region->dstOffset = region->srcOffset;
++    region->extent.width = key.GetWidth() * draw_resolution_scale_x();
++    region->extent.height = old_rows * draw_resolution_scale_y();
++    region->extent.depth = 1;
++  }
++
++  // From here on the render target holds the taller image; `taller` holds the
++  // old one until the GPU is done with this submission.
++  vulkan_rt.SwapNativeImage(taller);
++  if (!clear_pending) {
++    vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
++                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
++  }
++  native_retired_render_targets_.emplace_back(command_processor_.GetCurrentSubmission(), &taller);
++  // [rexglue-native] SDK 0309's resolve records: not refilled from a moved
++  // image (they'd be right, the contents are copied, but this keeps it simple).
++  vulkan_rt.BumpNativeContentsGeneration();
++  RetireNativeFramebuffers();
++  native_rows_bytes_ += GetNativeRowsBytes(key, new_rows) - GetNativeRowsBytes(key, old_rows);
++
++  if (!clear_pending) {
++    // The rows it didn't have hold what a new native render target starts
++    // with (PerformNativeInitialClears), as in a full-height one where nothing
++    // was drawn: color 0, depth 1.0, stencil 0.
++    uint64_t clear_value = 0;
++    if (key.is_depth) {
++      uint32_t depth_one = key.GetDepthFormat() == xenos::DepthRenderTargetFormat::kD24FS8
++                               ? xenos::Float32To20e4(1.0f, false)
++                               : uint32_t(0xFFFFFF);
++      clear_value = uint64_t(depth_one) << 8;
++    }
++    Transfer::Rectangle rectangle;
++    rectangle.x_pixels = 0;
++    rectangle.y_pixels = old_rows;
++    rectangle.width_pixels = key.GetWidth();
++    rectangle.height_pixels = new_rows - old_rows;
++    const std::vector<Transfer> no_transfers;
++    PerformTransfersAndResolveClears(1, &render_target, &no_transfers, &clear_value, &rectangle);
++  }
++
++  LogNativeRows(key, old_rows, new_rows, reason);
++  return true;
++}
++
++uint32_t VulkanRenderTargetCache::GetNativeFramebufferRows(
++    RenderPassKey render_pass_key, const RenderTarget* const* depth_and_color_render_targets) const {
++  uint32_t rows = UINT32_MAX;
++  uint32_t render_targets_remaining = render_pass_key.depth_and_color_used;
++  uint32_t rt_index;
++  while (rex::bit_scan_forward(render_targets_remaining, &rt_index)) {
++    render_targets_remaining &= ~(uint32_t(1) << rt_index);
++    const RenderTarget* render_target = depth_and_color_render_targets[rt_index];
++    if (render_target) {
++      rows = std::min(rows, GetRenderTargetRows(*render_target));
++    }
++  }
++  return rows;
++}
++
++void VulkanRenderTargetCache::RetireNativeFramebuffers() {
++  const uint64_t submission = command_processor_.GetCurrentSubmission();
++  for (const auto& framebuffer_pair : framebuffers_) {
++    if (framebuffer_pair.second.framebuffer != VK_NULL_HANDLE) {
++      native_retired_framebuffers_.emplace_back(submission, framebuffer_pair.second.framebuffer);
++    }
++  }
++  framebuffers_.clear();
++  last_update_framebuffer_ = nullptr;
++}
++
++void VulkanRenderTargetCache::DestroyRetiredNativeRenderTargets(uint64_t completed_submission) {
++  if (native_retired_framebuffers_.empty() && native_retired_render_targets_.empty()) {
++    return;
++  }
++  const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
++  const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
++  const VkDevice device = vulkan_device->device();
++  // Framebuffers first: they reference the views.
++  while (!native_retired_framebuffers_.empty() &&
++         native_retired_framebuffers_.front().first <= completed_submission) {
++    dfn.vkDestroyFramebuffer(device, native_retired_framebuffers_.front().second, nullptr);
++    native_retired_framebuffers_.pop_front();
++  }
++  while (!native_retired_render_targets_.empty() &&
++         native_retired_render_targets_.front().first <= completed_submission) {
++    // Its destructor destroys the old image, its views and frees its
++    // descriptor set.
++    delete native_retired_render_targets_.front().second;
++    native_retired_render_targets_.pop_front();
++  }
++}
++
++uint64_t VulkanRenderTargetCache::GetNativeRowsBytes(RenderTargetKey key, uint32_t rows) const {
++  // 4 bytes a pixel (8 for 64bpp color, 5 for 32-bit float depth with stencil).
++  uint64_t bytes_per_pixel = 4;
++  if (key.is_depth) {
++    if (GetDepthVulkanFormat(key.GetDepthFormat()) == VK_FORMAT_D32_SFLOAT_S8_UINT) {
++      bytes_per_pixel = 5;
++    }
++  } else if (key.Is64bpp()) {
++    bytes_per_pixel = 8;
++  }
++  return uint64_t(key.GetWidth()) * draw_resolution_scale_x() * rows * draw_resolution_scale_y() *
++         bytes_per_pixel;
++}
++
++void VulkanRenderTargetCache::NoteNativeRenderTargetMade(RenderTargetKey key, uint32_t rows) {
++  // A taller image for an existing one is noted by EnsureNativeRenderTargetRows.
++  if (!rows || native_rows_growing_) {
++    return;
++  }
++  native_rows_bytes_ += GetNativeRowsBytes(key, rows);
++  native_rows_bytes_full_ +=
++      GetNativeRowsBytes(key, GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples));
++  LogNativeRows(key, 0, rows, "a draw or a clear");
++}
++
++void VulkanRenderTargetCache::LogNativeRows(RenderTargetKey key, uint32_t old_rows,
++                                            uint32_t new_rows, const char* reason) {
++  if (native_rows_log_lines_ >= kNativeRowsLogLines) {
++    return;
++  }
++  ++native_rows_log_lines_;
++  const uint32_t full_rows = GetRenderTargetHeight(key.pitch_tiles_at_32bpp, key.msaa_samples);
++  const double mib = 1.0 / (1024.0 * 1024.0);
++  const char* last = native_rows_log_lines_ >= kNativeRowsLogLines ? " (no more of these lines)" : "";
++  if (old_rows) {
++    REXGPU_INFO(
++        "native_render_targets_right_sized: {} grown from {} to {} rows for {} (full height {}); "
++        "right-sized render targets {:.1f} MiB, {:.1f} MiB at full height{}",
++        key.GetDebugName(), old_rows, new_rows, reason, full_rows,
++        double(native_rows_bytes_) * mib, double(native_rows_bytes_full_) * mib, last);
++  } else {
++    REXGPU_INFO(
++        "native_render_targets_right_sized: {} made {}x{} for {} (full height {}); right-sized "
++        "render targets {:.1f} MiB, {:.1f} MiB at full height{}",
++        key.GetDebugName(), key.GetWidth(), new_rows, reason, full_rows,
++        double(native_rows_bytes_) * mib, double(native_rows_bytes_full_) * mib, last);
++  }
++}
++
++}  // namespace rex::graphics::vulkan

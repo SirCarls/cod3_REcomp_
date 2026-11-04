@@ -1,0 +1,942 @@
+[rexglue-native] SDK 0309, released in setup tool 2.31.0 (2026-11-04). Native depth resolves and resolve
+records at a draw resolution scale (Vulkan; on top of 0308; only with native_resolves_at_draw_scale on).
+Off, nothing changes.
+
+With native_resolves_at_draw_scale on, depth resolves (and color whose red/blue order the texture can't
+take) are done natively at the scale too: the pass writes the texture's texels at the scale into the
+scratch buffer, converted as the scaled depth load shaders do (k_24_8, k_24_8_FLOAT, k_8_8_8_8), then a
+buffer-to-image copy (scratch capped at 128 MB; past that it loads as before). A resolve with no scaled
+texture yet is done natively as well, writing the scaled resolve buffer so the texture made later loads
+right. New setting native_resolve_records_at_draw_scale (GPU, default off): each native color resolve is
+recorded with the render target area it came from, and a scaled 8888 texture loaded later over that memory
+is copied from the render target if nothing has drawn into or cleared it since; otherwise it loads from the
+buffer as before.
+
+Tested with 0308 (dev/agents/rexglue-native/R3-SCALE-ASYNC.md, R4-SCALE-TIMING.md,
+R5-RELEASE-CANDIDATE.md): depth and records at 2x and 3x, 0 errors, pictures within noise.
+
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -366,6 +366,12 @@
+     uint32_t temporary_sort_index() const { return temporary_sort_index_; }
+     void SetTemporarySortIndex(uint32_t index) { temporary_sort_index_ = index; }
+ 
++    // [rexglue-native] SDK 0309: changes whenever the render target may be
++    // drawn into or cleared (only counted while native resolve records are
++    // kept), so a record of a resolve from it knows whether it still holds it.
++    uint32_t native_contents_generation() const { return native_contents_generation_; }
++    void BumpNativeContentsGeneration() { ++native_contents_generation_; }
++
+    private:
+     VulkanRenderTargetCache& render_target_cache_;
+ 
+@@ -390,6 +396,8 @@
+ 
+     // Temporary storage for indices in operations like transfers and dumps.
+     uint32_t temporary_sort_index_ = 0;
++
++    uint32_t native_contents_generation_ = 0;  // [rexglue-native] SDK 0309
+   };
+ 
+   struct FramebufferKey {
+@@ -914,6 +922,9 @@
+   // downscale would take from them into shared memory. The scaled texture the
+   // game samples is then copied from the render target. Returns false, having
+   // done nothing that matters, for anything else (the EDRAM path does it).
++  // [rexglue-native] SDK 0309: depth too, and color whose red and blue the
++  // texture can't take (the texture's texels through the scratch buffer, at
++  // the scale), and resolves with no scaled texture yet.
+   bool NativeResolveScaled(const draw_util::ResolveInfo& resolve_info,
+                            VulkanSharedMemory& shared_memory, VulkanTextureCache& texture_cache);
+   VkPipeline GetNativeResolveScaledPipeline(NativeResolvePipelineKey key);
+@@ -921,6 +932,51 @@
+   void InitializeNativeResolveScaled();
+   void ShutdownNativeResolveScaled();
+ 
++  // [rexglue-native] SDK 0309: records of native color resolves with a draw
++  // resolution scale (native_resolve_records_at_draw_scale): where each one
++  // went and which render target area it came from, while that render target
++  // hasn't been drawn into or cleared since. A scaled texture loaded later
++  // over a recorded destination (made after the resolve, or another texture
++  // over the same memory) is copied from the render target instead of being
++  // loaded from the scaled resolve buffer (VulkanTextureCache::
++  // SetNativeScaledRefill). Records never overlap in memory: a newer resolve
++  // over the same memory, native or not, drops the older one.
++  struct NativeResolveRecord {
++    // nullptr: unused.
++    VulkanRenderTarget* render_target = nullptr;
++    uint32_t render_target_generation = 0;
++    // The guest memory it wrote, [extent_start, extent_end).
++    uint32_t extent_start = 0;
++    uint32_t extent_end = 0;
++    // draw_util::ResolveInfo::copy_dest_base >> 12, the destination pitch in
++    // 32-texel tiles, and the area in the destination's first tile, in texels.
++    uint32_t dest_page = 0;
++    uint32_t pitch_tiles = 0;
++    uint32_t offset_x = 0;
++    uint32_t offset_y = 0;
++    uint32_t width = 0;
++    uint32_t height = 0;
++    // Where the area is in the render target, in guest pixels.
++    uint32_t source_x = 0;
++    uint32_t source_y = 0;
++    xenos::Endian endian = xenos::Endian::kNone;
++    bool red_blue_swap = false;
++    bool fill_half_pixel_offset = false;
++  };
++  static constexpr uint32_t kNativeResolveRecordCount = 16;
++  void ClearNativeResolveRecords();
++  // Drops the records of any memory in [start, start + length).
++  void InvalidateNativeResolveRecords(uint32_t start, uint32_t length);
++  void AddNativeResolveRecord(const NativeResolveRecord& record);
++  // For the render targets about to be drawn into or cleared (null ones
++  // skipped).
++  void BumpNativeContentsGenerations(RenderTarget* const* render_targets, uint32_t count);
++  bool RefillFromNativeResolveRecord(VulkanTextureCache& texture_cache,
++                                     const VulkanTextureCache::NativeResolveDestination& destination);
++  static bool RefillFromNativeResolveRecordThunk(
++      void* context, VulkanTextureCache& texture_cache,
++      const VulkanTextureCache::NativeResolveDestination& destination);
++
+   bool gamma_render_target_as_unorm16_ = false;
+ 
+   bool depth_unorm24_vulkan_format_supported_ = false;
+@@ -981,6 +1037,12 @@
+   VkPipelineLayout native_resolve_scaled_pipeline_layout_depth_ = VK_NULL_HANDLE;
+   std::unordered_map<NativeResolvePipelineKey, VkPipeline, NativeResolvePipelineKey::Hasher>
+       native_resolve_scaled_pipelines_;
++  // [rexglue-native] SDK 0309: NativeResolveRecord ring, newest at
++  // native_resolve_record_next_ - 1. Active: records kept, render target
++  // generations counted, and the texture cache refills from them.
++  std::array<NativeResolveRecord, kNativeResolveRecordCount> native_resolve_records_{};
++  uint32_t native_resolve_record_next_ = 0;
++  bool native_resolve_records_active_ = false;
+ 
+   // Temporary storage for Resolve.
+   std::vector<Transfer> clear_transfers_[2];
+diff --git a/include/rex/graphics/vulkan/texture_cache.h b/include/rex/graphics/vulkan/texture_cache.h
+--- a/include/rex/graphics/vulkan/texture_cache.h
++++ b/include/rex/graphics/vulkan/texture_cache.h
+@@ -225,6 +225,23 @@
+       VkPipelineStageFlags source_stage_mask, VkAccessFlags source_access_mask,
+       VkImageLayout source_layout, uint32_t source_x, uint32_t source_y, uint32_t fill_x,
+       uint32_t fill_y);
++  // [rexglue-native] SDK 0309: as CopyBufferIntoNativeResolveDestination, into
++  // a texture made from scaled resolve memory: the buffer holds its texels at
++  // the scale (destination width and height times the scale).
++  void CopyBufferIntoNativeResolveDestinationScaled(const NativeResolveDestination& destination,
++                                                    VkBuffer buffer);
++  // [rexglue-native] SDK 0309: while set, a scaled 8888 texture about to be
++  // loaded (base level only) is first offered to refill (the render target
++  // cache's native resolve records, VulkanRenderTargetCache::
++  // RefillFromNativeResolveRecord) as a destination covering all of it; if it
++  // writes the texture (CopyImageIntoNativeResolveDestinationScaled), the load
++  // from the scaled resolve buffer is skipped. nullptr: never.
++  using NativeScaledRefill = bool (*)(void* context, VulkanTextureCache& texture_cache,
++                                      const NativeResolveDestination& destination);
++  void SetNativeScaledRefill(NativeScaledRefill refill, void* context) {
++    native_scaled_refill_ = refill;
++    native_scaled_refill_context_ = context;
++  }
+ 
+  protected:
+   bool IsSignedVersionSeparateForFormat(TextureKey key) const override;
+@@ -573,6 +590,12 @@
+   // [rexglue-native] SDK 0302: a texture to be written by a native resolve
+   // copy: from its last use to a transfer destination.
+   void BeginNativeResolveTextureWrite(VulkanTexture& texture);
++
++  // [rexglue-native] SDK 0309: SetNativeScaledRefill, and the texture load's
++  // use of it.
++  NativeScaledRefill native_scaled_refill_ = nullptr;
++  void* native_scaled_refill_context_ = nullptr;
++  bool TryNativeScaledRefill(VulkanTexture& texture);
+ };
+ 
+ }  // namespace rex::graphics::vulkan
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -1277,6 +1277,11 @@
+   if (native_resolved) {
+     copied = true;
+   } else if (resolve_info.copy_dest_extent_length) {
++    // [rexglue-native] SDK 0309: what native resolves recorded there is gone.
++    if (native_resolve_records_active_) {
++      InvalidateNativeResolveRecords(resolve_info.copy_dest_extent_start,
++                                     resolve_info.copy_dest_extent_length);
++    }
+     draw_util::ResolveCopyShaderConstants copy_shader_constants;
+     uint32_t copy_group_count_x, copy_group_count_y;
+     draw_util::ResolveCopyShaderIndex copy_shader =
+@@ -1451,6 +1456,10 @@
+               resolve_info.rb_color_clear | (uint64_t(resolve_info.rb_color_clear_lo) << 32);
+           PerformTransfersAndResolveClears(2, clear_render_targets, clear_transfers_, clear_values,
+                                            &clear_rectangle);
++          // [rexglue-native] SDK 0309: no longer what a resolve recorded.
++          if (native_resolve_records_active_) {
++            BumpNativeContentsGenerations(clear_render_targets, 2);
++          }
+         }
+         cleared = true;
+       } break;
+@@ -1531,6 +1540,11 @@
+           last_update_accumulated_render_targets();
+ 
+       PerformNativeInitialClears();  // [rexglue-native] SDK 0301
++      // [rexglue-native] SDK 0309: drawn into from here on.
++      if (native_resolve_records_active_) {
++        BumpNativeContentsGenerations(depth_and_color_render_targets,
++                                      1 + xenos::kMaxColorRenderTargets);
++      }
+ 
+       PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                        depth_and_color_render_targets, last_update_transfers());
+diff --git a/src/graphics/vulkan/render_target_cache_native_scaled.cpp b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+--- a/src/graphics/vulkan/render_target_cache_native_scaled.cpp
++++ b/src/graphics/vulkan/render_target_cache_native_scaled.cpp
+@@ -36,6 +36,28 @@
+ // buffer. Anything else, and a resolve with no scaled texture yet (0309 does
+ // those too), goes the EDRAM way.
+ //
++// [rexglue-native] SDK 0309:
++// - Depth (and color whose red/blue order the texture can't take): the same
++//   pass also writes the texture's texels at the scale into the scratch
++//   buffer, converted as the scaled depth load shaders convert the scaled
++//   words, and they are copied into it.
++// - A resolve with no scaled texture yet is done natively too: the scaled
++//   resolve buffer gets the same words as from the EDRAM path, so the texture
++//   made later is right when loaded from it.
++// - Resolve records (native_resolve_records_at_draw_scale, off by default):
++//   each native color resolve is recorded with its render target area; a
++//   scaled texture loaded later over it (made after the resolve, or another
++//   texture over the same memory) is copied from the render target while that
++//   still holds the resolve (not drawn into or cleared since), instead of being
++//   loaded from the scaled resolve buffer.
++// The scaled resolve buffer stays written and its "scaled resolved" page marks
++// stay, so whatever no record can serve still loads what the EDRAM path would
++// give. Leaving it unwritten needs the resolve readback to read guest memory
++// for native destinations (the command processor's readback, not changed
++// here) and a full-resolution source for textures made after the render
++// target has moved on: the guest-resolution words the downscale takes can't
++// be one (see above).
++//
+ // The layouts, as read from the SPIR-V disassemblies in the generated
+ // shaders/vulkan_spirv headers (see DRAFTS-0308-0309.md in the project's
+ // dev/agents/rexglue-native):
+@@ -89,6 +111,13 @@
+                     "resolve memory, guest memory and the scaled texture the game samples (no "
+                     "EDRAM dump, the same bytes as the EDRAM path). Applies at once");
+ 
++// [rexglue-native] SDK 0309.
++REXCVAR_DEFINE_BOOL(native_resolve_records_at_draw_scale, false, "GPU",
++                    "native_resolves_at_draw_scale: a scaled texture loaded after a native color "
++                    "resolve into its memory is copied from the render target while that still "
++                    "holds the resolve, instead of being loaded from the scaled resolve memory. "
++                    "Applies at the next resolve");
++
+ // Defined in render_target_cache.cpp.
+ REXCVAR_DECLARE(bool, vulkan_resolve_into_textures);
+ 
+@@ -140,6 +169,11 @@
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
++  // [rexglue-native] SDK 0309: the render targets are gone (the texture cache
++  // is made again for a new scale, without the refill set, and set again at
++  // the next native resolve).
++  native_resolve_records_active_ = false;
++  ClearNativeResolveRecords();
+   for (const auto& pipeline_pair : native_resolve_scaled_pipelines_) {
+     if (pipeline_pair.second != VK_NULL_HANDLE) {
+       dfn.vkDestroyPipeline(device, pipeline_pair.second, nullptr);
+@@ -155,6 +189,15 @@
+ bool VulkanRenderTargetCache::NativeResolveScaled(const draw_util::ResolveInfo& resolve_info,
+                                                   VulkanSharedMemory& shared_memory,
+                                                   VulkanTextureCache& texture_cache) {
++  // [rexglue-native] SDK 0309: records on or off from this resolve on.
++  const bool records = REXCVAR_GET(native_resolves_at_draw_scale) &&
++                       REXCVAR_GET(native_resolve_records_at_draw_scale);
++  if (records != native_resolve_records_active_) {
++    native_resolve_records_active_ = records;
++    ClearNativeResolveRecords();
++    texture_cache.SetNativeScaledRefill(records ? &RefillFromNativeResolveRecordThunk : nullptr,
++                                        this);
++  }
+   if (!REXCVAR_GET(native_resolves_at_draw_scale)) {
+     return false;
+   }
+@@ -177,11 +220,10 @@
+   if (scale_x > 7 || scale_y > 7 || (scale_x <= 1 && scale_y <= 1)) {
+     return skip(0, "a draw resolution scale outside 1...7");
+   }
++  // [rexglue-native] SDK 0309: depth too.
+   const bool is_depth = resolve_info.IsCopyingDepth();
+-  if (is_depth) {
+-    return skip(1, "depth");
+-  }
+-  const draw_util::ResolveEdramInfo& edram_info = resolve_info.color_edram_info;
++  const draw_util::ResolveEdramInfo& edram_info =
++      is_depth ? resolve_info.depth_edram_info : resolve_info.color_edram_info;
+   const reg::RB_COPY_DEST_INFO dest_info = resolve_info.copy_dest_info;
+   const draw_util::ResolveCopyDestCoordinateInfo dest_coordinates =
+       resolve_info.copy_dest_coordinate_info;
+@@ -192,10 +234,13 @@
+       uint32_t(dest_info.copy_dest_endian) > uint32_t(xenos::Endian128::k16in32)) {
+     return skip(3, "an array destination, or 64-bit or 128-bit endian swapping");
+   }
+-  if (xenos::ColorRenderTargetFormat(edram_info.format) !=
+-          xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
+-      dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8 ||
+-      dest_info.copy_dest_exp_bias) {
++  // Depth is written as its raw 32-bit words (copy_dest_info has the depth
++  // format, not the one the game samples it as). Color: 8888 to 8888 only.
++  if (!is_depth &&
++      (xenos::ColorRenderTargetFormat(edram_info.format) !=
++           xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
++       dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8 ||
++       dest_info.copy_dest_exp_bias)) {
+     return skip(4, "color other than 8888 to 8888, or an exponent bias");
+   }
+   const uint32_t dest_pitch_texels = uint32_t(dest_coordinates.pitch_aligned_div_32)
+@@ -233,33 +278,92 @@
+     return skip(7, "the area is outside its render target");
+   }
+   bool source_is_uint = false;
+-  GetColorOwnershipTransferVulkanFormat(rt_key.GetColorFormat(), rt_key.msaa_samples,
+-                                        &source_is_uint);
+-  const bool red_blue_swap = dest_info.copy_dest_swap;
++  if (!is_depth) {
++    GetColorOwnershipTransferVulkanFormat(rt_key.GetColorFormat(), rt_key.msaa_samples,
++                                          &source_is_uint);
++  }
++  const bool red_blue_swap = !is_depth && dest_info.copy_dest_swap;
+   // The half-pixel offset gap the scaled resolve shader fills, in host pixels.
+   const bool fill_half_pixel_offset = edram_info.fill_half_pixel_offset != 0;
+   const uint32_t fill_x = fill_half_pixel_offset ? (scale_x >> 1) : 0;
+   const uint32_t fill_y = fill_half_pixel_offset ? (scale_y >> 1) : 0;
+ 
+-  // The scaled texture the game samples the surface as. Without one, the EDRAM
+-  // path (the texture made later loads from the scaled resolve buffer).
+-  if (!REXCVAR_GET(vulkan_resolve_into_textures)) {
+-    return skip(8, "vulkan_resolve_into_textures is off");
+-  }
++  // The scaled texture the game samples the surface as, if it exists and can
++  // be written (otherwise it's loaded from the scaled resolve memory written
++  // here, as after the EDRAM path).
+   VulkanTextureCache::NativeResolveDestination texture_destination;
+-  if (!texture_cache.FindNativeResolveDestination(
+-          resolve_info.copy_dest_base, dest_pitch_texels, xenos::TextureFormat::k_8_8_8_8,
+-          xenos::Endian(dest_info.copy_dest_endian), dest_offset_x, dest_offset_y, width, height,
+-          texture_destination, true)) {
+-    return skip(9, "no scaled texture of that address, pitch and format yet");
+-  }
+-  // Before the range is marked as resolved below.
+-  bool linear_red_blue_swap;
+-  if (texture_cache.GetNativeResolveCopy(texture_destination, false, red_blue_swap,
+-                                         linear_red_blue_swap) !=
+-      VulkanTextureCache::NativeResolveCopy::kImage) {
+-    return skip(10, "a scaled texture written in part while outdated, or with red and blue the "
+-                    "other way");
++  VulkanTextureCache::NativeResolveCopy texture_copy =
++      VulkanTextureCache::NativeResolveCopy::kNone;
++  bool linear_red_blue_swap = false;
++  native_census::NativeNotCopied not_copied = native_census::kNativeNoTexture;
++  if (REXCVAR_GET(vulkan_resolve_into_textures)) {
++    const xenos::Endian dest_endian = xenos::Endian(dest_info.copy_dest_endian);
++    auto find_destination = [&](xenos::TextureFormat texture_format) -> bool {
++      return texture_cache.FindNativeResolveDestination(
++          resolve_info.copy_dest_base, dest_pitch_texels, texture_format, dest_endian,
++          dest_offset_x, dest_offset_y, width, height, texture_destination, true);
++    };
++    bool found;
++    if (is_depth) {
++      // As SDK 0302-r3: k_24_8 or k_24_8_FLOAT as the depth render target's
++      // format gives it, else the register's format (k_8_8_8_8).
++      found = find_destination(xenos::TextureFormat(dest_info.copy_dest_format));
++      if (!found) {
++        const reg::RB_COPY_DEST_INFO dest_info_register =
++            register_file().Get<reg::RB_COPY_DEST_INFO>();
++        if (dest_info_register.copy_dest_format != dest_info.copy_dest_format) {
++          found = find_destination(xenos::TextureFormat(dest_info_register.copy_dest_format));
++        }
++      }
++    } else {
++      found = find_destination(xenos::TextureFormat::k_8_8_8_8);
++    }
++    if (found) {
++      // Before the range is marked as resolved below.
++      texture_copy = texture_cache.GetNativeResolveCopy(texture_destination, is_depth,
++                                                        red_blue_swap, linear_red_blue_swap);
++      not_copied = native_census::kNativeRefused;
++    }
++  }
++  // The texture's texels at the scale, for kBuffer.
++  const uint32_t linear_width = texture_destination.width * scale_x;
++  const uint32_t linear_height = texture_destination.height * scale_y;
++  const VkDeviceSize linear_size =
++      VkDeviceSize(linear_width) * linear_height * sizeof(uint32_t);
++  VulkanCommandProcessor::ScratchBufferAcquisition scratch_buffer_acquisition;
++  if (texture_copy == VulkanTextureCache::NativeResolveCopy::kBuffer) {
++    // The scratch buffer stays as big as its biggest use: no more than 128 MB
++    // (a 1920x1088 surface at 3x is 75 MB, at 4x 134 MB), or a storage buffer
++    // binding.
++    if (linear_size > (VkDeviceSize(128) << 20) ||
++        linear_size > VkDeviceSize(
++                          command_processor_.GetVulkanDevice()->properties().maxStorageBufferRange)) {
++      texture_copy = VulkanTextureCache::NativeResolveCopy::kNone;
++      not_copied = native_census::kNativeNoScratch;
++    } else {
++      scratch_buffer_acquisition = command_processor_.AcquireScratchGpuBuffer(
++          linear_size, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_WRITE_BIT);
++      if (scratch_buffer_acquisition.buffer() == VK_NULL_HANDLE) {
++        texture_copy = VulkanTextureCache::NativeResolveCopy::kNone;
++        not_copied = native_census::kNativeNoScratch;
++      }
++    }
++  }
++  const bool linear = texture_copy == VulkanTextureCache::NativeResolveCopy::kBuffer;
++  // As SDK 0302-r3: depth texels for a texture sampling depth as depth are
++  // what its load shader would make of the word in memory.
++  NativeResolveLinearDepth linear_depth = kNativeResolveLinearDepthWord;
++  if (linear && is_depth) {
++    switch (texture_destination.texture->key().format) {
++      case xenos::TextureFormat::k_24_8:
++        linear_depth = kNativeResolveLinearDepthUnorm24;
++        break;
++      case xenos::TextureFormat::k_24_8_FLOAT:
++        linear_depth = kNativeResolveLinearDepthFloat20e4;
++        break;
++      default:
++        break;
++    }
+   }
+ 
+   // The scaled resolve memory, as the EDRAM path takes it (16-byte aligned
+@@ -283,10 +387,13 @@
+ 
+   NativeResolvePipelineKey pipeline_key;
+   pipeline_key.resource_format = rt_key.resource_format;
+-  pipeline_key.is_depth = 0;
++  pipeline_key.is_depth = uint32_t(is_depth);
+   pipeline_key.source_is_uint = uint32_t(source_is_uint);
+   pipeline_key.endian = uint32_t(dest_info.copy_dest_endian);
+   pipeline_key.red_blue_swap = uint32_t(red_blue_swap);
++  pipeline_key.linear = uint32_t(linear);
++  pipeline_key.linear_red_blue_swap = uint32_t(linear && linear_red_blue_swap);
++  pipeline_key.linear_depth = uint32_t(linear_depth);
+   pipeline_key.scale_x_minus_1 = scale_x - 1;
+   pipeline_key.scale_y_minus_1 = scale_y - 1;
+   pipeline_key.fill_half_pixel_offset = uint32_t(fill_half_pixel_offset);
+@@ -337,11 +444,39 @@
+     descriptor_write.pTexelBufferView = nullptr;
+   }
+   dfn.vkUpdateDescriptorSets(device, 2, descriptor_writes, 0, nullptr);
++  // [rexglue-native] SDK 0309: set 2, the texture's texels.
++  VkDescriptorSet descriptor_set_linear = VK_NULL_HANDLE;
++  if (linear) {
++    descriptor_set_linear = command_processor_.AllocateSingleTransientDescriptor(
++        VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute);
++    if (descriptor_set_linear == VK_NULL_HANDLE) {
++      return skip(17, "no descriptor set for the texels");
++    }
++    VkDescriptorBufferInfo linear_buffer_info;
++    linear_buffer_info.buffer = scratch_buffer_acquisition.buffer();
++    linear_buffer_info.offset = 0;
++    linear_buffer_info.range = linear_size;
++    VkWriteDescriptorSet linear_descriptor_write;
++    linear_descriptor_write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++    linear_descriptor_write.pNext = nullptr;
++    linear_descriptor_write.dstSet = descriptor_set_linear;
++    linear_descriptor_write.dstBinding = 0;
++    linear_descriptor_write.dstArrayElement = 0;
++    linear_descriptor_write.descriptorCount = 1;
++    linear_descriptor_write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++    linear_descriptor_write.pImageInfo = nullptr;
++    linear_descriptor_write.pBufferInfo = &linear_buffer_info;
++    linear_descriptor_write.pTexelBufferView = nullptr;
++    dfn.vkUpdateDescriptorSets(device, 1, &linear_descriptor_write, 0, nullptr);
++  }
+ 
+   // The render target: from its last use to a compute shader read (as the
+   // EDRAM dump does).
+   command_processor_.PushImageMemoryBarrier(
+-      vulkan_rt.image(), ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT),
++      vulkan_rt.image(),
++      ui::vulkan::util::InitializeSubresourceRange(
++          is_depth ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
++                   : VK_IMAGE_ASPECT_COLOR_BIT),
+       vulkan_rt.current_stage_mask(), VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+       vulkan_rt.current_access_mask(), VK_ACCESS_SHADER_READ_BIT, vulkan_rt.current_layout(),
+       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+@@ -354,21 +489,23 @@
+ 
+   DeferredCommandBuffer& command_buffer = command_processor_.deferred_command_buffer();
+   command_processor_.BindExternalComputePipeline(pipeline);
+-  VkDescriptorSet descriptor_sets[2] = {descriptor_set_buffers,
+-                                        vulkan_rt.GetDescriptorSetTransferSource()};
+-  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
+-                                         native_resolve_scaled_pipeline_layout_color_, 0, 2,
+-                                         descriptor_sets, 0, nullptr);
++  VkPipelineLayout pipeline_layout = is_depth ? native_resolve_scaled_pipeline_layout_depth_
++                                              : native_resolve_scaled_pipeline_layout_color_;
++  VkDescriptorSet descriptor_sets[3] = {
++      descriptor_set_buffers, vulkan_rt.GetDescriptorSetTransferSource(), descriptor_set_linear};
++  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, pipeline_layout, 0,
++                                         linear ? 3 : 2, descriptor_sets, 0, nullptr);
+   uint32_t push_constants[kNativeResolvePushConstantCount];
+   // In guest pixels: the shader multiplies them by the scale.
+   push_constants[kNativeResolvePushConstantSource] = source_x | (source_y << 16);
+   push_constants[kNativeResolvePushConstantDestOrigin] = dest_offset_x | (dest_offset_y << 16);
+   push_constants[kNativeResolvePushConstantDestPitchTiles] =
+       dest_pitch_texels >> xenos::kTextureTileWidthHeightLog2;
+-  push_constants[kNativeResolvePushConstantLinearSize] = 0;
+-  command_buffer.CmdVkPushConstants(native_resolve_scaled_pipeline_layout_color_,
+-                                    VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push_constants),
+-                                    push_constants);
++  // In host pixels (at most 8192 * 7 each).
++  push_constants[kNativeResolvePushConstantLinearSize] =
++      linear ? (linear_width | (linear_height << 16)) : 0;
++  command_buffer.CmdVkPushConstants(pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                                    sizeof(push_constants), push_constants);
+   command_processor_.SubmitBarriers(true);
+   // 8x8 host pixels per group; the area is whole 8x8 guest blocks.
+   command_buffer.CmdVkDispatch((width * scale_x) >> 3, (height * scale_y) >> 3, 1);
+@@ -379,32 +516,191 @@
+   texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+                                     resolve_info.copy_dest_extent_length);
+ 
+-  texture_cache.CopyImageIntoNativeResolveDestinationScaled(
+-      texture_destination, red_blue_swap, vulkan_rt.image(), vulkan_rt.current_stage_mask(),
+-      vulkan_rt.current_access_mask(), vulkan_rt.current_layout(), source_x * scale_x,
+-      source_y * scale_y, fill_x, fill_y);
+-  vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+-                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++  switch (texture_copy) {
++    case VulkanTextureCache::NativeResolveCopy::kImage:
++      texture_cache.CopyImageIntoNativeResolveDestinationScaled(
++          texture_destination, red_blue_swap, vulkan_rt.image(), vulkan_rt.current_stage_mask(),
++          vulkan_rt.current_access_mask(), vulkan_rt.current_layout(), source_x * scale_x,
++          source_y * scale_y, fill_x, fill_y);
++      vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++      break;
++    case VulkanTextureCache::NativeResolveCopy::kBuffer:
++      command_processor_.PushBufferMemoryBarrier(
++          scratch_buffer_acquisition.buffer(), 0, VK_WHOLE_SIZE,
++          scratch_buffer_acquisition.SetStageMask(VK_PIPELINE_STAGE_TRANSFER_BIT),
++          VK_PIPELINE_STAGE_TRANSFER_BIT,
++          scratch_buffer_acquisition.SetAccessMask(VK_ACCESS_TRANSFER_READ_BIT),
++          VK_ACCESS_TRANSFER_READ_BIT);
++      texture_cache.CopyBufferIntoNativeResolveDestinationScaled(
++          texture_destination, scratch_buffer_acquisition.buffer());
++      break;
++    default:
++      break;
++  }
++
++  // [rexglue-native] SDK 0309: what's recorded over this memory is gone; a
++  // color resolve is recorded itself.
++  if (native_resolve_records_active_) {
++    if (is_depth) {
++      InvalidateNativeResolveRecords(resolve_info.copy_dest_extent_start,
++                                     resolve_info.copy_dest_extent_length);
++    } else {
++      NativeResolveRecord record;
++      record.render_target = &vulkan_rt;
++      record.render_target_generation = vulkan_rt.native_contents_generation();
++      record.extent_start = resolve_info.copy_dest_extent_start;
++      record.extent_end =
++          resolve_info.copy_dest_extent_start + resolve_info.copy_dest_extent_length;
++      record.dest_page = (resolve_info.copy_dest_base & 0x1FFFFFFF) >> 12;
++      record.pitch_tiles = dest_pitch_texels >> xenos::kTextureTileWidthHeightLog2;
++      record.offset_x = dest_offset_x;
++      record.offset_y = dest_offset_y;
++      record.width = width;
++      record.height = height;
++      record.source_x = source_x;
++      record.source_y = source_y;
++      record.endian = xenos::Endian(dest_info.copy_dest_endian);
++      record.red_blue_swap = red_blue_swap;
++      record.fill_half_pixel_offset = fill_half_pixel_offset;
++      AddNativeResolveRecord(record);
++    }
++  }
+ 
+   if (native_census::Active()) {
+     native_census::Counters& census = native_census::Get();
+     ++census.native_resolves;
+-    ++census.native_into_texture_image;
++    if (texture_copy == VulkanTextureCache::NativeResolveCopy::kImage) {
++      ++census.native_into_texture_image;
++    } else if (texture_copy == VulkanTextureCache::NativeResolveCopy::kBuffer) {
++      ++census.native_into_texture_texels;
++    } else if (REXCVAR_GET(vulkan_resolve_into_textures)) {
++      ++census.native_not_copied[is_depth ? 1 : 0][not_copied];
++    }
+   }
+ 
+-  static bool logged = false;
+-  if (!logged) {
+-    logged = true;
++  static bool logged[2] = {};
++  if (!logged[is_depth ? 1 : 0]) {
++    logged[is_depth ? 1 : 0] = true;
+     REXGPU_INFO(
+-        "native_resolves_at_draw_scale: the first native color resolve at {}x{}, {}x{} to "
+-        "0x{:08X} (half-pixel gap fill {}, readback half-pixel offset {})",
+-        scale_x, scale_y, width, height, resolve_info.copy_dest_base,
++        "native_resolves_at_draw_scale: the first native {} resolve at {}x{}, {}x{} to 0x{:08X} "
++        "(into its texture: {}; half-pixel gap fill {}, readback half-pixel offset {})",
++        is_depth ? "depth" : "color", scale_x, scale_y, width, height,
++        resolve_info.copy_dest_base,
++        texture_copy == VulkanTextureCache::NativeResolveCopy::kImage    ? "image copy"
++        : texture_copy == VulkanTextureCache::NativeResolveCopy::kBuffer ? "texel copy"
++                                                                          : "no",
+         fill_half_pixel_offset ? "on" : "off",
+         pipeline_key.readback_half_pixel_offset ? "on" : "off");
+   }
+   return true;
+ }
+ 
++// [rexglue-native] SDK 0309: native resolve records.
++
++void VulkanRenderTargetCache::ClearNativeResolveRecords() {
++  for (NativeResolveRecord& record : native_resolve_records_) {
++    record.render_target = nullptr;
++  }
++  native_resolve_record_next_ = 0;
++}
++
++void VulkanRenderTargetCache::InvalidateNativeResolveRecords(uint32_t start, uint32_t length) {
++  const uint64_t end = uint64_t(start) + length;
++  for (NativeResolveRecord& record : native_resolve_records_) {
++    if (record.render_target && record.extent_start < end && start < record.extent_end) {
++      record.render_target = nullptr;
++    }
++  }
++}
++
++void VulkanRenderTargetCache::AddNativeResolveRecord(const NativeResolveRecord& record) {
++  InvalidateNativeResolveRecords(record.extent_start, record.extent_end - record.extent_start);
++  native_resolve_records_[native_resolve_record_next_] = record;
++  native_resolve_record_next_ = (native_resolve_record_next_ + 1) % kNativeResolveRecordCount;
++}
++
++void VulkanRenderTargetCache::BumpNativeContentsGenerations(RenderTarget* const* render_targets,
++                                                            uint32_t count) {
++  for (uint32_t i = 0; i < count; ++i) {
++    if (render_targets[i]) {
++      static_cast<VulkanRenderTarget*>(render_targets[i])->BumpNativeContentsGeneration();
++    }
++  }
++}
++
++bool VulkanRenderTargetCache::RefillFromNativeResolveRecordThunk(
++    void* context, VulkanTextureCache& texture_cache,
++    const VulkanTextureCache::NativeResolveDestination& destination) {
++  return static_cast<VulkanRenderTargetCache*>(context)->RefillFromNativeResolveRecord(
++      texture_cache, destination);
++}
++
++bool VulkanRenderTargetCache::RefillFromNativeResolveRecord(
++    VulkanTextureCache& texture_cache,
++    const VulkanTextureCache::NativeResolveDestination& destination) {
++  // A scaled 8888 texture covering all of destination (TryNativeScaledRefill).
++  if (!native_resolve_records_active_ || !destination.texture || !IsDrawResolutionScaled()) {
++    return false;
++  }
++  const auto& key = destination.texture->key();
++  const uint32_t texture_width = destination.width;
++  const uint32_t texture_height = destination.height;
++  for (const NativeResolveRecord& record : native_resolve_records_) {
++    if (!record.render_target || record.pitch_tiles != key.pitch ||
++        record.endian != key.endianness || key.base_page < record.dest_page) {
++      continue;
++    }
++    // Where the texture starts relative to the tile the record's area starts
++    // in: whole 32x32 tiles of 4 KB (as FindNativeResolveDestination).
++    const uint32_t tiles = key.base_page - record.dest_page;
++    const uint32_t texture_x = (tiles % record.pitch_tiles) << 5;
++    const uint32_t texture_y = (tiles / record.pitch_tiles) << 5;
++    // All of the texture must be in the area. Records don't overlap, so no
++    // other one has any of it.
++    if (texture_x < record.offset_x || texture_y < record.offset_y ||
++        texture_x + texture_width > record.offset_x + record.width ||
++        texture_y + texture_height > record.offset_y + record.height) {
++      continue;
++    }
++    VulkanRenderTarget& vulkan_rt = *record.render_target;
++    if (vulkan_rt.native_contents_generation() != record.render_target_generation) {
++      // Drawn into or cleared since: the scaled resolve memory has it.
++      return false;
++    }
++    bool linear_red_blue_swap;
++    if (texture_cache.GetNativeResolveCopy(destination, false, record.red_blue_swap,
++                                           linear_red_blue_swap) !=
++        VulkanTextureCache::NativeResolveCopy::kImage) {
++      return false;
++    }
++    const uint32_t scale_x = draw_resolution_scale_x();
++    const uint32_t scale_y = draw_resolution_scale_y();
++    // The half-pixel offset gap is at the area's left and top edges only.
++    const uint32_t fill_x =
++        (record.fill_half_pixel_offset && texture_x == record.offset_x) ? (scale_x >> 1) : 0;
++    const uint32_t fill_y =
++        (record.fill_half_pixel_offset && texture_y == record.offset_y) ? (scale_y >> 1) : 0;
++    texture_cache.CopyImageIntoNativeResolveDestinationScaled(
++        destination, record.red_blue_swap, vulkan_rt.image(), vulkan_rt.current_stage_mask(),
++        vulkan_rt.current_access_mask(), vulkan_rt.current_layout(),
++        (record.source_x + (texture_x - record.offset_x)) * scale_x,
++        (record.source_y + (texture_y - record.offset_y)) * scale_y, fill_x, fill_y);
++    vulkan_rt.SetUsage(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT,
++                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
++    static bool logged = false;
++    if (!logged) {
++      logged = true;
++      REXGPU_INFO(
++          "native_resolve_records_at_draw_scale: the first texture copied from a render target a "
++          "native resolve recorded, {}x{} at page 0x{:05X}",
++          texture_width, texture_height, uint32_t(key.base_page));
++    }
++    return true;
++  }
++  return false;
++}
++
+ VkPipeline VulkanRenderTargetCache::GetNativeResolveScaledPipeline(
+     NativeResolvePipelineKey key) {
+   auto pipeline_it = native_resolve_scaled_pipelines_.find(key);
+@@ -413,7 +709,7 @@
+   }
+   VkPipelineLayout pipeline_layout = key.is_depth ? native_resolve_scaled_pipeline_layout_depth_
+                                                   : native_resolve_scaled_pipeline_layout_color_;
+-  if (pipeline_layout == VK_NULL_HANDLE || key.is_depth || key.linear) {
++  if (pipeline_layout == VK_NULL_HANDLE) {
+     native_resolve_scaled_pipelines_.emplace(key, VkPipeline(VK_NULL_HANDLE));
+     return VK_NULL_HANDLE;
+   }
+@@ -433,7 +729,6 @@
+ 
+   SpirvBuilder builder(spv::Spv_1_0, (SpirvShaderTranslator::kSpirvMagicToolId << 16) | 1, nullptr);
+   spv::Id ext_inst_glsl_std_450 = builder.import("GLSL.std.450");
+-  (void)ext_inst_glsl_std_450;
+   builder.addCapability(spv::CapabilityShader);
+   builder.setMemoryModel(spv::AddressingModelLogical, spv::MemoryModelGLSL450);
+   builder.setSource(spv::SourceLanguageUnknown, 0);
+@@ -475,8 +770,16 @@
+       make_storage_buffer(0, 0, "XeNativeResolveScaledGuest", "xe_native_resolve_scaled_guest");
+   spv::Id scaled_buffer = make_storage_buffer(0, 1, "XeNativeResolveScaledScaled",
+                                               "xe_native_resolve_scaled_scaled");
+-  // Set 1: the render target, its transfer source descriptor set.
+-  bool source_is_uint = key.source_is_uint != 0;
++  // [rexglue-native] SDK 0309: set 2, binding 0 - the texture's texels at the
++  // scale, linearly.
++  spv::Id linear_buffer = spv::NoResult;
++  if (key.linear) {
++    linear_buffer = make_storage_buffer(2, 0, "XeNativeResolveScaledLinear",
++                                        "xe_native_resolve_scaled_linear");
++  }
++  // Set 1: the render target (binding 0, depth or color) and its stencil
++  // (binding 1), its transfer source descriptor set.
++  bool source_is_uint = !key.is_depth && key.source_is_uint;
+   spv::Id source_component_type = source_is_uint ? type_uint : type_float;
+   spv::Id source_texture = builder.createVariable(
+       spv::NoPrecision, spv::StorageClassUniformConstant,
+@@ -485,6 +788,16 @@
+       "xe_native_resolve_scaled_source");
+   builder.addDecoration(source_texture, spv::DecorationDescriptorSet, 1);
+   builder.addDecoration(source_texture, spv::DecorationBinding, 0);
++  spv::Id source_stencil_texture = spv::NoResult;
++  if (key.is_depth) {
++    source_stencil_texture = builder.createVariable(
++        spv::NoPrecision, spv::StorageClassUniformConstant,
++        builder.makeImageType(type_uint, spv::Dim2D, false, false, false, 1,
++                              spv::ImageFormatUnknown),
++        "xe_native_resolve_scaled_stencil");
++    builder.addDecoration(source_stencil_texture, spv::DecorationDescriptorSet, 1);
++    builder.addDecoration(source_stencil_texture, spv::DecorationBinding, 1);
++  }
+   // Push constants.
+   id_vector_temp.clear();
+   id_vector_temp.reserve(kNativeResolvePushConstantCount);
+@@ -648,10 +961,38 @@
+       spv::NoPrecision, builder.makeVectorType(source_component_type, 4), false, true, false, false,
+       false, source_texture_parameters, spv::ImageOperandsMaskNone);
+ 
+-  // Pack it into the 32-bit word the EDRAM holds (as the EDRAM dump does):
+-  // 8_8_8_8, red in 0:7 to alpha in 24:31.
++  // Pack it into the 32-bit word the EDRAM holds (as the EDRAM dump and SDK
++  // 0302's native resolve do).
+   spv::Id packed;
+-  {
++  if (key.is_depth) {
++    // [rexglue-native] SDK 0309: depth, as SDK 0302 packs it.
++    source_texture_parameters.sampler =
++        builder.createLoad(source_stencil_texture, spv::NoPrecision);
++    spv::Id source_stencil = builder.createCompositeExtract(
++        builder.createTextureCall(spv::NoPrecision, builder.makeVectorType(type_uint, 4), false,
++                                  true, false, false, false, source_texture_parameters,
++                                  spv::ImageOperandsMaskNone),
++        type_uint, 0);
++    spv::Id source_depth32 = builder.createCompositeExtract(source_vec4, type_float, 0);
++    spv::Id depth24;
++    if (xenos::DepthRenderTargetFormat(key.resource_format) ==
++        xenos::DepthRenderTargetFormat::kD24FS8) {
++      depth24 = SpirvShaderTranslator::PreClampedDepthTo20e4(
++          builder, source_depth32, depth_float24_round(), true, ext_inst_glsl_std_450);
++    } else {
++      // Round to the nearest even integer, as the EDRAM dump does.
++      depth24 = builder.createUnaryOp(
++          spv::OpConvertFToU, type_uint,
++          builder.createUnaryBuiltinCall(
++              type_float, ext_inst_glsl_std_450, GLSLstd450RoundEven,
++              builder.createBinOp(spv::OpFMul, type_float, source_depth32,
++                                  builder.makeFloatConstant(float(0xFFFFFF)))));
++    }
++    // Stencil in 0:7, depth in 8:31.
++    packed = builder.createQuadOp(spv::OpBitFieldInsert, type_uint, source_stencil, depth24,
++                                  const_uint_8, builder.makeUintConstant(24));
++  } else {
++    // 8_8_8_8, red in 0:7 to alpha in 24:31.
+     spv::Id unorm_round_offset = builder.makeFloatConstant(0.5f);
+     spv::Id unorm_scale = builder.makeFloatConstant(255.0f);
+     auto component_uint = [&](uint32_t i) -> spv::Id {
+@@ -672,6 +1013,50 @@
+     }
+   }
+ 
++  // [rexglue-native] SDK 0309: the texture's texel for this host pixel, if
++  // asked, inside the texture only - what the scaled load shader would make of
++  // this pixel's word in the scaled resolve memory (as SDK 0302-r3 does at 1x).
++  if (key.linear) {
++    spv::Id linear_value = key.linear_red_blue_swap ? swap_red_blue(packed) : packed;
++    if (key.is_depth) {
++      switch (NativeResolveLinearDepth(key.linear_depth)) {
++        case kNativeResolveLinearDepthUnorm24: {
++          // texture_load_depth_unorm: n = word >> 8;
++          // float(n + (n >> 23)) * 2^-24 (exact: n + 1 <= 2^24).
++          spv::Id depth_unorm24 = uint_shr(packed, 8);
++          spv::Id depth_float = builder.createBinOp(
++              spv::OpFMul, type_float,
++              builder.createUnaryOp(spv::OpConvertUToF, type_float,
++                                    uint_add(depth_unorm24, uint_shr(depth_unorm24, 23))),
++              builder.makeFloatConstant(1.0f / float(1 << 24)));
++          linear_value = builder.createUnaryOp(spv::OpBitcast, type_uint, depth_float);
++        } break;
++        case kNativeResolveLinearDepthFloat20e4:
++          // texture_load_depth_float: the 20e4 in bits 8:31 to float32, zero
++          // to zero, denormals normalized, without the 0...0.5 remapping.
++          linear_value = SpirvShaderTranslator::Depth20e4To32(builder, packed, 8, false, true,
++                                                              ext_inst_glsl_std_450);
++          break;
++        default:
++          break;
++      }
++    }
++    spv::Id linear_size = load_push_constant(kNativeResolvePushConstantLinearSize);
++    spv::Id linear_width = low_16(linear_size);
++    spv::Id linear_inside = builder.createBinOp(
++        spv::OpLogicalAnd, type_bool,
++        builder.createBinOp(spv::OpULessThan, type_bool, x, linear_width),
++        builder.createBinOp(spv::OpULessThan, type_bool, y, high_16(linear_size)));
++    SpirvBuilder::IfBuilder linear_inside_if(linear_inside, spv::SelectionControlMaskNone,
++                                             builder);
++    {
++      store_word(linear_buffer,
++                 uint_add(builder.createBinOp(spv::OpIMul, type_uint, y, linear_width), x),
++                 linear_value);
++    }
++    linear_inside_if.makeEndIf();
++  }
++
+   // The word in memory: red and blue swapped if asked, then endian.
+   spv::Id dest_value = key.red_blue_swap ? swap_red_blue(packed) : packed;
+   switch (xenos::Endian128(key.endian)) {
+diff --git a/src/graphics/vulkan/texture_cache.cpp b/src/graphics/vulkan/texture_cache.cpp
+--- a/src/graphics/vulkan/texture_cache.cpp
++++ b/src/graphics/vulkan/texture_cache.cpp
+@@ -1454,6 +1454,11 @@
+   VulkanCommandProcessor::ScopedGpuSection texture_section(
+       command_processor_, VulkanCommandProcessor::GpuSection::kTextureLoads);
+   VulkanTexture& vulkan_texture = static_cast<VulkanTexture&>(texture);
++  // [rexglue-native] SDK 0309: a scaled texture over a native resolve its
++  // render target still holds is copied from there instead.
++  if (native_scaled_refill_ && load_base && !load_mips && TryNativeScaledRefill(vulkan_texture)) {
++    return true;
++  }
+   // Loaded as the guest memory has it (vulkan_resolve_into_textures may have
+   // stored red and blue the other way before).
+   if (vulkan_texture.red_blue_swapped()) {
+@@ -3068,6 +3073,70 @@
+   MarkTextureUpToDate(texture);
+ }
+ 
++// [rexglue-native] SDK 0309: depth and linear texels with a draw resolution
++// scale, and textures refilled from native resolve records.
++
++void VulkanTextureCache::CopyBufferIntoNativeResolveDestinationScaled(
++    const NativeResolveDestination& destination, VkBuffer buffer) {
++  if (!destination.texture || !destination.width || !destination.height) {
++    return;
++  }
++  VulkanTexture& texture = *static_cast<VulkanTexture*>(destination.texture);
++  const uint32_t scale_x = draw_resolution_scale_x();
++  const uint32_t scale_y = draw_resolution_scale_y();
++  const uint32_t width = destination.width * scale_x;
++  const uint32_t height = destination.height * scale_y;
++  BeginNativeResolveTextureWrite(texture);
++  command_processor_.SubmitBarriers(true);
++  VkBufferImageCopy& region =
++      *command_processor_.deferred_command_buffer().CmdCopyBufferToImageEmplace(
++          buffer, texture.image(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1);
++  region.bufferOffset = 0;
++  region.bufferRowLength = width;
++  region.bufferImageHeight = height;
++  region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++  region.imageSubresource.mipLevel = 0;
++  region.imageSubresource.baseArrayLayer = 0;
++  region.imageSubresource.layerCount = 1;
++  region.imageOffset.x = int32_t(destination.dest_x * scale_x);
++  region.imageOffset.y = int32_t(destination.dest_y * scale_y);
++  region.imageOffset.z = 0;
++  region.imageExtent.width = width;
++  region.imageExtent.height = height;
++  region.imageExtent.depth = 1;
++  MarkTextureUpToDate(texture);
++}
++
++bool VulkanTextureCache::TryNativeScaledRefill(VulkanTexture& texture) {
++  // A texture a native color resolve could have been copied into
++  // (FindNativeResolveDestination's candidates with scaled, 8888 only), all of
++  // it, so its red and blue order can be set for the copy.
++  const TextureKey& key = texture.key();
++  if (!native_scaled_refill_ || !key.scaled_resolve || !key.is_valid || !key.tiled ||
++      key.dimension != xenos::DataDimension::k2DOrStacked || key.depth_or_array_size_minus_1 ||
++      key.signed_separate || key.format != xenos::TextureFormat::k_8_8_8_8) {
++    return false;
++  }
++  if (key.packed_mips && (key.GetWidth() <= 16 || key.GetHeight() <= 16)) {
++    return false;
++  }
++  if (texture.is_replacement() || texture.GetGuestMipsSize() || !texture.GetGuestBaseSize()) {
++    return false;
++  }
++  const HostFormatPair& host_format_pair = GetHostFormatPair(key);
++  if (host_format_pair.format_unsigned.load_shader != kLoadShaderIndex32bpb ||
++      host_format_pair.format_unsigned.format != VK_FORMAT_R8G8B8A8_UNORM) {
++    return false;
++  }
++  NativeResolveDestination destination;
++  destination.texture = &texture;
++  destination.dest_x = 0;
++  destination.dest_y = 0;
++  destination.width = key.GetWidth();
++  destination.height = key.GetHeight();
++  return native_scaled_refill_(native_scaled_refill_context_, *this, destination);
++}
++
+ bool VulkanTextureCache::Initialize() {
+   const ui::vulkan::VulkanDevice* const vulkan_device = command_processor_.GetVulkanDevice();
+   const ui::vulkan::VulkanInstance::Functions& ifn = vulkan_device->vulkan_instance()->functions();

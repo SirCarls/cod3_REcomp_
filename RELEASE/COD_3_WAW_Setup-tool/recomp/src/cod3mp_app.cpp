@@ -39,6 +39,7 @@
 #include <typeinfo>
 
 #include <rex/graphics/xenos.h>
+#include <rex/system/gpu_plugin.h>  // [rexglue-native] the graphics API (F2 > Video)
 #include <rex/system/kernel_state.h>
 
 #include "app_defaults.h"
@@ -89,6 +90,7 @@ REXCVAR_DEFINE_STRING(cod3_test_input, "", "cod3",
 
 REXCVAR_DECLARE(bool, cod3_raw_mouse);
 REXCVAR_DECLARE(double, cod3_refresh_rate);
+REXCVAR_DECLARE(std::string, cod3_graphics_api);  // [rexglue-native] ui/hud_overlay.cpp
 
 std::unique_ptr<rex::ui::WindowedApp> Cod3MpApp::Create(rex::ui::WindowedAppContext& ctx) {
   return std::unique_ptr<Cod3MpApp>(new Cod3MpApp(ctx, "cod3mp", PPCImageConfig));
@@ -316,6 +318,23 @@ void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
   if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
   // [rust-renderer] cod3_renderer rust: the plugin's host backend, no GPU emulation (render/rust_renderer.h).
   cod3::render::StartHostBackend(config);
+#ifdef _WIN32
+  // [rexglue-native] Graphics API (F2 > Video), as the campaign does
+  // (Cod3App::OnPreSetup): Windows builds have Direct3D 12 and Vulkan; "auto"
+  // is Vulkan, and Direct3D 12 when Vulkan can't start. Without this, cod3mp
+  // on Windows always got the SDK's default (Direct3D 12), whatever the
+  // setting said. Linux has only Vulkan.
+  if (std::string api = REXCVAR_GET(cod3_graphics_api);
+      !config.graphics && !config.gpu_plugin.empty() && (api == "auto" || api == "d3d12" || api == "vulkan")) {
+    const bool automatic = api == "auto";
+    if (automatic) api = "vulkan";
+    config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin, api);
+    if (config.graphics)
+      REXLOG_INFO("cod3mp: graphics API {} ({})", api, automatic ? "automatic" : "chosen in the settings");
+    else
+      REXLOG_WARN("cod3mp: the {} renderer couldn't start; using the other one", api);
+  }
+#endif
   // No guest command line (Com_Init runs it as forced writes into a fixed
   // buffer), and the game's own files stay read-only, as in the campaign.
   if (!rex::cvar::GetFlagByName("cl").empty()) {

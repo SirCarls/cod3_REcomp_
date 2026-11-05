@@ -46,7 +46,6 @@ Each tool is a pinned release, checked against its SHA-256 before use (`c3w/deps
 | Rust (rustup, minimal) | no prebuilt ripper (a release download has `engine\bin\win-amd64\rip.exe`, then no Rust is needed) | static.rust-lang.org | `work\tools\rust` |
 | The ripper's Rust libraries | Rust builds the ripper | crates.io | `work\tools\rust\cargo\registry` |
 | ReXGlue SDK source with its submodules | first build | github.com | `work\rexglue-sdk` |
-| AMD FidelityFX SDK source (FSR / CAS in the game) | "AMD FidelityFX" is on (Set up page, "Show more options") | github.com, fetched by the SDK's own CMake setup | `work\rexglue-sdk\out\build\win-amd64\_deps` |
 | waifu2x-ncnn-vulkan (optional texture upscaling) | the Textures option is on | github.com/nihui | `work\tools\waifu2x-win` |
 | Ubuntu 24.04 for WSL | only when the Linux version is built too | releases.ubuntu.com | `work\wsl`, removed after the build |
 
@@ -55,6 +54,8 @@ Rust: when Visual Studio's C++ tools are there, Rust uses Microsoft's linker (th
 ## Check this PC
 
 **Tools** page, **Check this PC** (or `setup.bat doctor` in a Command Prompt) lists every tool with its version and folder, and under it, for each missing or wrong piece, **why** the build needs it and the exact **fix**: the button that installs it with your approval, or what to install yourself and where to get it. It also warns about what on this PC tends to break Windows builds: a folder inside OneDrive, the Microsoft Store's Python, a 32-bit Python, Windows on ARM, a proxy that Git doesn't know about, little free space. **Copy** puts the whole result on the clipboard.
+
+The **Set up** page says the same in one line under **What to build**: what this build will download or install (you approve the list first) and what is missing, for the options ticked; it is worked out again a moment after an option changes. <!-- [acct2-decomp] 2026-11-05 -->
 
 Every build's log starts with the setup tool's and Python's versions and Windows' version, then the tools it found (with versions and paths) and the same notes. When a command fails and the cause is known, the error message ends with **What to do:**. To report a problem, use **Log**, **Make bug report...**: it zips the newest logs with user, computer and folder names removed.
 
@@ -79,7 +80,7 @@ Every build's log starts with the setup tool's and Python's versions and Windows
 | `Access is denied` with a "Unauthorized changes blocked" notice | Windows Security's Controlled folder access guards Documents, Desktop, Pictures, Videos and Music | Move the project folder to a folder like `C:\Games\COD3`, or allow the programs (Windows Security, Virus & threat protection, Ransomware protection). "Check this PC" warns about it when Windows lets it read the setting. |
 | "Call of Duty 3 is running" | Windows can't replace a running program | Close the game, then **Build**. |
 | `Patch ... doesn't apply` | The SDK checkout was changed by hand or half-done | Delete `work\rexglue-sdk` and build again. (Patches whose line endings were changed to CRLF are converted back by the tool.) |
-| A long pause at "Configuring the SDK (FidelityFX on)" | CMake is downloading AMD's FidelityFX SDK (no progress shown) | Wait; or untick "AMD FidelityFX" under "Show more options". If it fails, the SDK is built again without it. |
+| `file INSTALL cannot find "...\rexglue-sdk\out\...": File exists.` at the end of the SDK, or the log says a file the build made has disappeared | Something removed a file the build had just made, almost always an antivirus (with setup tool 2.32.0 and older, often `TracyClient.dll`; since 2.32.1 the SDK is built without Tracy unless "Build the SDK with the Tracy profiler" is ticked under "Show more options") | Restore the file from your antivirus's quarantine, or add the work folder (the setup tool names it) to its exclusions. Windows Security: Virus & threat protection, Protection history; Manage settings, Exclusions. Kaspersky, Norton, Avast, Bitdefender, ESET and the others: their Quarantine (or Reports) and their Exclusions (or Exceptions). Then **Build**: it goes on where it stopped. <!-- [acct2-decomp] 2026-11-05 --> |
 | Out of memory, `C1060`, the PC freezes | Too many build threads for the memory | Lower "Build threads" (Set up page, "Show more options"). |
 | Builds are very slow | Antivirus real-time scanning of every compiled file | Optional: add the project folder to Windows Security's exclusions (Virus & threat protection, Manage settings, Exclusions). Your choice; the build works without it. |
 

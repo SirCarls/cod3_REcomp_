@@ -23,6 +23,7 @@ from . import (common, deps, game_settings, pc_check, profiles, repair, rippers,
                waw, widgets)
 from . import voices  # [voice] another disc's voices
 from . import censored  # [acct2-decomp] the censored campaign
+from . import build_needs  # [acct2-decomp] what the build with these options needs on this PC
 from .common import IS_LINUX, IS_WINDOWS, SetupError
 from .pipeline import TOOL_VERSION, upscaled_size
 from .widgets import ScrollFrame, hint, px, section, tip
@@ -1033,22 +1034,29 @@ class Pages:
     def _check_tools(self) -> None:
         # What the build would compile here: this system's own version, and on
         # Linux also the Windows one (cross-built). A Linux version made in WSL
-        # needs nothing compiled on Windows.
-        recomp = self.v_recomp.get() and (self.v_windows.get() if IS_WINDOWS
-                                          else (self.v_linux.get() or self.v_windows.get()))
+        # needs nothing compiled on Windows. [acct2-decomp] 2026-11-05 (owner: "refresh the dependency
+        # checks and options offered"): worked out by build_needs.py, the build's own rules: no Rust when
+        # the build needs none (a release download's prebuilt ripper), and rows for the tools only some
+        # options add (llvm-mingw, appimagetool, waifu2x).
+        opts = self._options()
 
         def work():
             runner = common.Runner(self.log, threading.Event())
             tc = deps.detect(self._tools_dir(), runner)
-            problems = tc.problems(recomp=recomp)
+            needs = build_needs.check(opts, tc=tc, runner=runner)
+            recomp, problems = needs.recomp, needs.problems
+            rows = [(n, True, (d + "; " if d else "") + "not needed for this build")
+                    if n == "Rust" and not found and not needs.rust else (n, found, d)
+                    for n, found, d in tc.rows()] + needs.option_rows
             # For each problem why it matters and the fix, and what about
             # this PC can get in the way (pc_check); the log gets them too.
             work_dir = Path(self.v_work.get() or common.default_work_dir())
             out = Path(self.v_out.get()) if self.v_out.get().strip() else None
-            notes = pc_check.tool_notes(tc, recomp=recomp) + pc_check.system_notes(work_dir, out)
+            notes = pc_check.tool_notes(tc, recomp=recomp, rust=needs.rust) + pc_check.system_notes(work_dir, out)
             self.log.info("This PC:\n" + "\n".join(pc_check.system_lines()) + "\n" + tc.summary() +
+                          "".join(f"\n{n:<20}  {d}" for n, _f, d in needs.option_rows) +
                           "".join("\n" + n.text() for n in notes))
-            self.q.put(("checked", tc.rows(), problems, recomp, notes))
+            self.q.put(("checked", rows, problems, recomp, notes))
         self._bg(work, "Checking this PC...")
 
     def _show_check(self, rows: List[tuple], problems: List[str], recomp: bool,
@@ -1074,7 +1082,7 @@ class Pages:
         for r, (name, found, detail) in enumerate(rows):
             ttk.Label(t, text=name, style="Bold.TLabel").grid(row=r, column=0, sticky="nw", padx=(0, px(12)),
                                                              pady=px(2))
-            optional = "optional" in name
+            optional = "optional" in name or detail.startswith(build_needs.AT_BUILD)   # [acct2-decomp]
             ttk.Label(t, text="Found" if found else ("Not installed" if optional else "Missing"),
                       style="Good.TLabel" if found else "Hint.TLabel" if optional else "Bad.TLabel").grid(
                 row=r, column=1, sticky="nw", padx=(0, px(12)), pady=px(2))
@@ -1172,12 +1180,18 @@ class Pages:
         common.APPROVAL.reset()
         common.APPROVAL.ask = self._ask_approval
 
+        opts = self._options()   # [acct2-decomp]
+
         def work():
             runner = common.Runner(self.log, self.cancel)
+            rust = build_needs.check(opts, runner=runner).rust   # [acct2-decomp] no Rust when none is needed
             tc = deps.ensure(self._tools_dir(), runner, self.log, self.cancel, True, recomp=recomp,
-                             windows_exe=IS_LINUX and self.v_windows.get())
+                             windows_exe=IS_LINUX and self.v_windows.get(), rust=rust)
             left = tc.problems(recomp=recomp)
-            fixes = "".join("\n\n" + n.text() for n in pc_check.tool_notes(tc, recomp=recomp))
+            if not rust:
+                left = [x for x in left if x not in tc.rust_problems()]
+            fixes = "".join("\n\n" + n.text() for n in pc_check.tool_notes(tc, recomp=recomp, rust=rust))
+            self.q.put(("call", lambda: self._needs_soon(0)))   # [acct2-decomp] the Set up line, now
             self.q.put(("info", "This PC", "All set." if not left else
                         "Still missing:\n- " + "\n- ".join(left) + fixes + "\n\nSee the Log page for details."))
         self._bg(work, "Installing missing tools...")

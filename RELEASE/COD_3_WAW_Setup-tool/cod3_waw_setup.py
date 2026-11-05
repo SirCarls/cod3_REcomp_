@@ -136,7 +136,8 @@ def cmd_build(a: argparse.Namespace) -> int:
         output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
         jobs=jobs, build_recomp=not a.no_recomp, appimage=not a.no_appimage,
         cleanup=not a.no_cleanup, keep_sdk=a.keep_sdk, install_deps=not a.no_install_deps,
-        fidelityfx=a.fidelityfx and not a.no_fidelityfx, build_linux=build_linux, build_windows=build_windows,
+        tracy=a.tracy,   # [acct2-decomp]
+        build_linux=build_linux, build_windows=build_windows,
         binaries_only=a.binaries_only, force_unknown_iso=a.force, skip_dep_check=a.skip_dep_check,
         upscale_textures=a.upscale_textures, upscale_model=a.upscale_model, upscale_noise=a.upscale_noise,
         upscale_scale=a.upscale_scale, trace_build=a.trace_build)
@@ -453,11 +454,16 @@ def main() -> int:
                    help="the Linux version as a plain bin/ folder instead of the AppImage (the default)")
     b.add_argument("--no-cleanup", action="store_true", help="keep the work folder")
     b.add_argument("--keep-sdk", action="store_true", help="keep the built SDK for faster rebuilds (downloaded tools in work/tools are always kept)")
+    # [acct2-decomp] 2026-11-05 (owner: "Make this tracy setting a toggle within the setup tool")
+    b.add_argument("--tracy", action="store_true",
+                   help="build the SDK with the Tracy profiler (for developers; the game built here never loads it, "
+                        "and some antivirus programs delete its DLL during the build). Off by default; a change "
+                        "rebuilds the SDK")
     b.add_argument("--no-install-deps", action="store_true", help="never install missing tools")
-    b.add_argument("--fidelityfx", action="store_true",
-                   help="Windows: also build AMD's FidelityFX SDK (the experimental FSR 2 / 3; downloads several "
-                        "hundred MB). AMD CAS and FSR 1 are in every build without it")
-    b.add_argument("--no-fidelityfx", action="store_true", help=argparse.SUPPRESS)   # the old default's opt-out
+    # [acct2-decomp] 2026-11-05 (owner): the AMD FidelityFX SDK option is gone (AMD CAS and FSR 1 are in every
+    # build); its old switches are still taken, and do nothing, so older command lines keep working.
+    b.add_argument("--fidelityfx", action="store_true", help=argparse.SUPPRESS)
+    b.add_argument("--no-fidelityfx", action="store_true", help=argparse.SUPPRESS)
     b.add_argument("--windows-exe", action="store_true",
                    help="Linux: also build the Windows version and ripper (same as --linux --windows)")
     b.add_argument("--binaries-only", action="store_true", help=argparse.SUPPRESS)  # the build inside WSL

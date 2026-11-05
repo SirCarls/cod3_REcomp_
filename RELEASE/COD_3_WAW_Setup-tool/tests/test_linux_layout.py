@@ -1,7 +1,7 @@
 """Tests for the Linux version's two layouts (one AppImage, the default, or a
 plain bin/ folder from More options), their launcher scripts, and the
 removal of what a build made the other way; and for the build options'
-defaults (the AppImage on, AMD's FidelityFX SDK off). Made-up files only;
+defaults (the AppImage on). Made-up files only;
 nothing is built.
 
     python -m unittest discover -s COD_3_WAW_Setup-tool/tests
@@ -33,22 +33,22 @@ def write(path: Path, data: bytes = b"\x7fELF") -> Path:
 
 
 class DefaultsTests(unittest.TestCase):
-    def test_appimage_is_the_default_and_fidelityfx_is_off(self):
+    def test_appimage_is_the_default(self):
         o = BuildOptions()
         self.assertTrue(o.appimage)
-        self.assertFalse(o.fidelityfx)
+        self.assertFalse(hasattr(o, "fidelityfx"))   # [acct2-decomp] the FidelityFX SDK option is gone
 
-    def test_command_line_has_the_bin_folder_and_fidelityfx_switches(self):
+    def test_command_line_has_the_bin_folder_switch(self):
         out = subprocess.run([sys.executable, str(TOOL / "cod3_waw_setup.py"), "build", "--help"],
                              capture_output=True, text=True, timeout=60).stdout
         self.assertIn("--bin-folder", out)
-        self.assertIn("--fidelityfx", out)
-        self.assertNotIn("--no-fidelityfx", out)   # still taken, but no longer shown
+        self.assertNotIn("fidelityfx", out)   # [acct2-decomp] still taken (does nothing), no longer shown
+        self.assertNotIn("FSR 2", out)
 
-    def test_old_fidelityfx_setting_is_left_out_quietly(self):
+    def test_old_fidelityfx_settings_are_left_out_quietly(self):
         notes = []
         out = profiles.clean_settings({"fidelityfx": True, "fidelityfx_sdk": True, "appimage": False}, notes)
-        self.assertEqual(out, {"fidelityfx_sdk": True, "appimage": False})
+        self.assertEqual(out, {"appimage": False})
         self.assertEqual(notes, [])
 
 

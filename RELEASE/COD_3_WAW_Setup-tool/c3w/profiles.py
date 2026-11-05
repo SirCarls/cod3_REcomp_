@@ -36,15 +36,16 @@ SETTING_TYPES: Dict[str, type] = {
     "cod3_source": str, "waw_steam": str, "waw_xbox360": str, "waw_pc_disc": str,
     "waw_alternative": str, "waw_map_packs": list, "use_waw": bool,
     "build_linux": bool, "build_windows": bool, "output_dir": str, "work_dir": str,
-    "jobs": int, "build_recomp": bool, "appimage": bool, "install_deps": bool, "fidelityfx_sdk": bool,
+    "jobs": int, "build_recomp": bool, "appimage": bool, "install_deps": bool,
     "cleanup": bool, "keep_sdk": bool, "upscale_textures": bool, "upscale_model": str,
+    "tracy": bool,   # [acct2-decomp] 2026-11-05 the SDK with the Tracy profiler (More options)
     "upscale_noise": int, "upscale_scale": int, "cod3_windowed": bool, "cod3_args": str,
 }
 # Settings older versions kept that mean nothing now: left out quietly.
 # "fidelityfx" (on for everyone) meant AMD CAS / FSR 1, which every build has
-# since SDK patch 0064; the FidelityFX SDK box is "fidelityfx_sdk", off unless
-# ticked (2026-10-19).
-RETIRED_KEYS = ("fidelityfx",)
+# since SDK patch 0064; [acct2-decomp] "fidelityfx_sdk", the AMD FidelityFX SDK
+# box, is gone since 2026-11-05 (owner).
+RETIRED_KEYS = ("fidelityfx", "fidelityfx_sdk")
 # Call of Duty 2 and United Offensive (c3w/pc_games.py): the same choices each.
 PC_GAME_IDS = ("cod2", "coduo")
 for _game in PC_GAME_IDS:

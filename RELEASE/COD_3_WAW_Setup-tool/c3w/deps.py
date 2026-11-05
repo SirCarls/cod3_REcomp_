@@ -48,9 +48,8 @@ MIN_CLANG = 19
 PREFERRED_CLANG = 20    # what the SDK's CI builds with
 MIN_CMAKE = (3, 25)
 # Windows: Git 2.31 or newer takes settings from the environment
-# (GIT_CONFIG_COUNT), which is how the git that CMake starts for the SDK's
-# FidelityFX download learns core.longpaths. An older one is replaced by the
-# pinned MinGit.
+# (GIT_CONFIG_COUNT), which is how a git that CMake starts for the SDK learns
+# core.longpaths. An older one is replaced by the pinned MinGit.
 MIN_GIT_WINDOWS = (2, 31)
 
 # Rust: the ripper's minimum (engine/Cargo.toml rust-version) and rustup's
@@ -715,8 +714,8 @@ def detect(tools_dir: Path, runner: Runner) -> Toolchain:
             tc.vs_version = vs_details(runner, tc.vs_path)
             tc.env, tc.vs_env_error = vs_environment_checked(tc.vs_path, tc.env)
             tc.windows_sdk = find_windows_sdk(tc.env)
-        # Every git started from here on allows long paths, also the one CMake
-        # starts to fetch the SDK's FidelityFX part (it can't be given -c).
+        # Every git started from here on allows long paths, also one CMake
+        # starts for the SDK (it can't be given -c).
         tc.env = merge_env(tc.env, {"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.longpaths",
                                     "GIT_CONFIG_VALUE_0": "true"})
     if IS_LINUX:

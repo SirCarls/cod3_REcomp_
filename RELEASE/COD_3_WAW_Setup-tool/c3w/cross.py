@@ -129,10 +129,13 @@ def common_args(toolchain: Path) -> List[str]:
             "-DCMAKE_FIND_USE_PACKAGE_REGISTRY=OFF"]
 
 
-def sdk_configure_args(toolchain: Path, install: Path) -> List[str]:
-    """Extra CMake arguments for the SDK's Windows build."""
+def sdk_configure_args(toolchain: Path, install: Path, tracy: bool = False) -> List[str]:
+    """Extra CMake arguments for the SDK's Windows build; `tracy`: with the Tracy profiler ([acct2-decomp])."""
     return common_args(toolchain) + [
         "-DCMAKE_CXX_STANDARD=23", "-DREXGLUE_BUILD_TESTS=OFF", "-DBUILD_TESTING=OFF", "-DREXGLUE_ENABLE_FIDELITYFX=OFF",
+        # [acct2-decomp] 2026-11-05: Tracy is only used by the SDK's Debug builds (no TracyClient.dll to ship);
+        # on only when asked for (the setup tool's Tracy box).
+        f"-DREXGLUE_ENABLE_TRACY={'ON' if tracy else 'OFF'}",
         # Vulkan next to Direct3D 12, chosen in F2 (cod3_graphics_api).
         "-DREXGLUE_USE_VULKAN=ON",
         f"-DCMAKE_INSTALL_PREFIX={install}"]

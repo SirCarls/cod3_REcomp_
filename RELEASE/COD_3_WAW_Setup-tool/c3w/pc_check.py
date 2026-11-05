@@ -317,6 +317,15 @@ def system_notes(work: Path, out: Optional[Path] = None) -> List[Note]:
                               "build goes through a short link when the work folder's path is long.",
                               "Usually nothing. If a build stops with \"Filename too long\", move the project "
                               "folder to a short path like C:\\Games\\COD3."))
+        # [acct2-decomp] 2026-11-05 (owner: "refresh the dependency checks"; a user's Kaspersky deleted
+        # TracyClient.dll a minute after the build made it): a word on antivirus programs, for every PC.
+        notes.append(Note(INFO, "Antivirus programs and newly built files",
+                          "An antivirus (Kaspersky, Norton, Avast, Bitdefender, ESET, and sometimes Windows "
+                          "Security) can quarantine a program file the build has just made, and the build then "
+                          "stops saying the file disappeared.",
+                          "If that happens: restore the file from the antivirus's quarantine, or add the work "
+                          f"folder ({work}) to its exclusions, and press Build again (it goes on where it "
+                          "stopped)."))
         if windows_proxy_set() and not proxy_env_set():
             notes.append(Note(WARN, "Windows uses a proxy server, but HTTPS_PROXY isn't set",
                               "The setup tool's own downloads follow Windows' proxy setting, but Git (the SDK "

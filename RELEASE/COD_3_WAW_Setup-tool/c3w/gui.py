@@ -37,7 +37,8 @@ from .gui_log import LogPage
 from .gui_pages import Pages, clean_path_text  # [acct2-decomp] clean_path_text
 from .gui_updates import Updates  # [updater] the setup tool's own update checks
 from .gui_addons import Addons  # [acct2-decomp] map packs (and later mods) on Set up
-from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline, fidelityfx_available
+from . import build_needs  # [acct2-decomp] what the build needs on this PC, kept up to date on Set up
+from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline
 from .widgets import ScrollFrame, px, section, hint, tip  # noqa: F401 - ScrollFrame/px kept importable from gui
 from .xiso import XisoImage
 
@@ -182,10 +183,8 @@ class App(Pages, LogPage, Games, Updates, Addons):
         self.v_bin_folder.trace_add("write", lambda *_: self._sync_linux_layout(from_box=True))
         self.v_appimage.trace_add("write", lambda *_: self._sync_linux_layout(from_box=False))
         self.v_install = tk.BooleanVar(value=s.get("install_deps", True))
-        # AMD's FidelityFX SDK (the experimental FSR 2 / 3): off unless ticked
-        # (owner 2026-10-19). A new key: the old "fidelityfx" was on for everyone
-        # and meant CAS / FSR 1, which every build has now (SDK patch 0064).
-        self.v_ffx = tk.BooleanVar(value=s.get("fidelityfx_sdk", False))
+        # [acct2-decomp] 2026-11-05 (owner): the AMD FidelityFX SDK box is gone; CAS and FSR 1 are in every build
+        # (SDK patch 0064). An old "fidelityfx_sdk" setting is left out quietly (profiles.RETIRED_KEYS).
         self.v_upscale = tk.BooleanVar(value=s.get("upscale_textures", False))
         self.v_upscale_model = tk.StringVar()
         self.v_upscale_noise = tk.StringVar()
@@ -200,6 +199,14 @@ class App(Pages, LogPage, Games, Updates, Addons):
         self.v_windows = tk.BooleanVar(value=s.get("build_windows", IS_WINDOWS or bool(s.get("windows_exe"))))
         self.v_cleanup = tk.BooleanVar(value=s.get("cleanup", True))
         self.v_keep_sdk = tk.BooleanVar(value=s.get("keep_sdk", False))
+        # [acct2-decomp] 2026-11-05 (owner 10:31: "Make this tracy setting a toggle within the setup tool")
+        self.v_tracy = tk.BooleanVar(value=s.get("tracy", False))
+        # [acct2-decomp] 2026-11-05 (owner 10:32: "refresh the dependency checks and options offered"): what
+        # the build needs on this PC (build_needs.py), under "What to build", worked out again when an option
+        # that changes it changes (_watch_needs).
+        self.v_needs = tk.StringVar(value="")
+        self._needs_gen = 0
+        self._needs_after = None
         self.v_iso_status = tk.StringVar()
         self.v_waw_status = tk.StringVar()
         self.v_status = tk.StringVar(value="Ready.")
@@ -470,7 +477,43 @@ class App(Pages, LogPage, Games, Updates, Addons):
         self._validate_waw()
         self._update_build_state()
         self._refresh_page(self.page)
+        self._needs_soon(0)   # [acct2-decomp] what the build needs here
         self.v_status.set("Checked again.")
+
+    # [acct2-decomp] 2026-11-05 (owner 10:32: "also refresh the dependency checks and options offered"; his
+    # choice: re-check on change): the line under "What to build" says what this build needs on this PC
+    # (build_needs.py: the build's own rules), worked out again a moment after an option that changes it
+    # changes, after a build or an install, and with F5.
+    def _watch_needs(self) -> None:
+        for v in (self.v_recomp, self.v_linux, self.v_windows, self.v_appimage, self.v_upscale, self.v_tracy,
+                  self.v_install, self.v_work):
+            v.trace_add("write", lambda *_: self._needs_soon())
+        self._needs_soon(300)
+
+    def _needs_soon(self, delay_ms: int = 700) -> None:
+        """Works the line out again shortly: once for a burst of changes."""
+        if self._needs_after is not None:
+            try:
+                self.root.after_cancel(self._needs_after)
+            except tk.TclError:
+                pass
+        self._needs_after = self.root.after(delay_ms, self._needs_check)
+
+    def _needs_check(self) -> None:
+        self._needs_after = None
+        if self.worker and self.worker.is_alive():   # the build checks for itself; again when it ends
+            return
+        self._needs_gen += 1
+        gen, opts = self._needs_gen, self._options()
+        self.v_needs.set("Checking what this build needs on this PC...")
+
+        def work():
+            try:
+                text = build_needs.check(opts).line()
+            except Exception as e:  # noqa: BLE001 - the line says so; the page goes on
+                text = f"What this build needs couldn't be checked ({e}); Tools > Check this PC shows it."
+            self.q.put(("call", lambda: gen == self._needs_gen and self.v_needs.set(text)))
+        threading.Thread(target=work, daemon=True).start()
 
     # ------------------------------------------------------------------ theme
     def _own(self) -> str:
@@ -806,6 +849,9 @@ class App(Pages, LogPage, Games, Updates, Addons):
                                   command=self._update_build_state)
         waw_box.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
         tip(waw_box, "Not needed to play Call of Duty 3.")
+        # [acct2-decomp] 2026-11-05: what this build needs here, kept up to date (_watch_needs).
+        self.lbl_needs = hint(w, var=self.v_needs)
+        self.lbl_needs.grid(row=6, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
 
         # Rarely changed: under "More options" (closed by default).
         more = ttk.Frame(t)
@@ -825,21 +871,19 @@ class App(Pages, LogPage, Games, Updates, Addons):
         ttk.Label(jf, text=f"{common.cpu_count()} CPU threads, {common.total_ram_gb():.0f} GB RAM "
                            f"(about 2 GB per build thread; {common.recommended_jobs()} recommended)",
                   style="Hint.TLabel").pack(side="left", padx=(px(10), 0))
-        ffx_why = ("" if fidelityfx_available() else
-                   "Windows only: building it runs AMD's Windows shader compiler, and this tool runs nothing "
-                   "through Wine. Linux builds have AMD CAS and FSR 1 all the same.")
         checks = [("Linux version as a plain bin/ folder instead of the AppImage", self.v_bin_folder,
                    "Off (the default): the Linux version is one file, CoD3-x86_64.AppImage. On: a bin/ folder "
                    "with the game's programs and libraries. Either way 'Call of Duty 3.sh' starts it, and a "
                    "build removes what an earlier build made the other way.", ""),
-                  ("Build with AMD's FidelityFX SDK (FSR 2 / 3, experimental; downloads several hundred MB)",
-                   self.v_ffx,
-                   "Off by default. AMD CAS and FSR 1 are in every build without it (F2 > Video > Output "
-                   "scaling). FSR 2 / 3 aren't offered in F2: the game gives them no depth or motion, so they "
-                   "can't work as meant; set present_effect in cod3.toml to try them.", ffx_why),
                   ("Delete temporary files when done", self.v_cleanup, "", ""),
                   ("Keep the built SDK for faster rebuilds (downloaded tools are always kept)", self.v_keep_sdk,
-                   "", "")]
+                   "", ""),
+                  # [acct2-decomp] 2026-11-05 (owner: "Make this tracy setting a toggle within the setup tool")
+                  ("Build the SDK with the Tracy profiler (for developers)", self.v_tracy,
+                   "Tracy is a profiler for the SDK's own non-Release builds; the game built here never loads it. "
+                   "Off (the default): no TracyClient library is built. Some antivirus programs (Kaspersky, for "
+                   "one) delete TracyClient.dll while the SDK builds. Changing this builds the SDK again at the "
+                   "next Build.", "")]
         boxes = {}
         for i, (text, var, help_text, why) in enumerate(checks):
             cb = ttk.Checkbutton(self.adv, text=text, variable=var, state="disabled" if why else "normal")
@@ -857,6 +901,7 @@ class App(Pages, LogPage, Games, Updates, Addons):
         self.v_cleanup.trace_add("write", keep_state)   # a click, or a profile loaded
         keep_state()
         self._toggle_options(show=False)
+        self._watch_needs()   # [acct2-decomp]
 
         hint(t, "Nothing is downloaded before you approve the list (what, from where, into which folder). "
                 "Everything stays in this project folder (Tools > Where things go). Cancel any time; Build "
@@ -1028,7 +1073,7 @@ class App(Pages, LogPage, Games, Updates, Addons):
             output_dir=clean_path_text(self.v_out.get()), work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
             jobs=self._jobs(), build_recomp=self.v_recomp.get(),
             appimage=self.v_appimage.get(), cleanup=self.v_cleanup.get(), keep_sdk=self.v_keep_sdk.get(),
-            install_deps=self.v_install.get(), fidelityfx=self.v_ffx.get(),
+            install_deps=self.v_install.get(), tracy=self.v_tracy.get(),  # [acct2-decomp] tracy
             upscale_textures=self.v_upscale.get(), upscale_model=self._upscale_model_key(),
             upscale_noise=self._upscale_noise_level(), upscale_scale=self._upscale_scale())
 
@@ -1130,6 +1175,7 @@ class App(Pages, LogPage, Games, Updates, Addons):
         self.v_elapsed.set("")
         self.v_progress.set(1.0 if kind == "good" else self.v_progress.get())
         self._update_build_state()
+        self._needs_soon(200)   # [acct2-decomp] what is installed now
         self._refresh_maps()
         if hasattr(self, "_refresh_censored"):
             self._refresh_censored()   # [acct2-decomp] a job may have swapped (or failed to swap) them
@@ -1357,8 +1403,8 @@ class App(Pages, LogPage, Games, Updates, Addons):
             "output_dir": self.v_out.get(),
             "work_dir": self.v_work.get(), "jobs": self._jobs(), "build_recomp": self.v_recomp.get(),
             "appimage": self.v_appimage.get(), "install_deps": self.v_install.get(),
-            "fidelityfx_sdk": self.v_ffx.get(),
             "cleanup": self.v_cleanup.get(), "keep_sdk": self.v_keep_sdk.get(),
+            "tracy": self.v_tracy.get(),   # [acct2-decomp]
             "upscale_textures": self.v_upscale.get(), "upscale_model": self._upscale_model_key(),
             "upscale_noise": self._upscale_noise_level(), "upscale_scale": self._upscale_scale(),
             "cod3_windowed": self.v_cod3_windowed.get(), "cod3_args": self.v_cod3_args.get(),
@@ -1373,7 +1419,7 @@ class App(Pages, LogPage, Games, Updates, Addons):
                    "work_dir": self.v_work, "cod3_args": self.v_cod3_args}
         bools = {"use_waw": self.v_use_waw, "build_linux": self.v_linux, "build_windows": self.v_windows,
                  "build_recomp": self.v_recomp, "appimage": self.v_appimage, "install_deps": self.v_install,
-                 "fidelityfx_sdk": self.v_ffx, "cleanup": self.v_cleanup, "keep_sdk": self.v_keep_sdk,
+                 "cleanup": self.v_cleanup, "keep_sdk": self.v_keep_sdk, "tracy": self.v_tracy,  # [acct2-decomp]
                  "upscale_textures": self.v_upscale, "cod3_windowed": self.v_cod3_windowed}
         for k, var in strings.items():
             if isinstance(s.get(k), str):

@@ -143,7 +143,7 @@ The full requirements list, with the status of every item, is in [docs/REQUIREME
 
 ## Safety
 
-- **Everything runs natively.** Nothing goes through Wine, Proton or an emulator. No game, patch, mod or map installer is ever run: they are only unpacked. (AMD's FidelityFX SDK build runs a Windows shader compiler, so it is left out of Linux builds; CAS and FSR 1 don't need it.)
+- **Everything runs natively.** Nothing goes through Wine, Proton or an emulator. No game, patch, mod or map installer is ever run: they are only unpacked.
 - **Your files are only read.** Discs, game folders and downloads are opened read-only and are on a protected list. Folders are only ever deleted through one guarded function, which refuses anything outside the tool's own work and output folders and anything that overlaps your inputs. Single files are only deleted inside those two folders.
 - **Nothing is downloaded without your approval.** Each download and install is listed first, with where it goes.
 - **Downloads are pinned and checked.** Each tool the setup downloads itself (CMake, Ninja, 7-Zip, innoextract, LLVM, appimagetool, waifu2x) is a fixed release, checked against its SHA-256 before use, also when it was downloaded before. The Rust installer is checked against the checksum the Rust project publishes next to it. The ReXGlue SDK and its submodules are fetched at pinned commits. The Ubuntu image for the Linux build on Windows is checked against the checksum list Canonical publishes next to it. Everything else comes from your system's package manager (apt, dnf, pacman, zypper, xbps or winget), which checks its own signatures.

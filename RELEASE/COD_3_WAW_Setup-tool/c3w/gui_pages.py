@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from . import (common, deps, game_settings, pc_check, profiles, repair, rippers, theme, upscale, user_textures,
                waw, widgets)
 from . import voices  # [voice] another disc's voices
+from . import censored  # [acct2-decomp] the censored campaign
 from .common import IS_LINUX, IS_WINDOWS, SetupError
 from .pipeline import TOOL_VERSION, upscaled_size
 from .widgets import ScrollFrame, hint, px, section, tip
@@ -48,11 +49,21 @@ GS_GROUPS = [
                   "cod3_depth_of_field", "cod3_motion_blur",  # [post-effects]
                   "cod3_hd_textures", "cod3_user_textures", "cod3_graphics_api"]),
     ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
-                            "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
-                            "cod3_skip_movies",
-                            "cod3_letterbox", "cod3_skip_prompt_position", "cod3_skip_hold_ms"]),  # [claude-9b-think]
+                            "cod3_glyph_color_mode"]),  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
+    # [acct2-decomp] the cutscene rows had been under "Sound and controls"
+    ("Cutscenes", ["cod3_skip_movies", "cod3_letterbox", "cod3_skip_prompt_position",
+                   "cod3_skip_hold_ms"]),  # [claude-9b-think]
     ("Player", ["user_name", "user_name_2", "user_name_3", "user_name_4"]),  # [claude-9b] SDK patches 0070, 0074
 ]
+
+
+def clean_path_text(text: str) -> str:
+    """[acct2-decomp] A path as typed or pasted: spaces and the quotes of Windows'
+    "Copy as path" around it taken off, ~ expanded (as the pipeline does)."""
+    s = (text or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        s = s[1:-1].strip()
+    return os.path.expanduser(s) if s else ""
 
 
 def _fix_label(fix: str) -> str:
@@ -66,9 +77,13 @@ class Pages:
         next to them."""
         if hasattr(self, "btn_play"):
             exe, why = self._play_exe()
+            if exe and self._job_running():   # [acct2-decomp] a build or repair may be replacing the game
+                exe, why = None, "A job is running: wait for it to finish (or Cancel it)."
             self.btn_play.configure(state="normal" if exe else "disabled")
             self.v_play_reason.set(why)
             self.lbl_play_reason.configure(style="Good.TLabel" if exe else "Warn.TLabel")
+        if hasattr(self, "cb_censored"):   # [acct2-decomp]
+            self.cb_censored.configure(state="disabled" if self._job_running() else "normal")
         if hasattr(self, "btn_user_pack"):
             rip = self._installed_rip()
             self.btn_user_pack.configure(state="normal" if rip else "disabled")
@@ -120,8 +135,11 @@ class Pages:
         self._update_accent_reset()
 
     def _out_path(self) -> Optional[Path]:
-        out = self.v_out.get().strip()
+        out = clean_path_text(self.v_out.get())   # [acct2-decomp] ~ and pasted quotes, as the pipeline reads it
         return Path(out) if out else None
+
+    def _job_running(self) -> bool:  # [acct2-decomp]
+        return bool(self.worker and self.worker.is_alive())
 
     # ------------------------------------------------------------------ Play page
     def _page_play(self, t) -> None:
@@ -145,20 +163,31 @@ class Pages:
         # below, F2 in the game): one setting, so the last change made in
         # either place is the one the next start uses. (An older "Start in a
         # window" box sent --fullscreen=false at every start, which undid F2.)
-        ttk.Label(g, text="Extra arguments").grid(row=2, column=0, sticky="w", pady=(px(10), px(3)))
-        e = ttk.Entry(g, textvariable=self.v_cod3_args)
-        e.grid(row=2, column=1, columnspan=2, sticky="ew", pady=(px(10), px(3)))
-        tip(e, "For testing: passed to the game as they are, for each start from here. They win over the game "
-               "settings for that start and are never saved in them. Leave empty normally.")
-        hint(g, "In game: ~ console (Shift+~ full), F2 settings (resolution up to 4K, FPS, AA/FSR, FOV, crosshair, "
-                "mouse). FOV is also in Options > Gameplay.").grid(row=3, column=0, columnspan=3, sticky="w",
+        hint(g, "In game: ~ console (Shift+~ full), F2 settings (resolution up to 8K, FPS, AA/FSR, FOV, crosshair, "
+                "mouse). FOV is also in Options > Gameplay.").grid(row=2, column=0, columnspan=3, sticky="w",
                                                                    pady=(px(4), 0))
+        # [acct2-decomp] Extra arguments (for testing) after the player's own rows: row 5.
+        ttk.Label(g, text="Extra arguments").grid(row=5, column=0, sticky="w", pady=(px(10), px(3)))
+        e = ttk.Entry(g, textvariable=self.v_cod3_args)
+        e.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(px(10), px(3)))
+        tip(e, "For testing: passed to the game as they are, for each start from here. They win over the game "
+               "settings for that start and are never saved in them. Quote a value with spaces "
+               "(--name=\"My Name\"). Leave empty normally.")
         # [voice] Another disc's voices (c3w/voices.py); Voices under Game settings picks the language.
         vb = ttk.Button(g, text="Add voices from another disc...", command=self._add_voices)
-        vb.grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
+        vb.grid(row=3, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
         tip(vb, "Copies the voices of another Call of Duty 3 disc (Germany, or Europe with French, Spanish and "
                 "Italian) from its .iso into the game, next to its own. Then choose them with Voices under Game "
                 "settings, or in F2 > Game > Sound.")
+        # [acct2-decomp] The censored campaign (c3w/censored.py): the German release's textures, on or off.
+        self.v_censored = tk.BooleanVar(value=False)
+        cz = ttk.Checkbutton(g, text="Censored campaign (the German release's textures)", variable=self.v_censored,
+                             command=self._toggle_censored)
+        cz.grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        self.cb_censored = cz
+        tip(cz, "The campaign with the German release's textures (insignia taken off; a few props in six levels "
+                "keep theirs). The first time it asks for the German disc's .iso and copies about 1 GB from it; "
+                "after that it switches at once. Text, voices and multiplayer don't change. Close the game first.")
 
         s = section(t, "Game settings", 3, columns=1)
         self._grid_cols(s)
@@ -166,7 +195,8 @@ class Pages:
 
         d = section(t, "Ripped game files", 5, columns=1)
         hint(d, "Textures (DDS + PNG), meshes (glTF) and materials (JSON), for the new engine.").pack(anchor="w")
-        b = ttk.Button(d, text="Open ripped files", command=lambda: self._open(str(Path(self.v_out.get()) / "data")))
+        b = ttk.Button(d, text="Open ripped files",  # [acct2-decomp] nothing chosen: not the current folder
+                       command=lambda: self._open(str(self._out_path() / "data") if self._out_path() else ""))
         b.pack(anchor="w", pady=(px(8), px(18)))
         tip(b, "The data folder in the output folder.")
 
@@ -183,7 +213,7 @@ class Pages:
                                                "first.", kind="warning")
             return
         disc = filedialog.askopenfilename(title="Another Call of Duty 3 disc", parent=self.root,
-                                          filetypes=[("Disc images", "*.iso"), ("All files", "*")])
+                                          filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")])  # [acct2-decomp]
         if not disc:
             return
 
@@ -195,11 +225,68 @@ class Pages:
             return f"{first} Voices the game can use: {have}. Choose one with Voices under Game settings."
         self._start_task("Adding voices", work, actions=[])
 
+    def _refresh_censored(self) -> None:  # [acct2-decomp]
+        """The Censored campaign box as the game's files are (by size and
+        what waits in assets/censored/: instant)."""
+        out = self._out_path()
+        try:
+            on = out is not None and censored.status(out).censored
+        except (SetupError, OSError):
+            on = False
+        self.v_censored.set(on)
+
+    def _toggle_censored(self) -> None:  # [acct2-decomp]
+        """Swaps the campaign's censored files in or out (c3w/censored.py),
+        asking for the disc with the other version the first time."""
+        on = self.v_censored.get()
+        out = self._out_path()
+        if self._job_running():
+            self.v_censored.set(not on)
+            self.v_status.set("Busy: wait for the job running now, or cancel it.")
+            return
+        try:
+            if out is not None and game_settings.game_running(out):
+                self.v_censored.set(not on)
+                self._info("Close the game first", "Call of Duty 3 is running: close it, then switch the censored "
+                                                   "campaign (the game has these files open).", kind="warning")
+                return
+        except Exception:  # noqa: BLE001 - best effort, as _play_cod3
+            pass
+        try:
+            if out is None:
+                raise SetupError("Build Call of Duty 3 on Set up first.")
+            st = censored.status(out)
+        except SetupError as e:
+            self.v_censored.set(not on)
+            self._info("Censored campaign", str(e), kind="warning")
+            return
+        disc = ""
+        if not st.ready(censored.GERMAN if on else censored.UNCUT):
+            which = "the German disc" if on else "the USA/Europe or Europe (Fr, Es, It) disc"
+            disc = filedialog.askopenfilename(title=f"Call of Duty 3: {which} (for the censored campaign)",
+                                              parent=self.root,
+                                              filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")])
+            if not disc:
+                self.v_censored.set(not on)
+                return
+
+        def work(runner: common.Runner) -> str:
+            if disc:
+                censored.add(Path(disc), out, runner.log, runner.cancel)
+            r = censored.set_censored(out, on, runner.log, runner.cancel)
+            if r["lacking"] or r["changed"]:
+                raise SetupError(censored.status(out).summary())
+            first = ("The campaign now has the German release's textures (insignia taken off)." if on else
+                     "The campaign now has the uncut textures.")
+            return f"{first} Text, voices and multiplayer are as before. From the next level you load."
+        self._start_task("Censored campaign", work, actions=[])
+
     def _on_show_play(self) -> None:
         # The game may have changed its settings (F2) or been started or
         # closed since: read them again, keeping changes not saved yet.
         self._update_page_states()
         self._load_game_settings(keep_edits=self._gs_loaded_for == self.v_out.get().strip())
+        self._refresh_censored()   # [acct2-decomp]
 
     def _play_exe(self):
         """(the game for this system, "") or (None, why it can't start)."""
@@ -241,7 +328,7 @@ class Pages:
             self._info("Not built yet", f"No {'Windows' if IS_WINDOWS else 'Linux'} build of Call of Duty 3 "
                                         f"found.\n{why}", kind="warning")
             return
-        out = Path(self.v_out.get())
+        out = self._out_path()   # [acct2-decomp] as _play_exe found it
         try:
             running = game_settings.game_running(out)
         except Exception:  # noqa: BLE001 - best effort, as on the Play page
@@ -254,7 +341,11 @@ class Pages:
         self._migrate_windowed(out)
         args = [str(exe)]
         if self.v_cod3_args.get().strip():
-            args += shlex.split(self.v_cod3_args.get(), posix=not IS_WINDOWS)
+            try:
+                args += shlex.split(self.v_cod3_args.get(), posix=not IS_WINDOWS)
+            except ValueError:   # [acct2-decomp] an unclosed quote: say so instead of doing nothing
+                self._info("Not started", "Extra arguments: a quote isn't closed.", kind="warning")
+                return
         env = dict(os.environ)
         if not IS_WINDOWS and not os.access(exe, os.X_OK):
             # Built on Windows (WSL) or copied from a Windows drive: no exec bit.
@@ -360,8 +451,7 @@ class Pages:
                 w = ttk.Spinbox(s, from_=st.min, to=st.max, textvariable=var, width=8,
                                 increment=5 if st.max - st.min >= 100 else 1)
         w.grid(row=r, column=1, columnspan=2, sticky="w", pady=(px(5), 0))
-        if st.help:
-            tip(w, st.help)
+        if st.help:   # [acct2-decomp] shown once, under the control (it was a tooltip as well)
             hint(s, st.help, style="Small.TLabel", wrap=560).grid(row=r + 1, column=1, columnspan=2, sticky="w",
                                                                   padx=(px(24), 0) if st.kind == "bool" else 0)
         self._gs_vars[st.key] = (st, var, w)
@@ -548,8 +638,8 @@ class Pages:
         if self._out_path() is None:
             reason, style = "Choose an output folder on Set up first.", "Warn.TLabel"
         elif self._gs_running:
-            reason, style = ("Call of Duty 3 is running: close it first (it writes its settings when it quits), "
-                             "then press F5."), "Warn.TLabel"
+            reason, style = ("Call of Duty 3 is running: close it first. This page reads its settings again "
+                             "when it quits."), "Warn.TLabel"   # [acct2-decomp] _gs_watch does
         elif error:
             reason, style = f"Couldn't read the settings file: {error}", "Warn.TLabel"
         elif self._gs_problems():
@@ -715,6 +805,9 @@ class Pages:
 
     def _build_user_textures(self) -> None:
         """`rip cod3-user-pack` with the ripper the build left in tools/."""
+        if self._job_running():   # [acct2-decomp] a build writes the same pack (pipeline: user_textures.build)
+            self.v_status.set("Busy: wait for the job running now, or cancel it.")
+            return
         data = self._user_data()
         if data is None:
             return
@@ -864,6 +957,11 @@ class Pages:
         self.btn_repair = ttk.Button(bf, text="Repair", style="Accent.TButton", command=self._start_repair)
         self.btn_repair.pack(side="left", padx=(px(6), 0))
         tip(self.btn_repair, lambda: self.v_repair_reason.get() or "Redo the parts of the build that fix these.")
+        # [acct2-decomp] the disc's MD5s, file by file (c3w/disc_files.py)
+        b = ttk.Button(bf, text="Check game files (MD5)", command=self._check_disc_md5)
+        b.pack(side="left", padx=(px(6), 0))
+        tip(b, "Read every file taken off the disc and compare it with the disc's own MD5 (a minute or two; "
+               "nothing is changed).")
         self.v_repair_reason = tk.StringVar()
         self.lbl_repair_reason = hint(r, var=self.v_repair_reason)
         self.lbl_repair_reason.pack(anchor="w", pady=(px(4), 0))
@@ -901,8 +999,8 @@ class Pages:
         hint(p, var=self.v_profiles_empty).pack(anchor="w", pady=(px(4), 0))
 
         a = section(t, "Appearance", 9, columns=1)
-        hint(a, "The game's F2 themes, and a highlight color of your own. Other tabs pick theirs in the "
-                "sidebar.").grid(
+        hint(a, "The game's F2 themes, and a highlight color of your own. The other tabs pick theirs in the "
+                "sidebar (widen the window if it's hidden).").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, px(6)))
         for i, tid in enumerate(theme.THEME_ORDER):
             th = theme.THEMES[tid]
@@ -1067,6 +1165,9 @@ class Pages:
         d.focus_set()
 
     def _install_missing(self, recomp: bool) -> None:
+        if self._job_running():   # [acct2-decomp] a build's own installs and approvals run then
+            self.v_status.set("Busy: wait for the job running now, or cancel it.")
+            return
         self.show_page("log")
         common.APPROVAL.reset()
         common.APPROVAL.ask = self._ask_approval
@@ -1182,7 +1283,7 @@ class Pages:
         running = bool(self.worker and self.worker.is_alive())
         reason, style, blocked = "", "Hint.TLabel", True
         if running:
-            reason = "A build is running."
+            reason = "A job is running."   # [acct2-decomp] any job, not only a build
         elif report is None:
             reason = "Check the build first."
         elif not fixable:
@@ -1215,6 +1316,59 @@ class Pages:
         self._repair_report = None
         self._show_repair(None)
         self._start_build(overrides, what="Repair")
+
+    # [acct2-decomp] The disc's MD5s, file by file (c3w/disc_files.py)
+    def _check_disc_md5(self) -> None:
+        out = self._out_path()
+        if out is None:
+            self._info("No output folder", "Choose the output folder on Set up first.", kind="warning")
+            return
+        from . import disc_files
+
+        def work():
+            last = [0.0]
+
+            def progress(done: int, total: int, rel: str) -> None:
+                now = time.time()
+                if total and now - last[0] > 0.3:
+                    last[0] = now
+                    text = f"Checking game files: {100 * done / total:.0f}% ({rel})"
+                    self.q.put(("call", lambda t=text: self.v_status.set(t)))
+            report = disc_files.check(out, deep=True, progress=progress)
+            self.q.put(("call", lambda: self._show_disc_md5(report)))
+        self._bg(work, "Checking game files...")
+
+    def _show_disc_md5(self, report) -> None:
+        from . import disc_files
+        self.v_status.set("Ready.")
+        if report.disc is None:
+            self._info("Game files", report.summary(), kind="warning")
+            return
+        order = {s: i for i, s in enumerate(("changed", "size", "missing", "other_disc", "extra", "ok"))}
+        rows = []
+        for r in sorted(report.rows, key=lambda r: (order.get(r.status, 9), r.path.lower())):
+            if r.status == "missing":
+                yours = "(missing)"
+            elif r.md5 and r.md5 == r.expected_md5:
+                yours = "the same"
+            else:
+                yours = r.md5 or "-"
+            status = disc_files.STATUS_TEXT.get(r.status, r.status)
+            if r.note:
+                status += f" ({r.note})"
+            rows.append((r.path, status, r.expected_md5 or "-", yours))
+
+        def save() -> None:
+            p = filedialog.asksaveasfilename(parent=self.root, title="Save the list", defaultextension=".tsv",
+                                             initialfile="game-files-md5.tsv",
+                                             filetypes=[("Table", "*.tsv"), ("All files", "*")])
+            if p:
+                disc_files.write_tsv(report, Path(p))
+        note = ("Files that are missing or another size: Repair takes them off the disc again. A file with "
+                "another MD5 but the same size: delete it, then Repair.") if report.problems else ""
+        self._table_window("Game files", report.summary(), ["File", "Status", "MD5 on the disc", "Your file"],
+                           rows, note, [("Close", None), ("Save the list...", save)],
+                           shares=(0.34, 0.18, 0.24, 0.24))
 
     # Profiles
     def _refresh_profiles(self, select: Optional[str] = None) -> None:

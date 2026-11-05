@@ -17,13 +17,19 @@
 // The game's text and menus stay in the game's own language (0x82A2A150 is
 // never changed). "disc" leaves everything as the game does it.
 //
-// A change: the films follow at once. The soldiers follow at the next level
-// load (starting or loading a mission): the banks of the archives that level
-// opens are registered for the new voice, and every bank still registered for
-// the old one (the same level loaded again, the battle chatter) is released,
+// A change: the films follow at once. The soldiers follow in the middle of the
+// level ([acct2-decomp] 2026-11-04): on the game thread, each bank whose files
+// differ for the new voice waits until nothing of the slots that change has
+// played for two frames, then those slots are released, registered again and
+// loaded again in the background, the way the game does it (no sound is cut;
+// lines asked for in the moment between are not heard). The battle chatter
+// changes within seconds. A bank that keeps playing (a level's own sounds in an
+// English disc's whole bank), or whose new files need more sound memory than
+// the old ones, waits for the next level load (starting or loading a mission):
+// the banks of the archives that level opens are registered for the new
+// voice, and every bank still registered for the old one is released,
 // registered again and loaded again while the level loads (0x824631D0,
-// hooked). Before, a bank the game kept registered or loaded kept its old
-// voice until the game was started again.
+// hooked).
 //
 // Campaign only: the multiplayer program registers its banks in its own code
 // (0x824964E8, language 0x82BCBE24: docs/X360_FAMILY.md).

@@ -2,11 +2,15 @@
 
 #include "game/voice_language.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -21,13 +25,15 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game/engine.h"  // [acct2-decomp] QueueGuestTask: the mid-level swap runs on the game thread
 #include "game/guest.h"
 #include "game/voice_paths.h"
 
 REXCVAR_DEFINE_STRING(cod3_voice_language, "disc", "cod3/Audio",
                       "Voices in the campaign: disc (the game's own) or en, de, fr, es, it, from the "
                       "voice files of another disc that the setup tool copied into assets/; the text "
-                      "stays the game's own. The films change at once, the soldiers at the next level load")
+                      "stays the game's own. The films change at once; the soldiers as soon as nothing "
+                      "of their sound bank is playing, else at the next level load")
     .allowed({"disc", "en", "de", "fr", "es", "it"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
@@ -71,6 +77,44 @@ constexpr int kMaxEntries = 16, kSlots = 6;
 constexpr uint32_t kState = 36, kFile = 60, kLoaded = 84;
 constexpr uint32_t kNone = 0xFFFFFFFFu;
 
+// [acct2-decomp] For a change in the middle of a level (default.xex, read 2026-11-04;
+// dev/agents/acct2-decomp/NOTES.md "voices mid-level"):
+//   0x82114B58 nslUnloadBank (bank): frees a loaded bank at once (a queued one is
+//     cancelled) and advances its slot's generation. It does NOT stop the sounds
+//     playing from it, and resident waves are played from the bank's memory
+//     (FMOD_OPENMEMORY_POINT), so a bank is only released while nothing of it plays.
+//   The sound instances: a handle pool at 0x8290C99C (0x821249B8 first handle,
+//     0x821249D8 next, 0x821246E8 handle -> index or -1), 0x148-byte instances
+//     from the pointer at 0x8290C9C8; an instance's sound is at +0x110:
+//     the bank's handle (generation << 16 | 0xFFFF) with the wave index below.
+//   The voices (what FMOD plays; 0x8211B7D0 hands them out, 0x8211B8D8 frees one
+//     at once or marks it to stop at the next update): 0x140 bytes each from the
+//     pointer at 0x8290CC0C, their number at 0x825A16AC; +0x108 a state byte
+//     (0 free), +0x110 the sound, as an instance's. A voice can outlive its
+//     instance by one update, so both are counted.
+//   0x82493F00, the bank manager's update, runs every frame from CL_Frame: it
+//     turns a slot that is releasing (3) into nothing (0) once NSL has let the
+//     bank go, and a loading one (1) into loaded (2).
+// A bank file's resident data size is the u32 (little-endian) at +0x30 of its
+// NSLB header (docs/COD3_AUDIO.md).
+constexpr uint32_t kNslUnloadBank = 0x82114B58;
+// NSL holds 8 banks at most (the count at 0x825A16A8; 0x82118E80 counts those in
+// use). A slot the game can't get a bank for is closed and stays silent, so a
+// change that needs more banks than are free waits for a level load.
+constexpr uint32_t kNslBankSlots = 0x825A16A8, kNslLoadedBankCount = 0x82118E80;
+constexpr uint32_t kInstancePool = 0x8290C99C;
+constexpr uint32_t kInstanceArray = 0x8290C9C8;
+constexpr uint32_t kPoolFirst = 0x821249B8, kPoolNext = 0x821249D8, kPoolIndex = 0x821246E8;
+constexpr uint32_t kInstanceSize = 0x148, kInstanceSound = 0x110;
+constexpr uint32_t kVoiceArray = 0x8290CC0C, kVoiceCount = 0x825A16AC;
+constexpr uint32_t kVoiceSize = 0x140, kVoiceState = 0x108, kVoiceSound = 0x110;
+constexpr uint32_t kMaxVoices = 1024;      // NSL gives 247 and a few more; a bound in case it is damaged
+constexpr int kPoolGuard = 4096;           // the pool has 512 instances; a bound in case it is damaged
+constexpr int kQuietFrames = 2;            // a voice released in the last frame is stopped by the next update
+constexpr auto kEveryFrameFor = std::chrono::seconds(30);   // then once a second
+constexpr auto kReleaseTimeout = std::chrono::seconds(5);
+constexpr uint32_t kStateIdle = 0, kStateLoading = 1, kStateLoaded = 2, kStateReleasing = 3;
+
 using Key = std::array<uint32_t, 8>;
 
 std::mutex g_mutex;               // g_root, g_available, g_scanned, g_logged
@@ -90,14 +134,29 @@ struct Original {
   uint32_t slot;
   uint32_t archive;
 };
+// [acct2-decomp] A change in the middle of a level, per bank (game thread only).
+enum class SwapPhase { kIdle, kWaiting, kReleasing, kDeferred };
+struct Swap {
+  SwapPhase phase = SwapPhase::kIdle;
+  int target = -2;                   // the voice being swapped to
+  int quiet = 0;                     // frames in a row with nothing of the changed slots playing
+  std::chrono::steady_clock::time_point since{}, next_try{};
+  std::vector<uint32_t> slots;       // the slots whose files change
+  bool was_loaded = false;           // load the bank again when its new files are registered
+  bool told = false;                 // "waits" logged
+};
 struct Tracked {
   uint32_t table;
   Key key;
   std::vector<Original> regs;
   int voice;   // the voice its files were chosen for (-1 the game's own)
+  Swap swap{};
+  uint64_t peak = 0;   // [acct2-decomp] the most resident data it has held since the level loaded
 };
 std::vector<Tracked> g_tracked;
 std::recursive_mutex g_bank_mutex;         // g_tracked and the bank manager's entries while we change them
+std::atomic<bool> g_swap_queued{false};    // a SwapTask is queued for the next frame
+std::atomic<int> g_waiting{0};             // banks still waiting to change (for the settings row)
 
 int ReadChosen() { return LanguageFromCode(std::string(REXCVAR_GET(cod3_voice_language))); }
 
@@ -306,6 +365,218 @@ void RegisterAll(PPCContext& parent, uint8_t* base, const Tracked& t, int voice)
       RegisterRaw(parent, base, t.table, t.key, r, o.archive);
 }
 
+// --- [acct2-decomp] a change in the middle of a level --------------------------------
+
+// Queues SwapTask for the next game frame (once).
+void RequestSwap();
+
+// The slots whose files differ between two voices' plans for a bank.
+std::vector<uint32_t> ChangedSlots(const std::vector<Registration>& a, const std::vector<Registration>& b) {
+  std::map<uint32_t, std::vector<std::string>> pa, pb;
+  for (const auto& r : a) pa[r.slot].push_back(r.path);
+  for (const auto& r : b) pb[r.slot].push_back(r.path);
+  for (auto* m : {&pa, &pb})
+    for (auto& [slot, paths] : *m) std::sort(paths.begin(), paths.end());
+  std::vector<uint32_t> slots;
+  for (uint32_t s = 0; s < uint32_t(kSlots); ++s) {
+    const auto ia = pa.find(s), ib = pb.find(s);
+    const bool has_a = ia != pa.end(), has_b = ib != pb.end();
+    if (has_a != has_b || (has_a && ia->second != ib->second)) slots.push_back(s);
+  }
+  return slots;
+}
+
+bool InSlots(const std::vector<uint32_t>& slots, uint32_t s) {
+  return std::find(slots.begin(), slots.end(), s) != slots.end();
+}
+
+// The resident data of the bank files of the given slots that the game loads
+// (slot 5 and the game's language), from their NSLB headers in assets/; nothing
+// when a file can't be read (the change then waits for a level load).
+std::optional<uint64_t> ResidentBytes(const std::vector<Registration>& files, const std::vector<uint32_t>& slots,
+                                      int game_language) {
+  uint64_t total = 0;
+  for (const auto& r : files) {
+    if (!InSlots(slots, r.slot)) continue;
+    if (r.slot != kEveryLanguage && int(r.slot) != game_language) continue;
+    const auto p = Find(r.path);
+    if (!p) return std::nullopt;
+    std::ifstream f(*p, std::ios::binary);
+    unsigned char h[0x34]{};
+    if (!f.read(reinterpret_cast<char*>(h), sizeof h) || std::memcmp(h, "NSLB", 4) != 0) return std::nullopt;
+    total += uint64_t(h[0x30]) | uint64_t(h[0x31]) << 8 | uint64_t(h[0x32]) << 16 | uint64_t(h[0x33]) << 24;
+  }
+  return total;
+}
+
+bool OfBanks(uint32_t sound, const std::vector<uint32_t>& banks) {
+  return std::find(banks.begin(), banks.end(), sound | 0xFFFFu) != banks.end();
+}
+
+// How many sound instances and voices play from (or wait on) the given NSL banks.
+int CountPlaying(PPCContext& ctx, uint8_t* base, const std::vector<uint32_t>& banks) {
+  if (banks.empty()) return 0;
+  int n = 0;
+  if (const uint32_t array = ReadU32(base, kInstanceArray); array != 0) {
+    cod3::guest::Call call(ctx, base);
+    uint32_t h = uint32_t(call.Invoke(kPoolFirst, {kInstancePool}));
+    for (int guard = 0; h != kNone && guard < kPoolGuard; ++guard) {
+      const uint32_t cur = h;
+      h = uint32_t(call.Invoke(kPoolNext, {kInstancePool, cur}));
+      const int32_t index = int32_t(uint32_t(call.Invoke(kPoolIndex, {kInstancePool, cur})));
+      if (index < 0 || index >= kPoolGuard) continue;
+      n += OfBanks(ReadU32(base, array + uint32_t(index) * kInstanceSize + kInstanceSound), banks) ? 1 : 0;
+    }
+  }
+  if (const uint32_t voices = ReadU32(base, kVoiceArray); voices != 0) {
+    const uint32_t count = std::min(ReadU32(base, kVoiceCount), kMaxVoices);
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t v = voices + i * kVoiceSize;
+      if (cod3::guest::ReadU8(base, v + kVoiceState) != 0 && OfBanks(ReadU32(base, v + kVoiceSound), banks)) ++n;
+    }
+  }
+  return n;
+}
+
+// Releases the given slots of a bank as the game's 0x82494C70 does for each
+// loaded slot (NSL frees it, the file is closed, the slot is "releasing" until
+// the game's per-frame update clears it), and closes the files of the others.
+void ReleaseSlots(PPCContext& ctx, uint8_t* base, uint32_t e, const std::vector<uint32_t>& slots) {
+  for (uint32_t s : slots) {
+    const uint32_t state = ReadU32(base, e + kState + 4 * s);
+    const uint32_t file = ReadU32(base, e + kFile + 4 * s);
+    cod3::guest::Call call(ctx, base);
+    if (state == kStateLoaded) call.Invoke(kNslUnloadBank, {ReadU32(base, e + kLoaded + 4 * s)});
+    if (file != kNone) call.Invoke(kCloseFile, {file});
+    WriteU32(base, e + kFile + 4 * s, kNone);
+    if (state == kStateLoaded) WriteU32(base, e + kState + 4 * s, kStateReleasing);
+  }
+}
+
+// One frame of the change for one bank; true while it still has work to do.
+bool SwapBank(PPCContext& ctx, uint8_t* base, Tracked& t, int voice) {
+  using clock = std::chrono::steady_clock;
+  Swap& sw = t.swap;
+  const auto now = clock::now();
+  const uint32_t e = FindEntry(base, t.table, t.key);
+  if (!e) return false;   // the game no longer has it; RefreshBanks forgets it
+  const int game_language = ReadS32(base, kGameLanguage);
+
+  if (sw.phase == SwapPhase::kReleasing) {
+    // Waiting for the game's update to finish releasing the old files.
+    bool released = true;
+    for (uint32_t s : sw.slots)
+      released &= ReadU32(base, e + kState + 4 * s) == kStateIdle && ReadU32(base, e + kLoaded + 4 * s) == kNone;
+    if (!released) {
+      if (now - sw.since > kReleaseTimeout) {
+        REXLOG_WARN("cod3: voices: {} wasn't released in time: it changes at the next level load", BankName(t));
+        sw.phase = SwapPhase::kDeferred;
+        return false;
+      }
+      return true;
+    }
+    bool untouched = true;   // nobody registered a file in these slots since they were released
+    for (uint32_t s : sw.slots) untouched &= ReadU32(base, e + kFile + 4 * s) == kNone;
+    if (!untouched) {
+      sw = Swap{};
+      return t.voice != voice;
+    }
+    for (const Original& o : t.regs)
+      for (const Registration& r : PlanBank(o.path, o.slot, game_language, sw.target, Exists))
+        if (InSlots(sw.slots, r.slot)) RegisterRaw(ctx, base, t.table, t.key, r, o.archive);
+    if (sw.was_loaded) {
+      cod3::guest::Call call(ctx, base);
+      const uint32_t key_addr = PushKey(call, base, t.key);
+      call.Invoke(kLoadBank, {t.table, key_addr, 1});   // in the background, as the game loads it
+    }
+    REXLOG_INFO("cod3: voices: {} now {} (was {}), in the middle of the level", BankName(t), VoiceName(sw.target),
+                VoiceName(t.voice));
+    t.voice = sw.target;
+    sw = Swap{};
+    return t.voice != voice;   // changed again meanwhile: go on
+  }
+
+  if (sw.phase == SwapPhase::kDeferred && sw.target == voice) return false;
+  if (sw.phase == SwapPhase::kIdle || sw.target != voice) {
+    sw = Swap{};
+    sw.phase = SwapPhase::kWaiting;
+    sw.target = voice;
+    sw.since = now;
+    const auto old_files = Files(base, t, t.voice), new_files = Files(base, t, voice);
+    sw.slots = ChangedSlots(old_files, new_files);
+    if (sw.slots.empty()) {
+      t.voice = voice;   // the same files either way
+      sw = Swap{};
+      return false;
+    }
+    // Sound memory: the new files may not need more than this bank has held since the
+    // level loaded (what it frees now, or more it held before a smaller change).
+    const auto old_bytes = ResidentBytes(old_files, sw.slots, game_language);
+    const auto new_bytes = ResidentBytes(new_files, sw.slots, game_language);
+    if (old_bytes) t.peak = std::max(t.peak, *old_bytes);
+    if (!old_bytes || !new_bytes || *new_bytes > t.peak) {
+      REXLOG_INFO("cod3: voices: {} needs {} of sound memory ({} at most this level): it changes at the next "
+                  "level load", BankName(t), new_bytes ? std::to_string(*new_bytes) : std::string("an unknown amount"),
+                  old_bytes ? std::to_string(t.peak) : std::string("unknown"));
+      sw.phase = SwapPhase::kDeferred;
+      return false;
+    }
+    // NSL's banks: a whole bank replaced by a split pair needs one more.
+    const auto loads = [&](const std::vector<Registration>& files) {
+      int n = 0;
+      for (uint32_t s : sw.slots) {
+        if (s != kEveryLanguage && int(s) != game_language) continue;
+        bool any = false;
+        for (const auto& r : files) any |= r.slot == s;
+        n += any ? 1 : 0;
+      }
+      return n;
+    };
+    if (const int extra = loads(new_files) - loads(old_files); extra > 0) {
+      cod3::guest::Call call(ctx, base);
+      const int in_use = int(uint32_t(call.Invoke(kNslLoadedBankCount)));
+      const int slots = int(ReadU32(base, kNslBankSlots));
+      if (in_use < 0 || slots <= 0 || slots - in_use < extra) {
+        REXLOG_INFO("cod3: voices: {} needs {} more of the sound system's {} banks ({} in use): it changes at the "
+                    "next level load", BankName(t), extra, slots, in_use);
+        sw.phase = SwapPhase::kDeferred;
+        return false;
+      }
+    }
+  }
+  if (sw.phase != SwapPhase::kWaiting) return false;
+  if (now < sw.next_try) return true;
+
+  // Busy: a slot being loaded or released waits; so does any sound of the slots
+  // that change, until none has played for kQuietFrames frames in a row.
+  std::vector<uint32_t> banks;
+  bool busy = false, loaded = false;
+  for (uint32_t s : sw.slots) {
+    const uint32_t state = ReadU32(base, e + kState + 4 * s);
+    busy |= state == kStateLoading || state == kStateReleasing;
+    if (state == kStateLoaded) banks.push_back(ReadU32(base, e + kLoaded + 4 * s));
+  }
+  for (int s = 0; s < kSlots; ++s) loaded |= ReadU32(base, e + kState + 4 * s) == kStateLoaded;
+  const int playing = busy ? 0 : CountPlaying(ctx, base, banks);
+  if (busy || playing > 0) {
+    sw.quiet = 0;
+    // After a while, look once a second (a quiet look is followed by one the next frame).
+    if (now - sw.since > kEveryFrameFor) sw.next_try = now + std::chrono::seconds(1);
+    if (!sw.told && now - sw.since > std::chrono::seconds(2)) {
+      sw.told = true;
+      REXLOG_INFO("cod3: voices: {} is playing ({} sounds): it changes to {} when it's quiet or at the next "
+                  "level load", BankName(t), playing, VoiceName(voice));
+    }
+    return true;
+  }
+  if (++sw.quiet < kQuietFrames) return true;
+  sw.was_loaded = loaded;
+  ReleaseSlots(ctx, base, e, sw.slots);
+  sw.phase = SwapPhase::kReleasing;
+  sw.since = now;
+  return true;
+}
+
 }  // namespace
 
 void SetGameDataRoot(const std::filesystem::path& root) {
@@ -321,8 +592,9 @@ int Chosen() {
     rex::cvar::RegisterChangeCallback("cod3_voice_language", [](std::string_view, std::string_view) {
       const int now = ReadChosen();
       g_chosen.store(now, std::memory_order_relaxed);
-      REXLOG_INFO("cod3: voices: {} (the films at once, the soldiers from the next level load)",
+      REXLOG_INFO("cod3: voices: {} (the films at once, the soldiers as soon as their bank is quiet)",
                   VoiceName(now));
+      RequestSwap();   // [acct2-decomp] in the middle of a level too
     });
   });
   v = ReadChosen();
@@ -365,16 +637,25 @@ bool DrawSettingsRow() {
     if (!installed.empty()) installed += ", ";
     installed += kNames[i];
   }
+  // [acct2-decomp] the soldiers change in the middle of a level too (SwapTask)
   const std::string help =
       "The language the soldiers speak in the campaign and its films. Another disc's voices "
       "(German, or French, Spanish and Italian) come from the setup tool: Play page > Add voices "
-      "from another disc. The game's text stays as it is. The films change at once; the soldiers "
-      "when the next level loads (starting or loading a mission). Installed: " +
+      "from another disc. The game's text stays as it is. The films change at once. The soldiers "
+      "change as soon as nothing of their sound bank is playing (battle chatter within seconds); "
+      "a bank that keeps playing, such as a level's own sounds on the English disc, changes when "
+      "the next level loads. Nothing that is playing is cut off. Installed: " +
       (installed.empty() ? std::string("none found") : installed) + ".";
   Help(help.c_str());
+  if (const int waiting = g_waiting.load(); waiting > 0) {
+    const std::string w = std::to_string(waiting) + (waiting == 1 ? " sound bank still has" : " sound banks still have") +
+                          " the old voices (playing, or waiting for the next level load).";
+    Help(w.c_str());
+  }
   if (pick == -2 || pick == chosen) return false;
   rex::cvar::SetFlagByName("cod3_voice_language", pick < 0 ? "disc" : kCodes[pick]);
   g_chosen.store(pick, std::memory_order_relaxed);   // also when the change callback isn't there yet
+  RequestSwap();   // [acct2-decomp]
   return true;
 }
 
@@ -409,20 +690,26 @@ void RefreshBanks(PPCContext& ctx, uint8_t* base) {
   const bool debug = REXCVAR_GET(cod3_debug_voices);
   // Banks the game no longer has (their archive closed) are forgotten.
   std::erase_if(g_tracked, [&](const Tracked& t) { return FindEntry(base, t.table, t.key) == 0; });
+  for (Tracked& t : g_tracked) t.peak = 0;   // [acct2-decomp] a new level: memory measured afresh
   for (Tracked& t : g_tracked) {
     if (t.voice == voice) continue;
     const uint32_t e = FindEntry(base, t.table, t.key);
     if (!e) continue;
     if (Files(base, t, voice) == Files(base, t, t.voice)) {
       t.voice = voice;   // the same files either way (a bank without speech, or no files for the voice)
+      t.swap = Swap{};
       continue;
     }
     if (AnyState(base, e, 1) || AnyState(base, e, 3)) {
-      REXLOG_INFO("cod3: voices: {} is loading or being released: keeps {} for this level", BankName(t),
-                  VoiceName(t.voice));
+      // [acct2-decomp] a mid-level change releasing it finishes it (SwapTask)
+      if (t.swap.phase != SwapPhase::kReleasing)
+        REXLOG_INFO("cod3: voices: {} is loading or being released: keeps {} for this level", BankName(t),
+                    VoiceName(t.voice));
       continue;
     }
-    const bool was_loaded = AnyState(base, e, 2);
+    // [acct2-decomp] released by a mid-level change that hadn't registered it again yet
+    const bool was_loaded = AnyState(base, e, 2) || (t.swap.phase == SwapPhase::kReleasing && t.swap.was_loaded);
+    t.swap = Swap{};
     if (was_loaded) {
       cod3::guest::Call call(ctx, base);
       const uint32_t key_addr = PushKey(call, base, t.key);
@@ -451,6 +738,40 @@ void RefreshBanks(PPCContext& ctx, uint8_t* base) {
     }
     t.voice = voice;
   }
+  // [acct2-decomp] what still waits (a bank that was loading or releasing), for the settings row
+  int waiting = 0;
+  for (Tracked& t : g_tracked) {
+    if (t.voice == voice) continue;
+    ++waiting;
+    if (t.swap.phase == SwapPhase::kDeferred) t.swap = Swap{};   // the level load was its chance; try again
+  }
+  g_waiting.store(waiting);
+  if (waiting) RequestSwap();
+}
+
+// [acct2-decomp] Each frame while a change is unfinished: every bank registered
+// for another voice moves on one step (SwapBank). Runs on the game's main thread
+// at the start of the frame (Engine::OnGuestFrame, before Cbuf_Execute).
+void SwapTask(PPCContext& ctx, uint8_t* base) {
+  g_swap_queued.store(false);
+  bool more = false;
+  int waiting = 0;
+  {
+    std::lock_guard lock(g_bank_mutex);
+    const int voice = Chosen();
+    for (Tracked& t : g_tracked) {
+      if (t.voice == voice && t.swap.phase != SwapPhase::kReleasing) continue;
+      const bool busy = SwapBank(ctx, base, t, voice);
+      more |= busy;
+      waiting += t.voice != voice ? 1 : 0;
+    }
+  }
+  g_waiting.store(waiting);
+  if (more) RequestSwap();
+}
+
+void RequestSwap() {
+  if (!g_swap_queued.exchange(true)) cod3::Engine::Get().QueueGuestTask(SwapTask);
 }
 
 }  // namespace
@@ -482,6 +803,8 @@ REX_HOOK_RAW(sub_82478B80) {
   } else if (!entry) {
     t->regs.clear();
     t->voice = voice;
+    t->swap = Swap{};   // [acct2-decomp]
+    t->peak = 0;
   }
   bool known = false;
   for (const Original& o : t->regs) known |= SameName(o.path, path) && o.slot == slot && o.archive == archive;
@@ -494,6 +817,7 @@ REX_HOOK_RAW(sub_82478B80) {
   // The bank is registered for another voice and nothing of it is loaded:
   // its files are registered again from the start, this one included.
   if (entry && t->voice != voice && Idle(base, entry)) {
+    t->swap = Swap{};   // [acct2-decomp] the game registers it again: no mid-level change left to finish
     if (Files(base, *t, voice) != Files(base, *t, t->voice)) {
       ClearFiles(ctx, base, entry);
       RegisterAll(ctx, base, *t, voice);

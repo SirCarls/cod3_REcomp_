@@ -272,6 +272,19 @@ def _check_assets(report: Report) -> None:
     if missing:
         report.add("error", "Game files from the disc are missing", f"In assets/: {_names(missing)}",
                    "rerip", "assets")
+    # [acct2-decomp] The disc's own files, by size (instant; the MD5s are
+    # Tools > Repair > "Check game files (MD5)" and `verify-files`).
+    try:
+        from . import disc_files
+        sized = disc_files.check(assets, deep=False)
+    except Exception:  # an unknown disc, or a list that can't be read: no check
+        sized = None
+    if sized is not None and sized.disc is not None:
+        bad = [r.path for r in sized.problems]
+        if bad:
+            report.add("warning", f"{len(bad)} game file{'s' if len(bad) != 1 else ''} differ from the disc "
+                       f"({sized.disc.name})",
+                       f"Missing or another size in assets/: {_names(sorted(bad))}", "rerip", "assets")
     # A file the extraction was writing when it stopped.
     parts = []
     for root, _dirs, files in os.walk(assets):

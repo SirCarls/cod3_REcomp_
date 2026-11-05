@@ -10,6 +10,9 @@ playable Call of Duty 3 recompilation. It installs whatever is missing.
     python3 cod3_waw_setup.py doctor [--fix]  # what this PC has; --fix installs what's missing
     python3 cod3_waw_setup.py xiso "<disc image>" [--extract <folder> --only "*.ff"]
     python3 cod3_waw_setup.py map-pack "<patch download>" [--extract <folder>]
+    python3 cod3_waw_setup.py verify-files [<output folder, assets/ or disc image>] [--all] [--quick]
+    python3 cod3_waw_setup.py verify-files --list [usa_europe|germany|europe_fr_es_it|japan]  # the discs' MD5s
+    python3 cod3_waw_setup.py censored [<output folder>] [--add <German disc>] [--on|--off] [--verify]  # campaign only
     python3 cod3_waw_setup.py update [--check] [--yes] [--undo] [--allow|--deny]  # this tool's own updates
 
 Versions: by default the one for this system. --linux and --windows pick
@@ -283,6 +286,73 @@ def cmd_xiso(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_verify_files(a: argparse.Namespace) -> int:
+    """[acct2-decomp] The game's files against the MD5s of its disc
+    (c3w/disc_files.py). Only reads. Exit code 1 when a file is missing or
+    differs from the disc."""
+    from c3w import disc_files
+    if a.list is not None:
+        discs = [disc_files.disc_by_key(a.list)] if a.list else list(disc_files.DISCS)
+        if None in discs:
+            print(f"No list for {a.list!r}. Known: " + ", ".join(d.key for d in disc_files.DISCS))
+            return 1
+        for d in discs:
+            files = disc_files.known_files(d)
+            print(f"# {d.name} ({d.key}): {len(files)} files, default.xex SHA-1 {d.xex_sha1}")
+            print("# md5                             size          path")
+            for k in sorted(files.values(), key=lambda k: k.path.lower()):
+                print(f"{k.md5}  {k.size:12d}  {k.path}")
+        return 0
+    disc = None
+    if a.disc:
+        disc = disc_files.disc_by_key(a.disc)
+        if disc is None:
+            print(f"No list for {a.disc!r}. Known: " + ", ".join(d.key for d in disc_files.DISCS))
+            return 1
+    target = Path(a.target) if a.target else common.default_output_dir()
+    last = [0.0]
+
+    def progress(done: int, total: int, rel: str) -> None:
+        import time
+        now = time.time()
+        if now - last[0] > 2 and total:
+            last[0] = now
+            print(f"  {100 * done / total:5.1f}%  {rel}", file=sys.stderr)
+    try:
+        report = disc_files.check(target, disc, deep=not a.quick, progress=progress)
+    except (common.SetupError, OSError) as e:
+        print(f"Error: {e}")
+        return 1
+    print(report.summary())
+    rows = report.rows if a.all else report.problems
+    if not a.all and report.rows:
+        print("(--all lists every file with its MD5)")
+    if rows:
+        print(f"\n{'status':10}  {'MD5 (yours)':32}  {'size':>12}  path")
+    for r in rows:
+        print(f"{r.status:10}  {r.md5 or '-':32}  {'-' if r.size is None else r.size:>12}  {r.path}")
+        if r.status in ("changed", "size", "missing"):
+            print(f"{'':10}  {r.expected_md5:32}  {r.expected_size:>12}  (on the disc)")
+    if a.tsv:
+        disc_files.write_tsv(report, Path(a.tsv))
+        print(f"\nWritten: {a.tsv}")
+    return 1 if (report.disc is None or report.problems) else 0
+
+
+def cmd_censored(a: argparse.Namespace) -> int:
+    """[acct2-decomp] The censored campaign (c3w/censored.py): the German
+    disc's insignia textures in 84 campaign archives, on or off. Multiplayer
+    and the game's text are not touched."""
+    from c3w import censored
+    args = [str(Path(a.target) if a.target else common.default_output_dir())]
+    if a.add:
+        args += ["--add", a.add]
+    args += ["--on"] if a.on else ["--off"] if a.off else []
+    args += ["--verify"] if a.verify else []
+    args += ["--list"] if a.list else []
+    return censored.main(args)
+
+
 def cmd_update(a: argparse.Namespace) -> int:
     """[updater] Checks for a newer release of the setup tool and, with the
     user's yes, downloads and applies it (docs/UPDATES.md)."""
@@ -442,6 +512,29 @@ def main() -> int:
     mp.add_argument("--extract", metavar="FOLDER", help="take its fastfiles and .iwd files out into this folder")
     mp.add_argument("--work", help=argparse.SUPPRESS)
     mp.set_defaults(func=cmd_map_pack)
+
+    # [acct2-decomp] the discs' MD5s (c3w/disc_files.py)
+    vf = sub.add_parser("verify-files", help="check the game's files against the MD5s of its disc (read-only)")
+    vf.add_argument("target", nargs="?", help="output folder, its assets/ or a disc image (default: the output folder)")
+    vf.add_argument("--all", action="store_true", help="list every file with its MD5, not only the ones that differ")
+    vf.add_argument("--quick", action="store_true", help="sizes only (instant); without it every file is read")
+    vf.add_argument("--disc", metavar="KEY", help="check against this disc's list (default: told by default.xex)")
+    vf.add_argument("--list", nargs="?", const="", metavar="KEY",
+                    help="print the known discs' MD5s (or one disc's) and stop")
+    vf.add_argument("--tsv", metavar="FILE", help="also write the result as a table")
+    vf.set_defaults(func=cmd_verify_files)
+
+    # [acct2-decomp] the censored campaign (c3w/censored.py)
+    cz = sub.add_parser("censored", help="the campaign with the German disc's censored textures, on or off")
+    cz.add_argument("target", nargs="?", help="output folder or its assets/ (default: the output folder)")
+    cz.add_argument("--add", metavar="DISC", help="first copy the other version's files from this disc "
+                                                  "(the German .iso; for a German game, the USA/Europe one)")
+    czg = cz.add_mutually_exclusive_group()
+    czg.add_argument("--on", action="store_true", help="censored: the German disc's textures")
+    czg.add_argument("--off", action="store_true", help="uncut: the USA/Europe disc's textures")
+    cz.add_argument("--verify", action="store_true", help="tell which version is in use by every file's MD5")
+    cz.add_argument("--list", action="store_true", help="list the files it swaps and stop")
+    cz.set_defaults(func=cmd_censored)
 
     up = sub.add_parser("update", help="check for a newer setup tool and, with your yes, install it")
     up.add_argument("--check", action="store_true", help="only say whether there is one")

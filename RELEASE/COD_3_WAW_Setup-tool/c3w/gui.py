@@ -34,8 +34,9 @@ from . import common, fonts, games, inputs, map_packs, pc_games, theme, upscale,
 from .common import IS_LINUX, IS_WINDOWS, Log, SetupError
 from .gui_games import HERO_H, Games
 from .gui_log import LogPage
-from .gui_pages import Pages
+from .gui_pages import Pages, clean_path_text  # [acct2-decomp] clean_path_text
 from .gui_updates import Updates  # [updater] the setup tool's own update checks
+from .gui_addons import Addons  # [acct2-decomp] map packs (and later mods) on Set up
 from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline, fidelityfx_available
 from .widgets import ScrollFrame, px, section, hint, tip  # noqa: F401 - ScrollFrame/px kept importable from gui
 from .xiso import XisoImage
@@ -43,6 +44,8 @@ from .xiso import XisoImage
 SETTINGS_FILE = common.config_dir() / "settings.json"
 PAD = {"padx": 6, "pady": 3}
 DISC_TYPES = [("Disc images", "*.iso *.ISO")]
+
+
 PATCH_TYPES = [("Patch downloads", "*.zip *.ZIP *.exe *.EXE")]
 # Where earlier versions put the work folder by default; such a saved setting
 # is moved to the new default (the project's own work/ folder).
@@ -109,7 +112,7 @@ def format_duration(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
-class App(Pages, LogPage, Games, Updates):
+class App(Pages, LogPage, Games, Updates, Addons):
     def __init__(self, root: tk.Tk, launcher: bool):
         self.root = root
         self.launcher = launcher
@@ -621,6 +624,13 @@ class App(Pages, LogPage, Games, Updates):
             return f"{what} needs your Call of Duty 3 disc: {Path(src).name} isn't there any more (Set up)."
         if not opts.output_dir:
             return f"{what} needs an output folder: choose one on Set up."
+        # [acct2-decomp] What the pipeline would refuse at once (pipeline.py: _check_cod3_source, the
+        # version check): said here instead, before anything starts.
+        checked = getattr(self, "_iso_checked", None)
+        if checked and checked[0] == src and checked[1] is False:
+            return f"{what} needs a Call of Duty 3 disc the recomp knows: {self.v_iso_status.get()} (Set up)."
+        if opts.build_recomp and not (opts.build_linux or opts.build_windows):
+            return f"{what} needs a version: tick Linux and/or Windows on Set up."
         return ""
 
     def _options_with(self, overrides: Optional[dict]) -> BuildOptions:
@@ -640,6 +650,7 @@ class App(Pages, LogPage, Games, Updates):
         self._last_out = new
         self._update_build_state()
         self._refresh_maps()
+        self._refresh_addons()   # [acct2-decomp]
         self._output_changed()
 
     # ------------------------------------------------------------------ helpers
@@ -696,9 +707,10 @@ class App(Pages, LogPage, Games, Updates):
     def _manifest(self) -> dict:
         """The output folder's cod3_waw.json. Read again only when the file
         changed: the main buttons ask for it on every key typed in a form."""
-        if not self.v_out.get():
+        out = clean_path_text(self.v_out.get())   # [acct2-decomp]
+        if not out:
             return {}
-        path = Path(self.v_out.get()) / "cod3_waw.json"
+        path = Path(out) / "cod3_waw.json"
         try:
             st = path.stat()
         except OSError:
@@ -755,11 +767,13 @@ class App(Pages, LogPage, Games, Updates):
              "Pick the disc image (.iso)."),
             ("Folder...", lambda: self._pick_dir(self.v_iso, "Folder extracted from the CoD3 disc"),
              "Pick a folder you already extracted the disc to.")],
-            tooltip="Your Call of Duty 3 (USA, Europe) Xbox 360 disc image.")
+            tooltip="Your Call of Duty 3 Xbox 360 disc image: USA/Europe, Germany, or Europe "
+                    "(French, Spanish, Italian).")  # [acct2-decomp] KNOWN_XEX has all three
         self.lbl_iso_status = hint(d, var=self.v_iso_status)
         self.lbl_iso_status.grid(row=1, column=1, columnspan=2, sticky="w")
         hint(d, "Tip: put your disc images and downloads in the input folder and they're found by "
                 "themselves.").grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        self._addons_row(d, 3)   # [acct2-decomp] the map packs, beside the disc
 
         w = section(t, "What to build", 3, columns=1)
         self._grid_cols(w)
@@ -786,7 +800,7 @@ class App(Pages, LogPage, Games, Updates):
         self._row(w, 3, "Output folder", self.v_out, [
             ("Browse...", lambda: self._pick_dir(self.v_out, "Where everything goes"), "")],
             tooltip="Where the game, the ripped files, saves and logs go.")
-        ttk.Checkbutton(w, text="Install anything that's missing automatically (recommended)",
+        ttk.Checkbutton(w, text="Install anything that's missing (you approve the list first; recommended)",  # [acct2-decomp]
                         variable=self.v_install).grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
         waw_box = ttk.Checkbutton(w, text="Also rip World at War (set it up on its tab)", variable=self.v_use_waw,
                                   command=self._update_build_state)
@@ -802,7 +816,8 @@ class App(Pages, LogPage, Games, Updates):
         self._grid_cols(self.adv)
         self._row(self.adv, 0, "Work folder (temporary)", self.v_work, [
             ("Browse...", lambda: self._pick_dir(self.v_work, "Temporary build folder"), "")],
-            tooltip="Temporary build files; emptied after a build unless you keep the SDK.")
+            tooltip="Temporary build files. Emptied after a build when \"Delete temporary files\" is on "
+                    "(tools/ is kept, and the built SDK when that box is ticked).")  # [acct2-decomp]
         ttk.Label(self.adv, text="Build threads").grid(row=1, column=0, sticky="w", pady=px(3))
         jf = ttk.Frame(self.adv)
         jf.grid(row=1, column=1, columnspan=2, sticky="w", pady=px(3))
@@ -825,11 +840,22 @@ class App(Pages, LogPage, Games, Updates):
                   ("Delete temporary files when done", self.v_cleanup, "", ""),
                   ("Keep the built SDK for faster rebuilds (downloaded tools are always kept)", self.v_keep_sdk,
                    "", "")]
+        boxes = {}
         for i, (text, var, help_text, why) in enumerate(checks):
             cb = ttk.Checkbutton(self.adv, text=text, variable=var, state="disabled" if why else "normal")
             cb.grid(row=2 + i, column=0, columnspan=3, sticky="w", pady=px(1))
             if help_text or why:
                 tip(cb, help_text, reason=(lambda w=why: w) if why else None)
+            boxes[str(var)] = cb
+        # [acct2-decomp] The built SDK is only ever deleted with the temporary files
+        # (pipeline.cleanup returns at once when they're kept): the box means nothing then.
+        keep = boxes[str(self.v_keep_sdk)]
+        tip(keep, "Only with \"Delete temporary files\": the temporary files are all kept otherwise.",
+            reason=lambda: "" if self.v_cleanup.get() else "Nothing is deleted: \"Delete temporary files\" is off.")
+        def keep_state(*_a) -> None:
+            keep.configure(state="normal" if self.v_cleanup.get() else "disabled")
+        self.v_cleanup.trace_add("write", keep_state)   # a click, or a profile loaded
+        keep_state()
         self._toggle_options(show=False)
 
         hint(t, "Nothing is downloaded before you approve the list (what, from where, into which folder). "
@@ -902,7 +928,7 @@ class App(Pages, LogPage, Games, Updates):
                                     "Use Browse to pick its folder, or use the Xbox 360 or PC disc.")
 
     def _validate_iso(self) -> None:
-        p = self.v_iso.get().strip()
+        p = clean_path_text(self.v_iso.get())   # [acct2-decomp] ~ and pasted quotes
         if not p:
             self.v_iso_status.set("Choose the .iso, or a folder you already extracted it to.")
             self.lbl_iso_status.configure(style="Hint.TLabel") if hasattr(self, "lbl_iso_status") else None
@@ -917,8 +943,9 @@ class App(Pages, LogPage, Games, Updates):
                     if not xex.exists():
                         msg = "No default.xex in this folder."
                     else:
-                        ok = common.sha1_file(xex) in KNOWN_XEX
-                        msg = KNOWN_XEX.get(common.sha1_file(xex), "Unknown CoD3 version (default.xex differs)")
+                        sha = common.sha1_file(xex)   # [acct2-decomp] read once
+                        ok = sha in KNOWN_XEX
+                        msg = KNOWN_XEX.get(sha, "Unknown CoD3 version (default.xex differs)")
                 elif path.is_file():
                     with XisoImage(path) as img:
                         sha = hashlib.sha1(img.read("default.xex")).hexdigest()
@@ -929,7 +956,9 @@ class App(Pages, LogPage, Games, Updates):
                     msg = "Not found."
             except (SetupError, OSError) as e:
                 msg = str(e)
-            if self.v_iso.get().strip() == p:   # still the same disc
+            except Exception as e:  # noqa: BLE001 [acct2-decomp] a damaged image: say so, never keep an old status
+                msg = f"Can't read it: {type(e).__name__}: {e}"
+            if clean_path_text(self.v_iso.get()) == p:   # still the same disc
                 self.q.put(("iso_status", msg, ok))
         threading.Thread(target=work, daemon=True).start()
 
@@ -990,13 +1019,13 @@ class App(Pages, LogPage, Games, Updates):
     def _options(self) -> BuildOptions:
         use = self.v_use_waw.get()   # unticked: no World at War at all, whatever is filled in
         return BuildOptions(
-            cod3_source=self.v_iso.get().strip(),
+            cod3_source=clean_path_text(self.v_iso.get()),  # [acct2-decomp]
             waw_steam=self.v_steam.get().strip() if use else "",
             waw_xbox360=self.v_xbox.get().strip() if use else "",
             waw_pc_disc=self.v_pc.get().strip() if use else "", waw_alternative=self.v_alt.get(),
             waw_map_packs=list(self.packs) if use and not self.v_steam.get().strip() else [],
             build_linux=self.v_linux.get(), build_windows=self.v_windows.get(),
-            output_dir=self.v_out.get().strip(), work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
+            output_dir=clean_path_text(self.v_out.get()), work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
             jobs=self._jobs(), build_recomp=self.v_recomp.get(),
             appimage=self.v_appimage.get(), cleanup=self.v_cleanup.get(), keep_sdk=self.v_keep_sdk.get(),
             install_deps=self.v_install.get(), fidelityfx=self.v_ffx.get(),
@@ -1036,7 +1065,7 @@ class App(Pages, LogPage, Games, Updates):
                          on_step=lambda i, n, t: self.q.put(("step", i, n, t))).run()
                 self.q.put(("done", "good", self._where_summary(opts)))
             except common.Cancelled:
-                self.q.put(("done", "warn", "Press Build to continue later."))
+                self.q.put(("done", "warn", f"Press {what} to continue later."))  # [acct2-decomp] also Repair, Rip
             except SetupError as e:
                 self.log.error(str(e))
                 self.q.put(("done", "bad", str(e)))
@@ -1102,6 +1131,8 @@ class App(Pages, LogPage, Games, Updates):
         self.v_progress.set(1.0 if kind == "good" else self.v_progress.get())
         self._update_build_state()
         self._refresh_maps()
+        if hasattr(self, "_refresh_censored"):
+            self._refresh_censored()   # [acct2-decomp] a job may have swapped (or failed to swap) them
         if kind == "good" and actions is not None:
             # A rip or another job: its own note; a quiet one (starting the
             # LAN server) leaves the status line to what it started.
@@ -1143,7 +1174,7 @@ class App(Pages, LogPage, Games, Updates):
     def _jobs(self) -> int:
         """Build threads; an empty or garbled box means the recommended number."""
         try:
-            return max(1, int(self.v_jobs.get()))
+            return min(max(1, common.cpu_count()), max(1, int(self.v_jobs.get())))  # [acct2-decomp] the box's own limit
         except (tk.TclError, ValueError):
             return common.recommended_jobs()
 
@@ -1293,6 +1324,8 @@ class App(Pages, LogPage, Games, Updates):
                 elif kind == "iso_status":
                     self.v_iso_status.set(msg[1])
                     self.lbl_iso_status.configure(style="Good.TLabel" if msg[2] else "Warn.TLabel")
+                    self._iso_checked = (clean_path_text(self.v_iso.get()), bool(msg[2]))   # [acct2-decomp]
+                    self._update_build_state()
                 elif kind == "approve":
                     self._show_approval(msg[1], msg[2], msg[3])
                 elif kind == "checked":

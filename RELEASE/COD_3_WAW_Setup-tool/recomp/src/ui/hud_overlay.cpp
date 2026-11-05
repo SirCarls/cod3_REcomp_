@@ -1825,7 +1825,7 @@ void SettingsWindow::DrawVideoDisplay() {
            "the frame rate limit for that. Applies after a restart.");
     }
   }
-  dirty_ |= CvarCheckbox("Letterbox (keep the picture's shape)", "present_letterbox", &restart_needed_);
+  dirty_ |= CvarCheckbox("Black bars instead of stretching", "present_letterbox", &restart_needed_);  // [acct2-decomp]
   Help("Keeps the picture's shape with black bars when the window has another shape (for example "
        "16:9 chosen on an ultrawide monitor, or 4:3 on a 16:9 one), instead of stretching it to the "
        "window.");
@@ -1911,6 +1911,9 @@ void SettingsWindow::DrawVideoResolution() {
                               custom_w, custom_h, size_shape, picture);
       }
     }
+    // [acct2-decomp] "Xbox 360 original" draws the console's own size: these two don't apply to it.
+    const bool original = Get("cod3_render_resolution") == "original";
+    ImGui::BeginDisabled(original);
     {
       const char* v[] = {"native", "scaled"};
       const char* n[] = {"Native: the game draws every pixel itself",
@@ -1934,6 +1937,8 @@ void SettingsWindow::DrawVideoResolution() {
         dirty_ = true;
       }
     }
+    ImGui::EndDisabled();
+    if (original) ImGui::TextDisabled("With Xbox 360 original, the way it is drawn and the scale don't apply.");
     const cod3::RenderPlan now = cod3::GetRenderPlan();
     if (now.game_width) ImGui::TextWrapped("Now: the game draws %s.", cod3::DescribePlan(now).c_str());
     else if (cur == "original") ImGui::TextWrapped("Now: the game draws the Xbox 360's own 1040x624.");
@@ -2344,8 +2349,8 @@ void SettingsWindow::DrawGame() {
                         scale_range.max);
     ImGui::Text("Effective FOV: %.1f (kept within %.0f to %.0f)", engine.fov() * engine.fov_scale(),
                 fov::kMinEffective, fov::kMaxEffective);
-    Help("The field of view times the FOV scale. It never goes below 65 or above 165, from here, the "
-         "game's Options or the console. Vehicles, turrets and scripted moments may change the view "
+    Help("The field of view times the FOV scale. It never goes below 65 or above 165 (170 with the vehicle FOV "
+         "scale in a vehicle), from here, the game's Options or the console. Vehicles, turrets and scripted moments may change the view "
          "while they last (aiming down the sights narrows it too); your values come back after them "
          "and at every level start, and only your own changes are saved.");
     if (fov::ScriptedViewActive())
@@ -2436,13 +2441,41 @@ void SettingsWindow::DrawGame() {
     Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
          "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
          "level has loaded). Without it, hold Space, Enter or Escape, the left mouse button or the "
-         "controller's A to skip one (Prompts: how long).");
+         "controller's A to skip one (Hold to skip, below).");
     // [claude-9b-think] 2026-10-27 UNTESTED (owner 13:19) game/ultrawide.cpp cod3_letterbox.
-    dirty_ |= CvarCheckbox("Cinematic letterbox bars", "cod3_letterbox", &restart_needed_);
+    dirty_ |= CvarCheckbox("Black bars in in-game cutscenes", "cod3_letterbox", &restart_needed_);  // [acct2-decomp]
     Help("The black bars at the top and bottom of the screen during the levels' scripted in-game scenes. Off: "
          "the scene fills the screen; the scene itself is unchanged (the HUD stays hidden, the weapon put away, "
          "the subtitles where the game puts them).");
-    ImGui::TextDisabled("The skip prompt and the hold to skip: the Prompts tab.");
+    // [acct2-decomp] The skip prompt's rows (they were on the Prompts tab): greyed out while they do nothing.
+    const bool auto_skip = GetBool("cod3_skip_movies");
+    Section("Skip prompt and hold");
+    if (auto_skip) ImGui::TextDisabled("Skip cutscenes automatically is on: there is nothing to hold or show.");
+    ImGui::BeginDisabled(auto_skip);
+    dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
+    Help("Shows \"SPACE Skip\" (a controller's button while you use one) while a level's briefing can be "
+         "skipped: for 4 seconds when it starts and again for 4 seconds after any key or button press.");
+    {
+      const char* v[] = {"corner", "bottom_center"};
+      const char* n[] = {"Bottom-right corner", "Bottom center"};
+      ImGui::BeginDisabled(!GetBool("cod3_skip_prompt"));
+      dirty_ |= CvarCombo("Skip prompt position", "cod3_skip_prompt_position", v, n, 2, &restart_needed_);
+      ImGui::EndDisabled();
+      Help("The corner keeps it out of the subtitles' way; bottom center is where it was.");
+    }
+    if (Has("cod3_skip_hold_ms")) {
+      int ms = std::clamp(GetInt("cod3_skip_hold_ms", 1000), 0, 5000);
+      if (SliderIntBox("Hold to skip", &ms, 0, 5000, "%d ms")) {
+        rex::cvar::SetFlagByName("cod3_skip_hold_ms", std::to_string(std::clamp(ms, 0, 5000)));
+        dirty_ = true;
+      }
+      Help("How long Space, Enter, Escape, the left mouse button or the controller's A / START is held to skip; "
+           "the prompt fills while you hold, and letting go early cancels. While the prompt is hidden, the first "
+           "press only shows it. 0: a press skips at once.");
+      if (!GetBool("cod3_skip_prompt") && ms > 0)
+        ImGui::TextDisabled("The prompt is off: the hold still counts, with no fill to show it (0 skips on a press).");
+    }
+    ImGui::EndDisabled();
     ImGui::EndTabItem();
   }
   if (ImGui::BeginTabItem("Aim")) {
@@ -2458,8 +2491,8 @@ void SettingsWindow::DrawGame() {
       ImGui::Checkbox("Aim assist (Sticky Aim)", &v);
       ImGui::EndDisabled();
     }
-    Help("Slows your aim down while it passes over an enemy, as on the console. Mostly helps with a "
-         "controller. It's the same switch as Options > Gameplay > Sticky Aim in the game's menu "
+    Help("Slows your aim down while it passes over an enemy, as on the console. Controller only: with the "
+         "keyboard and mouse the pull is off. It's the same switch as Options > Gameplay > Sticky Aim in the game's menu "
          "(available once a profile is loaded).");
     cod3::sticky_aim::DrawF2Section();  // [claude-9b] what applies now (game/sticky_aim.h)
     ImGui::EndTabItem();
@@ -2577,7 +2610,7 @@ void SettingsWindow::DrawGame() {
           changed = true;
         }
       }
-      if (ImGui::Button("Connection order")) {
+      if (ImGui::Button("Reset to connection order")) {  // [acct2-decomp]
         for (int i = 0; i < 4; ++i) order[i] = i;
         changed = true;
       }
@@ -2682,28 +2715,7 @@ void SettingsWindow::DrawGamePrompts() {
   ImGui::TextDisabled("Every color above back to its default.");
   DrawGlyphPreview();
   dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h): the stick actions' prompts
-#if !defined(COD3_MP)
-  Section("Cutscene skip prompt");
-  dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
-  Help("Shows \"SPACE Skip\" (a controller's button while you use one) while a level's briefing can be "
-       "skipped: for 4 seconds when it starts and again for 4 seconds after any key or button press.");
-  {
-    const char* v[] = {"corner", "bottom_center"};
-    const char* n[] = {"Bottom-right corner", "Bottom center"};
-    dirty_ |= CvarCombo("Skip prompt position", "cod3_skip_prompt_position", v, n, 2, &restart_needed_);
-    Help("The corner keeps it out of the subtitles' way; bottom center is where it was.");
-  }
-  if (Has("cod3_skip_hold_ms")) {
-    int ms = std::clamp(GetInt("cod3_skip_hold_ms", 1000), 0, 5000);
-    if (SliderIntBox("Hold to skip", &ms, 0, 5000, "%d ms")) {
-      rex::cvar::SetFlagByName("cod3_skip_hold_ms", std::to_string(std::clamp(ms, 0, 5000)));
-      dirty_ = true;
-    }
-    Help("How long Space, Enter, Escape, the left mouse button or the controller's A / START is held to skip; "
-         "the prompt fills while you hold, and letting go early cancels. While the prompt is hidden, the first "
-         "press only shows it. 0: a press skips at once.");
-  }
-#endif
+  // [acct2-decomp] The cutscene skip prompt's rows are on the Cutscenes tab now, next to the automatic skip.
 }
 
 // [claude-9b] SOUND, right next to VIDEO (owner 2026-10-21: "sound needs to be right next to
@@ -2851,9 +2863,10 @@ void SettingsWindow::DrawCrosshair() {
       changed = true;
     }
   };
-  slider("Length", REXCVAR_GET(cod3_crosshair_size), 0.0f, 32.0f);
-  slider("Thickness", REXCVAR_GET(cod3_crosshair_thickness), 0.5f, 8.0f);
-  slider("Gap", REXCVAR_GET(cod3_crosshair_gap), -4.0f, 32.0f);
+  // [acct2-decomp] the cvars' own ranges (they were 0-32, 0.5-8, -4..32: a console value beyond was cut)
+  slider("Length", REXCVAR_GET(cod3_crosshair_size), 0.0f, 64.0f);
+  slider("Thickness", REXCVAR_GET(cod3_crosshair_thickness), 0.5f, 16.0f);
+  slider("Gap", REXCVAR_GET(cod3_crosshair_gap), -8.0f, 64.0f);
   Help("Sizes are in pixels on a 1080p screen and scale with the window. Gap is the space between "
        "the center and each arm.");
   bool outline = REXCVAR_GET(cod3_crosshair_outline);
@@ -2972,10 +2985,19 @@ void SettingsWindow::DrawControlsMouse() {
                                       "cod3_zoom_sensitivity", "cod3_invert_mouse", "cod3_m_yaw",
                                       "cod3_m_pitch",
                                       "cod3_mouse_game_sensitivity"});  // [claude-9b]
+    // [acct2-decomp] mnk_mouse's default was fixed at start (cod3_app.cpp), not by the reset: the Mouse aim
+    // combo's own rule, so raw input and the stick emulation are never on together (the view would turn twice).
+    if (REXCVAR_GET(cod3_raw_mouse)) rex::cvar::SetFlagByName("mnk_mouse", "false");
     dirty_ = true;
   }
   dirty_ |= CvarCheckbox("Keyboard & mouse", "mnk_mode", &restart_needed_);
-  Help("Play with keyboard and mouse. A controller keeps working either way.");
+  Help("Play with keyboard and mouse. A controller keeps working either way. The mouse is held by the game "
+       "only during gameplay; menus, the console and this window get a normal cursor.");
+  // [acct2-decomp] Off, the mouse aim, the key bindings' actions and the key prompts all stop
+  // (mouse_look.cpp, keybinds/binds.cpp, button_prompts.cpp): the rows below say so instead of doing nothing.
+  const bool mnk = GetBool("mnk_mode");
+  if (!mnk) ImGui::TextDisabled("Keyboard & mouse is off: the rows below apply once it's on.");
+  ImGui::BeginDisabled(!mnk);
 
   // One choice for the two underlying switches: raw aim (ours) or the SDK's
   // mouse-to-right-stick emulation. Never both, or the view turns twice.
@@ -3018,28 +3040,29 @@ void SettingsWindow::DrawControlsMouse() {
         dirty_ = true;
       }
       Help("Pushing the mouse forward looks down. The game's own Invert aim option (Options > "
-           "Controls) inverts the controller and the mouse; this box shows the mouse as it is.");
+           "Controls) inverts the controller and the mouse; this box shows the mouse as it is, so "
+           "changing Invert aim in the game flips this box too.");  // [acct2-decomp] the two combine
       // [claude-9b] Owner 2026-10-26: the game's Horizontal / Vertical rows are the controller's only.
       dirty_ |= CvarCheckbox("Game's horizontal / vertical rows scale the mouse too", "cod3_mouse_game_sensitivity",
                              &restart_needed_);
       Help("Off (default): the mouse uses only the sensitivity above; the game's Options > Controls "
            "Horizontal / Vertical sensitivity rows are the controller's. On: those rows scale the mouse "
-           "too (25 = 1x), as in earlier versions. The game's Invert aim flips both either way. The "
-           "mouse is held by the game only during gameplay; menus, the console and this window get a "
-           "normal cursor.");
+           "too (25 = 1x), as in earlier versions. The game's Invert aim flips both either way.");
       if (ImGui::TreeNode("Advanced (m_yaw / m_pitch)")) {
         float yaw = static_cast<float>(REXCVAR_GET(cod3_m_yaw));
         float pitch = static_cast<float>(REXCVAR_GET(cod3_m_pitch));
-        if (ImGui::InputFloat("m_yaw", &yaw, 0.001f, 0.01f, "%.4f")) {
+        // [acct2-decomp] Kept within the cvars' -1..1 and never 0 (0 stops that axis of the aim).
+        auto usable = [](float v) { return std::isfinite(v) && std::abs(v) >= 0.0001f && std::abs(v) <= 1.0f; };
+        if (ImGui::InputFloat("m_yaw", &yaw, 0.001f, 0.01f, "%.4f") && usable(yaw)) {
           REXCVAR_SET(cod3_m_yaw, static_cast<double>(yaw));
           dirty_ = true;
         }
-        if (ImGui::InputFloat("m_pitch", &pitch, 0.001f, 0.01f, "%.4f")) {
+        if (ImGui::InputFloat("m_pitch", &pitch, 0.001f, 0.01f, "%.4f") && usable(pitch)) {
           REXCVAR_SET(cod3_m_pitch, static_cast<double>(pitch));
           dirty_ = true;
         }
         Help("Degrees turned per mouse count at sensitivity 1, sideways and up/down. World at War "
-             "uses 0.022 for both.");
+             "uses 0.022 for both. A negative value turns that way round; 0 isn't taken.");
         ImGui::TreePop();
       }
     } else if (mode == 1) {
@@ -3047,6 +3070,7 @@ void SettingsWindow::DrawControlsMouse() {
       ImGui::TextDisabled("Its speed: Stick sensitivity, on the Controller tab.");
     }
   }
+  ImGui::EndDisabled();  // [acct2-decomp] Keyboard & mouse
 }
 
 // [claude-9b-think] 2026-10-27 UNTESTED The Controller subtab (owner 13:28: "Stick sensitivity (mnk_sensitivity) and
@@ -3296,7 +3320,8 @@ void SettingsWindow::DrawPerformance() {
   if (ImGui::BeginPopupModal("Low-end PC settings##lowend", nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::TextUnformatted("For a PC with 2-4 CPU cores and integrated graphics:");
-    ImGui::BulletText("Render resolution 720p (Xbox 360 original stays if chosen)");
+    ImGui::BulletText("Render resolution 720p (Xbox 360 original stays if chosen); with Aspect ratio \"Match "
+                      "the render resolution\" the picture becomes 16:9");  // [acct2-decomp] ultrawide.cpp
     ImGui::BulletText("No FXAA, plain bilinear scaling, the game's own texture filtering");
     ImGui::BulletText("HD textures off; the game's 2x MSAA drawn as real 2x");
     ImGui::BulletText("Geometry the game hasn't changed isn't sent to the GPU again every frame");
@@ -3367,7 +3392,9 @@ void SettingsWindow::DrawPerformance() {
       const char* v[] = {"0", "30", "60", "120", "300"};
       const char* n[] = {"Off", "Every 30 seconds", "Every minute", "Every 2 minutes",
                          "Every 5 minutes"};
+      ImGui::BeginDisabled(Get("cod3_log_detail") != "debug");  // [acct2-decomp] its help: Debug only
       dirty_ |= CvarCombo("Debug screenshots", "cod3_debug_screenshots", v, n, 5, &restart_needed_);
+      ImGui::EndDisabled();
     }
     Help("With Log detail on Debug only: the game's picture every so often while it changes, "
          "when the game gets stuck, and with each report, into userdata/logs/screenshots/ "
@@ -3481,7 +3508,7 @@ void SettingsWindow::DrawEmulation() {
       {"GPU", &SettingsWindow::DrawEmulationGpu},
       {"GPU speed-ups", &SettingsWindow::DrawEmulationSpeedups},
       {"Native code", &SettingsWindow::DrawEmulationNative},
-      {"Sound", &SettingsWindow::DrawEmulationSound},
+      {"Audio engine", &SettingsWindow::DrawEmulationSound},  // [acct2-decomp] not the SOUND tab
   };
   for (const Page& page : kPages) {
     if (!ImGui::BeginTabItem(page.label)) continue;
@@ -3608,8 +3635,14 @@ void SettingsWindow::DrawEmulationSpeedups() {
   for (const char* cvar : {"vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads"}) {
     if (!Has(cvar)) continue;
     int v = GetInt(cvar, -1);
-    if (ImGui::SliderInt("Shader build threads", &v, -1, static_cast<int>(hw),
-                         v < 0 ? "auto (CPUs - 1)" : "%d")) {
+    // [acct2-decomp] Both rows had the label "Shader build threads", so ImGui gave them one ID: dragging one
+    // moved both (Windows, where both exist). Each its own label and ID now.
+    const bool vk = cvar[0] == 'v';
+    ImGui::PushID(cvar);
+    const bool changed = ImGui::SliderInt(vk ? "Shader build threads (Vulkan)" : "Shader build threads (Direct3D 12)",
+                                          &v, -1, static_cast<int>(hw), v < 0 ? "auto (CPUs - 1)" : "%d");
+    ImGui::PopID();
+    if (changed) {
       rex::cvar::SetFlagByName(cvar, std::to_string(v));
       restart_needed_ = true;
       dirty_ = true;
@@ -3685,7 +3718,7 @@ void SettingsWindow::DrawInterface() {
   const ThemeInfo* chosen = &themes[0];
   for (size_t i = 0; i < count; ++i)
     if (current == themes[i].id) chosen = &themes[i];
-  if (ImGui::BeginCombo("Colors", chosen->label)) {
+  if (ImGui::BeginCombo("Theme", chosen->label)) {  // [acct2-decomp] not Video > Colors
     for (size_t i = 0; i < count; ++i) {
       const bool selected = &themes[i] == chosen;
       if (ImGui::Selectable(themes[i].label, selected)) {
@@ -3747,7 +3780,8 @@ void SettingsWindow::DrawSavedConsoleSettings() {
        "set with seta, plus com_maxfps and cg_drawFPS however they were changed, and your own cg_fov and "
        "cg_fovScale (not a vehicle's or a scripted view's). "
        "Reset puts them back to the game's defaults (the frame rate limit to the one in Video) and empties "
-       "the list. The settings in the other tabs aren't touched.");
+       "the list. That includes your field of view, FOV scale (Game > View) and the FPS counter (Video > "
+       "Frame rate); the other settings aren't touched.");  // [acct2-decomp] engine.cpp ResetArchivedCvars
   const auto saved = engine.ArchivedCvars();
   if (saved.empty()) {
     ImGui::TextDisabled("Nothing saved from the console.");

@@ -62,6 +62,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>  // [acct2-ocr]
 #include <utility>
 #include <vector>
 
@@ -79,6 +80,7 @@
 #include "game/keybinds/binds.h"  // [keybinds]
 #include "game/qte_actions.h"
 #include "game/rumble.h"  // [rumble]
+#include "game/text_language.h"  // [acct2-ocr]
 #include "game/pc_menu.h"
 
 #if !defined(COD3_MP)
@@ -839,7 +841,8 @@ std::string GameText(PPCContext& ctx, uint8_t* base, const std::string& key) {
   static std::mutex mutex;
   static std::unordered_map<std::string, std::string> cache;
   static uint32_t cached_language = ~0u;
-  const uint32_t language = ReadU32(base, bp::kLanguageMode);
+  uint32_t language = ReadU32(base, bp::kLanguageMode);
+  language ^= cod3::text::Generation() << 8;  // [acct2-ocr] a text language change empties the cache too
   {
     std::lock_guard lock(mutex);
     if (language != cached_language) cache.clear(), cached_language = language;
@@ -975,6 +978,17 @@ bool InkSpan(uint8_t* base, uint32_t font, const std::string& text, float x_scal
   }
   return any;
 }
+// [acct2-ocr] 2026-11-05 (owner 07:46: "double check the keys don't overlap with the text"): a piece with a character
+// past Latin-1 (Russian, Chinese ...) is not drawn from the game font's glyphs (ui/text_native.cpp draws it, and the
+// layout measured it with our widths), so InkSpan's reading of its bytes in the game font is meaningless: zh-Hans moved
+// [ESC] 6.6 units into the next word. The room is right as it is for such a line.
+bool BeyondLatin1(const std::string& text) {
+  for (size_t i = 0; i + 1 < text.size(); ++i) {
+    const uint8_t c = uint8_t(text[i]);
+    if (c >= 0xC4 && c < 0xF5 && (uint8_t(text[i + 1]) & 0xC0) == 0x80) return true;  // a UTF-8 lead of U+0100+
+  }
+  return false;
+}
 void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float x_scale, float y_scale, float text_alpha,
                  float button_alpha, Mode mode) {
   namespace pm = cod3::addr::pc_menu;
@@ -1032,6 +1046,7 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float x_scale, flo
           const int32_t after_end = k + 2 < n ? entry(k + 2, 0) : int32_t(text.size());
           float bl = 0.0f, br = 0.0f, al = 0.0f, ar = 0.0f;
           if (before_at >= 0 && before_at < start && after_end > end && after_end <= int32_t(text.size()) &&
+              !BeyondLatin1(text) &&  // [acct2-ocr] our glyphs, not the game font's
               InkSpan(base, font, text.substr(size_t(before_at), size_t(start - before_at)), x_scale, &bl, &br) &&
               InkSpan(base, font, text.substr(size_t(end), size_t(after_end - end)), x_scale, &al, &ar)) {
             const float gap_l = before_x + br, gap_r = x + float(entry(k + 1, 1)) + al;
@@ -1366,6 +1381,8 @@ std::string StickPhraseKeys(PPCContext& ctx, uint8_t* base, std::string text) {
 // placeholders: <MOVE> the movement keys, <LOOK> the mouse (the look keys without mouse aim), <BIND:keybind_x> a
 // controller button's key, <ACTION:name> one of the port's actions' key (game/keybinds/binds.h), <KEY:name> a key;
 // "\n" a new line. Used while keys are shown (menus and play), English only; other texts keep the phrase table.
+// [acct2-ocr] Rows "KEY[,KEY..]@lang": the same for the chosen text language (game/text_language.h), our own words;
+// placeholders <MOVE:word> / <LOOK:word> (the word without keys), <LCLICK> / <RCLICK> (a stick's click).
 uint32_t KeyHash(std::string_view key) {
   uint32_t h = 0;
   for (char c : key) h = h * 33 + uint32_t(uint8_t(std::tolower(uint8_t(c))));
@@ -1375,8 +1392,29 @@ std::mutex g_kbm_mutex;
 std::unordered_map<uint32_t, std::string> g_kbm_text;    // key hash -> our keyboard-and-mouse text
 std::unordered_map<std::string, uint32_t> g_kbm_key_of;  // the game's text (as the tables hold it) -> its key hash
 uint32_t g_kbm_buffer = 0;                               // guest copy of our text for the "[ACTION]" pass
+// [acct2-ocr] The same in other languages: rows "KEY[,KEY..]@lang" (lang a locale or its start: "ru", "zh-Hant"), our
+// own words in UTF-8, used while that language's text is shown (game/text_language.h): language -> key hash -> text.
+// Its texts are noted by the lookup below in g_kbm_loc_key_of (the chosen language's text -> its key hash).
+std::unordered_map<std::string, std::unordered_map<uint32_t, std::string>> g_kbm_loc;
+std::unordered_set<uint32_t> g_kbm_loc_hashes;               // every key some language has a row for
+std::unordered_map<std::string, uint32_t> g_kbm_loc_key_of;
 
-void ReadPromptText(std::istream& in, const char* from, std::unordered_map<uint32_t, std::string>& rows) {
+// [acct2-ocr] The chosen language's row for a key ("ru-RU", then "ru"), UTF-8, or "".
+std::string KbmRowForChosen(uint32_t hash) {
+  std::string code = cod3::text::Chosen();
+  std::lock_guard lock(g_kbm_mutex);
+  while (!code.empty()) {
+    if (auto l = g_kbm_loc.find(code); l != g_kbm_loc.end())
+      if (auto row = l->second.find(hash); row != l->second.end()) return row->second;
+    const size_t dash = code.rfind('-');
+    if (dash == std::string::npos) break;
+    code.resize(dash);
+  }
+  return "";
+}
+
+void ReadPromptText(std::istream& in, const char* from, std::unordered_map<uint32_t, std::string>& rows,
+                    std::unordered_map<std::string, std::unordered_map<uint32_t, std::string>>& localized) {
   std::string line;
   int read = 0, left_out = 0;
   while (std::getline(in, line)) {
@@ -1387,16 +1425,30 @@ void ReadPromptText(std::istream& in, const char* from, std::unordered_map<uint3
       ++left_out;
       continue;
     }
-    const std::string key = line.substr(0, tab);
+    std::string keys = line.substr(0, tab);
     std::string text = line.substr(tab + 1);
     for (size_t at = text.find("\\n"); at != std::string::npos; at = text.find("\\n", at + 1)) text.replace(at, 2, "\n");
-    bool hex = key.size() == 8;
-    for (char c : key) hex = hex && std::isxdigit(uint8_t(c)) != 0;
     if (text.empty() || text.size() > 500) {
       ++left_out;
       continue;
     }
-    rows[hex ? uint32_t(std::strtoul(key.c_str(), nullptr, 16)) : KeyHash(key)] = std::move(text);
+    // [acct2-ocr] "KEY,KEY@ru": several keys with one text, in one language.
+    std::string lang;
+    if (const size_t at = keys.find('@'); at != std::string::npos) lang = keys.substr(at + 1), keys.resize(at);
+    for (size_t from_at = 0; from_at <= keys.size();) {
+      size_t comma = keys.find(',', from_at);
+      if (comma == std::string::npos) comma = keys.size();
+      const std::string key = keys.substr(from_at, comma - from_at);
+      from_at = comma + 1;
+      if (key.empty()) continue;
+      bool hex = key.size() == 8;
+      for (char c : key) hex = hex && std::isxdigit(uint8_t(c)) != 0;
+      const uint32_t hash = hex ? uint32_t(std::strtoul(key.c_str(), nullptr, 16)) : KeyHash(key);
+      if (lang.empty())
+        rows[hash] = text;
+      else
+        localized[lang][hash] = text;
+    }
     ++read;
   }
   REXLOG_INFO("cod3: prompt texts: {} rows from {} ({} lines left out)", read, from, left_out);
@@ -1410,19 +1462,29 @@ std::string BindKeyNamed(std::string_view cvar) {
 }
 
 // Our placeholders -> key tokens (KeyToken) or words.
-std::string ExpandPlaceholders(std::string text) {
+std::string ExpandPlaceholders(uint8_t* base, std::string text) {
   for (size_t at = text.find('<'); at != std::string::npos; at = text.find('<', at + 1)) {
     const size_t end = text.find('>', at);
     if (end == std::string::npos) break;
     const std::string tag = text.substr(at + 1, end - at - 1);
     std::string with;
-    if (tag == "MOVE") {
+    // [acct2-ocr] "<MOVE:word>", "<LOOK:word>": the word instead of "the movement keys" / "the mouse" (other languages).
+    const bool own_word = tag.size() > 5 && tag[4] == ':';
+    if (tag == "MOVE" || (own_word && tag.rfind("MOVE", 0) == 0)) {
       const std::string keys = FourKeys(kBindMoveUp);
-      with = keys.empty() ? "the movement keys" : KeyToken(keys);
-    } else if (tag == "LOOK") {
+      with = !keys.empty() ? KeyToken(keys) : own_word ? tag.substr(5) : "the movement keys";
+    } else if (tag == "LOOK" || (own_word && tag.rfind("LOOK", 0) == 0)) {
       const std::string keys = FourKeys(kBindLookUp);
-      with = g_mouse_aim.load(std::memory_order_relaxed) || keys.empty() ? (at == 0 ? "The mouse" : "the mouse")
-                                                                          : KeyToken(keys);
+      with = !(g_mouse_aim.load(std::memory_order_relaxed) || keys.empty()) ? KeyToken(keys)
+             : own_word                                                      ? tag.substr(5)
+             : at == 0                                                       ? "The mouse"
+                                                                             : "the mouse";
+    } else if (tag == "LCLICK" || tag == "RCLICK") {
+      // [acct2-ocr] a stick's click: the port's own action on it first (the left one is +binoculars), else its keybind.
+      const bool left = tag[0] == 'L';
+      std::string key = cod3::binds::KeyNameForPadKey(base, left ? 220 : 219);
+      if (key.empty()) key = BindKey(left ? 10 : 11);
+      with = key.empty() ? "" : KeyToken(key);
     } else if (tag.rfind("BIND:", 0) == 0) {
       const std::string key = BindKeyNamed(tag.substr(5));
       with = key.empty() ? "" : KeyToken(key);
@@ -1439,6 +1501,21 @@ std::string ExpandPlaceholders(std::string text) {
   }
   return text;
 }
+
+// [acct2-ocr] The chosen language's words for "[USE_LEFT_STICK]" (1), "[USE_RIGHT_STICK]" (2) and
+// "[USE_BOTH_STICKS]" (3) with keys (rows COD3_KBM_STICK_<n>@lang), or "": no row, or the game's own prompts shown
+// (English chosen, cod3_text_prompts off, no font for the script yet).
+std::string LocalizedStickWords(uint8_t* base, int stick) {
+  static constexpr const char* kSentence[] = {"INGAME_XBOX_USE_LEFT_STICK", "INGAME_XBOX_USE_RIGHT_STICK",
+                                              "INGAME_XBOX_USE_BOTH_STICKS"};
+  static constexpr const char* kRow[] = {"COD3_KBM_STICK_1", "COD3_KBM_STICK_2", "COD3_KBM_STICK_3"};
+  if (stick < 1 || stick > 3) return "";
+  if (!cod3::text::GuestTextFor(base, KeyHash(kSentence[stick - 1]))) return "";
+  const std::string row = cod3::text::ForChosenFonts(KbmRowForChosen(KeyHash(kRow[stick - 1])));
+  return row.empty() ? "" : ExpandPlaceholders(base, row);
+}
+#else
+std::string LocalizedStickWords(uint8_t*, int) { return ""; }  // [acct2-ocr] the campaign's rows only
 #endif
 
 #if !defined(COD3_MP)
@@ -1509,6 +1586,11 @@ void AfterActionText(PPCContext& ctx, uint8_t* base, const std::string& action) 
     return;
   }
   if (!stick || !IsKeys(LayoutMode(base)) || ReadU32(base, bp::kLanguageMode) != 0) return;
+  // [acct2-ocr] The chosen language's stick words (COD3_KBM_STICK_<n>@lang rows), while its prompts are shown.
+  if (const std::string ours = LocalizedStickWords(base, stick); !ours.empty()) {
+    if (const uint32_t text = TempText(base, ours)) ctx.r3.u64 = text;
+    return;
+  }
   if (const uint32_t text = TempText(base, StickWords(stick))) {
     if (base[text]) ctx.r3.u64 = text;
   }
@@ -1550,19 +1632,25 @@ void NoteKeyboardUse() { KeyboardUsed("a test's key or mouse"); }
 void LoadPromptText(const std::filesystem::path& user_dir) {
 #if !defined(COD3_MP)
   std::unordered_map<uint32_t, std::string> rows;
+  std::unordered_map<std::string, std::unordered_map<uint32_t, std::string>> localized;  // [acct2-ocr]
   {
     std::istringstream in{std::string(kPromptTextKbm)};
-    ReadPromptText(in, "config/prompt_text_kbm.tsv (built in)", rows);
+    ReadPromptText(in, "config/prompt_text_kbm.tsv (built in)", rows, localized);
   }
   std::error_code error;
   const std::filesystem::path user = user_dir / "prompt_text_kbm.tsv";
   if (!user_dir.empty() && std::filesystem::exists(user, error)) {
     std::ifstream in(user);
-    if (in) ReadPromptText(in, "userdata/prompt_text_kbm.tsv", rows);
+    if (in) ReadPromptText(in, "userdata/prompt_text_kbm.tsv", rows, localized);
   }
   std::lock_guard lock(g_kbm_mutex);
   g_kbm_text = std::move(rows);
   g_kbm_key_of.clear();
+  g_kbm_loc_hashes.clear();  // [acct2-ocr]
+  for (const auto& [lang, texts] : localized)
+    for (const auto& [hash, text] : texts) g_kbm_loc_hashes.insert(hash);
+  g_kbm_loc = std::move(localized);
+  g_kbm_loc_key_of.clear();
 #else
   (void)user_dir;  // the campaign's texts only
 #endif
@@ -1820,6 +1908,10 @@ REX_HOOK_RAW(sub_824DD9A8) {
   const std::string action = Valid(ctx.r3.u32) ? ReadString(base, ctx.r3.u32, 64) : "";
   __imp__sub_824DD9A8(ctx, base);
   AfterActionText(ctx, base, action);
+  // [acct2-ocr] the chosen language's button verbs put the button where their text says ("~a drücken")
+  if (Valid(ctx.r3.u32))
+    if (const std::string placed = cod3::text::PlaceButton(ReadString(base, ctx.r3.u32, 512)); !placed.empty())
+      if (const uint32_t at = TempText(base, placed)) ctx.r3.u64 = at;
 }
 
 // The whole text after its "[ACTION]" pass (a static 512-byte buffer): with
@@ -1833,14 +1925,19 @@ REX_HOOK_RAW(sub_824DE290) {
   uint32_t key = 0;
   if (Valid(ctx.r3.u32)) {
     std::string kbm;
+    bool localized = false;  // [acct2-ocr] the chosen language's text: its own row (KEY@lang), never the English one
     {
       const std::string source = ReadString(base, ctx.r3.u32, 512);
       std::lock_guard lock(g_kbm_mutex);
-      if (auto it = g_kbm_key_of.find(source); it != g_kbm_key_of.end()) {
+      if (auto it = g_kbm_loc_key_of.find(source); it != g_kbm_loc_key_of.end()) {
+        key = it->second;
+        localized = true;
+      } else if (auto it = g_kbm_key_of.find(source); it != g_kbm_key_of.end()) {
         key = it->second;
         if (auto row = g_kbm_text.find(key); row != g_kbm_text.end()) kbm = row->second;
       }
     }
+    if (localized) kbm = cod3::text::ForChosenFonts(KbmRowForChosen(key));
     if (!kbm.empty()) {
       ++t_tokens;
       if (IsKeys(LayoutMode(base)) && ReadU32(base, bp::kLanguageMode) == 0 && kbm.size() < 511) {
@@ -1858,7 +1955,7 @@ REX_HOOK_RAW(sub_824DE290) {
   if (!Valid(buf)) return;
   const std::string shown = ReadString(base, buf, 512);
   // [claude-9b-think] our placeholders (<MOVE>, <BIND:..> ...) -> key tokens, after the game's "[ACTION]" pass.
-  const std::string text = ours ? ExpandPlaceholders(shown) : shown;
+  const std::string text = ours ? ExpandPlaceholders(base, shown) : shown;
   if (ours && REXCVAR_GET(cod3_debug_key_caps)) {
     static std::unordered_map<uint32_t, int> logged;
     if (logged.size() < 200 && logged[key]++ == 0)
@@ -1892,7 +1989,22 @@ REX_EXTERN(__imp__sub_82527FD0);
 REX_HOOK_RAW(sub_82527FD0) {
   const uint32_t hash = ctx.r4.u32;
   __imp__sub_82527FD0(ctx, base);
-  const uint32_t text = ctx.r3.u32;
+  // [acct2-ocr] The chosen text language (game/text_language.h) answers first; the English
+  // keyboard-and-mouse wording below is then left out for this text.
+  // [acct2-ocr] r3 is the table entry, its text at +8 (the callers' lwz r3,8(r3)).
+  if (const uint32_t ours = cod3::text::GuestEntryFor(base, hash, ctx.r3.u32)) {
+    ctx.r3.u64 = ours;
+    // [acct2-ocr] a text the keyboard-and-mouse rows have in some language: noted, as the English below.
+    const uint32_t text = ReadU32(base, ours + 8);
+    if (!Valid(text)) return;
+    std::lock_guard lock(g_kbm_mutex);
+    if (!g_kbm_loc_hashes.count(hash)) return;
+    if (g_kbm_loc_key_of.size() > 4096) g_kbm_loc_key_of.clear();
+    g_kbm_loc_key_of[ReadString(base, text, 512)] = hash;
+    return;
+  }
+  if (!Valid(ctx.r3.u32)) return;
+  const uint32_t text = ReadU32(base, ctx.r3.u32 + 8);   // [acct2-ocr] was the entry itself
   if (!Valid(text)) return;
   std::lock_guard lock(g_kbm_mutex);
   if (g_kbm_text.find(hash) == g_kbm_text.end()) return;
@@ -1909,6 +2021,11 @@ REX_HOOK_RAW(FEMultiLineText__vfunc_94) {
   const std::string action = Valid(ctx.r4.u32) ? ReadString(base, ctx.r4.u32, 64) : "";
   __imp__FEMultiLineText__vfunc_94(ctx, base);
   AfterActionText(ctx, base, action);
+  // [acct2-ocr] as the campaign's 0x824DD9A8 hook: the chosen language's button verbs put the button where their
+  // text says ("~a drücken"); this slot answers in r3 like the campaign's (AfterActionText reads/sets r3 for both)
+  if (Valid(ctx.r3.u32))
+    if (const std::string placed = cod3::text::PlaceButton(ReadString(base, ctx.r3.u32, 512)); !placed.empty())
+      if (const uint32_t at = TempText(base, placed)) ctx.r3.u64 = at;
 }
 #endif
 

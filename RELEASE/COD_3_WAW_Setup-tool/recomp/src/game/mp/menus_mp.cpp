@@ -48,6 +48,7 @@
 #include "game/addresses.h"
 #include "game/guest.h"
 #include "game/pc_menu.h"
+#include "game/text_language.h"  // [acct2-ocr] the port's texts in the chosen language
 #include "ui/announcement_feed.h"
 
 REXCVAR_DECLARE(bool, cod3_pc_menus);
@@ -596,6 +597,11 @@ REX_HOOK_RAW(Localize) {
   const uint32_t key = ctx.r4.u32;
   if (key) {
     const char* k = reinterpret_cast<const char*>(base + key);
+    // [acct2-ocr] The port's own texts in the chosen language (game/text_language.h), else the English below.
+    if (const uint32_t ours = cod3::text::PortText(base, k)) {
+      ctx.r3.u64 = ours;
+      return;
+    }
     for (auto& t : g_texts) {
       if (std::strcmp(k, t.key) != 0) continue;
       if (const uint32_t text = PortTextFor(base, t)) {

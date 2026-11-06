@@ -51,6 +51,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/keybinds/binds.cpp  # [keybinds] keys that call the game's own actions
     ${COD3_SRC}/game/keybinds/keys.cpp  # [keybinds]
     ${COD3_SRC}/game/keybinds/model.cpp  # [keybinds]
+    ${COD3_SRC}/game/keybinds/pad_model.cpp  # [acct2-main] the controller's own binds per player (split screen)
+    ${COD3_SRC}/game/keybinds/pad_binds.cpp  # [acct2-main]
     ${COD3_SRC}/game/level_hooks.cpp
     ${COD3_SRC}/game/machine_profile.cpp
     ${COD3_SRC}/game/mouse_look.cpp
@@ -64,6 +66,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     ${COD3_SRC}/game/render_resolution.cpp
     ${COD3_SRC}/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes checked (split screen's 2-4 views share one frame's lists)
+    ${COD3_SRC}/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame (logging only)
+    ${COD3_SRC}/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame drawn by ngl_vk beside the GPU emulation (a check)
     ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
@@ -73,6 +77,11 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
+    ${COD3_SRC}/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (its own hook of cod3mp's lookup)
+    ${COD3_SRC}/game/font_fill.cpp  # [acct2-ocr] the glyphs the game's fonts lack, added in memory
+    ${COD3_SRC}/ui/text_overlay.cpp  # [acct2-ocr] Russian/Chinese/Japanese/Korean text, drawn by us
+    ${COD3_SRC}/ui/text_native.cpp  # [acct2-ocr] the same text drawn through the game's own text path
+    ${COD3_SRC}/game/color_text.cpp  # [acct2-ocr] color codes inside a line (names)
     ${COD3_SRC}/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands
     ${COD3_SRC}/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip, _2 to _4)
     ${COD3_SRC}/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, per player
@@ -129,6 +138,13 @@ endif()
 
 rexglue_setup_target(cod3mp GPU_PLUGINS xenos)
 cod3_render_link(cod3mp)  # [rust-renderer] made by the top folder's cmake/cod3_render.cmake
+
+# [acct2-bro] ngl_vk, the native renderer's Vulkan library, when the top folder found it (cod3_debug_ngl_side; without
+# it the check only counts).
+if(TARGET ngl_vk)
+    target_link_libraries(cod3mp PRIVATE ngl_vk)
+    target_compile_definitions(cod3mp PRIVATE COD3_NGL_VK=1)
+endif()
 
 if(MINGW)
     target_link_options(cod3mp PRIVATE -municode)

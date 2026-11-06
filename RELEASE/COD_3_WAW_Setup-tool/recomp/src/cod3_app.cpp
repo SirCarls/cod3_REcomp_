@@ -54,10 +54,16 @@
 #include "game/settings_sync.h"
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
+#if !defined(COD3_MP)
+#include "game/font_fill.h"  // [acct2-ocr]
+#include "game/text_language.h"  // [acct2-ocr]
+#include "ui/text_overlay.h"  // [acct2-ocr]
+#endif
 #include "game/watchdog.h"
 #include "render/rust_renderer.h"  // [rust-renderer]
 #include "test_input.h"
 #include "ui/problem_log.h"
+#include "ui/start_problem.h"  // [acct2-decomp] Windows: a start that fails says why
 #include "ui/theme.h"
 #include "generated/default/cod3_init.h"
 
@@ -172,6 +178,11 @@ void StartExitWatchdog(const char* why) {
 //   <root>/userdata      saves, console config, caches
 //   <root>/cod3.toml     recomp settings (F2 window)
 void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
+#ifdef _WIN32
+  // [acct2-decomp] The game's name on message boxes, and a last word for an
+  // error nothing caught (ui/start_problem.h).
+  cod3::start_problem::Install("Call of Duty 3", "cod3.exe", "cod3.log");
+#endif
   std::vector<std::filesystem::path> candidates;
   if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage)
     candidates.push_back(std::filesystem::path(appimage).parent_path());
@@ -193,6 +204,12 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::mp::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   // [voice] Where the Voices setting finds other discs' sound banks.
   cod3::voice::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+#if !defined(COD3_MP)
+  // [acct2-ocr] Where the Text setting finds text/<language>.txt.
+  cod3::text::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+#endif
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
     paths.user_data_root = root / "userdata";
     paths.cache_root = root / "userdata" / "cache";
@@ -213,7 +230,14 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
     const auto user_dir = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
     std::error_code ec;
     std::filesystem::create_directories(user_dir / "logs", ec);
+#ifdef _WIN32
+    // [acct2-decomp] A name the SDK's log can open (generic_string() threw for
+    // a character outside the system's code page), or a message box saying
+    // what to do and the end of the program (ui/start_problem.h).
+    rex::cvar::SetFlagByName("log_file", cod3::start_problem::LogFileOrStop(user_dir / "logs" / "cod3.log"));
+#else
     rex::cvar::SetFlagByName("log_file", (user_dir / "logs" / "cod3.log").generic_string());
+#endif
   }
 }
 

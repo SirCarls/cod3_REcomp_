@@ -51,6 +51,9 @@
 #include "ui/slider_box.h"  // [claude-9b] sliders with a number box (owner: "sliders + textbox")
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
+#include "game/text_language.h"  // [acct2-ocr]
+#include "ui/text_overlay.h"  // [acct2-ocr]
+#include "ui/film_text.h"  // [acct2-ocr]
 #include "game/frame_rate.h"
 #include "game/perf_stats.h"
 #include "game/machine_profile.h"  // [hw-scaling]
@@ -1336,6 +1339,13 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   cod3::hud::AnnouncementFeed::Draw(io);
   DrawQteSpinner(io);  // stick battle actions (ui/qte_spinner.h)
   DrawPromptKeyCaps(io);  // [acct2-decomp] the game's prompts' keys as key caps
+  {  // [acct2-ocr] Russian/CJK lines the game drew invisibly (ui/text_overlay.h), mapped as the key caps
+    const HudArea ta = CurrentHudArea(io);
+    cod3::text_overlay::Draw(ta.x, ta.y, ta.width, ta.height);
+#if !defined(COD3_MP)
+    cod3::film_text::Draw(ta.x, ta.y, ta.width, ta.height);  // [acct2-ocr] the films' cards in the chosen language
+#endif
+  }
   if (const float cover = cod3::CutsceneSkip::Get().CoverAlpha(); cover > 0.0f) {
     // Skipping a level intro: black while game time runs fast behind it.
     ImGui::GetBackgroundDrawList()->AddRectFilled(
@@ -2736,6 +2746,7 @@ void SettingsWindow::DrawSound() {
   }
   DrawSoundOutput();
   if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
+  if (cod3::text::DrawSettingsRow()) Save();  // [acct2-ocr] the text language, next to the voices
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -3076,10 +3087,85 @@ void SettingsWindow::DrawControlsMouse() {
 // [claude-9b-think] 2026-10-27 UNTESTED The Controller subtab (owner 13:28: "Stick sensitivity (mnk_sensitivity) and
 // anything controller-only"). mnk_sensitivity is the SDK's mouse-to-right-stick factor: it applies only with Mouse
 // aim set to Right-stick emulation (it was shown under that choice). A controller's own settings are the game's.
+// [acct2-ocr] 2026-11-05 (owner 07:48: "if there is any deadzone settings for controllers allow for the user
+// to edit them"): the game's one stick dead zone is its dvar joy_threshold, "25" of the stick's 128 per axis,
+// archived (campaign Cvar_Get at 0x8251E9C8, cod3mp at 0x8253D3D4, the same in both). IN_JoyMove reads it for
+// each axis: a push smaller than it counts as nothing, a larger one is stretched back to the full range. The
+// slider sets it like the console would (at once) and saves it to cod3_config.cfg (seta), so the console's
+// joy_threshold is the same setting. A split screen's controllers all share it. (The SDK's 7849 of 32767,
+// state_merge.h, is not a dead zone of play: it only tells a resting pad from a used one when the keyboard's
+// and the pad's states merge.)
+namespace {
+constexpr int kJoyThresholdDefault = 25;  // the game's own
+constexpr int kJoyThresholdMax = 100;     // of 128: past that the stick barely moves anything
+int g_joy_threshold = -1;                 // what the game has, -1 until known
+uint64_t g_joy_threshold_gen = ~0ull;     // the console snapshot it was last read from
+
+int JoyThresholdNow() {
+  auto& engine = cod3::Engine::Get();
+  if (g_joy_threshold < 0) {
+    const auto archived = engine.ArchivedCvars();
+    if (auto it = archived.find("joy_threshold"); it != archived.end())
+      g_joy_threshold = std::atoi(it->second.c_str());
+  }
+  const uint64_t gen = engine.SnapshotGeneration();
+  if (gen != g_joy_threshold_gen) {  // a console change shows here too
+    g_joy_threshold_gen = gen;
+    const cod3::EngineSnapshot snap = engine.Snapshot();
+    for (const auto& c : snap.cvars)
+      if (c.name == "joy_threshold") {
+        g_joy_threshold = std::atoi(c.value.c_str());
+        break;
+      }
+  }
+  if (g_joy_threshold < 0) g_joy_threshold = kJoyThresholdDefault;
+  return g_joy_threshold;
+}
+
+void SetJoyThreshold(int units) {
+  units = std::clamp(units, 0, kJoyThresholdMax);
+  g_joy_threshold = units;
+  auto& engine = cod3::Engine::Get();
+  const std::string v = std::to_string(units);
+  engine.QueueGuestTask([v](PPCContext& ctx, uint8_t* base) {
+    cod3::Engine::CvarSet(ctx, base, "joy_threshold", v.c_str(), /*force=*/true);
+    cod3::Engine::Get().RequestSnapshot();  // the slider reads it back from there
+  });
+  if (units == kJoyThresholdDefault)
+    engine.DropArchived("joy_threshold");
+  else
+    engine.SetArchived("joy_threshold", v);
+  REXLOG_INFO("cod3: stick dead zone: joy_threshold {} ({:.0f}% of a full push) (F2)", units, units * 100.0 / 128.0);
+}
+}  // namespace
+
 void SettingsWindow::DrawControlsController() {
   if (ResetButton("reset_controller", "controller settings")) {
     restart_needed_ |= ResetSettings({"mnk_sensitivity"});
+    if (cod3::Engine::Get().GameReady()) SetJoyThreshold(kJoyThresholdDefault);  // [acct2-ocr]
     dirty_ = true;
+  }
+  {
+    // [acct2-ocr] The stick dead zone (joy_threshold): applied when the slider is let go.
+    auto& engine = cod3::Engine::Get();
+    static int dragging = -1;  // the slider's value while it is held
+    int units = dragging >= 0 ? dragging : JoyThresholdNow();
+    if (!engine.GameReady()) ImGui::BeginDisabled();
+    char label[48];
+    std::snprintf(label, sizeof(label), "%d of 128 (%.0f%%)", units, units * 100.0 / 128.0);
+    if (ImGui::SliderInt("Stick dead zone (joy_threshold)", &units, 0, kJoyThresholdMax, label,
+                         ImGuiSliderFlags_AlwaysClamp))
+      dragging = units;
+    if (ImGui::IsItemDeactivatedAfterEdit() && dragging >= 0) {
+      SetJoyThreshold(dragging);
+      dirty_ = true;
+    }
+    if (!ImGui::IsItemActive() && !ImGui::IsItemDeactivatedAfterEdit()) dragging = -1;
+    if (!engine.GameReady()) ImGui::EndDisabled();
+    Help("How far a stick must be pushed before the game takes it, for both sticks and every controller (split "
+         "screen too), on each axis: smaller pushes count as nothing, larger ones are stretched back to the "
+         "full range. The game's own is 25 (about 20%). Lower it for a precise stick, raise it for one that "
+         "drifts. Applies at once and is saved; the same as joy_threshold in the ~ console.");
   }
   if (Has("mnk_sensitivity")) {
     float sens = static_cast<float>(GetDouble("mnk_sensitivity", 1.0));

@@ -68,6 +68,8 @@ set(COD3_SOURCES
     src/game/keybinds/binds.cpp  # [keybinds] the keyboard's own actions (campaign only)
     src/game/keybinds/keys.cpp  # [keybinds]
     src/game/keybinds/model.cpp  # [keybinds]
+    src/game/keybinds/pad_model.cpp  # [acct2-main] the controller's own binds per player
+    src/game/keybinds/pad_binds.cpp  # [acct2-main]
     src/game/menu_fov.cpp
     src/game/menu_aim.cpp  # [claude-9b] Pause > Options > AIM: sensitivity per weapon class, crosshair
     src/game/menu_slider.cpp  # [claude-9b] slider rows: the number box you can type in
@@ -96,6 +98,8 @@ set(COD3_SOURCES
     src/game/ai_aim.cpp  # [claude-9b-think] the AI's sample of the player's movement taken as at 60 fps; census line 3: hit decisions vs hurt (campaign only)
     src/game/ai_shots.cpp  # [claude-9b-think] cod3_debug_ai_shots: each AI shot near the player with its guest stack, aim error and trace (campaign only)
     src/game/view_cull.cpp  # [claude-9b] the game's on-screen check as wide as the picture: logs, and cod3_cull_match_view (campaign only)
+    src/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame, for the native renderer at NGL's level (logging only; campaign first)
+    src/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame's 2D drawn by ngl_vk beside the GPU emulation and saved next to the game's screenshot (a check; campaign first)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
@@ -115,6 +119,12 @@ set(COD3_SOURCES
     src/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, hip and aiming, per player
     src/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz, the match's aim assist rules
     src/game/voice_language.cpp  # [voice]
+    src/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (campaign only)
+    src/game/font_fill.cpp  # [acct2-ocr] the glyphs the game's fonts lack, added in memory (campaign only)
+    src/ui/text_overlay.cpp  # [acct2-ocr] Russian/Chinese/Japanese/Korean text, drawn by us
+    src/ui/text_native.cpp  # [acct2-ocr] the same text drawn through the game's own text path
+    src/game/color_text.cpp  # [acct2-ocr] color codes inside a line (names), both programs
+    src/ui/film_text.cpp  # [acct2-ocr] the films' burned-in cards in the chosen language (campaign only)
     src/game/watchdog.cpp
     src/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start (both programs)
     src/ui/announcement_feed.cpp
@@ -157,6 +167,33 @@ rexglue_setup_target(cod3 GPU_PLUGINS xenos)
 # when the build has Rust for its target; cod3mp links it too (mp/CMakeLists.txt).
 include(cmake/cod3_render.cmake)
 cod3_render_link(cod3)
+
+# [acct2-bro] ngl_vk (the project's ngl_vk/ folder, the Vulkan renderer Big Red One's port draws with), for the
+# native renderer at NGL's level (dev/agents/acct2-bro/COD3-NGL-PLAN.md). Only the cod3_debug_ngl_side check uses it,
+# off by default; Linux builds with the Vulkan headers and glslc only, the others build without it (the check then
+# only counts). COD3_NGL_VK_DIR defaults to engine/'s neighbor, or the folder two up from this one.
+set(COD3_NGL_VK_DIR "" CACHE PATH "The project's ngl_vk/ folder (the native renderer's Vulkan library)")
+set(_cod3_ngl_vk "${COD3_NGL_VK_DIR}")
+if(NOT _cod3_ngl_vk AND COD3_ENGINE_DIR AND EXISTS "${COD3_ENGINE_DIR}/../ngl_vk/CMakeLists.txt")
+    get_filename_component(_cod3_ngl_vk "${COD3_ENGINE_DIR}/../ngl_vk" ABSOLUTE)
+endif()
+if(NOT _cod3_ngl_vk AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk/CMakeLists.txt")
+    get_filename_component(_cod3_ngl_vk "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk" ABSOLUTE)
+endif()
+if(NOT WIN32 AND _cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt")
+    find_package(Vulkan QUIET)
+    find_program(COD3_NGL_VK_GLSLC NAMES glslc HINTS "${Vulkan_GLSLC_EXECUTABLE}")
+    if(Vulkan_FOUND AND COD3_NGL_VK_GLSLC)
+        add_subdirectory("${_cod3_ngl_vk}" "${CMAKE_CURRENT_BINARY_DIR}/ngl_vk")
+        target_link_libraries(cod3 PRIVATE ngl_vk)
+        target_compile_definitions(cod3 PRIVATE COD3_NGL_VK=1)
+        message(STATUS "cod3: ngl_vk from ${_cod3_ngl_vk} (cod3_debug_ngl_side)")
+    else()
+        message(STATUS "cod3: no ngl_vk (Vulkan headers or glslc missing); cod3_debug_ngl_side only counts")
+    endif()
+else()
+    message(STATUS "cod3: no ngl_vk (no ngl_vk/ folder found, or Windows); cod3_debug_ngl_side only counts")
+endif()
 
 # MinGW (the Windows build made on Linux): the SDK's entry point is wWinMain,
 # which MinGW's C runtime only calls when the program links with -municode.

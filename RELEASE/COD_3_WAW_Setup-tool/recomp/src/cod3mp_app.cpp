@@ -47,6 +47,7 @@
 #include "game/color_output.h"
 #include "game/diagnostics.h"
 #include "game/engine.h"
+#include "game/font_fill.h"  // [acct2-ocr]
 #include "game/frame_rate.h"
 #include "game/guest.h"
 #include "game/hd_textures.h"
@@ -61,11 +62,14 @@
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
 #include "game/screenshot.h"
+#include "game/text_language.h"  // [acct2-ocr]
+#include "ui/text_overlay.h"  // [acct2-ocr]
 #include "game/ultrawide.h"
 #include "game/watchdog.h"
 #include "render/rust_renderer.h"  // [rust-renderer]
 #include "test_input.h"
 #include "ui/problem_log.h"
+#include "ui/start_problem.h"  // [acct2-decomp] Windows: a start that fails says why
 #include "ui/theme.h"
 #include "util.h"
 #include "generated/codmp/cod3mp_init.h"
@@ -225,6 +229,10 @@ std::optional<std::string> SharedString(const toml::table& table, const std::str
 // assets/, userdata/ and the settings, the executable in it, in its bin/
 // subfolder, or an AppImage placed in it.
 void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
+#ifdef _WIN32
+  // [acct2-decomp] As the campaign (ui/start_problem.h).
+  cod3::start_problem::Install("Call of Duty 3 Multiplayer", "cod3mp.exe", "cod3mp.log");
+#endif
   std::vector<std::filesystem::path> candidates;
   if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage)
     candidates.push_back(std::filesystem::path(appimage).parent_path());
@@ -242,6 +250,10 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
   root_dir_ = root;
   if (paths.game_data_root.empty() && std::filesystem::exists(root / "assets" / "codmp_xenonf.xex"))
     paths.game_data_root = root / "assets";
+  // [acct2-ocr] Where the Text setting and the font fill find text/ (as in the campaign).
+  cod3::text::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
     paths.user_data_root = root / "userdata";
     paths.cache_root = root / "userdata" / "cache";
@@ -257,7 +269,14 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
   if (rex::cvar::GetFlagByName("log_file").empty()) {
     std::error_code ec;
     std::filesystem::create_directories(userdata_dir_ / "logs", ec);
+#ifdef _WIN32
+    // [acct2-decomp] A name the SDK's log can open (Windows reads that name in
+    // the system's code page, so a UTF-8 one named another folder for a path
+    // that isn't plain ASCII), or a message box and the end of the program.
+    rex::cvar::SetFlagByName("log_file", cod3::start_problem::LogFileOrStop(userdata_dir_ / "logs" / "cod3mp.log"));
+#else
     rex::cvar::SetFlagByName("log_file", cod3::PathToUtf8Generic(userdata_dir_ / "logs" / "cod3mp.log"));
+#endif
   }
 }
 

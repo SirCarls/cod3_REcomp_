@@ -1,0 +1,489 @@
+diff --git a/include/rex/input/press_latch.h b/include/rex/input/press_latch.h
+new file mode 100644
+index 0000000..06a8945
+--- /dev/null
++++ b/include/rex/input/press_latch.h
+@@ -0,0 +1,137 @@
++#pragma once
++/**
++ * @file        rex/input/press_latch.h
++ * @brief       Presses that start and end between two reads of a pad.
++ *
++ * A pad that reports 1000 times a second (or a quick thumb at any rate) can
++ * press and release a button, or pull and let go of a trigger, inside the
++ * time between two of the game's reads. The state the game reads then never
++ * shows it and the press is lost. PressLatch remembers such a press and adds
++ * it to the next read, so each press is seen at least once.
++ *
++ * - A press is a button going down, or a trigger rising from below
++ *   kTriggerThreshold; a trigger's latch keeps the highest value it reached.
++ * - The first read after the press shows it, and so does every read within
++ *   kHoldNs of the press (a game that reads a pad twice in one frame sees it
++ *   both times). After that it is gone.
++ * - A press still held at a read is simply the pad's state: the latch drops it.
++ * - Nothing is delayed: a read never shows less than the pad as it is.
++ *
++ * Plain values only (no SDK types), so the drivers and a unit test share it.
++ * Not thread safe: the driver calls it under its own lock.
++ */
++
++#include <algorithm>
++#include <array>
++#include <cstdint>
++
++namespace rex::input {
++
++class PressLatch {
++ public:
++  // Reads closer together than this after a press all show it.
++  static constexpr uint64_t kHoldNs = 4'000'000;
++  // XInput's trigger threshold (rex/input/state_merge.h's kTriggerThreshold).
++  static constexpr uint8_t kTriggerPressed = 30;
++
++  // The pad's buttons changed from `before` to `after` at `now_ns`.
++  void Buttons(uint16_t before, uint16_t after, uint64_t now_ns) {
++    const uint16_t down = static_cast<uint16_t>(after & ~before);
++    for (int i = 0; i < 16; ++i) {
++      if (down & (1u << i)) {
++        buttons_[i] = {now_ns, false, true};
++      }
++    }
++  }
++
++  // Trigger `which` (0 left, 1 right) moved from `before` to `after` at `now_ns`.
++  void Trigger(int which, uint8_t before, uint8_t after, uint64_t now_ns) {
++    if (which < 0 || which > 1 || after <= before) {
++      return;
++    }
++    Entry& e = triggers_[which];
++    if (e.on) {
++      peak_[which] = std::max(peak_[which], after);
++    } else if (before < kTriggerPressed) {
++      e = {now_ns, false, true};
++      peak_[which] = after;
++    }
++  }
++
++  // A read at `now_ns` of a pad that is now `buttons`, `left`, `right`:
++  // adds the presses it should still show. True when it added anything (the
++  // pad itself no longer shows it, so the next read will differ).
++  bool Apply(uint16_t& buttons, uint8_t& left, uint8_t& right, uint64_t now_ns) {
++    bool added = false;
++    for (int i = 0; i < 16; ++i) {
++      Entry& e = buttons_[i];
++      if (!e.on) {
++        continue;
++      }
++      const uint16_t bit = static_cast<uint16_t>(1u << i);
++      if (buttons & bit) {
++        e.on = false;  // still held: the pad shows it
++        continue;
++      }
++      if (Show(e, now_ns)) {
++        buttons = static_cast<uint16_t>(buttons | bit);
++        added = true;
++      }
++    }
++    uint8_t* value[2] = {&left, &right};
++    for (int t = 0; t < 2; ++t) {
++      Entry& e = triggers_[t];
++      if (!e.on) {
++        continue;
++      }
++      if (*value[t] >= peak_[t]) {
++        e.on = false;  // the pad shows as much
++        continue;
++      }
++      if (Show(e, now_ns)) {
++        *value[t] = peak_[t];
++        added = true;
++      }
++    }
++    return added;
++  }
++
++  // Forget everything (the pad was disconnected, or input went inactive).
++  void Clear() {
++    buttons_ = {};
++    triggers_ = {};
++    peak_ = {};
++  }
++
++  bool Pending() const {
++    for (const Entry& e : buttons_) {
++      if (e.on) return true;
++    }
++    return triggers_[0].on || triggers_[1].on;
++  }
++
++ private:
++  struct Entry {
++    uint64_t at_ns = 0;
++    bool shown = false;
++    bool on = false;
++  };
++
++  // Whether a read at `now_ns` shows the press; ends it once it has been
++  // shown and its hold has passed.
++  static bool Show(Entry& e, uint64_t now_ns) {
++    const bool within = now_ns < e.at_ns + kHoldNs;
++    const bool show = !e.shown || within;
++    e.shown = true;
++    if (!within) {
++      e.on = false;
++    }
++    return show;
++  }
++
++  std::array<Entry, 16> buttons_{};
++  std::array<Entry, 2> triggers_{};
++  std::array<uint8_t, 2> peak_{};
++};
++
++}  // namespace rex::input
+diff --git a/include/rex/input/sdl/sdl_input_driver.h b/include/rex/input/sdl/sdl_input_driver.h
+index cf0e3d1..930db63 100644
+--- a/include/rex/input/sdl/sdl_input_driver.h
++++ b/include/rex/input/sdl/sdl_input_driver.h
+@@ -17,6 +17,7 @@
+ #include <vector>
+ 
+ #include <rex/input/input_driver.h>
++#include <rex/input/press_latch.h>
+ 
+ #include <SDL3/SDL.h>
+ 
+@@ -67,6 +68,8 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+     DeviceId id;
+     // Per pad rather than per guest user, so it survives reassignment.
+     KeystrokeState keystroke;
++    // Presses that came and went since the game's last read (patch 0073).
++    PressLatch latch;
+   };
+ 
+   // WindowListener
+@@ -101,6 +104,16 @@ class SDLInputDriver final : public InputDriver, public rex::ui::WindowListener
+   std::mutex controllers_mutex_;
+   std::mutex event_queue_mutex_;
+   std::vector<SDL_Event> pending_events_;
++  // The stick axes already waiting in pending_events_: a newer value of the
++  // same pad's axis replaces that event instead of queueing behind it
++  // (patch 0073; a 1000 Hz pad sends thousands a second). Under
++  // event_queue_mutex_; emptied with pending_events_.
++  struct PendingAxis {
++    SDL_JoystickID which;
++    uint8_t axis;
++    size_t index;
++  };
++  std::vector<PendingAxis> pending_axes_;
+   // Never rewound, so a handle held past a disconnect resolves to nothing.
+   uint64_t next_device_id_ = 1;
+ };
+diff --git a/include/rex/input/xinput/xinput_input_driver.h b/include/rex/input/xinput/xinput_input_driver.h
+index d03a3d6..0c46f8d 100644
+--- a/include/rex/input/xinput/xinput_input_driver.h
++++ b/include/rex/input/xinput/xinput_input_driver.h
+@@ -15,8 +15,10 @@
+ #include <atomic>
+ #include <mutex>
+ #include <optional>
++#include <thread>
+ 
+ #include <rex/input/input_driver.h>
++#include <rex/input/press_latch.h>
+ 
+ namespace rex::input::xinput {
+ 
+@@ -43,6 +45,29 @@ class XinputInputDriver final : public InputDriver {
+   void* XInputGetKeystroke_;
+   void* XInputSetState_;
+   void* XInputEnable_;
++
++  // Patch 0073: XInput only has the pad as it is at the moment it is asked, so
++  // a press between two of the game's reads was lost. A thread reads the pads
++  // the game uses xinput_poll_rate times a second and keeps those presses
++  // (PressLatch) for the game's next read.
++  struct SlotPoll {
++    bool live = false;  // the game's last read of this slot succeeded
++    uint16_t buttons = 0;
++    uint8_t left_trigger = 0;
++    uint8_t right_trigger = 0;
++    // Added to the native packet number: a read that showed a kept press is
++    // followed by one that doesn't, which must count as a new packet.
++    uint32_t extra_packets = 0;
++    PressLatch latch;
++    void Observe(uint16_t now_buttons, uint8_t left, uint8_t right, uint64_t now_ns);
++  };
++  void StartPolling();
++  void PollLoop(int rate);
++  std::mutex poll_mutex_;
++  std::array<SlotPoll, 4> slots_{};
++  std::once_flag poll_once_;
++  std::atomic<bool> polling_{false};
++  std::thread poller_;
+ };
+ 
+ }  // namespace rex::input::xinput
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index fdf4be7..28f2651 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -242,6 +242,20 @@ X_RESULT SDLInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state) {
+     // Simulate an "untouched" controller. When we become active again the
+     // pressed buttons aren't lost and will be visible again.
+     std::memset(&out_state->gamepad, 0, sizeof(out_state->gamepad));
++    controller->latch.Clear();  // presses made while inactive aren't the game's
++  } else {
++    // A press that started and ended since the last read is shown now
++    // (patch 0073); the next read shows the pad without it, so it counts as
++    // a change for the packet number.
++    uint16_t buttons = out_state->gamepad.buttons;
++    uint8_t left = out_state->gamepad.left_trigger;
++    uint8_t right = out_state->gamepad.right_trigger;
++    if (controller->latch.Apply(buttons, left, right, SDL_GetTicksNS())) {
++      out_state->gamepad.buttons = buttons;
++      out_state->gamepad.left_trigger = left;
++      out_state->gamepad.right_trigger = right;
++      controller->state_changed = true;
++    }
+   }
+   return X_ERROR_SUCCESS;
+ }
+@@ -422,10 +436,40 @@ void SDLInputDriver::HandleEvent(const SDL_Event& event) {
+     sdl_events_unflushed_ = 0;
+   }
+ 
++  // Only the gamepad events ProcessEventLocked reads are kept (patch 0073).
++  // The joystick events SDL sends alongside every gamepad event, the touchpad
++  // and the sensors were queued too and dropped at the drain.
++  switch (event.type) {
++    case SDL_EVENT_GAMEPAD_ADDED:
++    case SDL_EVENT_GAMEPAD_REMOVED:
++    case SDL_EVENT_GAMEPAD_AXIS_MOTION:
++    case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
++    case SDL_EVENT_GAMEPAD_BUTTON_UP:
++      break;
++    default:
++      return;
++  }
++
+   // Buffer only - no controllers_mutex_ acquisition here.
+   // This breaks the lock ordering inversion between controllers_mutex_ and
+   // SDL's internal joystick lock that caused deadlocks.
+   std::lock_guard<std::mutex> guard(event_queue_mutex_);
++
++  // A stick only matters where it is now, so its newest value replaces the one
++  // already waiting (patch 0073). Triggers and buttons stay in order: a pull
++  // or press between two reads must still be seen (PressLatch).
++  if (event.type == SDL_EVENT_GAMEPAD_AXIS_MOTION &&
++      event.gaxis.axis != SDL_GAMEPAD_AXIS_LEFT_TRIGGER &&
++      event.gaxis.axis != SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) {
++    for (const auto& pending : pending_axes_) {
++      if (pending.which == event.gaxis.which && pending.axis == event.gaxis.axis) {
++        pending_events_[pending.index] = event;
++        return;
++      }
++    }
++    pending_axes_.push_back(
++        {event.gaxis.which, static_cast<uint8_t>(event.gaxis.axis), pending_events_.size()});
++  }
+   pending_events_.push_back(event);
+ }
+ 
+@@ -434,6 +478,7 @@ std::unique_lock<std::mutex> SDLInputDriver::DrainAndLock() {
+   {
+     std::lock_guard<std::mutex> guard(event_queue_mutex_);
+     events.swap(pending_events_);
++    pending_axes_.clear();
+   }
+   std::unique_lock<std::mutex> guard(controllers_mutex_);
+   for (const auto& event : events) {
+@@ -533,12 +578,18 @@ void SDLInputDriver::OnControllerDeviceAxisMotionLocked(const SDL_Event& event)
+     case SDL_GAMEPAD_AXIS_RIGHTY:
+       pad.thumb_ry = ~event.gaxis.value;
+       break;
+-    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER:
++    case SDL_GAMEPAD_AXIS_LEFT_TRIGGER: {
++      const uint8_t before = pad.left_trigger;
+       pad.left_trigger = static_cast<uint8_t>(event.gaxis.value >> 7);
++      controllers_.at(*idx).latch.Trigger(0, before, pad.left_trigger, event.gaxis.timestamp);
+       break;
+-    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER:
++    }
++    case SDL_GAMEPAD_AXIS_RIGHT_TRIGGER: {
++      const uint8_t before = pad.right_trigger;
+       pad.right_trigger = static_cast<uint8_t>(event.gaxis.value >> 7);
++      controllers_.at(*idx).latch.Trigger(1, before, pad.right_trigger, event.gaxis.timestamp);
+       break;
++    }
+     default:
+       assert_always();
+       break;
+@@ -606,6 +657,7 @@ void SDLInputDriver::OnControllerDeviceButtonChangedLocked(const SDL_Event& even
+   } else {
+     xbuttons &= ~xbutton;
+   }
++  controller.latch.Buttons(controller.state.gamepad.buttons, xbuttons, event.gbutton.timestamp);
+   controller.state.gamepad.buttons = xbuttons;
+   controller.state_changed = true;
+ }
+diff --git a/src/input/xinput/xinput_input_driver.cpp b/src/input/xinput/xinput_input_driver.cpp
+index a36ca07..4001abf 100644
+--- a/src/input/xinput/xinput_input_driver.cpp
++++ b/src/input/xinput/xinput_input_driver.cpp
+@@ -9,7 +9,9 @@
+  * @modified    Sanjay Govind, 2026 - Adapted for ReXGlue runtime
+  */
+ 
++#include <algorithm>
+ #include <array>
++#include <chrono>
+ #include <filesystem>
+ 
+ #include <rex/assert.h>
+@@ -21,10 +23,21 @@
+ #include <rex/ui/virtual_key.h>
+ #include <xinput.h>  // NOLINT(build/include_order)
+ 
++REXCVAR_DEFINE_INT32(xinput_poll_rate, 1000, "Input",
++                     "With input_backend xinput: how many times a second the controllers are read "
++                     "between the game's own reads, so a press shorter than a frame still counts "
++                     "(0 = only when the game reads; at most 8000). Read at start.");
++
+ namespace {
+ 
+ constexpr uint32_t kXinputSlotCount = 4;
+ 
++uint64_t NowNs() {
++  return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
++                                   std::chrono::steady_clock::now().time_since_epoch())
++                                   .count());
++}
++
+ // XInput has four fixed native slots, so the slot index rides inside the handle
+ // and the per-slot bookkeeping below stays keyed by it.
+ constexpr rex::input::DeviceId DeviceForSlot(uint32_t slot) {
+@@ -76,6 +89,11 @@ XinputInputDriver::XinputInputDriver(rex::ui::Window* window, size_t window_z_or
+       XInputEnable_(nullptr) {}
+ 
+ XinputInputDriver::~XinputInputDriver() {
++  // The poll thread calls into the module: stop it first (patch 0073).
++  polling_ = false;
++  if (poller_.joinable()) {
++    poller_.join();
++  }
+   if (module_) {
+     FreeLibrary((HMODULE)module_);
+     module_ = nullptr;
+@@ -213,13 +231,39 @@ X_RESULT XinputInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
+     if (result == ERROR_DEVICE_NOT_CONNECTED) {
+       set_skip(user_index);
+     }
++    std::lock_guard<std::mutex> lock(poll_mutex_);
++    slots_[user_index].live = false;
+     return result;
+   }
+ 
+-  out_state->packet_number = native_state.state.dwPacketNumber;
+-  out_state->gamepad.buttons = native_state.state.Gamepad.wButtons;
+-  out_state->gamepad.left_trigger = native_state.state.Gamepad.bLeftTrigger;
+-  out_state->gamepad.right_trigger = native_state.state.Gamepad.bRightTrigger;
++  // Presses the poll thread saw since the last read (patch 0073).
++  uint16_t buttons = native_state.state.Gamepad.wButtons;
++  uint8_t left = native_state.state.Gamepad.bLeftTrigger;
++  uint8_t right = native_state.state.Gamepad.bRightTrigger;
++  uint32_t extra_packets = 0;
++  {
++    std::lock_guard<std::mutex> lock(poll_mutex_);
++    SlotPoll& slot = slots_[user_index];
++    const uint64_t now = NowNs();
++    if (!slot.live) {
++      slot.latch.Clear();
++      slot.buttons = buttons;
++      slot.left_trigger = left;
++      slot.right_trigger = right;
++      slot.live = true;
++    }
++    slot.Observe(buttons, left, right, now);
++    extra_packets = slot.extra_packets;
++    if (slot.latch.Apply(buttons, left, right, now)) {
++      slot.extra_packets++;
++    }
++  }
++  StartPolling();
++
++  out_state->packet_number = native_state.state.dwPacketNumber + extra_packets;
++  out_state->gamepad.buttons = buttons;
++  out_state->gamepad.left_trigger = left;
++  out_state->gamepad.right_trigger = right;
+   out_state->gamepad.thumb_lx = native_state.state.Gamepad.sThumbLX;
+   out_state->gamepad.thumb_ly = native_state.state.Gamepad.sThumbLY;
+   out_state->gamepad.thumb_rx = native_state.state.Gamepad.sThumbRX;
+@@ -228,6 +272,67 @@ X_RESULT XinputInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_state
+   return result;
+ }
+ 
++void XinputInputDriver::SlotPoll::Observe(uint16_t now_buttons, uint8_t left, uint8_t right,
++                                         uint64_t now_ns) {
++  latch.Buttons(buttons, now_buttons, now_ns);
++  latch.Trigger(0, left_trigger, left, now_ns);
++  latch.Trigger(1, right_trigger, right, now_ns);
++  buttons = now_buttons;
++  left_trigger = left;
++  right_trigger = right;
++}
++
++void XinputInputDriver::StartPolling() {
++  const int rate = std::clamp(REXCVAR_GET(xinput_poll_rate), 0, 8000);
++  if (rate <= 0) {
++    return;
++  }
++  std::call_once(poll_once_, [this, rate]() {
++    polling_ = true;
++    poller_ = std::thread([this, rate]() { PollLoop(rate); });
++    REXLOG_INFO("XInput: controllers read {} times a second between the game's reads.", rate);
++  });
++}
++
++void XinputInputDriver::PollLoop(int rate) {
++  const auto period = std::chrono::nanoseconds(1'000'000'000LL / rate);
++  auto next = std::chrono::steady_clock::now();
++  while (polling_) {
++    auto xigs = REXCVAR_GET(guide_button) ? (decltype(&XInputGetState))XInputGetStateEx_
++                                          : (decltype(&XInputGetState))XInputGetState_;
++    for (uint32_t i = 0; i < kXinputSlotCount && xigs; ++i) {
++      {
++        // Only the slots the game reads: an empty slot costs milliseconds.
++        std::lock_guard<std::mutex> lock(poll_mutex_);
++        if (!slots_[i].live) {
++          continue;
++        }
++      }
++      struct {
++        XINPUT_STATE state;
++        unsigned int dwPaddingReserved;
++      } native_state;
++      if (xigs(i, &native_state.state) != ERROR_SUCCESS) {
++        continue;  // the game's next read sees it and marks the slot
++      }
++      std::lock_guard<std::mutex> lock(poll_mutex_);
++      if (slots_[i].live) {
++        slots_[i].Observe(native_state.state.Gamepad.wButtons,
++                          native_state.state.Gamepad.bLeftTrigger,
++                          native_state.state.Gamepad.bRightTrigger, NowNs());
++      }
++    }
++    // A steady cadence; after a stall (the PC asleep, a debugger) start again
++    // from now instead of catching up.
++    next += period;
++    const auto now = std::chrono::steady_clock::now();
++    if (next < now) {
++      next = now + period;
++    }
++    std::this_thread::sleep_until(next);
++  }
++}
++
+ X_RESULT XinputInputDriver::SetDeviceVibration(DeviceId id, X_INPUT_VIBRATION* vibration) {
+   uint32_t user_index = 0;
+   if (!SlotForDevice(id, &user_index)) {

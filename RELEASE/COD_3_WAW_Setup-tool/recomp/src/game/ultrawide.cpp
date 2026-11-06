@@ -18,6 +18,11 @@
 #include <rex/logging.h>
 
 #include "game/addresses.h"
+#include "game/font_fill.h"  // [acct2-ocr]
+#include "ui/text_overlay.h"  // [acct2-ocr]
+#include "game/color_text.h"  // [acct2-ocr]
+#include "ui/text_native.h"  // [acct2-ocr]
+#include "game/text_language.h"  // [acct2-ocr] RawTextFor
 #include "game/program.h"
 #include "game/guest.h"
 #include "game/render_resolution.h"
@@ -760,10 +765,17 @@ REX_HOOK_RAW(nglListAddQuad) {
 // width shrink together, so the text keeps its shape in the middle.
 REX_EXTERN(__imp__nglListAddString);
 REX_HOOK_RAW(nglListAddString) {
+  cod3::font_fill::OnFontUsed(base, ctx.r3.u32);  // [acct2-ocr] a font's added glyphs, before its first string
+  if (const uint32_t t = cod3::text::RawTextFor(base, ctx.r4.u32)) ctx.r4.u64 = t;  // [acct2-ocr] raw English: ours
+  cod3::text_overlay::OnString(base, ctx);  // [acct2-ocr] Russian/CJK lines: noted (unmapped place), drawn by us
   if (const float scale = HudScale(base); scale > 0.0f) {
     ctx.f1.f64 = MapX(float(ctx.f1.f64), scale);
     ctx.f4.f64 *= scale;
   }
+  // [acct2-ocr] Russian/CJK lines: drawn as runs of our glyph pages through the game's own text (ui/text_native.h)
+  if (cod3::text_native::DrawLine(base, ctx, [](PPCContext& c, uint8_t* b) { __imp__nglListAddString(c, b); })) return;
+  // [acct2-ocr] ^0-^9 / ^: inside the line (names): drawn as colored runs (game/color_text.h)
+  if (cod3::color_text::DrawRuns(base, ctx, [](PPCContext& c, uint8_t* b) { __imp__nglListAddString(c, b); })) return;
   __imp__nglListAddString(ctx, base);
 }
 

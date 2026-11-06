@@ -60,6 +60,16 @@
 #define __imp__sub_8212A520 __imp__sub_82142248
 #define sub_82130808 sub_82143838  // 0x82130808 -> 0x82143838
 #define __imp__sub_82130808 __imp__sub_82143838
+#define sub_82134B90 sub_8214CA50  // 0x82134B90 -> 0x8214CA50
+#define __imp__sub_82134B90 __imp__sub_8214CA50
+#define sub_8213C9F8 sub_82155A80  // 0x8213C9F8 -> 0x82155A80
+#define __imp__sub_8213C9F8 __imp__sub_82155A80
+#define sub_8213DAA0 sub_82156B28  // 0x8213DAA0 -> 0x82156B28
+#define __imp__sub_8213DAA0 __imp__sub_82156B28
+#define sub_8213EB90 sub_8214E010  // 0x8213EB90 -> 0x8214E010
+#define __imp__sub_8213EB90 __imp__sub_8214E010
+#define sub_82142F20 sub_8215ACD8  // 0x82142F20 -> 0x8215ACD8
+#define __imp__sub_82142F20 __imp__sub_8215ACD8
 #define sub_82149950 sub_82161758  // 0x82149950 -> 0x82161758
 #define __imp__sub_82149950 __imp__sub_82161758
 #define sub_82149C80 sub_82161B28  // 0x82149C80 -> 0x82161B28
@@ -72,6 +82,10 @@
 #define __imp__sub_822EC168 __imp__sub_822BAEB0
 #define sub_822F1340 sub_822C0060  // 0x822F1340 -> 0x822C0060
 #define __imp__sub_822F1340 __imp__sub_822C0060
+#define sub_822F3620 sub_822C2340  // 0x822F3620 -> 0x822C2340
+#define __imp__sub_822F3620 __imp__sub_822C2340
+#define sub_822F3A28 sub_822C2748  // 0x822F3A28 -> 0x822C2748
+#define __imp__sub_822F3A28 __imp__sub_822C2748
 #define sub_82343548 sub_82312698  // 0x82343548 -> 0x82312698
 #define __imp__sub_82343548 __imp__sub_82312698
 #define sub_82344F98 sub_82314360  // 0x82344F98 -> 0x82314360

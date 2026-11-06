@@ -3,7 +3,7 @@
 # A row: KEY<tab>TEXT.
 #  KEY   the string's key: its hash as 8 hex digits (the game's own key hash, h * 33 + each lowercase
 #        character; dev/agents/button-prompts/HINTS-CATALOG.tsv lists every hint's), or a key name.
-#  TEXT  shown instead while the keyboard and mouse are in use (menus and play), English only. It may
+#  TEXT  shown instead while the keyboard and mouse are in use (menus and play), English (other languages: the [acct2-ocr] rows at the end). It may
 #        use the game's [ACTION] words and ~button tokens, and these: <MOVE> the movement keys, <LOOK>
 #        the mouse (the look keys without mouse aim), <BIND:keybind_x> the key of a controller button's
 #        bind, <ACTION:name> the key of one of the port's actions (game/keybinds/binds.h), <KEY:name> a
@@ -19,3 +19,254 @@
 DEEA4A0B	Press and hold <BIND:keybind_back> to check your objectives.
 # Options: aiming down the sights while the aim toggle is off.
 A4118529	When off, hold <BIND:keybind_left_trigger> to aim down the sights.
+
+# [acct2-ocr] 2026-11-05 The same texts in other languages, our own words (UTF-8): KEY[,KEY..]@LANG, where LANG is a
+# locale (game/text_language.h: es-419, pt-PT ...) or its start (fr: fr-FR, fr-CA and fr-BE; zh-Hant: both
+# Traditional Chinese). Used while that language's text is shown (cod3_text_language, its prompts on) and the
+# keyboard and mouse are in use, in play and the menus. <MOVE:word> and <LOOK:word> are <MOVE> and <LOOK> with the
+# word used when there are no keys (instead of "the movement keys" / "the mouse"); <LCLICK> / <RCLICK> the key of a
+# stick's click (the port's action on it, else its bind). COD3_KBM_STICK_1/2/3: the words of [USE_LEFT_STICK],
+# [USE_RIGHT_STICK] and [USE_BOTH_STICKS].
+# Battle actions: turn the right stick clockwise.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@fr	Faites tourner <LOOK:la souris> dans le sens des aiguilles d'une montre.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@de	Mit <LOOK:der Maus> im Uhrzeigersinn kreisen.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@it	Ruota <LOOK:il mouse> in senso orario.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@es	Gira <LOOK:el ratón> en el sentido de las agujas del reloj.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@es-419	Gira <LOOK:el mouse> en el sentido de las agujas del reloj.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@pt	Gire <LOOK:o mouse> no sentido horário.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@pt-PT	Rode <LOOK:o rato> no sentido horário.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@ru	Ведите <LOOK:мышью> по кругу по часовой стрелке.
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@zh-Hans	用<LOOK:鼠标>顺时针画圈。
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@zh-Hant	用<LOOK:滑鼠>順時針畫圈。
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@ja	<LOOK:マウス>を時計回りに回す。
+90DE938C,9D075825,AF0E6080,84EEFC5B,DD3D6B6F,DD3D6B70,10904294@ko	<LOOK:마우스>를 시계 방향으로 돌리십시오.
+# Battle actions: counterclockwise.
+8E75818F,3D612B48,78AE1A23@fr	Faites tourner <LOOK:la souris> dans le sens inverse des aiguilles d'une montre.
+8E75818F,3D612B48,78AE1A23@de	Mit <LOOK:der Maus> gegen den Uhrzeigersinn kreisen.
+8E75818F,3D612B48,78AE1A23@it	Ruota <LOOK:il mouse> in senso antiorario.
+8E75818F,3D612B48,78AE1A23@es	Gira <LOOK:el ratón> en el sentido contrario a las agujas del reloj.
+8E75818F,3D612B48,78AE1A23@es-419	Gira <LOOK:el mouse> en el sentido contrario a las agujas del reloj.
+8E75818F,3D612B48,78AE1A23@pt	Gire <LOOK:o mouse> no sentido anti-horário.
+8E75818F,3D612B48,78AE1A23@pt-PT	Rode <LOOK:o rato> no sentido anti-horário.
+8E75818F,3D612B48,78AE1A23@ru	Ведите <LOOK:мышью> по кругу против часовой стрелки.
+8E75818F,3D612B48,78AE1A23@zh-Hans	用<LOOK:鼠标>逆时针画圈。
+8E75818F,3D612B48,78AE1A23@zh-Hant	用<LOOK:滑鼠>逆時針畫圈。
+8E75818F,3D612B48,78AE1A23@ja	<LOOK:マウス>を反時計回りに回す。
+8E75818F,3D612B48,78AE1A23@ko	<LOOK:마우스>를 시계 반대 방향으로 돌리십시오.
+# The crowbar.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@fr	Déplacez <LOOK:la souris> vers le haut et vers le bas pour actionner le pied-de-biche.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@de	Mit <LOOK:der Maus> auf und ab, um das Brecheisen zu bewegen.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@it	Muovi <LOOK:il mouse> su e giù per muovere il piede di porco.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@es	Mueve <LOOK:el ratón> arriba y abajo para mover la palanca.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@es-419	Mueve <LOOK:el mouse> arriba y abajo para mover la palanca.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@pt	Mova <LOOK:o mouse> para cima e para baixo para mover o pé de cabra.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@pt-PT	Mova <LOOK:o rato> para cima e para baixo para mover o pé de cabra.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@ru	Двигайте <LOOK:мышь> вверх и вниз, чтобы двигать лом.
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@zh-Hans	上下移动<LOOK:鼠标>来移动撬棍。
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@zh-Hant	上下移動<LOOK:滑鼠>來移動撬棍。
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@ja	<LOOK:マウス>を上下に動かしてバールを動かす。
+D754EC4B,08676C84,A1AD1D5F,A1AD1D60@ko	<LOOK:마우스>를 위아래로 움직여 쇠지렛대를 움직이십시오.
+# Left and right.
+19456AB0,89A68CC9,84A4E324,84A4E325@fr	Déplacez <LOOK:la souris> à gauche et à droite.
+19456AB0,89A68CC9,84A4E324,84A4E325@de	Mit <LOOK:der Maus> nach links und rechts.
+19456AB0,89A68CC9,84A4E324,84A4E325@it	Muovi <LOOK:il mouse> a sinistra e a destra.
+19456AB0,89A68CC9,84A4E324,84A4E325@es	Mueve <LOOK:el ratón> a izquierda y derecha.
+19456AB0,89A68CC9,84A4E324,84A4E325@es-419	Mueve <LOOK:el mouse> a izquierda y derecha.
+19456AB0,89A68CC9,84A4E324,84A4E325@pt	Mova <LOOK:o mouse> para a esquerda e para a direita.
+19456AB0,89A68CC9,84A4E324,84A4E325@pt-PT	Mova <LOOK:o rato> para a esquerda e para a direita.
+19456AB0,89A68CC9,84A4E324,84A4E325@ru	Двигайте <LOOK:мышь> влево и вправо.
+19456AB0,89A68CC9,84A4E324,84A4E325@zh-Hans	左右移动<LOOK:鼠标>。
+19456AB0,89A68CC9,84A4E324,84A4E325@zh-Hant	左右移動<LOOK:滑鼠>。
+19456AB0,89A68CC9,84A4E324,84A4E325@ja	<LOOK:マウス>を左右に動かす。
+19456AB0,89A68CC9,84A4E324,84A4E325@ko	<LOOK:마우스>를 좌우로 움직이십시오.
+# Rowing.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@fr	Déplacez <LOOK:la souris> en demi-cercle \npour ramer.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@de	Mit <LOOK:der Maus> im Halbkreis \nbewegen, um zu rudern.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@it	Muovi <LOOK:il mouse> a semicerchio \nper remare.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@es	Mueve <LOOK:el ratón> en semicírculo \npara remar.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@es-419	Mueve <LOOK:el mouse> en semicírculo \npara remar.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@pt	Mova <LOOK:o mouse> em meio círculo \npara remar.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@pt-PT	Mova <LOOK:o rato> em meio círculo \npara remar.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@ru	Ведите <LOOK:мышью> по полукругу, \nчтобы грести.
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@zh-Hans	用<LOOK:鼠标>画半圈 \n来划船。
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@zh-Hant	用<LOOK:滑鼠>畫半圈 \n來划船。
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@ja	<LOOK:マウス>を半円を描くように動かして \nボートを漕ぐ。
+12E3C343,E6A7A36A,A9E5EC9E,A9E5EC9F@ko	<LOOK:마우스>를 반원을 그리며 움직여 \n노를 저으십시오.
+# Pitch and yaw.
+0E7D566B@fr	Déplacez <LOOK:la souris> pour le tangage \nUtilisez <MOVE:les touches de déplacement> pour le lacet
+0E7D566B@de	<LOOK:Maus> für Neigung \n<MOVE:Bewegungstasten> für Schwenk
+0E7D566B@it	Muovi <LOOK:il mouse> per il beccheggio \nUsa <MOVE:i tasti di movimento> per l'imbardata
+0E7D566B@es	Mueve <LOOK:el ratón> para el cabeceo \nUsa <MOVE:las teclas de movimiento> para la guiñada
+0E7D566B@es-419	Mueve <LOOK:el mouse> para el cabeceo \nUsa <MOVE:las teclas de movimiento> para la guiñada
+0E7D566B@pt	Mova <LOOK:o mouse> para a arfagem \nUse <MOVE:as teclas de movimento> para a guinada
+0E7D566B@pt-PT	Mova <LOOK:o rato> para a arfagem \nUse <MOVE:as teclas de movimento> para a guinada
+0E7D566B@ru	<LOOK:Мышь> — наклон \n<MOVE:Клавиши движения> — поворот
+0E7D566B@zh-Hans	<LOOK:鼠标>控制俯仰 \n<MOVE:移动键>控制偏航
+0E7D566B@zh-Hant	<LOOK:滑鼠>控制俯仰 \n<MOVE:移動鍵>控制偏航
+0E7D566B@ja	<LOOK:マウス>でピッチ \n<MOVE:移動キー>でヨー
+0E7D566B@ko	<LOOK:마우스>로 피치 조절 \n<MOVE:이동 키>로 요 조절
+# The left stick (also the words of [USE_LEFT_STICK], COD3_KBM_STICK_1).
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@fr	Utilisez <MOVE:les touches de déplacement>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@de	<MOVE:Bewegungstasten> benutzen
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@it	Usa <MOVE:i tasti di movimento>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@es	Usa <MOVE:las teclas de movimiento>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@pt	Use <MOVE:as teclas de movimento>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@ru	Используйте <MOVE:клавиши движения>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@zh-Hans	使用<MOVE:移动键>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@zh-Hant	使用<MOVE:移動鍵>
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@ja	<MOVE:移動キー>を使って
+COD3_KBM_STICK_1,1850C584,66401F58,8D776D04@ko	<MOVE:이동 키>를 사용해
+# The right stick (and [USE_RIGHT_STICK]).
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@fr	Utilisez <LOOK:la souris>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@de	<LOOK:Die Maus> benutzen
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@it	Usa <LOOK:il mouse>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@es	Usa <LOOK:el ratón>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@es-419	Usa <LOOK:el mouse>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@pt	Use <LOOK:o mouse>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@pt-PT	Use <LOOK:o rato>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@ru	Используйте <LOOK:мышь>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@zh-Hans	使用<LOOK:鼠标>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@zh-Hant	使用<LOOK:滑鼠>
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@ja	<LOOK:マウス>を動かして
+COD3_KBM_STICK_2,D5FA4857,E1D4DCAB,6792ABB7@ko	<LOOK:마우스>를 움직여
+# Both sticks (and [USE_BOTH_STICKS]).
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@fr	Utilisez <MOVE:les touches de déplacement> et <LOOK:la souris>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@de	<MOVE:Bewegungstasten> und <LOOK:Maus> benutzen
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@it	Usa <MOVE:i tasti di movimento> e <LOOK:il mouse>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@es	Usa <MOVE:las teclas de movimiento> y <LOOK:el ratón>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@es-419	Usa <MOVE:las teclas de movimiento> y <LOOK:el mouse>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@pt	Use <MOVE:as teclas de movimento> e <LOOK:o mouse>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@pt-PT	Use <MOVE:as teclas de movimento> e <LOOK:o rato>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@ru	Используйте <MOVE:клавиши движения> и <LOOK:мышь>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@zh-Hans	使用<MOVE:移动键>和<LOOK:鼠标>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@zh-Hant	使用<MOVE:移動鍵>和<LOOK:滑鼠>
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@ja	<MOVE:移動キー>と<LOOK:マウス>を使って
+COD3_KBM_STICK_3,60EC40B9,6CC6D50D,D5193159@ko	<MOVE:이동 키>와 <LOOK:마우스>를 사용해
+# Hold the left stick's click (its key: the port's action on it, else its bind).
+CB5D7C3A@fr	Maintenez la touche <LCLICK> enfoncée
+CB5D7C3A@de	<LCLICK> gedrückt halten
+CB5D7C3A@it	Tieni premuto <LCLICK>
+CB5D7C3A@es	Mantén pulsado <LCLICK>
+CB5D7C3A@es-419	Mantén presionado <LCLICK>
+CB5D7C3A@pt	Mantenha <LCLICK> pressionado
+CB5D7C3A@pt-PT	Mantenha <LCLICK> premido
+CB5D7C3A@ru	Удерживайте <LCLICK>
+CB5D7C3A@zh-Hans	按住<LCLICK>
+CB5D7C3A@zh-Hant	按住<LCLICK>
+CB5D7C3A@ja	<LCLICK>を押し続ける
+CB5D7C3A@ko	<LCLICK> 키를 누른 채로 유지하십시오
+# The machine gun mount (left).
+266B4FFC@fr	Maintenez la touche <LCLICK> enfoncée pour déployer votre arme
+266B4FFC@de	<LCLICK> gedrückt halten zum Aufstellen der Waffe
+266B4FFC@it	Tieni premuto <LCLICK> per piazzare l'arma
+266B4FFC@es	Mantén pulsado <LCLICK> para desplegar el arma
+266B4FFC@es-419	Mantén presionado <LCLICK> para desplegar el arma
+266B4FFC@pt	Mantenha <LCLICK> pressionado para apoiar a arma
+266B4FFC@pt-PT	Mantenha <LCLICK> premido para apoiar a arma
+266B4FFC@ru	Удерживайте <LCLICK>, чтобы установить оружие
+266B4FFC@zh-Hans	按住<LCLICK>以架设武器
+266B4FFC@zh-Hant	按住<LCLICK>以架設武器
+266B4FFC@ja	<LCLICK>を押し続けて武器を据え付ける
+266B4FFC@ko	<LCLICK> 키를 누른 채로 유지해 무기 거치
+# Hold the right stick's click (its key: the port's action on it, else its bind).
+E926CD8D@fr	Maintenez la touche <RCLICK> enfoncée
+E926CD8D@de	<RCLICK> gedrückt halten
+E926CD8D@it	Tieni premuto <RCLICK>
+E926CD8D@es	Mantén pulsado <RCLICK>
+E926CD8D@es-419	Mantén presionado <RCLICK>
+E926CD8D@pt	Mantenha <RCLICK> pressionado
+E926CD8D@pt-PT	Mantenha <RCLICK> premido
+E926CD8D@ru	Удерживайте <RCLICK>
+E926CD8D@zh-Hans	按住<RCLICK>
+E926CD8D@zh-Hant	按住<RCLICK>
+E926CD8D@ja	<RCLICK>を押し続ける
+E926CD8D@ko	<RCLICK> 키를 누른 채로 유지하십시오
+# The machine gun mount (right).
+266B5002@fr	Maintenez la touche <RCLICK> enfoncée pour déployer votre arme
+266B5002@de	<RCLICK> gedrückt halten zum Aufstellen der Waffe
+266B5002@it	Tieni premuto <RCLICK> per piazzare l'arma
+266B5002@es	Mantén pulsado <RCLICK> para desplegar el arma
+266B5002@es-419	Mantén presionado <RCLICK> para desplegar el arma
+266B5002@pt	Mantenha <RCLICK> pressionado para apoiar a arma
+266B5002@pt-PT	Mantenha <RCLICK> premido para apoiar a arma
+266B5002@ru	Удерживайте <RCLICK>, чтобы установить оружие
+266B5002@zh-Hans	按住<RCLICK>以架设武器
+266B5002@zh-Hant	按住<RCLICK>以架設武器
+266B5002@ja	<RCLICK>を押し続けて武器を据え付ける
+266B5002@ko	<RCLICK> 키를 누른 채로 유지해 무기 거치
+# The tank's camera view (the Vehicle action veh_view).
+FB4C8B2B,141D1F64,83BC603F@fr	Appuyez sur <ACTION:veh_view> pour changer de vue.
+FB4C8B2B,141D1F64,83BC603F@de	<ACTION:veh_view> drücken zum Wechseln der Kameraansicht.
+FB4C8B2B,141D1F64,83BC603F@it	Premi <ACTION:veh_view> per cambiare visuale.
+FB4C8B2B,141D1F64,83BC603F@es	Pulsa <ACTION:veh_view> para cambiar la vista de cámara.
+FB4C8B2B,141D1F64,83BC603F@es-419	Presiona <ACTION:veh_view> para cambiar la vista de cámara.
+FB4C8B2B,141D1F64,83BC603F@pt	Pressione <ACTION:veh_view> para alternar a visão da câmera.
+FB4C8B2B,141D1F64,83BC603F@pt-PT	Prima <ACTION:veh_view> para alternar a visão da câmara.
+FB4C8B2B,141D1F64,83BC603F@ru	Нажмите <ACTION:veh_view> для смены вида камеры.
+FB4C8B2B,141D1F64,83BC603F@zh-Hans	按<ACTION:veh_view>切换镜头视角。
+FB4C8B2B,141D1F64,83BC603F@zh-Hant	按<ACTION:veh_view>切換鏡頭視角。
+FB4C8B2B,141D1F64,83BC603F@ja	<ACTION:veh_view>を押してカメラ視点を切り替え。
+FB4C8B2B,141D1F64,83BC603F@ko	<ACTION:veh_view> 키를 눌러 카메라 시점 전환.
+# The jeep's view.
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@fr	Appuyez sur <ACTION:veh_view> pour changer de vue
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@de	<ACTION:veh_view> drücken zum Wechseln der Ansicht
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@it	Premi <ACTION:veh_view> per cambiare visuale
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@es	Pulsa <ACTION:veh_view> para cambiar la vista
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@es-419	Presiona <ACTION:veh_view> para cambiar la vista
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@pt	Pressione <ACTION:veh_view> para alternar a visão
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@pt-PT	Prima <ACTION:veh_view> para alternar a visão
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@ru	Нажмите <ACTION:veh_view> для смены вида
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@zh-Hans	按<ACTION:veh_view>切换视角
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@zh-Hant	按<ACTION:veh_view>切換視角
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@ja	<ACTION:veh_view>を押して視点切り替え
+F3F3D635,F3F3D636,7272BFE1,1E6AA05A@ko	<ACTION:veh_view> 키를 눌러 시점 전환
+# Turning a gun: up and down, left and right.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@fr	Déplacez <LOOK:la souris> pour viser en haut et en bas. \n Utilisez <MOVE:les touches de déplacement> pour viser à gauche et à droite.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@de	Mit <LOOK:der Maus> nach oben und unten schwenken. \n Mit <MOVE:den Bewegungstasten> nach links und rechts schwenken.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@it	Muovi <LOOK:il mouse> per ruotare in alto e in basso. \n Usa <MOVE:i tasti di movimento> per ruotare a sinistra e a destra.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@es	Mueve <LOOK:el ratón> para girar arriba y abajo. \n Usa <MOVE:las teclas de movimiento> para girar a izquierda y derecha.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@es-419	Mueve <LOOK:el mouse> para girar arriba y abajo. \n Usa <MOVE:las teclas de movimiento> para girar a izquierda y derecha.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@pt	Mova <LOOK:o mouse> para virar para cima e para baixo. \n Use <MOVE:as teclas de movimento> para virar para a esquerda e para a direita.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@pt-PT	Mova <LOOK:o rato> para virar para cima e para baixo. \n Use <MOVE:as teclas de movimento> para virar para a esquerda e para a direita.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@ru	Двигайте <LOOK:мышь>, чтобы поворачивать вверх и вниз. \n Используйте <MOVE:клавиши движения>, чтобы поворачивать влево и вправо.
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@zh-Hans	移动<LOOK:鼠标>上下调整。 \n 使用<MOVE:移动键>左右调整。
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@zh-Hant	移動<LOOK:滑鼠>上下調整。 \n 使用<MOVE:移動鍵>左右調整。
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@ja	<LOOK:マウス>で上下を調整。 \n <MOVE:移動キー>で左右を調整。
+35A66C77,CF9A4890,439BD36B,439BD36C,B71A63D7@ko	<LOOK:마우스>로 상하 조절. \n <MOVE:이동 키>로 좌우 조절.
+# A gun barrel: left and right.
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@fr	Utilisez <MOVE:les touches de déplacement> pour déplacer le canon à gauche et à droite
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@de	Mit <MOVE:den Bewegungstasten> das Rohr nach links und rechts bewegen
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@it	Usa <MOVE:i tasti di movimento> per spostare la canna a sinistra e a destra
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@es	Usa <MOVE:las teclas de movimiento> para mover el cañón a izquierda y derecha
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@pt	Use <MOVE:as teclas de movimento> para mover o cano para a esquerda e para a direita
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@ru	Используйте <MOVE:клавиши движения>, чтобы поворачивать ствол влево и вправо
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@zh-Hans	使用<MOVE:移动键>左右移动炮管
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@zh-Hant	使用<MOVE:移動鍵>左右移動砲管
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@ja	<MOVE:移動キー>で砲身を左右に動かす
+82D2B27D,82D2B27E,82E4CAFF,DD2D2529,7E6E60A2@ko	<MOVE:이동 키>로 포신을 좌우로 이동
+# A gun barrel: up and down.
+82E4CAFE,DF824DCA,F2EAD1A3@fr	Déplacez <LOOK:la souris> pour lever et abaisser le canon
+82E4CAFE,DF824DCA,F2EAD1A3@de	Mit <LOOK:der Maus> das Rohr heben und senken
+82E4CAFE,DF824DCA,F2EAD1A3@it	Muovi <LOOK:il mouse> per alzare e abbassare la canna
+82E4CAFE,DF824DCA,F2EAD1A3@es	Mueve <LOOK:el ratón> para subir y bajar el cañón
+82E4CAFE,DF824DCA,F2EAD1A3@es-419	Mueve <LOOK:el mouse> para subir y bajar el cañón
+82E4CAFE,DF824DCA,F2EAD1A3@pt	Mova <LOOK:o mouse> para levantar e abaixar o cano
+82E4CAFE,DF824DCA,F2EAD1A3@pt-PT	Mova <LOOK:o rato> para levantar e baixar o cano
+82E4CAFE,DF824DCA,F2EAD1A3@ru	Двигайте <LOOK:мышь>, чтобы поднимать и опускать ствол
+82E4CAFE,DF824DCA,F2EAD1A3@zh-Hans	移动<LOOK:鼠标>升降炮管
+82E4CAFE,DF824DCA,F2EAD1A3@zh-Hant	移動<LOOK:滑鼠>升降砲管
+82E4CAFE,DF824DCA,F2EAD1A3@ja	<LOOK:マウス>で砲身を上下させる
+82E4CAFE,DF824DCA,F2EAD1A3@ko	<LOOK:마우스>로 포신 올리기/내리기
+# Saint-Lo: moving and looking around.
+81E1068C,45D8EB25@fr	Utilisez <MOVE:les touches de déplacement> pour vous déplacer et <LOOK:la souris> pour regarder autour de vous.
+81E1068C,45D8EB25@de	Mit <MOVE:den Bewegungstasten> bewegst du dich, mit <LOOK:der Maus> siehst du dich um.
+81E1068C,45D8EB25@it	Usa <MOVE:i tasti di movimento> per muoverti e <LOOK:il mouse> per guardarti intorno.
+81E1068C,45D8EB25@es	Usa <MOVE:las teclas de movimiento> para moverte y <LOOK:el ratón> para mirar a tu alrededor.
+81E1068C,45D8EB25@es-419	Usa <MOVE:las teclas de movimiento> para moverte y <LOOK:el mouse> para mirar a tu alrededor.
+81E1068C,45D8EB25@pt	Use <MOVE:as teclas de movimento> para se mover e <LOOK:o mouse> para olhar ao redor.
+81E1068C,45D8EB25@pt-PT	Use <MOVE:as teclas de movimento> para se mover e <LOOK:o rato> para olhar à volta.
+81E1068C,45D8EB25@ru	<MOVE:Клавиши движения> — передвижение, <LOOK:мышь> — обзор.
+81E1068C,45D8EB25@zh-Hans	使用<MOVE:移动键>移动，使用<LOOK:鼠标>环顾四周。
+81E1068C,45D8EB25@zh-Hant	使用<MOVE:移動鍵>移動，使用<LOOK:滑鼠>環顧四周。
+81E1068C,45D8EB25@ja	<MOVE:移動キー>で移動、<LOOK:マウス>で見回しを行う。
+81E1068C,45D8EB25@ko	<MOVE:이동 키>로 이동하고 <LOOK:마우스>로 주위를 둘러보십시오.

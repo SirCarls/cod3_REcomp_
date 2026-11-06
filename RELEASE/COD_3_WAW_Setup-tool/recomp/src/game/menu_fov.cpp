@@ -52,6 +52,7 @@
 #include "game/menu_aim.h"  // [claude-9b] the AIM page
 #include "game/menu_slider.h"  // [claude-9b] slider rows: the number box
 #include "game/qte_actions.h"
+#include "game/text_language.h"  // [acct2-ocr] the port's texts in the chosen language
 
 namespace {
 
@@ -2169,6 +2170,11 @@ REX_HOOK_RAW(Localize) {
   const uint32_t key = ctx.r4.u32;
   if (key) {
     const char* k = reinterpret_cast<const char*>(base + key);
+    // [acct2-ocr] The port's own texts in the chosen language (game/text_language.h), else the English below.
+    if (const uint32_t ours = cod3::text::PortText(base, k)) {
+      ctx.r3.u64 = ours;
+      return;
+    }
     struct Text {
       const char* key;
       const char* text;

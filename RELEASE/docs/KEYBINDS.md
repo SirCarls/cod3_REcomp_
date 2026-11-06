@@ -96,8 +96,18 @@ MOUSE1 no longer drives it (W does, or whatever key Vehicle: gas has).
 
 The Vehicle keys count only while you drive and never take a key from an on-foot action: a key
 can be an on-foot action's and a vehicle action's at once (MOUSE2 aims on foot and fires the
-tank's machine gun), but not two on-foot or two vehicle actions'. The Vehicle "commands" are
-the actions' ids (the game has no command for them; it reads them itself).
+tank's machine gun). The Vehicle "commands" are the actions' ids (the game has no command for
+them; it reads them itself).
+
+**One key, up to three actions** (2026-11-05, owner: "Allow for up to 3 binds on the same key").
+A key can be given to up to three actions, on foot and Vehicle together; pressing it does all of
+them, each as if it had its own key (G can throw the frag and use; R can reload, jump and align
+the tank's turret). Giving a key to an action no longer takes it from the action that had it:
+the other actions keep it and the note says so ("G also does Smoke grenade"). A fourth is refused
+("G already does 3 things (...); clear one first"). While you drive, a key's Vehicle actions are
+the ones that count, as before. An action still has up to two keys. `cod3.toml` keeps the same
+form (a key simply appears under several actions); a key listed for more than three is dropped
+from the fourth with a log line. The one-time moves of old keys (below) work as they always did.
 
 Movement (WASD), the pause menu (ESCAPE, fixed) and the controller's BACK (TAB) stay the
 keyboard's controller rows (in the jeep W and S are its gas and brake while it reads them; a
@@ -115,8 +125,8 @@ the old behavior). 1 and 2 used to press Y (next weapon); they now pick weapon 1
 - **F2 > Controls > Key bindings > Actions**: one row per action; type the keys (up to two,
   separated by a comma: `F, MOUSE4`; empty = none). What you type shows in capitals and applies
   on Enter, when you click anywhere else (Save too) or when F2 closes, so typing a key and
-  clicking Save is enough. A key another action of the same kind had (on foot, or Vehicle)
-  moves and the row says so. Above the rows: the switch "Keys call the game's actions" and
+  clicking Save is enough. A key other actions have keeps them (up to three in all) and the row
+  says so; a key that has three already is refused. Above the rows: the switch "Keys call the game's actions" and
   "Aim toggle (keyboard and mouse)". Below them, while "Keys call the game's actions" is on,
   are only the movement rows (forward, back, strafe left / right, which steer a vehicle too); the
   controller button rows show only when it is off, that is when the keyboard plays as a
@@ -127,7 +137,8 @@ the old behavior). 1 and 2 used to press Y (next weapon); they now pick weapon 1
   MOUSE1, KP_0 are saved as `Return`, `Up`, `LMB`, `Numpad0`), and a row saved earlier in a
   spelling the SDK can't read (`space`) is written in its spelling when F2 saves or closes.
 - **The ~ console** (campaign): `bind K +reload` or `bind K reload`, `bind MOUSE4 tank_gun`,
-  `unbind K` (on foot and in vehicles), `bind K` (what K does, on foot and "while driving").
+  `unbind K` (every action K has, on foot and in vehicles), `bind K` (what K does, on foot and
+  "while driving"). `bind` adds the action to the key's others (up to three).
   Controller buttons (L3, UPARROW ...) stay the game's own `bind`.
 - **cod3.toml** (`[cod3/Binds]`): `cod3_binds_kbm_p1 = "fire=MOUSE1;aim=MOUSE2;use=F;..."`
   (empty = the defaults; an action missing from the text keeps its default unless another
@@ -155,6 +166,43 @@ keys move to an action there). Not yet in multiplayer: the console's `bind` for 
 (there it is still the game's own, for controller buttons). To check: multiplayer's D-pad rows
 are the SDK's Shift+arrows; SHIFT is sprint / hold breath in play now, so those rows work in
 the menus only (give the D-pad rows keys of their own if a match needs them).
+
+## Controller buttons, per player (split screen included)
+
+<!-- [acct2-main] 2026-11-05 -->
+Each player can change what the controller's buttons do, with up to three actions on one button. This works in the campaign and in multiplayer, split screen included. Player 1 is the campaign's player and multiplayer's first local player. Players 2-4 are the other split-screen players.
+
+- **Settings:** `cod3_binds_pad_p1` .. `cod3_binds_pad_p4`. Each holds only the buttons that differ from the controller layout chosen in the game's options, for example `x=reload,melee;y=weapnext;dpad_up=`. Empty means the layout as it is. A button with nothing after `=` does nothing.
+  - Button names: `a b x y lb rb lt rt ls rs dpad_up dpad_down dpad_left dpad_right back`.
+  - START stays the pause menu.
+  - The action names are the same as the keyboard's (above); vehicle actions are left out because vehicles read their own controls.
+  - The in-game KEY BINDINGS pages will write these settings; until then, set them in the settings file.
+- **First action:** goes into that player's own bind table in the game. The game then treats it like its own layout: in menus, mounted guns, battle actions and button prompts. If the game runs a layout file again (a layout chosen in the options, a map loading), the player's changes are put back on top. A button set back to the layout gets the layout's binding back.
+- **Second and third actions:** called by the port when the button is pressed and released, for the player who owns that controller.
+  - Commands like `weapnext` or `+scores` run straight away as that player, so a split-screen player's command goes to that player and not to player 1.
+  - They only work while the game is taking that player's presses: no menu open, in a match, no mounted gun or battle action running. Letting go of the button always reaches the game.
+  - Holding a button down always counts. A tap shorter than one frame only counts with SDK patch 0073 (`patches/README.md`), which keeps the press for the game's next read; without it, such a tap can be missed.
+- **Testing it** (split screen, scripted pads; no real controller needed). The multiplayer program with the split_screen bench's menu presses (`dev/tools/rea/bench/split_screen.txt`, variant 4p) and a few button presses once the match runs:
+
+  ```
+  devrun.py run --mp --seconds 95 --id <chat>-padbinds-4p --set audio_mute=true --set log_level=debug \
+    --set cod3_test_autojoin=auto \
+    --set cod3_binds_pad_p1=x=reload,weapnext --set cod3_binds_pad_p2=y=melee,frag \
+    --set cod3_binds_pad_p3=b=weapnext,smoke --set cod3_binds_pad_p4=a=jump,weapnext \
+    --set 'cod3_test_input=pads=4;<the 4p menu presses from split_screen.txt>;p1:60:X:0.3;p2:63:Y:0.3;p3:66:B:0.3;p4:69:A:0.3'
+  ```
+
+  The log shows `controller binds: player N <button> = "..."` when a first action is written. With `log_level=debug` it also shows a line for each second and third action: `player N <button> slot 2 down "..." (...; active client N-1)`. Player N's actions run with client N-1 active. Presses held back while a menu has them show as `not sent`. Last run 2026-11-05: 2 and 4 players, no errors.
+
+## Stick dead zone, per player
+
+<!-- [acct2-main] 2026-11-05 -->
+How far a stick must be pushed before the game takes it. The game has one value for every controller, `joy_threshold` (25 of 128 per axis, about 20%; F2 > Controls > Controller sets it). Each player can have their own instead:
+
+- **Settings:** `cod3_deadzone_p1` .. `cod3_deadzone_p4`, in the same units (0-100 of 128). `-1` (the default) uses `joy_threshold`. Player 1 is the campaign's player and multiplayer's first local player; players 2-4 are the other split-screen players. A push smaller than the value counts as nothing; a larger one is stretched back to the full range, as the game does.
+- **How:** the game's own dead-zone code runs for each stick axis of each player (campaign 0x82519D98, cod3mp 0x82537B20). For that one call, `joy_threshold`'s value is the player's, then the shared value goes back. So it covers walking, looking, vehicles and every other place that uses the dead zone, and the console's and F2's `joy_threshold` is never changed.
+- **Log:** one line when a player's value changes (`stick dead zone: player 2 uses 5 of 128`); with `log_level=debug`, a line every 2 s per player while a stick is pushed (`player 2 5 of 128 (shared 25): axis 44 -> 40`).
+- **Tested 2026-11-05** (run acct2-main-deadzone-4p, 4 scripted pads, the same push of 44 for everyone): player 1 at 60 got 0, player 2 at 5 got 40, player 3 used the shared 25, player 4 at 0 got 44. No errors.
 
 ## Controller vibration
 

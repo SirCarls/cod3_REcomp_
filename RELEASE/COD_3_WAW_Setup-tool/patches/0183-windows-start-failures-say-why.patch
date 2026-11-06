@@ -1,0 +1,267 @@
+diff --git a/include/rex/system.h b/include/rex/system.h
+--- a/include/rex/system.h
++++ b/include/rex/system.h
+@@ -37,4 +37,12 @@ enum class SimpleMessageBoxType {
+ // This is expected to block the caller until the message box is closed.
+ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message);
+ 
++// [cod3 0183] The message boxes' title (UTF-8; Windows: until set, the
++// program's file name). Elsewhere the message goes to stderr without one.
++void SetSimpleMessageBoxTitle(std::string_view title);
++
++// [cod3 0183] Whether ShowSimpleMessageBox has shown anything yet, so a later
++// "it didn't start" message isn't shown on top of the one that said why.
++bool SimpleMessageBoxShown();
++
+ }  // namespace rex
+diff --git a/src/core/system_posix.cpp b/src/core/system_posix.cpp
+--- a/src/core/system_posix.cpp
++++ b/src/core/system_posix.cpp
+@@ -6,12 +6,26 @@
+  * @license     BSD 3-Clause License
+  */
+ 
++#include <atomic>
+ #include <cstdio>
+ 
+ #include <rex/system.h>
+ 
+ namespace rex {
+ 
++namespace {
++std::atomic<bool> g_shown{false};  // [cod3 0183] SimpleMessageBoxShown
++}  // namespace
++
++// [cod3 0183] stderr has no title.
++void SetSimpleMessageBoxTitle(std::string_view title) {
++  (void)title;
++}
++
++bool SimpleMessageBoxShown() {
++  return g_shown.load(std::memory_order_acquire);
++}
++
+ // TODO(tomc): add linux support for showing a native message box
+ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+   const char* level = "INFO";
+@@ -26,6 +40,7 @@ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+       level = "ERROR";
+       break;
+   }
++  g_shown.store(true, std::memory_order_release);
+   std::fprintf(stderr, "[%s] %.*s\n", level, static_cast<int>(message.size()), message.data());
+   std::fflush(stderr);
+ }
+diff --git a/src/core/system_win.cpp b/src/core/system_win.cpp
+--- a/src/core/system_win.cpp
++++ b/src/core/system_win.cpp
+@@ -11,14 +11,58 @@
+ #endif
+ #include <windows.h>
+ 
++#include <atomic>
++#include <mutex>
++#include <string>
++
+ #include <rex/string.h>
+ #include <rex/system.h>
+ 
+ namespace rex {
+ 
++namespace {
++
++// [cod3 0183] The title SetSimpleMessageBoxTitle gave, and whether a box was shown.
++std::mutex g_title_mutex;
++std::wstring g_title;
++std::atomic<bool> g_shown{false};
++
++// The program's file name without ".exe" ("cod3"), for a box shown before
++// the program has named itself.
++std::wstring ProgramFileName() {
++  wchar_t path[MAX_PATH];
++  const DWORD n = GetModuleFileNameW(nullptr, path, MAX_PATH);
++  if (n == 0 || n >= MAX_PATH)
++    return L"ReXGlue";
++  std::wstring name(path, n);
++  if (const size_t slash = name.find_last_of(L"\\/"); slash != std::wstring::npos)
++    name.erase(0, slash + 1);
++  if (const size_t dot = name.rfind(L'.'); dot != std::wstring::npos && dot > 0)
++    name.erase(dot);
++  return name.empty() ? std::wstring(L"ReXGlue") : name;
++}
++
++}  // namespace
++
++void SetSimpleMessageBoxTitle(std::string_view title) {
++  const auto wide = rex::string::to_utf16(title);
++  std::lock_guard lock(g_title_mutex);
++  g_title.assign(reinterpret_cast<const wchar_t*>(wide.data()), wide.size());
++}
++
++bool SimpleMessageBoxShown() {
++  return g_shown.load(std::memory_order_acquire);
++}
++
+ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+   UINT flags = MB_OK | MB_TOPMOST | MB_SETFOREGROUND;
+-  const wchar_t* title = L"ReXGlue";
++  std::wstring title;
++  {
++    std::lock_guard lock(g_title_mutex);
++    title = g_title;
++  }
++  if (title.empty())
++    title = ProgramFileName();
+   switch (type) {
+     case SimpleMessageBoxType::Help:
+       flags |= MB_ICONINFORMATION;
+@@ -30,8 +74,9 @@ void ShowSimpleMessageBox(SimpleMessageBoxType type, std::string_view message) {
+       flags |= MB_ICONERROR;
+       break;
+   }
++  g_shown.store(true, std::memory_order_release);
+   auto wide = rex::string::to_utf16(message);
+-  ::MessageBoxW(nullptr, reinterpret_cast<const wchar_t*>(wide.c_str()), title, flags);
++  ::MessageBoxW(nullptr, reinterpret_cast<const wchar_t*>(wide.c_str()), title.c_str(), flags);
+ }
+ 
+ }  // namespace rex
+diff --git a/src/ui/windowed_app_main_sdl.cpp b/src/ui/windowed_app_main_sdl.cpp
+--- a/src/ui/windowed_app_main_sdl.cpp
++++ b/src/ui/windowed_app_main_sdl.cpp
+@@ -32,10 +32,68 @@
+ #include <windows.h>
+ #include <objbase.h>
+ #include <shellapi.h>
++
++#include <cstdio>
++#include <exception>
++
++#include <SDL3/SDL_error.h>
++#include <rex/system.h>
+ #endif
+ 
+ namespace {
+ 
++#if REX_PLATFORM_WIN32
++// [cod3 0183] A Windows program has no console, so a start that failed before
++// the program's own window ended without a word (no window, often no log).
++// Now it says why in a message box, unless one has said it already. An error
++// that escapes once the program runs (its message loop) still ends it as
++// before (std::terminate).
++
++// UTF-8 for a C runtime or exception text, which on Windows may be in the
++// system's code page (a path in a std::filesystem or spdlog message).
++std::string NarrowToUtf8(const char* text) {
++  if (!text || !*text)
++    return {};
++  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text, -1, nullptr, 0) > 0)
++    return text;
++  const int wide_size = MultiByteToWideChar(CP_ACP, 0, text, -1, nullptr, 0);
++  if (wide_size <= 1)
++    return text;
++  std::wstring wide(static_cast<size_t>(wide_size), L'\0');
++  MultiByteToWideChar(CP_ACP, 0, text, -1, wide.data(), wide_size);
++  const int size = WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, nullptr, 0, nullptr, nullptr);
++  if (size <= 1)
++    return text;
++  std::string utf8(static_cast<size_t>(size), '\0');
++  WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), -1, utf8.data(), size, nullptr, nullptr);
++  utf8.resize(static_cast<size_t>(size - 1));
++  return utf8;
++}
++
++// The exception being handled; call only inside a catch block.
++std::string CurrentExceptionText() {
++  try {
++    throw;
++  } catch (const std::exception& e) {
++    const std::string text = NarrowToUtf8(e.what());
++    return text.empty() ? std::string("an error without a description") : text;
++  } catch (...) {
++    return "an error without a description";
++  }
++}
++
++std::string LogFileHint() {
++  const std::string log_file = NarrowToUtf8(rex::cvar::GetFlagByName("log_file").c_str());
++  return log_file.empty() ? std::string("the logs folder next to the program") : log_file;
++}
++
++void ShowStartFailure(const std::string& text) {
++  if (rex::SimpleMessageBoxShown())
++    return;
++  rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error, text);
++}
++#endif
++
+ int RunWindowedApp(int argc, char** argv) {
+   auto remaining = rex::cvar::Init(argc, argv);
+   rex::cvar::ApplyEnvironment();
+@@ -45,12 +103,20 @@ int RunWindowedApp(int argc, char** argv) {
+   {
+     rex::ui::SDLWindowedAppContext app_context;
+     if (!app_context.Initialize()) {
++#if REX_PLATFORM_WIN32
++      ShowStartFailure(std::string("The program couldn't start its window system (SDL video):\n\n") +
++                       SDL_GetError());
++#endif
+       return EXIT_FAILURE;
+     }
+ 
+ #if REX_PLATFORM_WIN32
+     // Apartment-threaded COM for shell dialogs.
+-    if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
++    if (const HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); FAILED(hr)) {
++      char code[16];
++      std::snprintf(code, sizeof(code), "0x%08lX", static_cast<unsigned long>(hr));
++      ShowStartFailure(std::string("The program couldn't start Windows' COM (CoInitializeEx: ") + code +
++                       ").");
+       return EXIT_FAILURE;
+     }
+ #endif
+@@ -66,7 +132,28 @@ int RunWindowedApp(int argc, char** argv) {
+     }
+     app->SetParsedArguments(std::move(parsed));
+ 
++#if REX_PLATFORM_WIN32
++    bool initialized = false;
++    try {
++      initialized = app->OnInitialize();
++    } catch (...) {
++      ShowStartFailure("The program stopped while starting:\n\n" + CurrentExceptionText() +
++                       "\n\nIts log file, if one was made: " + LogFileHint());
++      // No teardown: it can wait on threads the start left running.
++      TerminateProcess(GetCurrentProcess(), EXIT_FAILURE);
++      std::_Exit(EXIT_FAILURE);
++    }
++    if (!initialized) {
++      rex::FlushLogging();
++      ShowStartFailure("The program couldn't start. Its log file says why:\n\n" + LogFileHint());
++    }
++    // noexcept: an error out of the running program goes to std::terminate as
++    // before, not to the start's catch in wWinMain.
++    result = initialized ? [&]() noexcept { return app_context.RunMainMessageLoop(); }()
++                         : EXIT_FAILURE;
++#else
+     result = app->OnInitialize() ? app_context.RunMainMessageLoop() : EXIT_FAILURE;
++#endif
+ 
+     app->InvokeOnDestroy();
+   }
+@@ -121,7 +208,14 @@ int WINAPI wWinMain(HINSTANCE hinstance, HINSTANCE hinstance_prev, LPWSTR comman
+   for (auto& s : utf8_args) {
+     argv_ptrs.push_back(s.data());
+   }
+-  return RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
++  // [cod3 0183] An error before the program's window (settings, logging, the
++  // window system) says why instead of ending the program without a word.
++  try {
++    return RunWindowedApp(static_cast<int>(argv_ptrs.size()), argv_ptrs.data());
++  } catch (...) {
++    ShowStartFailure("The program stopped while starting:\n\n" + CurrentExceptionText());
++  }
++  return EXIT_FAILURE;
+ }
+ 
+ #else

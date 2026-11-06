@@ -138,6 +138,9 @@ def drop_mp_conditionals(text: str) -> str:
 
 def cod3mp_sources(recomp: Path) -> list[str]:
     cmake = (recomp / "mp" / "CMakeLists.txt").read_text(encoding="utf-8")
+    # [acct2-ocr] 2026-11-05 CMake comments out first: a ')' in one ("# ... (cod3_fix_ui_clock, ...)") ended the
+    # list there, so 17 of the 87 sources were read and --write dropped the aliases of the rest.
+    cmake = re.sub(r"#[^\n]*", "", cmake)
     m = re.search(r"set\(COD3MP_SOURCES(.*?)\)", cmake, re.S)
     body = m.group(1) if m else ""
     return re.findall(r"\$\{COD3_SRC\}/(\S+\.cpp)", body)

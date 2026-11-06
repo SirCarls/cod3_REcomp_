@@ -236,6 +236,18 @@ KbmSet Defaults() {
 
 bool IsVehicleAction(Action action) { return Def(action).group == Group::kVehicle; }
 
+int FindAll(const KbmSet& set, KeyCode key, KeyUse* out, int max) {  // [acct2-main]
+  int n = 0;
+  if (key == kNoKey) return 0;
+  for (int a = 0; a < kActionCount && n < max; ++a)
+    for (int s = 0; s < kSlots; ++s)
+      if (set.key[a][s] == key) {
+        out[n++] = {static_cast<Action>(a), s};
+        break;
+      }
+  return n;
+}
+
 Action Find(const KbmSet& set, KeyCode key, int* slot, bool vehicle) {
   if (key == kNoKey) return Action::kCount;
   for (int a = 0; a < kActionCount; ++a) {
@@ -297,8 +309,15 @@ KbmSet Parse(std::string_view text, std::vector<std::string>* notes) {
         note(KeyName(key) + " can't be bound (the console or the pause menu); ignored");
         continue;
       }
-      if (Find(set, key, nullptr, IsVehicleAction(action)) != Action::kCount) {
-        note(KeyName(key) + " is listed for two actions; the first one keeps it");
+      // [acct2-main] A key may have up to kMaxActionsPerKey actions.
+      KeyUse uses[kActionCount];
+      const int used = FindAll(set, key, uses, kActionCount);
+      bool here = false;
+      for (int i = 0; i < used; ++i) here |= uses[i].action == action;
+      if (here) continue;  // listed twice for the same action
+      if (used >= kMaxActionsPerKey) {
+        note(KeyName(key) + " is listed for more than " + std::to_string(kMaxActionsPerKey) +
+             " actions; the first " + std::to_string(kMaxActionsPerKey) + " keep it");
         continue;
       }
       if (slot >= kSlots) {
@@ -338,7 +357,12 @@ std::string Serialize(const KbmSet& set) {
   return out;
 }
 
-std::string Assign(KbmSet& set, Action action, int slot, KeyCode key) {
+namespace {
+
+// The behavior before 2026-11-05: a key another action of the same kind had
+// is taken from it. The one-time moves of old keys (below) keep using it, so
+// they give the same result as before. [acct2-main]
+std::string AssignMoving(KbmSet& set, Action action, int slot, KeyCode key) {
   const int a = Index(action);
   if (a < 0 || a >= kActionCount || slot < 0 || slot >= kSlots) return "";
   std::string note;
@@ -357,6 +381,37 @@ std::string Assign(KbmSet& set, Action action, int slot, KeyCode key) {
   set.key[a][slot] = key;
   Compact(set, a);
   return note;
+}
+
+}  // namespace
+
+std::string Assign(KbmSet& set, Action action, int slot, KeyCode key, bool* ok) {  // [acct2-main]
+  if (ok) *ok = true;
+  const int a = Index(action);
+  if (a < 0 || a >= kActionCount || slot < 0 || slot >= kSlots) return "";
+  if (key == kNoKey || set.key[a][slot] == key) {
+    set.key[a][slot] = key;
+    Compact(set, a);
+    return "";
+  }
+  KeyUse uses[kActionCount];
+  const int used = FindAll(set, key, uses, kActionCount);
+  std::string others;
+  int count = 0;
+  for (int i = 0; i < used; ++i) {
+    if (uses[i].action == action) continue;  // its other slot: moves here
+    ++count;
+    others += std::string(others.empty() ? "" : ", ") + kDefs[Index(uses[i].action)].label;
+  }
+  if (count >= kMaxActionsPerKey) {
+    if (ok) *ok = false;
+    return KeyName(key) + " already does " + std::to_string(count) + " things (" + others + "); clear one first";
+  }
+  for (int s = 0; s < kSlots; ++s)
+    if (s != slot && set.key[a][s] == key) set.key[a][s] = kNoKey;
+  set.key[a][slot] = key;
+  Compact(set, a);
+  return others.empty() ? "" : KeyName(key) + " also does " + others;
 }
 
 std::string KeysText(const KbmSet& set, Action action) {
@@ -399,7 +454,12 @@ bool AssignText(KbmSet& set, Action action, std::string_view text, std::string* 
   for (int s = 0; s < kSlots; ++s) next.key[a][s] = kNoKey;
   std::string moved;
   for (size_t i = 0; i < keys.size(); ++i) {
-    const std::string n = Assign(next, action, static_cast<int>(i), keys[i]);
+    bool fits = true;  // [acct2-main] a key with kMaxActionsPerKey actions already is refused
+    const std::string n = Assign(next, action, static_cast<int>(i), keys[i], &fits);
+    if (!fits) {
+      if (note) *note = n + ".";
+      return false;
+    }
     if (!n.empty()) moved += (moved.empty() ? "" : " ") + n + ".";
   }
   set = next;
@@ -487,7 +547,7 @@ Migration Migrate(const KbmSet& current, const std::vector<OldBind>& binds, cons
         KbmSet next = m.set;
         for (int s = 0; s < kSlots; ++s) next.key[Index(action)][s] = kNoKey;
         for (size_t i = 0; i < keys.size(); ++i) {
-          const std::string n = Assign(next, action, static_cast<int>(i), keys[i]);
+          const std::string n = AssignMoving(next, action, static_cast<int>(i), keys[i]);
           if (!n.empty()) m.log.push_back(b.name + ": " + n);
         }
         m.set = next;
@@ -572,7 +632,7 @@ Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, b
     KbmSet next = m.set;
     for (int s = 0; s < kSlots; ++s) next.key[Index(action)][s] = kNoKey;
     for (size_t i = 0; i < keys.size(); ++i) {
-      const std::string n = Assign(next, action, static_cast<int>(i), keys[i]);
+      const std::string n = AssignMoving(next, action, static_cast<int>(i), keys[i]);
       if (!n.empty()) m.log.push_back(r.name + ": " + n);
     }
     m.set = next;
@@ -588,6 +648,8 @@ Migration MigrateRows(const KbmSet& current, const std::vector<OldBind>& rows, b
       const Action had = Find(m.set, key, &slot);
       if (had == Action::kCount) continue;
       m.set.key[Index(had)][slot] = kNoKey;
+      for (Action more = Find(m.set, key, &slot); more != Action::kCount; more = Find(m.set, key, &slot))
+        m.set.key[Index(more)][slot] = kNoKey;  // [acct2-main] a key may have more than one action now
       Compact(m.set, Index(had));
       const std::string left = KeysText(m.set, had);
       m.log.push_back(KeyName(key) + " stays with " + r.name + " (yours); " + Def(had).label +
@@ -643,7 +705,7 @@ Migration MigrateVehicleRows(const KbmSet& current, const std::vector<OldBind>& 
       KbmSet next = m.set;
       for (int s = 0; s < kSlots; ++s) next.key[Index(f.action)][s] = kNoKey;
       for (size_t i = 0; i < keys.size(); ++i) {
-        const std::string n = Assign(next, f.action, static_cast<int>(i), keys[i]);
+        const std::string n = AssignMoving(next, f.action, static_cast<int>(i), keys[i]);
         if (!n.empty()) m.log.push_back(r.name + ": " + n);
       }
       m.set = next;
@@ -663,6 +725,8 @@ Migration MigrateVehicleRows(const KbmSet& current, const std::vector<OldBind>& 
       const Action had = Find(m.set, key, &slot, /*vehicle=*/true);
       if (had == Action::kCount) continue;
       m.set.key[Index(had)][slot] = kNoKey;
+      for (Action more = Find(m.set, key, &slot, /*vehicle=*/true); more != Action::kCount; more = Find(m.set, key, &slot, /*vehicle=*/true))
+        m.set.key[Index(more)][slot] = kNoKey;  // [acct2-main] a key may have more than one action now
       Compact(m.set, Index(had));
       const std::string left = KeysText(m.set, had);
       m.log.push_back(KeyName(key) + " stays with " + r.name + " (yours) in vehicles too; " + Def(had).label +

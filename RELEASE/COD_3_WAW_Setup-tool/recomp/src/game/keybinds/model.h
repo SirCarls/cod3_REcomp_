@@ -29,8 +29,9 @@
 //            reads them, never by pressing a controller button. A vehicle key
 //            counts only while a vehicle reads its alias (while you drive); on
 //            foot the same key keeps its own action (MOUSE2 aims, W walks).
-// Up to two keys per action; a key belongs to one on-foot action and to at
-// most one vehicle action. Movement (WASD), the pause menu (ESCAPE) and the
+// Up to two keys per action. [acct2-main] 2026-11-05 (owner: "Allow for up to
+// 3 binds on the same key"): a key can be given to up to three actions
+// (kMaxActionsPerKey, on foot and vehicle together); a press does all of them. Movement (WASD), the pause menu (ESCAPE) and the
 // controller's BACK stay the keyboard's controller rows (keybind_*) on foot,
 // and so does everything in the game's menus.
 //
@@ -102,6 +103,8 @@ enum class Action : uint8_t {
 };
 inline constexpr int kActionCount = static_cast<int>(Action::kCount);
 inline constexpr int kSlots = 2;
+// [acct2-main] The most actions one key can have (on foot and vehicle together).
+inline constexpr int kMaxActionsPerKey = 3;
 
 // How the game is told (binds.cpp). The game's commands are found by name
 // in its own command list, so the same table serves both programs.
@@ -164,15 +167,25 @@ KbmSet Parse(std::string_view text, std::vector<std::string>* notes);
 // The keys -> cod3_binds_kbm_p1: "" when they are the defaults.
 std::string Serialize(const KbmSet& set);
 
-// The action and slot that have `key` among the on-foot actions (or, with
-// `vehicle`, among the vehicle actions); Action::kCount when none.
+// The first action and slot that have `key` among the on-foot actions (or,
+// with `vehicle`, among the vehicle actions); Action::kCount when none.
 Action Find(const KbmSet& set, KeyCode key, int* slot = nullptr, bool vehicle = false);
 
-// Puts `key` in `slot` of `action` (kNoKey clears the slot). A key another
-// action of the same kind (on foot or vehicle) had is taken from it; the note
-// says so ("B was Binoculars; moved here"). Returns "" when nothing else
-// changed.
-std::string Assign(KbmSet& set, Action action, int slot, KeyCode key);
+// [acct2-main] Every action that has `key` (on foot and vehicle, in the
+// action table's order) with the slot it is in; returns the count (at most
+// `max`).
+struct KeyUse {
+  Action action;
+  int slot;
+};
+int FindAll(const KbmSet& set, KeyCode key, KeyUse* out, int max);
+
+// Puts `key` in `slot` of `action` (kNoKey clears the slot). [acct2-main] The
+// key keeps the other actions it has, up to kMaxActionsPerKey in all; the
+// note says what else it does ("G also does Smoke grenade"). A key that has
+// that many already is refused: nothing changes, *ok is false and the note
+// says why. The action's other slot never keeps the same key (it moves).
+std::string Assign(KbmSet& set, Action action, int slot, KeyCode key, bool* ok = nullptr);
 
 // Both keys of an action as text ("B", "B, MOUSE4", "" when unbound) and back
 // (F2's text box). AssignText sets both slots from "B" / "B, MOUSE4" / "";

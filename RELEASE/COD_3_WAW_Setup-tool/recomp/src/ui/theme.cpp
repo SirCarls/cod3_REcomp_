@@ -9,6 +9,8 @@
 
 #include <rex/cvar.h>
 
+#include "ui/text_overlay.h"  // [acct2-ocr]
+
 REXCVAR_DEFINE_STRING(cod3_ui_theme, "cod3", "cod3/Interface",
                       "Colors of the F2 settings and the console: cod3 (the game's black, brass "
                       "and parchment), olive (field olive drab), parchment (light, like a "
@@ -168,6 +170,7 @@ void ConfigureFonts(ImFontAtlas* atlas) {
   for (float size : kHudSizes) g_regular[n++] = add(BarlowMedium_compressed_data_base85, size);
   for (size_t i = 0; i < std::size(kTextSizes); ++i)
     g_bold[i] = add(BarlowSemiBold_compressed_data_base85, kTextSizes[i]);
+  cod3::text_overlay::AddFonts(atlas);  // [acct2-ocr] Russian/CJK text: the chosen language's font, if it needs one
   ImGui::GetIO().FontDefault = g_regular[TextSizeIndex()];
 }
 

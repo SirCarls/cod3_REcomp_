@@ -23,6 +23,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game/addresses.h"  // [acct2-main] addr::keybinds::kLocalClients (the local clients in use)
 #include "game/guest.h"
 #include "game/movement/program_mp.h"
 #include "game/movement/rules.h"
@@ -114,13 +115,37 @@ void LogSettings() {
 thread_local int t_controller = -1;
 thread_local bool t_in_think = false;
 
-int ControllerOf(uint8_t* base, uint32_t ent) {
+int SlotOf(uint8_t* base, uint32_t ent) {  // [acct2-main] was ControllerOf: the table's slot (0-3) or -1
   const uint32_t table = g::ReadU32(base, mv::mp_fn::kLocalEntities);
   if (!ValidGuest(table) || !ValidGuest(ent)) return -1;
   for (int c = 0; c < 4; ++c) {
     if (g::ReadU32(base, table + 4 * static_cast<uint32_t>(c + 1)) == ent) return c;
   }
   return -1;
+}
+
+// [acct2-main] 2026-11-05 The table holds this console's client slots, not only its local players. In a system
+// link match (T2: runs acct2-main-t2-A / -B) the other console's player has a slot here too: its one ClientThink
+// when it spawned was labeled "local player 2" on both consoles, each with one player. So a slot is a local
+// player only while that local client is in use, the test Com_Frame (0x82557D60) makes before each CL_Frame:
+// *(kLocalClients + 184 + 3208 * client) != 0. Split screen fills the clients in order (0 .. n-1); if the ones
+// in use aren't in order, no slot counts as local (logged once), because then slot and client may not match.
+uint32_t LocalClientsInUse(uint8_t* base) {  // bit c: local client c is in use
+  namespace kb = cod3::addr::keybinds;
+  uint32_t mask = 0;
+  for (uint32_t c = 0; c < 4; ++c) {
+    if (g::ReadU32(base, kb::kLocalClients + kb::kLocalClientState + c * kb::kLocalClientStride) != 0) {
+      mask |= 1u << c;
+    }
+  }
+  return mask;
+}
+
+bool InOrder(uint32_t mask) { return (mask & (mask + 1)) == 0; }  // 0, 1, 3, 7 or 15
+
+int ControllerOf(int slot, uint32_t mask) {
+  if (slot < 0 || !InOrder(mask)) return -1;
+  return ((mask >> slot) & 1u) ? slot : -1;
 }
 
 // Rule points reached per controller (index controller + 1: 0 = not a local player / outside ClientThink).
@@ -220,6 +245,11 @@ void MaybeLogSeen() {
 
 }  // namespace
 
+// [acct2-main] 2026-11-05 This file is built into cod3mp only, so COD3_MP is always set and nothing changes here.
+// The block tells tools/mp_aliases.py and test_multiplayer_build that these names are cod3mp's own functions
+// (no campaign name to map), as in pc_menu.cpp and keybinds/pad_binds.cpp.
+#if defined(COD3_MP)
+
 // Pmove(pm) 0x824B4270 (program_mp.h): the game's own call, always; before it, the settings' log and (with
 // cod3mp_debug_movement) what it moves.
 REX_EXTERN(__imp__sub_824B4270);
@@ -246,18 +276,29 @@ REX_HOOK_RAW(sub_82592CD0) {  // ClientThink_real(ent)
     return;
   }
   const uint32_t ent = ctx.r3.u32;
-  const int controller = ControllerOf(base, ent);
+  // [acct2-main] the slot, then whether a local client plays it (LocalClientsInUse)
+  const int slot = SlotOf(base, ent);
+  const uint32_t in_use = LocalClientsInUse(base);
+  const int controller = ControllerOf(slot, in_use);
   ++g_think_calls[controller + 1];
   static int s_described = 0;  // the first 8 calls: what the entity and the table hold, to check the mapping
   if (s_described < 8 && ValidGuest(ent)) {
     ++s_described;
     const uint32_t table = g::ReadU32(base, mv::mp_fn::kLocalEntities);
     REXLOG_INFO("cod3mp: movement: stage 2: ClientThink entity {:#x} (+512 {:#x}, +0x208 {:#x}) -> local player {}; "
-                "table {:#x}: {:#x} {:#x} {:#x} {:#x}",
+                "table {:#x}: {:#x} {:#x} {:#x} {:#x}; slot {}, local clients in use {:#x}",
                 ent, g::ReadU32(base, ent + 512), g::ReadU32(base, ent + 0x208), controller + 1, table,
                 ValidGuest(table) ? g::ReadU32(base, table + 4) : 0, ValidGuest(table) ? g::ReadU32(base, table + 8) : 0,
                 ValidGuest(table) ? g::ReadU32(base, table + 12) : 0,
-                ValidGuest(table) ? g::ReadU32(base, table + 16) : 0);
+                ValidGuest(table) ? g::ReadU32(base, table + 16) : 0, slot + 1, in_use);
+  }
+  // [acct2-main] once per slot: a slot in the table that no local client plays (another console's player)
+  static uint32_t s_not_local_logged = 0;
+  if (slot >= 0 && controller < 0 && !(s_not_local_logged & (1u << slot))) {
+    s_not_local_logged |= 1u << slot;
+    REXLOG_INFO("cod3mp: movement: stage 2: ClientThink for slot {} (entity {:#x}): not a local player here "
+                "(local clients in use {:#x}{}); it keeps Call of Duty 3",
+                slot + 1, ent, in_use, InOrder(in_use) ? "" : ", not in order: no slot counts as local");
   }
   t_controller = controller;
   t_in_think = true;
@@ -289,3 +330,5 @@ REX_HOOK_RAW(sub_824A9798) {  // PM_AirMove
   CountRule(kAirMove);
   __imp__sub_824A9798(ctx, base);
 }
+
+#endif  // defined(COD3_MP) [acct2-main]

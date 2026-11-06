@@ -48,6 +48,7 @@
 #include "game/menu_slider.h"  // [claude-9b] the slider rows' number boxes
 #include "game/menu_video.h"
 #endif
+#include "game/text_language.h"  // [acct2-ocr] the quit question in the chosen language
 #include "game/ultrawide.h"
 
 REXCVAR_DEFINE_BOOL(cod3_pc_menus, true, "cod3/Mouse",
@@ -1972,7 +1973,9 @@ bool QuitToDesktopFromMainMenu(PPCContext& ctx, uint8_t* base) {
   if (!Valid(system) || ReadU32(base, system) != box::kSystemVtable) return false;
   const uint32_t pages = ReadU32(base, system + box::kSysPages);
   const uint32_t buttons = ReadU32(base, system + box::kSysButtons);
-  const uint32_t text = cod3::videomenu::Localize(base, cod3::videomenu::QuitToDesktopQuestionKey());
+  const char* question = cod3::videomenu::QuitToDesktopQuestionKey();
+  uint32_t text = cod3::text::PortText(base, question);   // [acct2-ocr] the chosen language's, else the English
+  if (!text) text = cod3::videomenu::Localize(base, question);
   if (!Valid(pages) || !Valid(buttons) || !text) return false;
   Call c(ctx, base);
   c.Invoke(box::kClose, {system});

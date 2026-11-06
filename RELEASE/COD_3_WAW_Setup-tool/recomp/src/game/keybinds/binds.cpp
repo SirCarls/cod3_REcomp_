@@ -74,6 +74,7 @@
 #include "game/decomp_trace.h"
 #include "game/guest.h"
 #include "game/keybinds/model.h"
+#include "game/keybinds/pad_binds.h"  // [acct2-main] the controller's own binds
 #include "game/keybinds/sdk_spelling.h"
 #include "game/program.h"
 #include "game/screenshot.h"
@@ -214,9 +215,11 @@ KbmSet g_set = Defaults();
 std::string g_last_text = "\x01";  // the cvar text g_set was read from
 std::atomic<uint32_t> g_generation{1};
 // KeyCode -> (action + 1) | slot << 8, 0 = no action. Read by the listener:
-// the on-foot actions' keys, and the Vehicle actions' (model.h).
-std::array<std::atomic<uint16_t>, kKeyCodeCount> g_lookup{};
-std::array<std::atomic<uint16_t>, kKeyCodeCount> g_vehicle_lookup{};
+// the on-foot actions' keys, and the Vehicle actions' (model.h). [acct2-main]
+// Up to kMaxActionsPerKey of each per key (a key may have several actions).
+using KeyEntries = std::array<std::atomic<uint16_t>, kMaxActionsPerKey>;
+std::array<KeyEntries, kKeyCodeCount> g_lookup{};
+std::array<KeyEntries, kKeyCodeCount> g_vehicle_lookup{};
 std::once_flag g_started;
 // The game has the action's command (set by the game thread's lookup): a key
 // of an action it hasn't stays the keyboard row's.
@@ -302,13 +305,20 @@ bool VehicleActionApplies(Action action) {
   return false;
 }
 
-// The action a key down goes to, as (action + 1) | slot << 8 (0 = none): its
-// Vehicle action while that counts, else its on-foot action.
-uint16_t KeyAction(KeyCode code) {
+// The actions a key down goes to, each as (action + 1) | slot << 8, into
+// `out` (kMaxActionsPerKey); returns how many. [acct2-main] Its Vehicle
+// actions that count now, else its on-foot actions.
+int KeyActions(KeyCode code, uint16_t* out) {
   if (code >= kKeyCodeCount) return 0;
-  const uint16_t vehicle = g_vehicle_lookup[code].load(std::memory_order_relaxed);
-  if (vehicle && VehicleActionApplies(static_cast<Action>((vehicle & 0xFF) - 1))) return vehicle;
-  return g_lookup[code].load(std::memory_order_relaxed);
+  int n = 0;
+  for (const auto& e : g_vehicle_lookup[code])
+    if (const uint16_t v = e.load(std::memory_order_relaxed);
+        v && VehicleActionApplies(static_cast<Action>((v & 0xFF) - 1)))
+      out[n++] = v;
+  if (n) return n;
+  for (const auto& e : g_lookup[code])
+    if (const uint16_t v = e.load(std::memory_order_relaxed)) out[n++] = v;
+  return n;
 }
 
 // The Vehicle action that answers `alias`; Action::kCount when none.
@@ -357,13 +367,19 @@ void Load(std::string_view text) {
     if (text == g_last_text) return;
     g_last_text = std::string(text);
     g_set = set;
-    for (auto& v : g_lookup) v.store(0, std::memory_order_relaxed);
-    for (auto& v : g_vehicle_lookup) v.store(0, std::memory_order_relaxed);
+    for (auto* table : {&g_lookup, &g_vehicle_lookup})  // [acct2-main] up to kMaxActionsPerKey per key
+      for (auto& entries : *table)
+        for (auto& v : entries) v.store(0, std::memory_order_relaxed);
     for (int a = 0; a < kActionCount; ++a)
       for (int s = 0; s < kSlots; ++s)
-        if (const KeyCode k = set.key[a][s]; k != kNoKey && k < kKeyCodeCount)
-          (IsVehicleAction(static_cast<Action>(a)) ? g_vehicle_lookup : g_lookup)[k].store(
-              static_cast<uint16_t>((a + 1) | (s << 8)), std::memory_order_relaxed);
+        if (const KeyCode k = set.key[a][s]; k != kNoKey && k < kKeyCodeCount) {
+          auto& entries = (IsVehicleAction(static_cast<Action>(a)) ? g_vehicle_lookup : g_lookup)[k];
+          for (auto& v : entries)
+            if (!v.load(std::memory_order_relaxed)) {
+              v.store(static_cast<uint16_t>((a + 1) | (s << 8)), std::memory_order_relaxed);
+              break;
+            }
+        }
   }
   for (const auto& n : notes) REXLOG_WARN("cod3: key binds: {}", n);
   g_generation.fetch_add(1, std::memory_order_release);
@@ -562,11 +578,16 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   void OnMouseWheel(rex::ui::MouseEvent& e) override {
     if (e.scroll_y() == 0 || !Acting()) return;
     const KeyCode code = e.scroll_y() > 0 ? kWheelUp : kWheelDown;
-    const uint16_t v = KeyAction(code);
-    if (!v || !g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return;
-    // One tap per wheel event (a slot takes one press per poll, as a key does).
-    Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kTap, code});
-    e.set_handled(true);
+    uint16_t vs[kMaxActionsPerKey];
+    const int n = KeyActions(code, vs);  // [acct2-main] each of the wheel's actions
+    bool any = false;
+    for (int i = 0; i < n; ++i) {
+      if (!g_action_ok[(vs[i] & 0xFF) - 1].load(std::memory_order_relaxed)) continue;
+      // One tap per wheel event (a slot takes one press per poll, as a key does).
+      Push({uint8_t((vs[i] & 0xFF) - 1), uint8_t(vs[i] >> 8), Kind::kTap, code});
+      any = true;
+    }
+    if (any) e.set_handled(true);
   }
   void OnLostFocus(rex::ui::UISetupEvent&) override { ReleaseAll("the window lost focus"); }
 
@@ -584,21 +605,23 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
       release_gen_ = gen;
       if (!blocked)
         for (size_t code = 0; code < kKeyCodeCount; ++code)
-          if (const uint16_t v = pressed_[code]; v && Continuous(static_cast<Action>((v & 0xFF) - 1)))
-            Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kDown, uint16_t(code)});
+          for (const uint16_t v : pressed_[code])  // [acct2-main] each action of the key
+            if (v && Continuous(static_cast<Action>((v & 0xFF) - 1)))
+              Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kDown, uint16_t(code)});
     }
   }
 
   // [claude-9b] keep_menu_held: a game menu alone blocks the keys; the objectives / scores key stays held.
   void ReleaseAll(const char* why, bool keep_menu_held = false) {
     bool any = false;
-    for (size_t code = 0; code < kKeyCodeCount; ++code) {
-      if (!pressed_[code]) continue;
-      if (keep_menu_held && KeptThroughMenus((pressed_[code] & 0xFF) - 1)) continue;  // [claude-9b]
-      Push({uint8_t((pressed_[code] & 0xFF) - 1), uint8_t(pressed_[code] >> 8), Kind::kUp, uint16_t(code)});
-      pressed_[code] = 0;
-      any = true;
-    }
+    for (size_t code = 0; code < kKeyCodeCount; ++code)
+      for (uint16_t& v : pressed_[code]) {  // [acct2-main] each action of the key
+        if (!v) continue;
+        if (keep_menu_held && KeptThroughMenus((v & 0xFF) - 1)) continue;  // [claude-9b]
+        Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kUp, uint16_t(code)});
+        v = 0;
+        any = true;
+      }
     if (any && Debug()) REXLOG_INFO("cod3: binds: keys let go ({})", why);
   }
 
@@ -636,25 +659,34 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   }
 
   // True when the key is an action's (it is taken: nothing below sees it).
+  // [acct2-main] A key with several actions presses each of them.
   bool Down(KeyCode code, bool repeat) {
-    const uint16_t v = KeyAction(code);
-    if (pressed_[code]) return true;  // held since play: still the action's (repeats too)
-    if (!v || !Acting()) return false;
-    if (!g_action_ok[(v & 0xFF) - 1].load(std::memory_order_relaxed)) return false;
+    for (const uint16_t held : pressed_[code])
+      if (held) return true;  // held since play: still its actions' (repeats too)
+    uint16_t vs[kMaxActionsPerKey];
+    const int n = KeyActions(code, vs);
+    if (!n || !Acting()) return false;
+    int ok = 0;
+    for (int i = 0; i < n; ++i)
+      if (g_action_ok[(vs[i] & 0xFF) - 1].load(std::memory_order_relaxed)) vs[ok++] = vs[i];
+    if (!ok) return false;
     if (repeat) return true;
-    pressed_[code] = v;
-    Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kDown, code});
+    for (int i = 0; i < ok; ++i) {
+      pressed_[code][i] = vs[i];
+      Push({uint8_t((vs[i] & 0xFF) - 1), uint8_t(vs[i] >> 8), Kind::kDown, code});
+    }
     return true;
   }
 
   void Up(KeyCode code) {
-    const uint16_t v = pressed_[code];
-    if (!v) return;
-    pressed_[code] = 0;
-    Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kUp, code});
+    for (uint16_t& v : pressed_[code]) {
+      if (!v) continue;
+      Push({uint8_t((v & 0xFF) - 1), uint8_t(v >> 8), Kind::kUp, code});
+      v = 0;
+    }
   }
 
-  uint16_t pressed_[kKeyCodeCount] = {};  // the action each held key pressed
+  uint16_t pressed_[kKeyCodeCount][kMaxActionsPerKey] = {};  // the actions each held key pressed
   bool blocked_ = false;
   uint32_t release_gen_ = 0;              // the last g_release_gen seen
 };
@@ -1261,6 +1293,7 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
       if (slot.mode == Mode::kDirect) held |= 1u << def.alias;
   }
   g_alias_held.store(held, std::memory_order_relaxed);
+  padbinds::BeforePoll(ctx, base);  // [acct2-main] the controller's first actions into the bind tables
 }
 
 // cod3mp keeps the buttons of each local client apart and copies the client's
@@ -1471,6 +1504,7 @@ void AfterPadPoll(PPCContext& ctx, uint8_t* base) {
 #if !defined(COD3_MP)
   if (Debug()) WatchState(ctx, base, LocalClient(base));
 #endif
+  padbinds::AfterPoll(ctx, base);  // [acct2-main] the controller's second and third actions
 }
 
 }  // namespace
@@ -1579,7 +1613,23 @@ void OnUiFrame() {
 
 bool InPlay() { return g_in_play.load(std::memory_order_relaxed); }
 
+// [acct2-main] For game/keybinds/pad_binds.cpp (pad_binds.h).
+bool PlayerTakesPresses(PPCContext& ctx, uint8_t* base, uint32_t cl) {
+  const char* why = "";
+  return PollTakesPresses(ctx, base, cl, &why) && !InteractionRunning(base, cl);
+}
+
+uint32_t PadOfPlayer(uint8_t* base, uint32_t cl) {
+  return cod3::kMultiplayer ? ClientPad(base, cl) : uint32_t(ActivePad(base, cl));
+}
+
+void AsPlayer(uint8_t* base, uint32_t cl, const std::function<void()>& fn) {
+  PlayerButtons player(base, cl);  // cod3mp: that client's buttons and the active client
+  fn();
+}
+
 void ApplyToPad(uint8_t* base, uint32_t user, uint32_t state) {
+  padbinds::OnPadState(base, user, state);  // [acct2-main] the raw buttons, before the keys' go in
   const uint32_t buttons = g_inject_buttons.load(std::memory_order_acquire);
   const uint32_t triggers = g_inject_triggers.load(std::memory_order_relaxed);
   if ((!buttons && !triggers) || int32_t(user) != g_inject_user.load(std::memory_order_relaxed)) return;
@@ -1665,18 +1715,24 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
   const KeyCode key = ParseKey(name);
   if (key == kNoKey) return false;
   KbmSet set = CurrentSet();
-  int had_slot = 0, vehicle_slot = 0;
-  const Action had = Find(set, key, &had_slot);                         // on foot
-  const Action had_vehicle = Find(set, key, &vehicle_slot, /*vehicle=*/true);  // while driving
+  // [acct2-main] A key may have up to kMaxActionsPerKey actions.
+  KeyUse uses[kActionCount];
+  const int used = FindAll(set, key, uses, kActionCount);
   const std::string key_name = KeyName(key);
 
   if (bind && args.size() == 2) {  // "bind B": what it does
-    if (had == Action::kCount && had_vehicle == Action::kCount) return false;
+    if (!used) return false;
+    std::string on_foot, driving;
+    for (int i = 0; i < used; ++i) {
+      const ActionDef& d = Def(uses[i].action);
+      std::string& list = IsVehicleAction(uses[i].action) ? driving : on_foot;
+      list += std::string(list.empty() ? "" : ", ") +
+              (IsVehicleAction(uses[i].action) ? std::string(d.label)
+                                                 : "\"" + std::string(d.command) + "\" (" + d.label + ")");
+    }
     std::string text = "\"" + key_name + "\"";
-    if (had != Action::kCount)
-      text += " = \"" + std::string(Def(had).command) + "\" (keyboard and mouse: " + Def(had).label + ")";
-    if (had_vehicle != Action::kCount)
-      text += std::string(had != Action::kCount ? "; " : " ") + "while driving: " + Def(had_vehicle).label;
+    if (!on_foot.empty()) text += " = " + on_foot + " (keyboard and mouse)";
+    if (!driving.empty()) text += std::string(on_foot.empty() ? " " : "; ") + "while driving: " + driving;
     print(false, text + "\n");
     return true;
   }
@@ -1691,13 +1747,19 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
       print(true, "^1bind: " + key_name + " can't be bound (" + why + ")\n");
       return true;
     }
-    if ((IsVehicleAction(action) ? had_vehicle : had) == action) {
-      print(false, key_name + " is already " + Def(action).label + "\n");
-      return true;
-    }
+    for (int i = 0; i < used; ++i)
+      if (uses[i].action == action) {
+        print(false, key_name + " is already " + Def(action).label + "\n");
+        return true;
+      }
     // A free slot, else the second key is replaced.
     const int slot = set.key[int(action)][0] == kNoKey ? 0 : 1;
-    const std::string note = Assign(set, action, slot, key);
+    bool fits = true;
+    const std::string note = Assign(set, action, slot, key, &fits);
+    if (!fits) {  // [acct2-main] the key has kMaxActionsPerKey actions already
+      print(true, "^1bind: " + note + " (unbind " + key_name + " clears them all)\n");
+      return true;
+    }
     Store(set);
     *changed = true;
     std::string text = key_name + " = " + Def(action).label + " (keyboard and mouse; saved)";
@@ -1708,18 +1770,14 @@ bool HandleConsoleCommand(const std::vector<std::string>& args, cheats::Source s
     REXLOG_INFO("cod3: key binds: {} from the console", text);
     return true;
   }
-  if (had == Action::kCount && had_vehicle == Action::kCount) return false;
+  if (!used) return false;
   // unbind B, or B bound to a command that isn't one of the actions: B leaves
-  // its actions, on foot and while driving (the game's own bind of the key
-  // does nothing: its keyboard keys never reach the game).
+  // every action it has, on foot and while driving (the game's own bind of
+  // the key does nothing: its keyboard keys never reach the game).
   std::string left;
-  if (had != Action::kCount) {
-    Assign(set, had, had_slot, kNoKey);
-    left = Def(had).label;
-  }
-  if (had_vehicle != Action::kCount) {
-    Assign(set, had_vehicle, vehicle_slot, kNoKey);
-    left += std::string(left.empty() ? "" : " or ") + Def(had_vehicle).label;
+  for (int i = 0; i < used; ++i) {  // [acct2-main] all of them
+    Assign(set, uses[i].action, uses[i].slot, kNoKey);
+    left += std::string(left.empty() ? "" : i + 1 == used ? " or " : ", ") + Def(uses[i].action).label;
   }
   Store(set);
   *changed = true;

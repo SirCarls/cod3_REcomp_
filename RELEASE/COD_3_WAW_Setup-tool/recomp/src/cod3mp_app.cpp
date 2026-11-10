@@ -61,6 +61,7 @@
 #include "game/button_prompts.h"  // [mp-menus]
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
+#include "game/ngl_side.h"  // [acct2-bro] cod3_native_vulkan
 #include "game/screenshot.h"
 #include "game/text_language.h"  // [acct2-ocr]
 #include "ui/text_overlay.h"  // [acct2-ocr]
@@ -335,6 +336,9 @@ void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
     config.gpu_plugin = "xenos";
   }
   if (config.gpu_plugin.empty()) config.gpu_plugin = "xenos";
+  // [acct2-bro] cod3_native_vulkan: the GPU emulation off, the game drawn by the native Vulkan renderer (ngl_vk;
+  // game/ngl_side.h). Before the choices below, which leave the graphics alone once it has started them.
+  cod3::ngl_side::StartNativeVulkan(config);
   // [rust-renderer] cod3_renderer rust: the plugin's host backend, no GPU emulation (render/rust_renderer.h).
   cod3::render::StartHostBackend(config);
 #ifdef _WIN32

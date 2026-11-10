@@ -1,0 +1,64 @@
+[acct2-cod4] SDK 0315, 2026-11-07 (coordinator 22:05: "Yes, write 0315 yourself"; posted on the board first).
+What it does: a plain UDP socket's recvfrom takes the VDP header off an out-of-band datagram that a VDP socket
+sent. On a PC every VDP datagram is plain UDP (0025), so one from a VDP socket can reach a plain UDP socket, which a
+360 never lets happen, and that socket's reader takes the 2-byte game data length for the start of the packet.
+Call of Duty 4's system link: the host answers the game browser's query (port 1001, plain UDP) from its port 1000
+VDP socket, and the browser read the "infoResponse" as a sequenced packet ("127.0.0.1:1000: Got msg sequence
+21233663 but connstate (0) is < CA_CONNECTED"; 0x0143FFFF = 21233663), so it listed no game. Only a datagram that
+is exactly a 2-byte length equal to what follows, then FF FF FF FF (an out-of-band packet), loses the two bytes;
+nothing else changes, and VDP sockets are untouched. The first one per socket is logged. No new setting.
+To test: Call of Duty 4 multiplayer, two copies on one PC joining by the game's menus (dev/agents/acct2-cod4/NOTES.md).
+
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -762,6 +762,33 @@
+   return game_data_length <= length - 2;
+ }
+ 
++// [acct2-cod4] 0315: on a PC every VDP datagram travels as plain UDP, so one that a VDP socket sent can reach a
++// plain UDP socket, which a 360 never lets happen, and that socket's reader takes the VDP header (the 2-byte game
++// data length) for the start of the packet. Call of Duty 4's system link: the host answers the game browser's
++// query from its VDP socket, and the browser read the "infoResponse" as a sequenced packet ("Got msg sequence ...
++// but connstate (0) is < CA_CONNECTED"). Only an out-of-band datagram is treated: exactly a 2-byte length equal to
++// what follows it, then FF FF FF FF; it reaches a plain UDP socket without the header.
++bool VdpHeaderOnOutOfBand(const uint8_t* data, uint32_t length) {
++  if (!data || length < 6) {
++    return false;
++  }
++  return memory::load_and_swap<uint16_t>(data) == length - 2 && data[2] == 0xFF && data[3] == 0xFF &&
++         data[4] == 0xFF && data[5] == 0xFF;
++}
++
++// [acct2-cod4] 0315: logs the first header taken off for each socket.
++void NoteVdpHeaderTakenOff(uint32_t socket_handle, uint32_t port) {
++  static std::mutex mutex;
++  static std::set<uint32_t> noted;
++  std::lock_guard<std::mutex> lock(mutex);
++  if (noted.insert(socket_handle).second) {
++    REXKRNL_INFO(
++        "XNet: socket {:08X} (port {}): an out-of-band datagram from a VDP socket reached this plain UDP socket; "
++        "its VDP header is taken off (logged once per socket)",
++        socket_handle, port);
++  }
++}
++
+ // sendto for datagram sockets: checks the destination and the VDP header.
+ // Returns the bytes sent, or -1 with the guest's last error set.
+ int SendDatagram(XSocket* socket, const uint8_t* data, uint32_t length, uint32_t flags,
+@@ -2060,6 +2087,15 @@
+       }
+       continue;
+     }
++    // [acct2-cod4] 0315: an out-of-band datagram from a VDP socket loses its VDP header on a plain UDP socket.
++    if (datagram && !socket->is_vdp() && ret >= 6) {
++      const uint32_t length = full_len ? full_len : static_cast<uint32_t>(ret);
++      if (length == static_cast<uint32_t>(ret) && VdpHeaderOnOutOfBand(buf, length)) {
++        std::memmove(buf, buf + 2, length - 2);
++        ret -= 2;
++        NoteVdpHeaderTakenOff(socket_handle, static_cast<uint32_t>(socket->bound_port()));
++      }
++    }
+     WriteGuestSockaddr(from_ptr, fromlen_ptr, from);
+     if (ret < 0) {
+       SetError(error);

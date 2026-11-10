@@ -1,0 +1,230 @@
+address	name	group	stack_bytes	register_args	returns	stand_in_return	params	size	problems
+000634D0	nglSaveScreenshot	debug	0		void	zero	int param_1	73	
+00064660	nglResetDeviceBindings	frame	0		void	zero	void	43	
+00064EC0	nglEndFrame	frame	0		void	zero	void	1201	
+00064690	nglBeginFrame	frame	0	edx	void	ngl_scene_begin_frame()	void	231	ret from tail-called 0x00066ED0
+00064650	nglGetScreenHeight	frame	0		undefined4	480	void	6	
+00064640	nglGetScreenWidth	frame	0		undefined4	640	void	6	
+000778B0	nglSetFrameMemorySize	frame	0		void	zero	undefined4 param_1, uint param_2, char param_3	526	
+00064570	nglShutdown	frame	0		void	zero	void	1	
+0005E670	nglSetEndFrameCallback	frame	0		void	zero	undefined4 param_1, undefined4 param_2	20	
+00075ED0	nglInitRenderStates	frame	0	ecx	void	zero	byte * param_1	376	ret from tail-called 0x00075780
+000649E0	nglSelectVideoMode	frame	0		void	zero	void * this, int param_1, uint param_2	456	
+00064BC0	nglInit	frame	0		void	ngl_scene_init()	void	767	
+0005E650	nglSetPreSwapCallback	frame	0		void	zero	undefined4 param_1, undefined4 param_2	20	
+000760C0	nglSetVertexShaderCached	material	0		void	zero	undefined4 * param_1	89	
+000760A0	nglSetPixelShaderProgramCached	material	0		void	zero	int * param_1	32	
+000761F0	nglVertexShader_Init	material	0		void	zero	undefined4 * param_1, undefined4 param_2, undefined4 param_3	18	
+00076210	nglPixelShader_Init	material	0		void	zero	undefined4 * param_1, undefined4 param_2	11	
+00075AC0	nglSetBlendMode	material	12	ecx	void	zero	void * this, int param_1, int param_2, int param_3	684	
+00076470	nglInitShaderConstants	material	0		void	zero	char param_1	331	
+00046870	cdDebug_InitMaterial	material	0	ecx	void	zero	undefined4 * param_1	28	
+00045640	nglAdvanceShaderTime	material	0		void	(ngl_frame_clock_advance_shader_time(MEM32(g_esp + 4), MEM32(g_esp + 8)), 0)	undefined4 * param_1, float param_2	68	
+00047200	ShaderPCUV_InitMaterial	material	12	ecx	void	zero	void * this, undefined4 param_1, undefined4 param_2, undefined4 param_3	35	
+00045F40	nglToggleShaderByName	material	0		void	zero	char * param_1	935	
+00046560	cdSimpleInstance_AddListToScene	material	0	ecx	void	native ngl_mesh_add_instance_list	float * param_1	288	
+00093B90	nglFreeFileBuffer	memory	0		void	zero	uint * param_1	66	
+00093A50	nglReadFile	memory	0		undefined4	zero	char * param_1, undefined4 * param_2, size_t param_3, uint param_4	310	
+00063520	nglAddRef	memory	0		void	zero	int * param_1	7	
+00068850	nglListAddMesh	mesh	0		undefined4	one	float param_1, float * param_2, uint * param_3, float * param_4	1812	
+00066960	nglVertexBuffer_Unlock	mesh	0		void	zero	void	1	
+0007A400	nglIndexBuffer_Lock	mesh	8	ecx	int	scratch	void * this, uint param_1	13	
+0007A410	nglIndexBuffer_Unlock	mesh	0		void	zero	void	1	
+0007A3D0	nglIndexBuffer_Free	mesh	0	ecx	void	zero	uint * param_1	22	
+00066940	nglLockVertexBuffer	mesh	8	ecx	int	scratch	void * this, int param_1	18	
+00066760	nglSkipList_InitHead	mesh	0	ecx	void	zero	int param_1	53	
+00064040	nglSkipList_RandomLevel	mesh	0	ecx	int	zero	uint * param_1	61	
+0006BF70	nglFlushDebugLineBatch	mesh	0		void	zero	void	133	
+0007A3A0	nglIndexBuffer_Alloc	mesh	4	ecx	bool	one	void * this, size_t param_1	31	
+00066850	nglCreateVertexBuffer	mesh	8	ecx	uint	block	void * this, size_t param_1	115	
+000669E0	nglVertexBuffer_Destroy	mesh	0	ecx	void	zero	uint * param_1	44	
+00066DA0	nglMeshBuilder_Begin	mesh	0		void	zero	uint param_1, uint param_2, int param_3, undefined4 * param_4	291	
+0001D280	nglMeshBuilder_AddStrip	mesh	0		void	zero	uint param_1, uint param_2	181	
+00067250	nglMeshBuilder_End	mesh	0		int	zero	void	222	
+00062A10	nglListAddCustomNode	mesh	0		void	zero	int param_1, int param_2, int * param_3	82	
+0007A420	nglIndexBuffer_Write	mesh	12	ecx	void	zero	void * this, undefined4 * param_1, uint param_2, uint param_3	41	
+0007A4C0	nglMeshSection_FreeBuffers	mesh	0		void	zero	int param_1	75	
+000669A0	nglVertexBuffer_Free	mesh	4	ecx	void	zero	void * this, int param_1	63	
+00078890	nglDrawMeshSection	mesh	0		void	zero	int param_1	83	
+0001F0B0	nglVertexWriter_Init	mesh	0		void	zero	void	49	
+0005E270	nglListAddQuad	quad	0		void	zero	undefined4 * param_1	209	
+0009D5B0	nglQuadBatch_SetMaterial	quad	0		void	(ngl_quad_batch_set_material(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16)), 0)	int param_1, undefined4 param_2, byte param_3, int param_4	628	
+0009D200	nglQuadBatch_Reserve	quad	0		undefined4	ngl_quad_batch_reserve(MEM32(g_esp + 4))	int param_1	64	
+0009D240	nglQuadBatch_Draw	quad	0		void	(ngl_quad_batch_draw(), 0)	void	173	
+00065F00	nglGetTextExtent	text	0		void	(ngl_text_extent(g_esp + 4), 0)	int param_1, byte * param_2, undefined4 * param_3, undefined4 * param_4, float param_5, float param_6	663	
+000661C0	nglListAddText	text	0		void	(ngl_text_add(MEM32(g_esp + 4), MEM32(g_esp + 8), g_esp + 12), 0)	int param_1, char * param_2, undefined4 param_3, undefined4 param_4, undefined4 param_5, undefined4 param_6, undefined4 param_7, undefined4 param_8	244	
+00066490	nglListAddTextf	text	0		void	(ngl_text_addf(g_esp + 4), 0)	int param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4, undefined4 param_5, undefined4 param_6, undefined4 param_7, char * param_8	102	
+000662C0	nglGetTextExtentf	text	0		void	(ngl_text_extentf(g_esp + 4), 0)	int param_1, undefined4 * param_2, undefined4 * param_3, char * param_4	80	
+00066310	nglGetTextSizef	text	0		void	(ngl_text_sizef(g_esp + 4), 0)	int param_1, undefined4 * param_2, undefined4 * param_3, float param_4, float param_5, char * param_6	86	
+000659F0	nglReleaseFont	text	0		void	zero	undefined4 param_1	21	
+000658F0	nglLoadFont	text	0		undefined4 *	(ngl_font_load(MEM32(g_esp + 4), MEM32(g_esp + 8)) ?: ngl_stand_in_block(NGL_NGLLOADFONT))	undefined4 * param_1	77	
+000658C0	nglFindFontAddRef	text	0		void	ngl_font_find(MEM32(g_esp + 4))	undefined4 param_1	40	
+00063630	nglReleaseTexture	texture	0		void	zero	undefined4 param_1	21	
+000635A0	nglLoadTexture	texture	0		int *	ngl_texture_load(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	undefined4 * param_1, uint * param_2, uint param_3	94	
+0006A760	nglSetTexture	texture	0		void	zero	int param_1, int param_2, byte param_3, undefined4 param_4	179	
+0006A6C0	nglUnbindTextures	texture	0		void	zero	void	158	
+00063530	nglFindTexture	texture	0		void	ngl_texture_lookup(MEM32(g_esp + 4))	undefined4 param_1	17	
+00063570	nglFindTextureAddRef	texture	0		int *	ngl_texture_lookup(MEM32(g_esp + 4))	undefined4 param_1	39	
+0023EC30	RE_RegisterShader	texture	0	ecx,edx	int	ngl_texture_register_shader(g_edx)	undefined4 param_1, char * param_2	367	
+000633B0	nglSetTextureManager	texture	0		void	zero	undefined4 param_1	10	
+0006AAE0	nglGetBackBufferTexture	texture	0		undefined4 *	ngl_back_buffer_texture()	void	36	
+00078810	nglSetRenderTargetCached	texture	0		void	zero	int param_1, int param_2, int param_3, int param_4	123	
+0006ECE0	nglFreeTexture	texture	0		void	zero	uint param_1	338	
+0006EEA0	nglCreateTexture	texture	0		undefined4 *	block	uint param_1, undefined4 param_2, undefined4 param_3, int param_4, int param_5	469	
+0006AAB0	nglGetFrontBufferTexture	texture	0		undefined4 *	block	void	36	
+0006B070	nglLoadDDS	texture	0		uint	zero	undefined4 * param_1, int * param_2	1151	
+0006A340	nglTextureGetSurfaces	texture	0	ecx	void	zero	int param_1	198	
+00079020	nglParseDDSPalette	texture	0		uint	zero	undefined4 param_1, int param_2	205	
+00073A70	nglSetRenderTarget	texture	0		void	ngl_set_render_target(MEM32(g_esp + 4))	undefined4 param_1	29	
+00072B10	nglAllocFogTextures	texture	0		void	zero	void	81	
+00063650	nglLoadAnimatedTextureList	texture	0		uint	zero	int param_1, char * param_2, int param_3	541	
+0007B130	nglFreePalette	texture	0		void	zero	uint * param_1	74	
+0006A820	nglTexture_Lock	texture	0		undefined4	one	int param_1, uint param_2	59	
+0006A860	nglTexture_Unlock	texture	0		void	zero	void	1	
+0005E3F0	nglSceneAddRenderTarget	texture	0		void	zero	int param_1	63	
+000633C0	nglGetTextureManager	texture	0		undefined4	block	void	6	
+003C63A1	DSOUND__IDirectSound_Release	directsound	4		undefined	zero	int param_1	22	
+003C63CD	DSOUND__DirectSoundUseFullHRTF	directsound	0		undefined	zero	void	31	
+003C6436	DSOUND__XAudioCreatePcmFormat	directsound	16		undefined	bro_media_pcm_format(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	ushort param_1, int param_2, ushort param_3, undefined2 * param_4	5	ret from tail-called 0x003C97B4
+003C643B	DSOUND__XAudioCreateAdpcmFormat	directsound	12		undefined	bro_media_adpcm_format(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	short param_1, uint param_2, undefined2 * param_3	5	ret from tail-called 0x003C97FE
+003C7636	DSOUND__IDirectSound_DownloadEffectsImage	directsound	20		undefined	zero	int param_1, int param_2, int param_3, undefined4 * param_4, undefined4 * param_5	39	
+003C765D	DSOUND__IDirectSound_SetEffectData	directsound	24		undefined	zero	int param_1, uint param_2, int param_3, undefined4 * param_4, uint param_5, byte param_6	42	
+003C7687	DSOUND__IDirectSound_EnableHeadphones	directsound	8		undefined	zero	int param_1, int param_2	28	
+003C76A3	DSOUND__IDirectSound_SetMixBinHeadroom	directsound	12		undefined	zero	int param_1, int param_2, undefined1 param_3	32	
+003C76C3	DSOUND__IDirectSound_SynchPlayback	directsound	4		undefined	zero	int param_1	24	
+003C76DB	DSOUND__IDirectSoundBuffer_SetVolume	directsound	8		undefined	bro_sound_buffer_set_volume(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	28	
+003C76F7	DSOUND__IDirectSoundBuffer_SetEG	directsound	8		undefined	zero	int param_1, int * param_2	28	
+003C7713	DSOUND__IDirectSoundBuffer_SetHeadroom	directsound	8		undefined	bro_sound_buffer_set_headroom(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	28	
+003C772F	DSOUND__IDirectSoundBuffer_Play	directsound	16		undefined	bro_sound_buffer_play(MEM32(g_esp + 4), MEM32(g_esp + 16))	int param_1, undefined4 param_2, undefined4 param_3, uint param_4	36	
+003C7753	DSOUND__IDirectSoundBuffer_PlayEx	directsound	16		undefined	bro_sound_buffer_play(MEM32(g_esp + 4), MEM32(g_esp + 16))	int param_1, int param_2, int param_3, uint param_4	36	
+003C7777	DSOUND__IDirectSoundBuffer_Stop	directsound	4		undefined	bro_sound_buffer_stop(MEM32(g_esp + 4), 0)	int param_1	24	
+003C778F	DSOUND__IDirectSoundBuffer_StopEx	directsound	16		undefined	bro_sound_buffer_stop(MEM32(g_esp + 4), MEM32(g_esp + 16))	int param_1, int param_2, int param_3, undefined4 param_4	36	
+003C77B3	DSOUND__IDirectSoundBuffer_Pause	directsound	8		undefined	bro_sound_buffer_pause(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	28	
+003C77CF	DSOUND__IDirectSoundBuffer_SetLoopRegion	directsound	12		undefined	bro_sound_buffer_set_loop_region(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	int param_1, int param_2, int param_3	32	
+003C77EF	DSOUND__IDirectSoundBuffer_GetStatus	directsound	8		undefined	bro_sound_buffer_get_status(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, uint * param_2	28	
+003C780B	DSOUND__IDirectSoundBuffer_SetCurrentPosition	directsound	8		undefined	bro_sound_buffer_set_position(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, uint param_2	28	
+003C7827	DSOUND__IDirectSoundStream_SetVolume	directsound	8		undefined4	bro_media_stream_volume(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	5	ret from tail-called 0x003C74EE
+003C782C	DSOUND__IDirectSoundStream_SetEG	directsound	8		undefined4	zero	int param_1, int * param_2	5	ret from tail-called 0x003C7540
+003C7831	DSOUND__IDirectSoundStream_SetHeadroom	directsound	8		undefined4	bro_media_stream_headroom(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	5	ret from tail-called 0x003C7592
+003C7836	DSOUND__IDirectSoundStream_SetMixBinVolumes_8	directsound	8		undefined4	zero	int param_1, uint * param_2	5	ret from tail-called 0x003C75E4
+003C783B	DSOUND__IDirectSoundStream_Pause	directsound	8		undefined4	zero	int param_1, int param_2	5	ret from tail-called 0x003C6FED
+003C7840	DSOUND__IDirectSoundStream_FlushEx	directsound	16		undefined	bro_media_stream_flush(MEM32(g_esp + 4))	int param_1, int param_2, int param_3, int param_4	24	
+003C7858	DSOUND__DirectSoundDoWork	directsound	0		undefined	bro_media_pump()	void	41	
+003C7881	DSOUND__XAudioDownloadEffectsImage	directsound	16		uint	zero	undefined * param_1, undefined4 * param_2, byte param_3, undefined4 * param_4	514	
+003C7A83	DSOUND__XFileCreateMediaObjectAsync	directsound	12		int	bro_media_create(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	undefined4 param_1, int param_2, undefined4 * param_3	96	
+003C8399	DSOUND__IDirectSoundBuffer_SetFrequency	directsound	8		undefined	bro_sound_buffer_set_frequency(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2	28	
+003C83B5	DSOUND__IDirectSoundBuffer_SetMixBins	directsound	8		undefined	bro_sound_buffer_set_mix_bins(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, uint * param_2	28	
+003C83D1	DSOUND__IDirectSoundBuffer_SetAllParameters	directsound	12		undefined	bro_sound_buffer_set_3d(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, int param_2, byte param_3	32	
+003C83F1	DSOUND__IDirectSoundBuffer_SetMode	directsound	12		undefined	bro_sound_buffer_set_mode(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, undefined4 param_2, byte param_3	32	
+003C8411	DSOUND__IDirectSoundBuffer_SetRolloffCurve	directsound	16		undefined	zero	int param_1, undefined4 param_2, undefined4 param_3, byte param_4	36	
+003C8435	DSOUND__IDirectSoundBuffer_SetPlayRegion	directsound	12		undefined	bro_sound_buffer_set_play_region(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	int param_1, int param_2, int param_3	32	
+003C8455	DSOUND__IDirectSoundStream_SetFrequency	directsound	8		undefined4	zero	int param_1, int param_2	5	ret from tail-called 0x003C81EF
+003C845A	DSOUND__IDirectSoundStream_SetMixBins	directsound	8		undefined4	zero	int param_1, uint * param_2	5	ret from tail-called 0x003C8241
+003C845F	DSOUND__IDirectSoundStream_SetAllParameters	directsound	12		undefined4	zero	int param_1, int param_2, byte param_3	5	ret from tail-called 0x003C8293
+003C8464	DSOUND__IDirectSoundStream_SetMode	directsound	12		undefined4	zero	int param_1, undefined4 param_2, byte param_3	5	ret from tail-called 0x003C82E9
+003C8469	DSOUND__IDirectSoundStream_SetRolloffCurve	directsound	16		undefined4	zero	int param_1, undefined4 param_2, undefined4 param_3, byte param_4	5	ret from tail-called 0x003C833F
+003C8A8D	DSOUND__IDirectSoundBuffer_SetFormat	directsound	8		undefined	bro_sound_buffer_set_format(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, short * param_2	28	
+003C8AA9	DSOUND__IDirectSoundBuffer_SetBufferData	directsound	12		undefined	bro_sound_buffer_set_data(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	int param_1, int param_2, uint param_3	32	
+003C8AC9	DSOUND__IDirectSoundStream_SetFormat	directsound	8		undefined4	bro_media_stream_set_format(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, short * param_2	5	ret from tail-called 0x003C8A3B
+003C8F89	DSOUND__IDirectSound_CommitDeferredSettings	directsound	4		undefined	zero	int param_1	24	
+003C92BB	DSOUND__IDirectSound_CreateSoundBuffer	directsound	16		undefined	bro_sound_create_buffer(MEM32(g_esp + 8), MEM32(g_esp + 12))	int param_1, int param_2, uint * param_3	36	
+003C92DF	DSOUND__IDirectSound_SetDistanceFactor	directsound	12	ecx	undefined	zero	int param_1, undefined4 param_2, byte param_3	36	
+003C9303	DSOUND__IDirectSound_SetOrientation	directsound	32		undefined	(bro_sound_listener_orientation(MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16), MEM32(g_esp + 20), MEM32(g_esp + 24), MEM32(g_esp + 28)), 0)	int param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4, undefined4 param_5, undefined4 param_6, undefined4 param_7, byte param_8	74	
+003C934D	DSOUND__IDirectSound_SetPosition	directsound	20		undefined	(bro_sound_listener_position(MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16)), 0)	int param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4, byte param_5	53	
+003C9382	DSOUND__IDirectSound_SetVelocity	directsound	20		undefined	zero	int param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4, byte param_5	53	
+003C955D	DSOUND__DirectSoundCreate	directsound	12	ecx	int	zero	undefined4 param_1, uint * param_2	71	
+003C95A4	DSOUND__DirectSoundCreateBuffer	directsound	8	ecx	int	bro_sound_create_buffer(MEM32(g_esp + 4), MEM32(g_esp + 8))	int param_1, uint * param_2	87	
+003C95FB	DSOUND__DirectSoundCreateStream	directsound	8	ecx	int	bro_media_create_stream(MEM32(g_esp + 4), MEM32(g_esp + 8))	uint * param_1, undefined4 * param_2	87	
+003E4EC0	FUN_003e4ec0	direct3d	0		uint	zero	void	84	
+003E50B0	D3D8LTCG__D3DDevice_GetDisplayMode	direct3d	4		undefined	zero	int * param_1	255	
+003E51B0	D3D8LTCG__D3DDevice_GetCreationParameters	direct3d	4		undefined	zero	undefined4 * param_1	62	
+003E52B0	D3D8LTCG__D3DDevice_SetRenderTarget	direct3d	8		undefined	zero	uint * param_1, uint * param_2	768	
+003E5B30	D3D8LTCG__D3DDevice_GetRenderTarget2	direct3d	0		uint *	block	void	54	
+003E5B70	D3D8LTCG__D3DDevice_GetDepthStencilSurface2	direct3d	0		uint *	block	void	57	
+003E5CC0	D3D8LTCG__D3DDevice_SetViewport	direct3d	4		undefined	zero	uint * param_1	533	
+003E5EE0	D3D8LTCG__D3DDevice_GetViewport	direct3d	4		undefined	zero	undefined4 * param_1	51	
+003E5F20	FUN_003e5f20	direct3d	4		undefined4	zero	int param_1	66	
+003E5F70	D3D8LTCG__D3DDevice_SetTexture	direct3d	8		undefined	zero	int param_1, int * param_2	436	
+003E6220	D3D8LTCG__D3DDevice_GetDisplayFieldStatus	direct3d	4		undefined	zero	int * param_1	60	
+003E6350	D3D8LTCG__D3DDevice_SetScissors	direct3d	12		undefined	zero	int param_1, int param_2, int * param_3	745	
+003E6640	D3D8LTCG__D3DDevice_GetScissors	direct3d	12		undefined	zero	undefined4 * param_1, undefined4 * param_2, undefined4 * param_3	81	
+003E6720	D3D8LTCG__D3DDevice_PersistDisplay	direct3d	0	ecx	undefined4	zero	void	395	
+003E6900	D3D8LTCG__D3DDevice_SetScreenSpaceOffset	direct3d	8		undefined	zero	float param_1, float param_2	76	
+003E6950	FUN_003e6950	direct3d	8		undefined	zero	float * param_1, float * param_2	44	
+003E7050	D3D8LTCG__D3DDevice_SetShaderConstantMode	direct3d	4		undefined	zero	uint param_1	287	
+003E7170	D3D8LTCG__D3DDevice_GetShaderConstantMode	direct3d	4		undefined	zero	undefined4 * param_1	20	
+003E72B0	D3D8LTCG__D3DDevice_SetVertexShader	direct3d	4	ecx	undefined	zero	uint param_1	362	
+003E7420	D3D8LTCG__D3DDevice_GetVertexShader	direct3d	4		undefined	zero	undefined4 * param_1	20	
+003E7440	D3D8LTCG__D3DDevice_SetVertexShaderConstant1Fast	direct3d	0		undefined	zero	undefined4 param_1, undefined4 * param_2	73	
+003E7490	D3D8LTCG__D3DDevice_SetVertexShaderConstantNotInlineFast	direct3d	4	edx	undefined	zero	uint param_1, uint * param_2, uint param_3	208	
+003E7570	D3D8LTCG__D3DDevice_SetVertexShaderConstantNotInline	direct3d	4	ecx	undefined	zero	uint param_1, uint * param_2, uint param_3	49	
+003E75B0	D3D8LTCG__D3DDevice_GetVertexShaderConstant	direct3d	12		undefined	zero	int param_1, undefined4 * param_2, int param_3	45	
+003E7620	D3D8LTCG__D3DDevice_SetVertexShaderInput	direct3d	12		undefined	zero	int param_1, int param_2, undefined4 * param_3	435	
+003E7820	D3D8LTCG__D3DDevice_SetPixelShader	direct3d	4	ecx	undefined	zero	uint param_1	513	
+003E7A30	D3D8LTCG__D3DDevice_GetPixelShader	direct3d	4		undefined	zero	undefined4 * param_1	20	
+003E7D30	FUN_003e7d30	direct3d	8		undefined	zero	int param_1, undefined4 * param_2	25	
+003E7EB0	D3D8LTCG__D3DResource_AddRef	direct3d	4		uint	zero	uint * param_1	55	
+003E7EF0	D3D8LTCG__D3DResource_Release	direct3d	4		uint	zero	uint * param_1	77	
+003E7F40	D3D8LTCG__D3DResource_GetType	direct3d	4		char	zero	uint * param_1	138	
+003E7FD0	D3D8LTCG__D3DResource_Register	direct3d	8		undefined	zero	uint * param_1, int param_2	40	
+003E8010	D3D8LTCG__D3DDevice_SetRenderState_EdgeAntiAlias	direct3d	4		undefined	zero	undefined4 param_1	59	
+003E8050	D3D8LTCG__D3DDevice_SetRenderState_ShadowFunc	direct3d	4		undefined	zero	int param_1	62	
+003E8090	D3D8LTCG__D3DDevice_SetRenderState_FogColor	direct3d	4		undefined	zero	uint param_1	86	
+003E80F0	D3D8LTCG__D3DDevice_SetRenderState_CullMode	direct3d	4		undefined	zero	int param_1	113	
+003E8170	D3D8LTCG__D3DDevice_SetRenderState_FrontFace	direct3d	4		undefined	zero	undefined4 param_1	67	ret from tail-called 0x003E80F0
+003E81C0	D3D8LTCG__D3DDevice_SetRenderState_NormalizeNormals	direct3d	4		undefined	zero	undefined4 param_1	66	
+003E8210	D3D8LTCG__D3DDevice_SetRenderState_ZEnable	direct3d	4		undefined	zero	int param_1	156	
+003E82B0	D3D8LTCG__D3DDevice_SetRenderState_StencilEnable	direct3d	4		undefined	zero	int param_1	161	
+003E8360	D3D8LTCG__D3DDevice_SetRenderState_StencilFail	direct3d	4		undefined	zero	int param_1	120	
+003E83E0	D3D8LTCG__D3DDevice_SetRenderState_TextureFactor	direct3d	4		undefined	zero	undefined4 param_1	89	
+003E8440	D3D8LTCG__D3DDevice_SetRenderState_LineWidth	direct3d	4	ecx	undefined	zero	float param_1	110	
+003E84B0	D3D8LTCG__D3DDevice_SetRenderState_Dxt1NoiseEnable	direct3d	4		undefined	zero	uint param_1	128	
+003E8530	D3D8LTCG__D3DDevice_SetRenderState_YuvEnable	direct3d	4		undefined	zero	void * this, undefined4 param_1	51	
+003E8570	D3D8LTCG__D3DDevice_SetRenderState_OcclusionCullEnable	direct3d	4		undefined	zero	int param_1	107	
+003E85E0	D3D8LTCG__D3DDevice_SetRenderState_StencilCullEnable	direct3d	4		undefined	zero	int param_1	107	
+003E8650	D3D8LTCG__D3DDevice_SetRenderState_RopZCmpAlwaysRead	direct3d	4		undefined	zero	undefined4 param_1	17	
+003E8670	D3D8LTCG__D3DDevice_SetRenderState_RopZRead	direct3d	4		undefined	zero	undefined4 param_1	17	
+003E8690	D3D8LTCG__D3DDevice_SetRenderState_DoNotCullUncompressed	direct3d	4		undefined	zero	undefined4 param_1	17	
+003E86B0	D3D8LTCG__D3DDevice_SetRenderState_ZBias	direct3d	4	ecx	undefined	zero	int param_1	168	
+003E8760	D3D8LTCG__D3DDevice_SetRenderState_MultiSampleMode	direct3d	4		undefined	zero	undefined4 param_1	45	
+003E8790	D3D8LTCG__D3DDevice_SetRenderState_MultiSampleRenderTargetMode	direct3d	4		undefined	zero	undefined4 param_1	45	
+003E87C0	D3D8LTCG__D3DDevice_SetRenderState_MultiSampleAntiAlias	direct3d	4		undefined	zero	undefined4 param_1	62	
+003E8800	D3D8LTCG__D3DDevice_SetRenderState_MultiSampleMask	direct3d	4		undefined	zero	undefined4 param_1	25	
+003E8820	D3D8LTCG__D3DDevice_SetRenderState_SampleAlpha	direct3d	4		undefined	zero	undefined4 param_1	25	
+003E8840	D3D8LTCG__D3DDevice_SetRenderState_LogicOp	direct3d	4		undefined	zero	int param_1	91	
+003E88A0	D3D8LTCG__D3DDevice_SetRenderState_FillMode	direct3d	4		undefined	zero	undefined4 param_1	77	
+003E88F0	D3D8LTCG__D3DDevice_SetRenderState_BackFillMode	direct3d	4		undefined	zero	undefined4 param_1	24	ret from tail-called 0x003E88A0
+003E8910	D3D8LTCG__D3DDevice_SetRenderState_TwoSidedLighting	direct3d	4		undefined	zero	int param_1	81	ret from tail-called 0x003E88A0
+003E8970	D3D8LTCG__D3DDevice_SetRenderState_VertexBlend	direct3d	4		undefined	zero	undefined4 param_1	74	
+003E89C0	D3D8LTCG__D3DDevice_SetRenderState_PSTextureModes	direct3d	4		undefined	zero	undefined4 param_1	34	
+003E89F0	D3D8LTCG__D3DDevice_SetRenderState_Simple	direct3d	0		undefined	zero	undefined4 param_1, undefined4 param_2	39	
+003E8A20	D3D8LTCG__D3DDevice_SetTextureState_TexCoordIndex	direct3d	8		undefined	zero	uint param_1, uint param_2	270	
+003E8B30	D3D8LTCG__D3DDevice_SetTextureState_BumpEnv	direct3d	12		undefined	zero	uint param_1, int param_2, int param_3	108	
+003E8BA0	D3D8LTCG__D3DDevice_SetTextureState_BorderColor	direct3d	8		undefined	zero	int param_1, int param_2	70	
+003E8BF0	D3D8LTCG__D3DDevice_SetTextureState_ColorKeyColor	direct3d	8		undefined	zero	int param_1, int param_2	66	
+003E9710	D3D8LTCG__D3DDevice_DrawVerticesUP	direct3d	16		undefined	zero	int * param_1, uint param_2, int param_3, uint param_4	418	
+003EACD0	FUN_003eacd0	direct3d	12		undefined	zero	uint * param_1, int * param_2, undefined4 param_3	183	
+003EB530	D3D8LTCG__D3D_BlockOnTime_4	direct3d	4	eax	undefined	zero	uint param_1	358	
+003EB6A0	D3D8LTCG__D3D_MakeRequestedSpace_8	direct3d	8	ecx	uint	zero	int param_1, uint param_2	309	
+003EB910	D3D8LTCG__D3D_BlockOnResource_0	direct3d	0		undefined	zero	uint * param_1	123	
+003EBCD0	D3D__D3DTexture_GetLevelDesc	direct3d	12		undefined	zero	void	26	
+003EE8C0	D3D8LTCG__Get2DSurfaceDesc_0	direct3d	0		undefined	zero	void	158	
+003EE960	FUN_003ee960	direct3d	32		undefined	zero	uint param_1, int param_2, int param_3, uint * param_4, uint * param_5, uint * param_6, uint * param_7, undefined4 * param_8	564	
+003EEC30	FUN_003eec30	direct3d	32	eax	int	zero	undefined4 param_1, int param_2, uint param_3, uint param_4, uint param_5, uint param_6, int param_7, int param_8, uint * param_9, uint * param_10	517	
+003EFB90	FUN_003efb90	direct3d	0	eax	undefined4	zero	void	266	
+003EFDF0	FUN_003efdf0	direct3d	0	ecx	undefined4	zero	int * param_1	179	size 179 too small, read to next function 0x003EFEB0
+007AC250	XGetDevices	input	4		DWORD	bro_pad_get_devices(MEM32(g_esp + 4))	PXPP_DEVICE_TYPE type		
+007AC272	XGetDeviceChanges	input	12		BOOL	bro_pad_get_device_changes(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	PXPP_DEVICE_TYPE type, DWORD * insertions, DWORD * removals		
+007ABF0D	XInputOpen	input	16		HANDLE	bro_pad_open(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	PXPP_DEVICE_TYPE type, DWORD port, DWORD slot, XINPUT_POLLING_PARAMETERS * polling		
+007ABF63	XInputClose	input	4		void	bro_pad_close(MEM32(g_esp + 4))	HANDLE device		
+007ABF6F	XInputGetCapabilities	input	8		DWORD	bro_pad_get_capabilities(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_CAPABILITIES * capabilities		
+007AC147	XInputGetState	input	8		DWORD	bro_pad_get_state(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_STATE * state		
+007AC1BA	XInputSetState	input	8		DWORD	bro_pad_set_state(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_FEEDBACK * feedback		
+0011D950	Scr_SuspendWaitTime	script	0		void	native scr_suspend_wait_time	void	62	
+0011D990	Scr_SuspendWaitFrames	script	0		void	native scr_suspend_wait_frames	void	62	
+0011D9D0	Scr_SuspendWaitTill	script	0		void	native scr_suspend_wait_till	void	111	
+001F2302	_CxxThrowException	script	8		void	native scr_cxx_throw	void * object, ThrowInfo * info	57	
+002F5660	Scr_JumpToScheduler	script	0		void	native scr_jump_to_scheduler	void * context	44	
+002FE100	Scr_ResumeThread	script	0	eax	void	native scr_resume_thread	ScrThread * thread	255	
+002221B0	Sys_ReadLaunchInfo	startup	0		undefined4	native bro_launch_info	char * param_1	1217	
+0023EE60	RE_AddPolyToScene	quad	0		void	(ngl_quad_batch_add_poly(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12)), 0)	undefined4 param_1, int param_2, int param_3	604	

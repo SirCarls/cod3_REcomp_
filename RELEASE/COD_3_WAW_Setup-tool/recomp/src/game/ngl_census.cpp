@@ -43,6 +43,8 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "game/addresses.h"  // [acct2-bro] side224: the render job's group
+#include "game/game_api.h"   // [acct2-bro] side224: WaitJobGroup
 #include "game/guest.h"
 #include "game/ngl_side.h"
 
@@ -310,6 +312,14 @@ REX_HOOK_RAW(sub_8213DAA0) {
     g_frames.fetch_add(1, std::memory_order_relaxed);
     Report();
   }
+  // [acct2-bro] side224: the last list's render job done first, so its effect flushes count with it (the game's
+  // nglListSend waits for the same group before queuing the next job).
+  // side225: kRenderJobGroup is the variable that holds the group, so pass the group it holds, as the game does
+  // (`lwz r3, kRenderJobGroup` before the wait); side224 passed the variable's address, which never finished.
+  if (cod3::ngl_side::WaitForRenderJobFirst()) {
+    const uint32_t render_job_group = cod3::guest::ReadU32(base, cod3::addr::live_video::kRenderJobGroup);
+    if (render_job_group) cod3::game::WaitJobGroup(ctx, base, render_job_group);
+  }
   cod3::ngl_side::OnListSend(base);  // [acct2-bro] the 2D side-by-side check (ngl_side.cpp), off by default
   __imp__sub_8213DAA0(ctx, base);
 }
@@ -334,6 +344,7 @@ REX_EXTERN(__imp__sub_822F3A28);
 REX_HOOK_RAW(sub_822F3A28) {
   if (On()) NoteDraw(uint32_t(ctx.lr), true);
   cod3::ngl_side::OnDraw(base, uint32_t(ctx.lr));
+  if (cod3::ngl_side::SkipGameDraw()) return;  // [acct2-bro] side191: a check (cod3_debug_skip_game_sky_layers)
   __imp__sub_822F3A28(ctx, base);
 }
 
@@ -341,6 +352,7 @@ REX_EXTERN(__imp__sub_822F3620);
 REX_HOOK_RAW(sub_822F3620) {
   if (On()) NoteDraw(uint32_t(ctx.lr), false);
   cod3::ngl_side::OnDraw(base, uint32_t(ctx.lr));
+  if (cod3::ngl_side::SkipGameDraw()) return;  // [acct2-bro] side191: a check (cod3_debug_skip_game_sky_layers)
   __imp__sub_822F3620(ctx, base);
 }
 
@@ -348,6 +360,8 @@ REX_HOOK_RAW(sub_822F3620) {
 REX_EXTERN(__imp__sub_82142F20);
 REX_HOOK_RAW(sub_82142F20) {
   if (On()) NotePass(base, ctx.r3.u32, ctx.r5.u32);
-  cod3::ngl_side::OnPass(base, ctx.r4.u32);  // [acct2-bro] side91: the gun's draws probed (ngl_side.cpp)
+  // [acct2-bro] side91: the gun's draws probed (ngl_side.cpp); [rexglue-native] 2026-11-10 rn43a: and the shader
+  // state, whose value block this fill writes for the object
+  cod3::ngl_side::OnPass(base, ctx.r4.u32, ctx.r3.u32);
   __imp__sub_82142F20(ctx, base);
 }

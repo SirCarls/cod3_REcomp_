@@ -1,0 +1,71 @@
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index 2f1edbb..d4992ef 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -670,6 +670,58 @@ translate:
+ #include <sys/types.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <dirent.h>
++#include <strings.h>
++
++/* The Xbox's file systems ignore case and Linux's don't. When a translated path
++ * doesn't exist, look up each component after `start` case-insensitively and
++ * use the name found on disk. (Call of Duty 2: Big Red One opens
++ * D:\sp\frontEnd.cod; the disc has frontend.cod.) Paths that exist as asked,
++ * and new files, are left alone. */
++static void fix_path_case(char *path, size_t start)
++{
++    struct stat st;
++    char *p;
++
++    if (start >= strlen(path) || stat(path, &st) == 0)
++        return;
++    p = path + start;
++    while (*p == '/')
++        p++;
++    while (*p) {
++        char *end = strchr(p, '/');
++        if (end)
++            *end = '\0';
++        if (p > path && stat(path, &st) != 0) {
++            int found = 0;
++            DIR *d;
++            p[-1] = '\0';
++            d = opendir(p - 1 == path ? "/" : path);
++            p[-1] = '/';
++            if (d) {
++                struct dirent *e;
++                size_t n = strlen(p);
++                while ((e = readdir(d)) != NULL) {
++                    if (strlen(e->d_name) == n && strcasecmp(e->d_name, p) == 0) {
++                        memcpy(p, e->d_name, n);
++                        found = 1;
++                        break;
++                    }
++                }
++                closedir(d);
++            }
++            if (!found) {
++                if (end)
++                    *end = '/';
++                return;
++            }
++        }
++        if (!end)
++            return;
++        *end = '/';
++        p = end + 1;
++    }
++}
+ 
+ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+@@ -891,6 +943,7 @@ translate:
+                 host_path_buf[--n] = '\0';
+         }
+ 
++        fix_path_case(host_path_buf, strlen(base_dir) + (sub_dir ? strlen(sub_dir) : 0));
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         /* As the Win32 backend does: the bridge reads back the host path
+          * the call it just made translated (the missing-file report, the

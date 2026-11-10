@@ -1,0 +1,445 @@
+{
+  "comment": "Scripted runs for tools/bro_decomp/bro_test_runs.py. Pad scripts: ms:button:hold_ms, the clock starting at the game's first XInputGetState; presses while the game is loading are lost. menus_to_prologue: title, Start, Profile Manager, NEW, Create Profile (8 rights on the keyboard, Enter), Single Player, New Game, Normal, then A every 4 s through the Prologue's load and briefing. a_presses: A every 4 s from 20 s, to get through a level's load and briefing when BRO_DEVMAP starts the game in it.",
+  "pad_scripts": {
+    "menus_to_prologue": "27000:start:250,30000:a:250,33000:a:250,34000:a:250,35000:down:200,35700:down:200,36400:right:200,37100:right:200,37800:right:200,38500:right:200,39200:right:200,39900:right:200,40600:right:200,41300:right:200,42500:a:250,46000:a:250,50000:a:250,54000:a:250,58000:a:250,62000:a:250,66000:a:250,70000:a:250,74000:a:250,78000:a:250,82000:a:250,86000:a:250,90000:a:250,94000:a:250,98000:a:250,102000:a:250,106000:a:250,110000:a:250",
+    "a_presses": "20000:a,24000:a,28000:a,32000:a,36000:a,40000:a,44000:a,48000:a,52000:a,56000:a,60000:a,64000:a,68000:a,72000:a,76000:a,80000:a,84000:a,88000:a,92000:a,96000:a,100000:a,104000:a,108000:a,112000:a,116000:a,120000:a,124000:a,128000:a,132000:a,136000:a,140000:a,144000:a,148000:a,152000:a,156000:a,160000:a,164000:a,168000:a,172000:a,176000:a"
+  },
+  "runs": [
+    {
+      "name": "prologue_vk",
+      "seconds": 180,
+      "pad": "menus_to_prologue",
+      "dump_frames": [
+        1500,
+        1800,
+        2100,
+        2400,
+        2700,
+        3000,
+        3300,
+        3600,
+        3900,
+        4200,
+        4500,
+        4700,
+        4800,
+        4900,
+        5000,
+        5100,
+        5200,
+        5300,
+        5400,
+        5500
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_MOVIE_TRACE": "1"
+      }
+    },
+    {
+      "name": "prologue_no_vk",
+      "seconds": 180,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_NGL_LOG": "1",
+        "BRO_MOVIE_TRACE": "1"
+      }
+    },
+    {
+      "name": "prologue_watch",
+      "seconds": 180,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_NGL_LOG": "1",
+        "BRO_SCRIPT_WATCH": "0x00056564"
+      },
+      "comment": "0x00056564: entry 14 of IN_PadConsumeReleased's jump table, found overwritten in run 48"
+    },
+    {
+      "name": "prologue_script_trace",
+      "seconds": 180,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_VK": "1",
+        "BRO_SCRIPT_TRACE": "1"
+      }
+    },
+    {
+      "name": "guard_page",
+      "seconds": 120,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_WRITE_GUARD": "0x00056564"
+      }
+    },
+    {
+      "name": "guard_mirrors",
+      "seconds": 120,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_GUARD_MIRRORS": "1"
+      }
+    },
+    {
+      "name": "prologue_where",
+      "seconds": 120,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_WHERE": "45,55,65,75,85,95,105,115",
+        "BRO_NGL_LOG": "1"
+      },
+      "comment": "where the game's thread is every 10 s through the Prologue's load: for a run that hangs"
+    },
+    {
+      "name": "prologue_mesh_census",
+      "seconds": 150,
+      "pad": "menus_to_prologue",
+      "env": {
+        "BRO_MESH_CENSUS": "1",
+        "BRO_NGL_LOG": "0"
+      }
+    },
+    {
+      "name": "prologue_long",
+      "seconds": 600,
+      "pad": "menus_to_prologue",
+      "dump_frames": [
+        6000,
+        12000,
+        18000,
+        24000,
+        30000,
+        35000
+      ],
+      "env": {
+        "BRO_VK": "1"
+      },
+      "comment": "ten minutes in the Prologue, the player standing: stability, memory and the frame clock over time"
+    },
+    {
+      "name": "prologue_skin",
+      "seconds": 130,
+      "pad": "menus_to_prologue",
+      "dump_frames": [
+        2700,
+        3000,
+        3300,
+        3600
+      ],
+      "env": {
+        "BRO_VK": "1"
+      },
+      "comment": "skinned characters (cdChar) in the prologue, pictures at four frames: compare against the bind pose"
+    },
+    {
+      "name": "prologue_sound",
+      "seconds": 150,
+      "pad": "menus_to_prologue",
+      "dump_frames": [
+        2700,
+        4500
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_SOUND_WAV": "sound_mix.wav",
+        "BRO_SOUND_TRACE": "1"
+      },
+      "comment": "the native sound (src/audio/bro_sound.c), muted, its mix written to sound_mix.wav in the run's folder; check it with tools/bro_decomp/wav_levels.py"
+    },
+    {
+      "name": "oran_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "oran"
+      }
+    },
+    {
+      "name": "omaha_beach_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "omaha_beach"
+      }
+    },
+    {
+      "name": "troina_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "troina"
+      }
+    },
+    {
+      "name": "gela_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "gela"
+      }
+    },
+    {
+      "name": "tunisia_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "Tunisia"
+      }
+    },
+    {
+      "name": "kasserine_pass_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "kasserine_pass"
+      }
+    },
+    {
+      "name": "kasserine_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "kasserine"
+      }
+    },
+    {
+      "name": "liberator_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "liberator"
+      }
+    },
+    {
+      "name": "piano_lupo_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "piano_lupo"
+      }
+    },
+    {
+      "name": "mons1_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "mons1"
+      }
+    },
+    {
+      "name": "eilendorf_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "eilendorf"
+      }
+    },
+    {
+      "name": "buchholz_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "buchholz"
+      }
+    },
+    {
+      "name": "dragons_teeth_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "dragons_teeth"
+      }
+    },
+    {
+      "name": "prologue_devmap_vk",
+      "seconds": 180,
+      "pad": "a_presses",
+      "dump_frames": [
+        600,
+        1200,
+        1800,
+        2400,
+        3000,
+        3600,
+        4200,
+        4800,
+        5400
+      ],
+      "env": {
+        "BRO_VK": "1",
+        "BRO_NGL_LOG": "1",
+        "BRO_DEVMAP": "prologue"
+      }
+    }
+  ]
+}

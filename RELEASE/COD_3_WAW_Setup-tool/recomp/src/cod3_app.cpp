@@ -50,6 +50,7 @@
 #include "game/protected_dvars.h"  // [movement]
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
+#include "game/ngl_side.h"  // [acct2-bro] cod3_native_vulkan
 #include "game/screenshot.h"
 #include "game/settings_sync.h"
 #include "game/ultrawide.h"
@@ -60,6 +61,7 @@
 #include "ui/text_overlay.h"  // [acct2-ocr]
 #endif
 #include "game/watchdog.h"
+#include "render/native_compare.h"  // [rexglue-native] 2026-11-09 the native renderer's live A/B compare
 #include "render/rust_renderer.h"  // [rust-renderer]
 #include "test_input.h"
 #include "ui/problem_log.h"
@@ -280,6 +282,9 @@ void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
   }
   // Use the Xenos GPU plugin unless the user picked one (or asked for none).
   if (config.gpu_plugin.empty() && !REXCVAR_GET(cod3_no_gpu)) config.gpu_plugin = "xenos";
+  // [acct2-bro] cod3_native_vulkan: the GPU emulation off, the game drawn by the native Vulkan renderer (ngl_vk;
+  // game/ngl_side.h). Before the choices below, which leave the graphics alone once it has started them.
+  cod3::ngl_side::StartNativeVulkan(config);
   // [rust-renderer] cod3_renderer rust: the plugin's host backend, no GPU emulation (render/rust_renderer.h).
   cod3::render::StartHostBackend(config);
 #ifdef _WIN32
@@ -542,6 +547,16 @@ void Cod3App::OnPostSetup() {
     return presenter && presenter->CaptureGuestOutput(image);
   });
 
+  // [rexglue-native] 2026-11-09: the native renderer's live A/B compare (render/native_compare.h; cod3_native_compare,
+  // Ctrl+Home): a drawer on the presenter, under ImGui's, and its keys, first of all listeners (only Ctrl+Home, and
+  // Ctrl+arrows while the compare is on, are taken, so the PC menus' arrows don't take them first); never while the
+  // console or the settings window has the input.
+  if (auto* graphics = runtime() ? runtime()->graphics_system() : nullptr) {
+    cod3::compare::Attach(window(), graphics->presenter(), graphics->provider(), 202, [this]() {
+      return cod3::ui::GameConsole::IsOpen() || settings_ != nullptr;
+    });
+  }
+
   // Master volume (F2 > Audio, snd_volume in the console).
   rex::audio::SetOutputGain(float(REXCVAR_GET(cod3_volume)));
   rex::cvar::RegisterChangeCallback("cod3_volume", [](std::string_view, std::string_view value) {
@@ -764,6 +779,7 @@ void Cod3App::OnPostLaunchModule(rex::system::XThread* thread) {
 void Cod3App::OnShutdown() {
   StartExitWatchdog("shutting down");
   cod3::shot::Stop();  // before the GPU emulation's presenter goes
+  cod3::compare::Detach(window());  // [rexglue-native] 2026-11-09: the same
   console_.reset();
   if (settings_) settings_->SaveIfDirty();
   settings_.reset();

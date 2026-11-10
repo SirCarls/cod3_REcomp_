@@ -1,0 +1,99 @@
+diff --git a/tools/disasm/engine.py b/tools/disasm/engine.py
+--- a/tools/disasm/engine.py
++++ b/tools/disasm/engine.py
+@@ -20,6 +20,7 @@
+ 
+ from . import config
+ from .loader import BinaryImage, SectionInfo
++from ..lazy_decode import lazy_disasm
+ 
+ 
+ @dataclass
+@@ -495,7 +496,7 @@
+ 
+         added = 0
+         overlaps = set()
+-        for cs_insn in self._cs.disasm(data[offset:], addr):
++        for cs_insn in lazy_disasm(self._cs, data, addr, offset):
+             if cs_insn.address >= file_end:
+                 break
+             if cs_insn.address != addr and cs_insn.address in self.instructions:
+@@ -712,7 +713,7 @@
+             # writer defines only its own flags: inc and dec leave CF.
+             pending = {"AF", "CF", "OF", "PF", "SF", "ZF"}
+             flag = lambda kind, name: getattr(x86_const, f"X86_EFLAGS_{kind}_{name}")
+-            for insn in self._cs.disasm(raw[addr - lower:], addr):
++            for insn in lazy_disasm(self._cs, raw, addr, addr - lower):
+                 if (X86_REG_EFLAGS in insn.regs_read
+                         and (not insn.eflags or any(
+                             insn.eflags & flag("TEST", f) for f in pending))):
+diff --git a/tools/lazy_decode.py b/tools/lazy_decode.py
+new file mode 100644
+--- /dev/null
++++ b/tools/lazy_decode.py
+@@ -0,0 +1,33 @@
++"""Capstone's disasm(), a few instructions at a time.
++
++[Big Red One port, bro/patches/xboxrecomp-lazy-decode.patch, 2026-11-08] Cs.disasm(code, address) decodes every
++instruction in `code`, each with its details, before it hands back the first one. The disassembler's callers that stop
++after a few (a block ends at its jump; a probe stops at the first call) paid for the whole rest of the section or gap
++each time: on Big Red One's default.xbe that was 98 of the disassembly's 99 minutes. lazy_disasm hands back the same
++instructions in the same order, decoded LAZY_CHUNK at a time, so a caller that stops early pays only for what it read.
++"""
++
++LAZY_CHUNK = 32
++MAX_INSTRUCTION = 15    # bytes: the longest x86 instruction
++
++
++def lazy_disasm(cs, code, address, start=0, end=None):
++    """What cs.disasm(code[start:end], address) gives, in order; `address` is code[start]'s.
++
++    Each window holds room for LAZY_CHUNK instructions and one more, so when a window gives fewer than LAZY_CHUNK
++    the next instruction had all of its bytes there and still didn't decode (or the end was reached): where a
++    single cs.disasm call stops too.
++    """
++    end = len(code) if end is None else min(end, len(code))
++    offset = start
++    while offset < end:
++        window = code[offset:min(end, offset + (LAZY_CHUNK + 1) * MAX_INSTRUCTION)]
++        count = 0
++        last = None
++        for insn in cs.disasm(window, address + (offset - start), LAZY_CHUNK):
++            count += 1
++            last = insn
++            yield insn
++        if count < LAZY_CHUNK:
++            return
++        offset = start + (last.address + last.size - address)
+diff --git a/tools/recomp/disasm.py b/tools/recomp/disasm.py
+--- a/tools/recomp/disasm.py
++++ b/tools/recomp/disasm.py
+@@ -9,6 +9,8 @@
+ from typing import Optional
+ from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_OP_IMM, CS_OP_MEM
+ 
++from ..lazy_decode import lazy_disasm
++
+ 
+ # LOOP family: ECX is the counter, not a flag. They branch, so they end a
+ # block like any other conditional jump, but they need their own lifting.
+@@ -231,8 +233,8 @@
+             for addr in [a for a, i in decoded.items()
+                          if a < point < a + i.size]:
+                 del decoded[addr]
+-            for cs_insn in self._cs.disasm(raw_bytes[point - start_va:size],
+-                                           point):
++            for cs_insn in lazy_disasm(self._cs, raw_bytes, point,
++                                       point - start_va, size):
+                 if cs_insn.address in decoded:
+                     break          # rejoined a stream we already have
+                 # The misaligned stream did not only straddle `point`: until
+@@ -264,7 +266,7 @@
+             if not (start_va <= entry < end_va) or entry in decoded:
+                 continue
+             offset = entry - start_va
+-            for cs_insn in self._cs.disasm(raw_bytes[offset:size], entry):
++            for cs_insn in lazy_disasm(self._cs, raw_bytes, entry, offset, size):
+                 if cs_insn.address != entry and cs_insn.address in stop_addresses:
+                     break
+                 if cs_insn.address >= end_va or cs_insn.address in decoded:

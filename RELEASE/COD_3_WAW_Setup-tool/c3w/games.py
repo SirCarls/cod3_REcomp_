@@ -1,5 +1,5 @@
 """The game tabs across the top of the setup tool's window: Call of Duty 3,
-World at War, Call of Duty 2 and United Offensive. Each tab has its own
+Big Red One, World at War, Call of Duty 2, Call of Duty 4 and United Offensive. Each tab has its own
 sidebar of pages, its own look (theme.py has the colors) and its own main
 action in the bottom bar.
 
@@ -13,7 +13,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
-COD3, WAW, COD2, CODUO = "cod3", "waw", "cod2", "coduo"
+COD3, BRO, WAW, COD2, CODUO = "cod3", "bro", "waw", "cod2", "coduo"
+COD4 = "cod4"   # [waw-decomp]
+# [waw-decomp] The tabs whose game is recompiled from its Xbox 360 disc on Call of Duty 3's SDK (c3w/x360_ports.py):
+# their Set up and Play pages and Build / Play buttons are gui_ports.py's.
+X360_PORTS = (WAW, COD2, COD4)
 DEFAULT_GAME = COD3
 
 
@@ -35,6 +39,9 @@ class Game:
 PAGE_LABELS: Dict[str, str] = {
     "setup": "Set up", "play": "Play", "textures": "Textures", "tools": "Tools", "log": "Log",
     "about": "About",
+    "bro_setup": "Set up", "bro_play": "Play", "bro_status": "Port status",   # [acct2-bro]
+    "waw_setup": "Set up", "waw_play": "Play", "cod2_setup": "Set up", "cod2_play": "Play",   # [waw-decomp]
+    "cod4_setup": "Set up", "cod4_play": "Play", "cod4_status": "Port status",
     "waw_content": "Content", "maps": "Mods & maps", "waw_status": "Port status",
     "cod2_copy": "New copy", "cod2_server": "LAN server", "cod2_status": "Port status",
     "coduo_copy": "New copy", "coduo_server": "LAN server", "coduo_status": "Port status",
@@ -45,12 +52,23 @@ GAMES: Tuple[Game, ...] = (
     Game(COD3, "Call of Duty 3", "Call of Duty 3", "CoD3", ("CALL OF DUTY", "3"),
          "Recompiled for PC from your own disc", "cod3",
          ("setup", "play", "textures", "tools", "log", "about"), ("build", "play")),
+    # [acct2-bro] Call of Duty 2: Big Red One (the original Xbox game), built like Call of Duty 3 (c3w/bro.py).
+    Game(BRO, "Call of Duty 2: Big Red One", "Big Red One", "BRO", ("CALL OF DUTY 2", "BIG RED ONE"),
+         "The Xbox original, recompiled for PC from your own disc", "bro",
+         ("bro_setup", "bro_play", "bro_status", "log"), ("build", "play")),
+    # [waw-decomp] 2026-11-09: World at War and Call of Duty 2 recompiled from the Xbox 360 disc on Call of Duty 3's
+    # SDK (owner 11-07 11:49: "the setup tool says rust, but it should be the same as cod3's SDK"); Call of Duty 4
+    # new. World at War keeps its Content page (the rip for Call of Duty 3), Call of Duty 2 its New copy and LAN
+    # server pages.
     Game(WAW, "World at War", "World at War", "WaW", ("CALL OF DUTY", "WORLD AT WAR"),
-         "Its content, ripped from your own copy", "waw",
-         ("waw_content", "maps", "waw_status", "log"), ("rip",)),
+         "Recompiled for PC from your own Xbox 360 disc", "waw",
+         ("waw_setup", "waw_play", "waw_content", "maps", "waw_status", "log"), ("build", "play", "rip")),
     Game(COD2, "Call of Duty 2", "Call of Duty 2", "CoD2", ("CALL OF DUTY", "2"),
-         "Rust engine tools: new copy and LAN server", "cod2",
-         ("cod2_copy", "cod2_server", "cod2_status", "log"), ("copy", "server")),
+         "Recompiled for PC from your own Xbox 360 disc", "cod2",
+         ("cod2_setup", "cod2_play", "cod2_copy", "cod2_server", "cod2_status", "log"), ("build", "play")),
+    Game(COD4, "Call of Duty 4: Modern Warfare", "Call of Duty 4", "CoD4", ("CALL OF DUTY 4", "MODERN WARFARE"),
+         "Recompiled for PC from your own Xbox 360 disc", "cod4",
+         ("cod4_setup", "cod4_play", "cod4_status", "log"), ("build", "play")),
     Game(CODUO, "Call of Duty: United Offensive", "United Offensive", "UO", ("CALL OF DUTY", "UNITED OFFENSIVE"),
          "Rust engine tools: new copy and LAN server", "coduo",
          ("coduo_copy", "coduo_server", "coduo_status", "log"), ("copy", "server")),
@@ -213,20 +231,47 @@ _PC_PORT = (
     Milestone("Rust client", LATER, "Joining servers from the Rust version."),
 )
 PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
-    WAW: (
-        Milestone("Content ripper", READY, "Fastfiles to open formats."),
-        Milestone("Decompile", READY, "PC and Xbox 360, single and multiplayer, with names."),
-        Milestone("System notes", NEXT, "Weapons, zombies, scripts, menus."),
-        Milestone("Rust port", LATER, "In the new engine, with Call of Duty 3."),
+    BRO: (   # [acct2-bro] dev/agents/acct2-bro/NOTES.md has the runs behind these
+        Milestone("Recompile", READY, "Your default.xbe to C with xboxrecomp; every call lifted."),
+        Milestone("Picture", TESTING, "Drawn natively with Vulkan: menus, levels, lights, fog, effects."),
+        Milestone("Sound and music", TESTING, "The game's own sound and music, out through SDL2."),
+        Milestone("Controls", TESTING, "A gamepad, or keyboard and mouse with mouse look."),
+        Milestone("Levels", TESTING, "Most levels checked for a few minutes each, no crash."),
+        Milestone("Windows", NEXT, "Builds on Linux for now."),
+        Milestone("Multiplayer", LATER, "Not started."),
     ),
-    COD2: _PC_PORT,
+    # [waw-decomp] 2026-11-09, from the second account's notes (dev/agents/acct2-waw, acct2-cod2, acct2-cod4)
+    WAW: (
+        Milestone("Recompile", READY, "Your Xbox 360 default.xex on Call of Duty 3's SDK, Linux and Windows."),
+        Milestone("Campaign", TESTING, "All 15 levels load and play; level-start saves; Nacht der Untoten loads."),
+        Milestone("Frame rate", TESTING, "A frame limit up to 1000; films keep their speed; jump height next."),
+        Milestone("Native renderer", NEXT, "Counting what it draws; skinning done natively."),
+        Milestone("Multiplayer", LATER, "Not started."),
+        Milestone("Content ripper", READY, "Fastfiles to open formats, for Call of Duty 3 (Content page)."),
+    ),
+    COD2: (
+        Milestone("Recompile", READY, "Your Xbox 360 programs on Call of Duty 3's SDK, Linux and Windows."),
+        Milestone("Campaign", TESTING, "All 27 levels load and play; a 60 fps limit with fixed movement steps."),
+        Milestone("Multiplayer", TESTING, "System link between two copies through the menus."),
+        Milestone("Native renderer", NEXT, "Recording each draw (step N1)."),
+        Milestone("New copy and LAN server", READY, "For the PC game (New copy, LAN server pages)."),
+    ),
+    COD4: (
+        Milestone("Recompile", READY, "Your Xbox 360 programs on Call of Duty 3's SDK, Linux and Windows."),
+        Milestone("Campaign", TESTING, "All 21 levels load and write their level-start saves."),
+        Milestone("Multiplayer", TESTING, "A two-player system-link match through the game's menus."),
+        Milestone("Controls", TESTING, "Keys, mouse look and a pad; field of view."),
+        Milestone("Native renderer", NEXT, "Design notes; counting what it draws next."),
+    ),
     CODUO: _PC_PORT,
 }
 # The documents behind each status page (in the project folder).
 STATUS_DOCS: Dict[str, Tuple[Tuple[str, str], ...]] = {
+    BRO: (("bro/README.md", "About the port"),),   # [acct2-bro]
     WAW: (("docs/WAW_DECOMP.md", "Decompile notes"),),
     COD2: (("docs/NEW_COPY.md", "New copy"), ("docs/PC_SERVER.md", "LAN server"),
            ("docs/PC_MULTIPLAYER.md", "Cross-play")),
+    COD4: (),   # [waw-decomp]
     CODUO: (("docs/NEW_COPY.md", "New copy"), ("docs/PC_SERVER.md", "LAN server"),
             ("docs/PC_MULTIPLAYER.md", "Cross-play")),
 }

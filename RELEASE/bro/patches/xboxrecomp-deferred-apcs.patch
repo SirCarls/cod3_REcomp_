@@ -1,0 +1,34 @@
+diff --git a/src/kernel/kernel.h b/src/kernel/kernel.h
+--- a/src/kernel/kernel.h
++++ b/src/kernel/kernel.h
+@@ -627,6 +627,7 @@ void xbox_SetCrtLockTable(uint32_t table_va, uint32_t count);
+  * Off by default: the inline path is what every other title was brought up
+  * on. Call before the guest runs. */
+ void xbox_SetDeferredIoApc(int on);
++int xbox_RunDeferredIoApcs(void);   /* [acct2-bro] run this thread's deferred I/O APCs now */
+
+ VOID    __stdcall xbox_RtlEnterCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);
+ VOID    __stdcall xbox_RtlLeaveCriticalSection(PRTL_CRITICAL_SECTION CriticalSection);
+diff --git a/src/kernel/kernel_bridge.c b/src/kernel/kernel_bridge.c
+--- a/src/kernel/kernel_bridge.c
++++ b/src/kernel/kernel_bridge.c
+@@ -4516,6 +4516,19 @@ static int bridge_run_io_apcs(uint32_t alertable, uint32_t wait_mode)
+     return 1;
+ }
+
++/* [acct2-bro] For a port whose own frame loop stands in for the game's waits: run this thread's deferred file-I/O
++ * APCs now, as an alertable wait would, and leave eax as it was. Returns how many ran. */
++int xbox_RunDeferredIoApcs(void)
++{
++    int n = g_io_apc_count;
++    uint32_t eax = g_eax;
++
++    if (!bridge_run_io_apcs(1, 1))
++        return 0;
++    g_eax = eax;
++    return n;
++}
++
+ /* -- XeLoadSection / XeUnloadSection (ordinals 327/328, 1 arg = 4 bytes) --
+  *
+  * NTSTATUS XeLoadSection(PXBE_SECTION_HEADER Section);

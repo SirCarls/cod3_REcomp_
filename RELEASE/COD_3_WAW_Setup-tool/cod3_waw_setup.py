@@ -14,6 +14,8 @@ playable Call of Duty 3 recompilation. It installs whatever is missing.
     python3 cod3_waw_setup.py verify-files --list [usa_europe|germany|europe_fr_es_it|japan]  # the discs' MD5s
     python3 cod3_waw_setup.py censored [<output folder>] [--add <German disc>] [--on|--off] [--verify]  # campaign only
     python3 cod3_waw_setup.py update [--check] [--yes] [--undo] [--allow|--deny]  # this tool's own updates
+    python3 cod3_waw_setup.py bro check|build|play "<Big Red One disc image or folder>"  # Call of Duty 2: Big Red One
+    python3 cod3_waw_setup.py cod2|waw|cod4 check|build|play "<Xbox 360 disc image or folder>"  # on CoD3's SDK
 
 Versions: by default the one for this system. --linux and --windows pick
 which to build, on either system: Linux builds the Windows version with
@@ -415,6 +417,104 @@ def cmd_update(a: argparse.Namespace) -> int:
     return update.at_start(__file__, [__file__, "update", "--check"]) or 0
 
 
+def cmd_port(a: argparse.Namespace) -> int:
+    """[waw-decomp] Call of Duty 2, World at War or Call of Duty 4 from your own Xbox 360 disc, recompiled on the
+    same SDK as Call of Duty 3 (c3w/x360_ports.py): check the disc, build the game, or start it. The disc is only
+    read."""
+    from c3w import x360_ports
+    from c3w.pipeline import BuildOptions
+    p = x360_ports.port(a.cmd)
+    if a.action == "check":
+        disc, line = x360_ports.check_disc(p, a.source or "", a.force)
+        print(line)
+        return 0 if disc else 1
+    if a.action == "play":
+        opts = x360_ports.PlayOptions(program=a.program or "", fullscreen=a.fullscreen, mute=a.mute,
+                                      skip_films=a.skip_films, fov=a.fov or 0.0,
+                                      max_fps=-1 if a.max_fps is None else a.max_fps,
+                                      graphics_api=a.graphics_api or "auto")
+        cmd, why = x360_ports.play_command(p, Path(a.output), opts)
+        if cmd is None:
+            print(why)
+            return 1
+        import subprocess
+        return subprocess.call(cmd)
+    if not a.source:
+        print(f"Give the disc: {a.cmd} build \"<the .iso, or a folder copied from the disc>\"")
+        return 2
+    if a.linux or a.windows:
+        build_linux, build_windows = a.linux, a.windows
+    else:
+        build_linux, build_windows = common.IS_LINUX, common.IS_WINDOWS
+    opts = BuildOptions(output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
+                        jobs=a.jobs or common.recommended_jobs(), cleanup=not a.no_cleanup, keep_sdk=a.keep_sdk,
+                        install_deps=not a.no_install_deps, build_linux=build_linux, build_windows=build_windows,
+                        force_unknown_iso=a.force)
+    log = _cli_log()
+    cancel = threading.Event()
+    common.APPROVAL.ask = _cli_approval(a.yes)
+    try:
+        log.info(x360_ports.run_build(p, a.source, opts, log, cancel))
+    except KeyboardInterrupt:
+        cancel.set()
+        log.error("Canceled. Run the same command again to continue where it stopped.")
+        return 130
+    except common.Cancelled:
+        log.error("Canceled.")
+        return 130
+    except common.SetupError as e:
+        log.error(str(e))
+        return 1
+    print()
+    return 0
+
+
+def cmd_bro(a: argparse.Namespace) -> int:
+    """[acct2-bro] Call of Duty 2: Big Red One from your own original Xbox disc (c3w/bro.py): check the disc,
+    build the port, or start it. The disc is only read."""
+    from c3w import bro
+    from c3w.pipeline import TOOL_VERSION
+    if a.action == "check":
+        disc, line = bro.check_disc(a.source or "")
+        print(line)
+        return 0 if disc else 1
+    if a.action == "play":
+        opts = bro.PlayOptions(level=a.level or "", fullscreen=a.fullscreen, mute=a.mute)
+        problems = opts.problems()
+        if problems:
+            print("; ".join(problems) + ". Levels: " + ", ".join(k for k, _ in bro.LEVELS if k))
+            return 2
+        cmd, why = bro.play_command(Path(a.output))
+        if cmd is None:
+            print(why)
+            return 1
+        import subprocess
+        return subprocess.call(cmd, env=bro.play_env(opts))
+    if not a.source:
+        print("Give the disc: bro build \"<the .iso, or a folder copied from the disc>\"")
+        return 2
+    opts = bro.BuildOptions(source=a.source, output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
+                            jobs=a.jobs or common.recommended_jobs(), install_deps=not a.no_install_deps,
+                            cleanup=not a.no_cleanup, tool_version=TOOL_VERSION)
+    log = _cli_log()
+    cancel = threading.Event()
+    common.APPROVAL.ask = _cli_approval(a.yes)
+    try:
+        log.info(bro.run_build(opts, common.Runner(log, cancel), log, cancel))
+    except KeyboardInterrupt:
+        cancel.set()
+        log.error("Canceled. Run the same command again to continue where it stopped.")
+        return 130
+    except common.Cancelled:
+        log.error("Canceled.")
+        return 130
+    except common.SetupError as e:
+        log.error(str(e))
+        return 1
+    print()
+    return 0
+
+
 def main() -> int:
     if common.IS_WINDOWS:
         # Output sent to a file or a pipe uses the ANSI code page, which can't
@@ -549,6 +649,59 @@ def main() -> int:
     up.add_argument("--allow", action="store_true", help="let the window check for updates when it starts")
     up.add_argument("--deny", action="store_true", help="don't let the window check for updates")
     up.set_defaults(func=cmd_update)
+
+    # [acct2-bro] Call of Duty 2: Big Red One (c3w/bro.py)
+    br = sub.add_parser("bro", help="Call of Duty 2: Big Red One from your own Xbox disc: check, build or play")
+    br.add_argument("action", choices=["check", "build", "play"])
+    br.add_argument("source", nargs="?", help="the disc image (.iso) or a folder copied from the disc")
+    br.add_argument("--output", default=str(common.default_output_dir()),
+                    help="where the game goes, in its bro/ folder (default: output/ here)")
+    br.add_argument("--work", help="temporary build folder (default: work/ here; its bro/ is deleted afterwards)")
+    br.add_argument("--jobs", type=int, help="build threads (default: based on CPU cores and RAM)")
+    br.add_argument("--no-cleanup", action="store_true", help="keep the recompiled C and the build in the work folder")
+    br.add_argument("--no-install-deps", action="store_true", help="never install missing packages")
+    br.add_argument("--yes", action="store_true",
+                    help="approve the downloads and installs without asking (they are still listed)")
+    br.add_argument("--level", help="play: start in this level, by its map name (prologue, oran, gela, omaha_beach, "
+                                    "...; a wrong one lists them)")
+    br.add_argument("--fullscreen", action="store_true", help="play: fullscreen")
+    br.add_argument("--mute", action="store_true", help="play: no sound")
+    br.set_defaults(func=cmd_bro)
+
+    # [waw-decomp] Call of Duty 2, World at War and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py)
+    from c3w import x360_ports
+    for pid in x360_ports.PORT_ORDER:
+        p = x360_ports.PORTS[pid]
+        pp = sub.add_parser(pid, help=f"{p.name} from your own Xbox 360 disc, on Call of Duty 3's SDK: check, build "
+                                      "or play")
+        pp.add_argument("action", choices=["check", "build", "play"])
+        pp.add_argument("source", nargs="?", help="the disc image (.iso) or a folder copied from the disc")
+        pp.add_argument("--output", default=str(common.default_output_dir()),
+                        help=f"where the game goes, in its {p.subdir}/ folder (default: output/ here)")
+        pp.add_argument("--work", help="temporary build folder (default: work/ here; emptied afterwards)")
+        pp.add_argument("--jobs", type=int, help="build threads (default: based on CPU cores and RAM)")
+        pp.add_argument("--linux", action="store_true", help="build the Linux version (default: this system's own)")
+        pp.add_argument("--windows", action="store_true",
+                        help="build the Windows version (on Linux: cross-compiled with llvm-mingw)")
+        pp.add_argument("--keep-sdk", action="store_true", help="keep the built SDK for faster rebuilds")
+        pp.add_argument("--no-cleanup", action="store_true", help="keep the whole work folder")
+        pp.add_argument("--no-install-deps", action="store_true", help="never install missing packages")
+        pp.add_argument("--force", action="store_true", help="build a disc whose program isn't the known one")
+        pp.add_argument("--yes", action="store_true",
+                        help="approve the downloads and installs without asking (they are still listed)")
+        pp.add_argument("--program", choices=[q.name for q in p.programs], help="play: which program (default: "
+                                                                                 "the campaign)")
+        pp.add_argument("--fullscreen", action="store_true", help="play: fullscreen")
+        pp.add_argument("--mute", action="store_true", help="play: no sound")
+        pp.add_argument("--skip-films", action="store_true", help="play: skip the start-up films" +
+                        ("" if p.skip_films else " (not in this port yet; ignored)"))
+        pp.add_argument("--fov", type=float, help="play: field of view, 40-140" + ("" if p.fov else
+                                                                                    " (not in this port yet)"))
+        pp.add_argument("--max-fps", type=int, help="play: frame limit, 0 = none" + ("" if p.max_fps else
+                                                                                      " (not in this port yet)"))
+        pp.add_argument("--graphics-api", choices=list(x360_ports.GRAPHICS_APIS), help="play, Windows: the "
+                                                                                         "graphics API")
+        pp.set_defaults(func=cmd_port)
     a = ap.parse_args()
     if a.cmd:
         return a.func(a)

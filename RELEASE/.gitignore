@@ -57,3 +57,7 @@ desktop.ini
 
 # The new-user bundle made by tools/make_release.py (a copy of the files above).
 /RELEASE/
+
+# Big Red One's port (bro/): the recompiler's generated C and the built game stay on each user's machine.
+/bro/generated/
+/bro/out/

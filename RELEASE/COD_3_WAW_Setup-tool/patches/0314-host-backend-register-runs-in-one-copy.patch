@@ -1,0 +1,57 @@
+diff --git a/include/rex/graphics/host/command_processor.h b/include/rex/graphics/host/command_processor.h
+--- a/include/rex/graphics/host/command_processor.h
++++ b/include/rex/graphics/host/command_processor.h
+@@ -48,6 +48,10 @@
+                  IndexBufferInfo* index_buffer_info, bool major_mode_explicit) override;
+   bool IssueCopy() override;
+ 
++  // [acct2-bro] 0314: a run of registers stored in one copy when the base's
++  // WriteRegister would do nothing for them but store the value.
++  void WriteRegistersFromMem(uint32_t start_index, uint32_t* base, uint32_t num_registers) override;
++
+  private:
+   // The renderer while it runs (from a successful start to stop), else null.
+   const RexHostRenderer* renderer_ = nullptr;
+diff --git a/src/graphics/host/command_processor.cpp b/src/graphics/host/command_processor.cpp
+--- a/src/graphics/host/command_processor.cpp
++++ b/src/graphics/host/command_processor.cpp
+@@ -160,6 +160,39 @@
+   return true;
+ }
+ 
++// [acct2-bro] 0314 (2026-11-07): with this backend nothing is emulated, so
++// for most registers the base's WriteRegister only stores the value. Shader
++// constants come in runs of hundreds (SET_CONSTANT, LOAD_ALU_CONSTANT), and
++// one virtual call per register for them was about two-thirds of the GPU
++// command thread's time in Call of Duty 3 (St-Bert, 270-300 frames a
++// second). A run that holds none of the registers the base acts on (the
++// scratch registers, COHER_STATUS_HOST and the gamma ramp's) is stored in one
++// byte-swapping copy; any other run, and one past the register file, goes
++// register by register as before. The one thing a copied run skips is the
++// debug log line about writes to registers the table doesn't know.
++void HostCommandProcessor::WriteRegistersFromMem(uint32_t start_index, uint32_t* base,
++                                                 uint32_t num_registers) {
++  if (!num_registers) {
++    return;
++  }
++  const uint64_t end_index = uint64_t(start_index) + num_registers - 1;
++  auto holds = [&](uint32_t first, uint32_t last) {
++    return start_index <= last && end_index >= first;
++  };
++  const bool one_by_one = end_index >= RegisterFile::kRegisterCount ||
++                          holds(XE_GPU_REG_SCRATCH_REG0, XE_GPU_REG_SCRATCH_REG7) ||
++                          holds(XE_GPU_REG_COHER_STATUS_HOST, XE_GPU_REG_COHER_STATUS_HOST) ||
++                          holds(XE_GPU_REG_DC_LUT_RW_INDEX, XE_GPU_REG_DC_LUT_RW_INDEX) ||
++                          holds(XE_GPU_REG_DC_LUT_SEQ_COLOR, XE_GPU_REG_DC_LUT_SEQ_COLOR) ||
++                          holds(XE_GPU_REG_DC_LUT_PWL_DATA, XE_GPU_REG_DC_LUT_PWL_DATA) ||
++                          holds(XE_GPU_REG_DC_LUT_30_COLOR, XE_GPU_REG_DC_LUT_30_COLOR);
++  if (one_by_one) {
++    CommandProcessor::WriteRegistersFromMem(start_index, base, num_registers);
++    return;
++  }
++  memory::copy_and_swap(register_file_->values + start_index, base, num_registers);
++}
++
+ bool HostCommandProcessor::IssueCopy() {
+   if (renderer_ && renderer_->resolve) {
+     renderer_->resolve(renderer_->user);

@@ -339,7 +339,43 @@ def _backdrop_coduo(p: Painter, w: float, h: float, c: Dict[str, str], rng: rand
     p.polygon(pts, theme.mix(c["bg"], "#000000", 0.45))
 
 
-BACKDROPS = {"cod3": _backdrop_cod3, "waw": _backdrop_waw, "cod2": _backdrop_cod2}
+def _backdrop_bro(p: Painter, w: float, h: float, c: Dict[str, str], rng: random.Random) -> None:
+    """[acct2-bro] Dawn over a beach landing: the sky glowing red low at the right, the sea with the light on it,
+    landing craft heading in, and steel obstacles on the sand in front."""
+    horizon = h * 0.62
+    top, low = theme.mix(c["tabbar"], "#000000", 0.2), theme.mix(c["bg"], c["accent"], 0.16)
+    p.gradient(0, 0, w, horizon + 2, top, low, vertical=True)
+    gx, glow = w * 0.84, theme.mix(c["bg"], c["accent"], 0.58)
+    rings = 40
+    for i in range(rings):                       # the sun's glow, in many close steps
+        f = i / (rings - 1)
+        rx, ry = w * 0.46 * (1 - f) + h * 0.12, h * 0.85 * (1 - f) + h * 0.05
+        p.oval(gx - rx, horizon - ry, gx + rx, horizon + ry, theme.mix(low, glow, f ** 1.8))
+    sea = theme.mix(c["bg"], "#000000", 0.28)
+    p.rect(0, horizon, w, h + 2, sea)
+    for k in range(9):                           # the light on the water, wider nearer
+        y = horizon + (h - horizon) * (k + 0.6) / 10
+        half = w * (0.03 + 0.022 * k)
+        p.line([gx - half, y, gx + half, y], theme.mix(sea, glow, 0.42 - 0.035 * k), max(1.0, h / 110))
+    boat = theme.mix(c["bg"], "#000000", 0.6)
+    for fx, fy, size in ((0.56, 0.70, 0.09), (0.67, 0.66, 0.07), (0.79, 0.75, 0.12), (0.92, 0.68, 0.08)):
+        x, y, length = w * fx, h * fy, h * size * 2.2
+        high = length * 0.24                     # a boxy hull, its ramp up at the front (left)
+        p.polygon([x, y, x + length, y, x + length * 0.96, y - high, x + length * 0.06, y - high * 1.25], boat)
+        p.rect(x + length * 0.62, y - high * 1.7, x + length * 0.78, y - high * 0.9, boat)
+    p.polygon(_ridge(rng, 0, w, h * 0.93, h * 0.025, 4, h + 2), theme.mix(c["bg"], c["border"], 0.30))
+    steel, thick = theme.mix(c["bg"], "#000000", 0.62), max(2.0, h / 45)
+    x = w * 0.52
+    while x < w + h * 0.2:                       # three crossed beams each
+        s, base = h * rng.uniform(0.10, 0.15), h * rng.uniform(0.95, 0.99)
+        p.line([x - s, base, x + s * 0.6, base - s * 1.1], steel, thick)
+        p.line([x + s, base, x - s * 0.6, base - s * 1.1], steel, thick)
+        p.line([x - s * 0.15, base - s * 1.25, x + s * 0.15, base + s * 0.05], steel, thick)
+        x += h * rng.uniform(0.45, 0.75)
+
+
+BACKDROPS = {"cod3": _backdrop_cod3, "waw": _backdrop_waw, "cod2": _backdrop_cod2,
+             "bro": _backdrop_bro}   # [acct2-bro]
 
 
 # ---------------------------------------------------------------------------

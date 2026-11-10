@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 from . import (common, deps, game_settings, pc_check, profiles, repair, rippers, theme, upscale, user_textures,
                waw, widgets)
 from . import voices  # [voice] another disc's voices
+from . import games  # [waw-decomp] the tabs built on Call of Duty 3's SDK (X360_PORTS)
 from . import censored  # [acct2-decomp] the censored campaign
 from . import build_needs  # [acct2-decomp] what the build with these options needs on this PC
 from .common import IS_LINUX, IS_WINDOWS, SetupError
@@ -122,6 +123,14 @@ class Pages:
             self._refresh_maps()
         elif key == "waw_content":
             self._validate_waw()
+        elif key == "bro_setup":   # [acct2-bro]
+            self._bro_check_disc()
+        elif key.endswith("_setup") and key[:-6] in games.X360_PORTS:   # [waw-decomp]
+            self._port_check_disc(key[:-6])
+        elif key.endswith("_play") and key[:-5] in games.X360_PORTS:
+            self._update_actions()
+        elif key == "bro_play":
+            self._update_actions()
         elif key.endswith("_copy") and key[:-5] in getattr(self, "pc", {}):
             self._pc_check_install(key[:-5])
         elif key.endswith("_server") and key[:-7] in getattr(self, "pc", {}):
@@ -1211,7 +1220,12 @@ class Pages:
                 ("Downloaded tools", str(tools),
                  "CMake, Ninja, 7-Zip, LLVM, llvm-mingw, appimagetool, waifu2x as needed; kept for the next "
                  "build. Delete the folder to free the space; they are downloaded again (with your approval)."),
-                ("This tool's settings and profiles", str(self.config_dir), "")]
+                ("This tool's settings and profiles", str(self.config_dir), ""),
+                # [acct2-bro]
+                ("Big Red One", str(out / "bro"), "The disc's files (game/), the port (bin/), saves/, logs/ and "
+                 "play.sh."),
+                ("Big Red One's build", str(work / "bro"), "The recompiled C and the build; removed after a build "
+                 "unless you keep them. xboxrecomp and its Python stay in the downloaded tools.")]
         local_rust = deps.rust_dir(tools)
         if local_rust.exists() or not deps.find_cargo():
             rows.append(("Rust", str(local_rust), "Installed here by the tool when the PC has no Rust (cargo/, "
@@ -1549,9 +1563,9 @@ class Pages:
 
     def _page_about(self, t) -> None:
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3 for PC from your own disc, "
-                                                "World at War's content, and the Rust tools for Call of Duty 2 and "
-                                                "United Offensive.", columns=1)
+        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3 and Big Red One for PC "
+                                                "from your own discs, World at War's content, and the Rust tools for "
+                                                "Call of Duty 2 and United Offensive.", columns=1)   # [acct2-bro]
         d = section(t, "Documents", 1, columns=1)
         d.columnconfigure(1, weight=1)
         docs = [("README.md", "Read me", "How to set up and play; the project folder."),
@@ -1584,8 +1598,9 @@ class Pages:
         hint(lic, "This project's code is under the MIT license. The SDK patches in COD_3_WAW_Setup-tool/patches "
                   "are under the ReXGlue SDK's BSD 3-Clause license. Built on the ReXGlue SDK and the Xenia "
                   "project it derives from. The game's settings window uses the Barlow font (SIL Open Font "
-                  "License). Texture upscaling uses waifu2x and waifu2x-ncnn-vulkan (MIT). Every download is "
-                  "listed in docs/SOURCES.md.").pack(anchor="w")
+                  "License). Texture upscaling uses waifu2x and waifu2x-ncnn-vulkan (MIT). Big Red One is "
+                  "recompiled with xboxrecomp (MIT) and its disassembler Capstone (BSD). Every download is "
+                  "listed in docs/SOURCES.md.").pack(anchor="w")   # [acct2-bro] xboxrecomp
         hint(lic, "Call of Duty is a trademark of Activision. This project contains no Activision code or assets: "
                   "everything game-specific is made on your PC from your own copies. The tab headers are drawn by "
                   "this tool; no game artwork or logo is used.").pack(anchor="w", pady=(px(8), px(18)))

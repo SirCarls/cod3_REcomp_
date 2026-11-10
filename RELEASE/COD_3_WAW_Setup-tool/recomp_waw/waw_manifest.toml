@@ -1,0 +1,17 @@
+# The recompiler's manifest for Call of Duty: World at War (Xbox 360), built with the same ReXGlue SDK and
+# patches as Call of Duty 3 (../recomp/). [acct2-waw]
+# Made with `rexglue init` (SDK 0.10.0), then given the project's own config file.
+#
+# assets/ holds the game's files from the player's Xbox 360 disc (World at War (USA, Europe),
+# default.xex SHA-1 9972cdb7c1bf2f54c6ef7d58c9eb3b6d4a724708). The multiplayer program,
+# default_mp.xex, gets its own folder later (mp/, as Call of Duty 3's cod3mp).
+
+[project]
+name = "waw"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated/default"
+includes = ["config/default.toml"]

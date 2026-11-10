@@ -190,6 +190,10 @@ std::string Demangle(const char* name) {
   if (status == 0 && out) {
     std::string s(out);
     std::free(out);
+    // [acct2-bro] side212: without "(anonymous namespace)::", whose parenthesis hid every function of a file's unnamed
+    // namespace behind the namespace's own name (all of ngl_side.cpp showed as "cod3::ngl_side::")
+    static const std::string kUnnamed = "(anonymous namespace)::";
+    for (size_t at = s.find(kUnnamed); at != std::string::npos; at = s.find(kUnnamed, at)) s.erase(at, kUnnamed.size());
     // Keep the function's name, not its parameter list.
     const size_t paren = s.find('(');
     if (paren != std::string::npos && paren > 0) s.resize(paren);

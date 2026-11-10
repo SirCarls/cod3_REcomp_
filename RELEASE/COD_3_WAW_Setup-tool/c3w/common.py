@@ -340,7 +340,7 @@ WORK_MARKER = ".cod3-setup-work"
 # marker existed).
 WORK_NAMES = {"tools", "wsl", "scratch", "rust-target", "waw_xbox360", "waw_pc_disc", "mingw", "setup.log",
               "rexglue-sdk", "upscale", "sdk.stamp.json", "sdk-mingw.stamp.json", "cod3", "appimage-runtime",
-              "AppDir", "map-pack-unpack", "map-unpack", WORK_MARKER}
+              "AppDir", "map-pack-unpack", "map-unpack", "bro", WORK_MARKER}   # [acct2-bro] bro: Big Red One's build
 
 
 def owns_work_dir(work: Path) -> bool:

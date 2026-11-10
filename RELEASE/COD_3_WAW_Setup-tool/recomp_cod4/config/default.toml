@@ -1,0 +1,258 @@
+# Codegen overrides for Call of Duty 4's Xbox 360 default.xex (the campaign). [acct2-cod4]
+# Title: Call of Duty 4: Modern Warfare (World), default.xex SHA-1 2f3148ca7e4c17140e0d44714e204f570197af51.
+#
+# Filled in as the codegen and the first runs need it, the way World at War's ../recomp_waw/config/default.toml was:
+#   setjmp_address / longjmp_address  the C runtime's pair (Com_Error leaves a frame with longjmp)
+#   [functions]                       functions the analyzer can't find (tail-branch targets, pointer-only functions)
+#   [[midasm_hook]]                   the port's hooks, one block each, with the reason
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (the C runtime's), found 2026-11-07 in the generated code:
+#   setjmp 0x820F0CC0 stores f14-f31, LR, CR (+304) and r1 (+144) into the buffer in r3, clears +312 and returns 0;
+#     its 10 callers include Com_Init 0x821DDFF0 (it calls Com_Init_Try_Block_Function 0x821DD488) and Com_Frame
+#     0x821DD348.
+#   longjmp 0x820EEEC0 reads +312 first (the same unwind check as World at War's 0x8244DCD0) and restores the frame;
+#     its callers include Com_Error 0x821DB7F0.
+# Com_Error leaves the failing frame with longjmp to the setjmp of the thread's frame loop. Recompiled as plain
+# functions, longjmp would return into the code that raised the error instead. With both addresses the codegen makes
+# host setjmp/longjmp calls keyed by the guest buffer (as World at War's config does).
+# ---------------------------------------------------------------------------
+setjmp_address = 0x820F0CC0
+longjmp_address = 0x820EEEC0
+
+# ---------------------------------------------------------------------------
+# Function boundaries the analyzer cannot discover on its own
+# ---------------------------------------------------------------------------
+[functions]
+# Reached only by a tail branch and outside every .pdata range: the codegen's first pass stopped on it ("target not
+# in any function", 2026-11-07 17:33). Codegen discovers its extent itself.
+0x820B99F8 = {}  # b from 0x820B13D4
+
+# Functions only reachable through data pointers (vtable slots, code references) that have no .pdata entry:
+# tools/find_missing_funcs.py on the decrypted image (tools/xex_dump.py) against the codegen's function table,
+# 2026-11-07 17:35.
+0x820B13C8 = { size = 8 }  # vtable @0x82071464
+0x820B13E8 = { size = 8 }  # vtable @0x820714BC
+0x820B1410 = { size = 8 }  # vtable @0x820714E0
+0x820B99F0 = { size = 8 }  # vtable @0x8207174C
+0x820CCB78 = { size = 36 }  # vtable @0x82071568
+0x820CCBC0 = { size = 28 }  # vtable @0x8207155C
+0x820CEDC8 = { size = 8 }  # vtable @0x82071BD0
+0x820CEDE0 = { size = 8 }  # vtable @0x82071BA0
+0x820CEDE8 = { size = 8 }  # vtable @0x820714DC
+0x820CEDF0 = { size = 8 }  # vtable @0x82071B98
+0x820CEE08 = { size = 8 }  # vtable @0x820714C4
+0x820CEE30 = { size = 8 }  # vtable @0x82071BA4
+0x82283DE0 = { size = 4 }  # vtable @0x8203F090
+0x822AE510 = { size = 32 }  # vtable @0x82370D20
+0x822C2738 = { size = 12 }  # vtable @0x8237116C
+0x822CC1E8 = { size = 8 }  # code-ref @0x822CD804
+0x822CC1F0 = { size = 16 }  # code-ref @0x822CD740
+
+# ---------------------------------------------------------------------------
+# Calls through a table of function pointers that the codegen takes for switches (src/cod4_hooks.cpp)
+# ---------------------------------------------------------------------------
+# `lwzx` (an entry of a table of 28-byte records), `mtctr`, `bctr` is also how a jump table looks, so the codegen wrote
+# a switch for these three, with no real cases ("detected jump to null value" traps). World at War's 360 code has the
+# same function (its sub_821892E8). Each hook calls CTR's target at the `bctr` and returns, which is what the original
+# does. Found by a scan of the generated code's 184 switches (results/acct2-cod4-scripts/cod4scan.py), 2026-11-07.
+[[midasm_hook]]
+address = 0x82283DA0  # bctr of sub_82283D70: record field +0
+name = "cod4_ctr_tail_call"
+registers = ["ctx", "base"]
+return = true
+
+[[midasm_hook]]
+address = 0x82283DDC  # bctr of sub_82283DA8: record field +4
+name = "cod4_ctr_tail_call"
+registers = ["ctx", "base"]
+return = true
+
+[[midasm_hook]]
+address = 0x8226F9EC  # bctr of sub_8226F9B8: record field +8
+name = "cod4_ctr_tail_call"
+registers = ["ctx", "base"]
+return = true
+
+# ---------------------------------------------------------------------------
+# The game's console (src/cod4_hooks.cpp)
+# ---------------------------------------------------------------------------
+# CL_ConsolePrint (0x822D7040; r4 channel, r5 text): Com_Printf (0x821DC0A0, x360-family's name) formats the line and
+# calls it directly on this build; every console line also goes into the log (cod4_log_console).
+[[midasm_hook]]
+address = 0x822D7040
+name = "cod4_console_print"
+registers = ["ctx", "base"]
+
+# Com_Frame (0x821DD348: the main loop's once-a-frame call; it sets the frame's error return with setjmp and calls
+# Com_ErrorCleanup 0x821DCB30 after an error): a debug console command once the game is up (cod4_debug_command),
+# through Cbuf_AddText (0x821DE9D8).
+[[midasm_hook]]
+address = 0x821DD348
+name = "cod4_frame_start"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The front end's menus (src/cod4_hooks.cpp)
+# ---------------------------------------------------------------------------
+# Menus_OpenByName (0x821A1630; r4 the menu's name) and UI_SetActiveMenu (0x821A5888; r3 the local client, r4 the
+# front end's state), x360-family's names: each menu the game opens goes into the log (cod4_log_menus), so a test can
+# tell which screen it is on.
+[[midasm_hook]]
+address = 0x821A1630
+name = "cod4_menu_open"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x821A5888
+name = "cod4_set_active_menu"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# Debug: the guest stack pointer (src/cod4_hooks.cpp, off unless cod4_debug_stack)
+# ---------------------------------------------------------------------------
+# 0x821AE290: the script compiler's string copy (8 KB on the stack), where the first level load wrote to guest
+# 0x70160000; Com_Frame's start gives the main loop's own stack pointer to compare.
+[[midasm_hook]]
+address = 0x821AE290
+name = "cod4_trace_stack"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The native renderer's census (src/cod4_census.cpp, record only, off unless cod4_debug_native_census)
+# ---------------------------------------------------------------------------
+# 0x82123A88: the draw-surface list loop's (IW3's R_DrawSurfs, 0x82123950) call of a tess function through the table
+# at 0x8202FDA0: r28 = surface type * 4, r30 = the pass, r31 = the command buffer context.
+[[midasm_hook]]
+address = 0x82123A88
+name = "cod4_census_tess"
+registers = ["ctx", "base"]
+
+# 0x82123BD0: the backend's command loop (0x82123B90) calling a render command through the table at 0x8202FDC0
+# (CTR = the command's function).
+[[midasm_hook]]
+address = 0x82123BD0
+name = "cod4_census_command"
+registers = ["ctx", "base"]
+
+# The frame-rate audit's first counters (src/cod4_census.cpp, off unless cod4_debug_frame_audit): G_RunFrame's start
+# (a server frame) and CG_PredictPlayerState_Internal's start (the client's movement prediction), x360-family's names.
+[[midasm_hook]]
+address = 0x82252FE0
+name = "cod4_audit_server_frame"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82329358
+name = "cod4_audit_prediction"
+registers = ["ctx", "base"]
+
+# The census's pass labels (2026-11-07 20:05): the starts of the 14 functions that call R_DrawSurfs's wrapper
+# 0x82123AB0, one per draw-list pass; then the 2D and code-mesh path's draw, 0x8211F460 (called only from 0x8211F560).
+
+[[midasm_hook]]
+address = 0x823256C8
+name = "cod4_census_pass_0"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F420
+name = "cod4_census_pass_1"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F4C8
+name = "cod4_census_pass_2"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F598
+name = "cod4_census_pass_3"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F638
+name = "cod4_census_pass_4"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F688
+name = "cod4_census_pass_5"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F728
+name = "cod4_census_pass_6"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F7C8
+name = "cod4_census_pass_7"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232F868
+name = "cod4_census_pass_8"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x823323B8
+name = "cod4_census_pass_9"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82332598
+name = "cod4_census_pass_10"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82332740
+name = "cod4_census_pass_11"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82332968
+name = "cod4_census_pass_12"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82332A28
+name = "cod4_census_pass_13"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8211F460
+name = "cod4_census_flush"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# A jump table the codegen switches on the wrong register
+# ---------------------------------------------------------------------------
+# The script lexer's action dispatch (the scanner function that GScr_LoadScriptAndLabel's compile reaches) is a
+# 99-entry jump table indexed by r10 (`cmplwi cr6,r10,98`, `rlwinm r0,r10,2,0,29`, `lwzx r0,r12,r0`, `bctr`), but the
+# codegen wrote `switch (ctx.r7.u32)`. The lexer then ran the wrong token actions: a string token's copy got length -1
+# and ran over the stack into its guard page (guest 0x70160000, the first level load, 2026-11-07 18:00). This entry
+# gives the codegen the right register; the labels are the table's own entries (read from the image by
+# results/acct2-cod4-scripts/jtcheck.py, which checks every switch's register: this is the only one).
+[[switch_tables]]  # sub_821AE3D8: the switch was on r7, the index is r10; table 0x821AE644, 99 entries
+address = 0x821AE640
+register = 10
+labels = [
+  0x821AE850, 0x821AE8F8, 0x821AE914, 0x821AE8F8, 0x821AE8F8, 0x821AE8F8,
+  0x821AE938, 0x821AE98C, 0x821AE9C8, 0x821AEA04, 0x821AEA28, 0x821AEA4C,
+  0x821AEA70, 0x821AEA94, 0x821AEAB8, 0x821AEADC, 0x821AEB00, 0x821AEB24,
+  0x821AEB48, 0x821AEB6C, 0x821AEB90, 0x821AEBB4, 0x821AEBD8, 0x821AEBFC,
+  0x821AEC20, 0x821AEC44, 0x821AEC68, 0x821AEC8C, 0x821AECB0, 0x821AECD4,
+  0x821AECF8, 0x821AED1C, 0x821AED40, 0x821AED64, 0x821AED88, 0x821AEDAC,
+  0x821AEDE4, 0x821AEE1C, 0x821AEE40, 0x821AEE64, 0x821AEE88, 0x821AEEAC,
+  0x821AEED0, 0x821AEEF4, 0x821AEF18, 0x821AEF3C, 0x821AEF60, 0x821AEF84,
+  0x821AEFA8, 0x821AEFCC, 0x821AEFF0, 0x821AF014, 0x821AF038, 0x821AF05C,
+  0x821AF080, 0x821AF0A4, 0x821AF0C8, 0x821AF0EC, 0x821AF110, 0x821AF134,
+  0x821AF158, 0x821AF17C, 0x821AF1A0, 0x821AF1C4, 0x821AF1E8, 0x821AF20C,
+  0x821AF230, 0x821AF254, 0x821AF278, 0x821AF29C, 0x821AF2C0, 0x821AF2E4,
+  0x821AF308, 0x821AF32C, 0x821AF350, 0x821AF374, 0x821AF398, 0x821AF3BC,
+  0x821AF3E0, 0x821AF404, 0x821AF428, 0x821AF44C, 0x821AF470, 0x821AF494,
+  0x821AF4B8, 0x821AF4DC, 0x821AF500, 0x821AF524, 0x821AF548, 0x821AF56C,
+  0x821AF590, 0x821AF5B4, 0x821AF5F0, 0x821AF62C, 0x821AE958, 0x821AE7D0,
+  0x821AF660, 0x821AF660, 0x821AF660,
+]

@@ -59,6 +59,11 @@ REXCVAR_DEFINE_BOOL(cod3_profile_auto, true, "cod3/Performance",
                     "their time in, 10 s each; the reports go to userdata/logs and into "
                     "cod3_report (cod3_profile in the F10 console does it by hand)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-07 side217: threads cod3_profile_auto skips because they are under its thresholds (the render
+// job's thread at 30% in native mode), named by the start of their names.
+REXCVAR_DEFINE_STRING(cod3_profile_auto_names, "", "cod3/Performance",
+                      "cod3_profile_auto also profiles every thread whose name starts with one of these "
+                      "(comma-separated, e.g. XThread82123DE0), however busy it is");
 
 namespace cod3 {
 
@@ -428,6 +433,30 @@ void ThreadProfiler::WorkerLoop() {
       if (row_cpu("GPU emulation") >= 40.0f) auto_queue.push_back("gpu");
       if (!main_limits && row_cpu("game main thread") >= 50.0f) auto_queue.push_back("main");
       if (row_cpu("window, input, presenting") >= 40.0f) auto_queue.push_back("window");
+      // [acct2-bro] side212: the native renderer's own thread (cod3_native_worker), when it is busy
+      for (const ThreadRow& row : r.rows) {
+        if (row.name.rfind("ngl worker", 0) == 0 && row.cpu_pct >= 30.0f) {
+          auto_queue.push_back("ngl worker");
+          break;
+        }
+      }
+      // [acct2-bro] side217: cod3_profile_auto_names, by thread id ("#id", as the lock holder below)
+      {
+        const std::string names = REXCVAR_GET(cod3_profile_auto_names);
+        size_t start = 0;
+        while (start < names.size()) {
+          size_t end = names.find(',', start);
+          if (end == std::string::npos) end = names.size();
+          const std::string prefix = names.substr(start, end - start);
+          start = end + 1;
+          if (prefix.empty()) continue;
+          for (const ThreadRow& row : r.rows) {
+            if (row.name.rfind(prefix, 0) != 0) continue;
+            const std::string id = "#" + std::to_string(row.id);
+            if (std::find(auto_queue.begin(), auto_queue.end(), id) == auto_queue.end()) auto_queue.push_back(id);
+          }
+        }
+      }
       // The thread holding the SDK's global lock while the GPU emulation waits
       // for it: its profile says what it does with the lock held.
       for (const ThreadRow& row : r.rows) {
@@ -440,6 +469,9 @@ void ThreadProfiler::WorkerLoop() {
       }
       std::string list;
       for (const auto& t : auto_queue) list += (list.empty() ? "" : ", ") + t;
+      // [acct2-bro] side222: every thread's share and waits a minute into play (the table at the start comes
+      // from the loading screen), so the function profiles below have their context
+      log_table("every thread a minute into play, over the last second:");
       REXLOG_INFO("cod3: profiler: after a minute of play, profiling {} for 10 s each "
                   "(cod3_profile_auto; reports in userdata/logs and in cod3_report)",
                   list.empty() ? std::string("no thread (none is busy)") : list);

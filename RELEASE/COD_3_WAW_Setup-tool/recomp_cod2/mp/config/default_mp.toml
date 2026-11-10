@@ -1,0 +1,124 @@
+# Codegen overrides for Call of Duty 2's default_mp.xex (Xbox 360, USA/Europe),
+# SHA-1 5c9672b2f3a9178192a6fab533ecd0d513ec3280, title ID 415607D1,
+# version 0.0.0.1, built 2005-10-06. [acct2-cod2]
+#
+# The same keys as ../../config/default.toml (the campaign's); addresses are
+# this program's own. How each was found: dev/agents/acct2-cod2/NOTES.md.
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (C runtime), matched by their translated code against Call
+# of Duty 3's setjmp 0x82351CC0 (score 0.986; the next best 0.070) and longjmp
+# 0x8234EEC0 (1.000; the next best 0.157), as in the campaign's file.
+# ---------------------------------------------------------------------------
+setjmp_address = 0x822B76D0
+longjmp_address = 0x822B3D20
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own (data pointers and
+# code-built addresses, no .pdata entry): tools/find_missing_funcs.py on the
+# flat image (tools/xex_dump.py, ImageBase set to 0x82000000 first). 0x820C0A38
+# is also the one Ghidra start that data points at and the codegen lacked.
+# The codegen works out each extent; the comment has the scan's estimate.
+# ---------------------------------------------------------------------------
+[functions]
+0x820C0A38 = {}  # vtable @0x82069F38, ~8 bytes
+0x820C3870 = {}  # vtable @0x82069F9C, ~8 bytes
+0x820C3880 = {}  # vtable @0x82069FB0, ~8 bytes
+0x820C3888 = {}  # vtable @0x82069FB4, ~8 bytes
+0x820C3890 = {}  # vtable @0x82069FB8, ~8 bytes
+0x820C3898 = {}  # vtable @0x82069FC0, ~8 bytes
+0x820C38D0 = {}  # vtable @0x82069FE0, ~8 bytes
+0x820C38F0 = {}  # vtable @0x82069FF0, ~8 bytes
+0x820C3900 = {}  # vtable @0x82069FF8, ~8 bytes
+0x820C3910 = {}  # vtable @0x8206A000, ~8 bytes
+0x820C3F70 = {}  # vtable @0x8206A070, ~8 bytes
+0x820C4C20 = {}  # vtable @0x8206A0C4, ~8 bytes
+0x820C4C28 = {}  # vtable @0x8206A0C8, ~8 bytes
+0x820C4C38 = {}  # vtable @0x8206A0DC, ~8 bytes
+0x820C4C40 = {}  # vtable @0x8206A0E4, ~8 bytes
+0x820C4C48 = {}  # vtable @0x8206A0E8, ~8 bytes
+0x820C4C50 = {}  # vtable @0x8206A0EC, ~8 bytes
+0x820C4C58 = {}  # vtable @0x8206A0F0, ~8 bytes
+0x820CAF20 = {}  # vtable @0x8206A2C0, ~8 bytes
+0x820CAF28 = {}  # vtable @0x8206A2C4, ~8 bytes
+0x820E44C0 = {}  # vtable @0x8206AB88, ~8 bytes
+0x820E5610 = {}  # vtable @0x8206ABE8, ~8 bytes
+0x820E5620 = {}  # vtable @0x8206ABFC, ~8 bytes
+0x820E5628 = {}  # vtable @0x8206AC00, ~8 bytes
+0x820E5630 = {}  # vtable @0x8206AC04, ~8 bytes
+0x820E5638 = {}  # vtable @0x8206AC08, ~8 bytes
+0x820E5648 = {}  # vtable @0x8206AC14, ~8 bytes
+0x820E5650 = {}  # vtable @0x8206AC18, ~8 bytes
+0x820E5670 = {}  # vtable @0x8206AC28, ~8 bytes
+0x820E5690 = {}  # vtable @0x8206AC38, ~8 bytes
+0x820E56A0 = {}  # vtable @0x8206AC40, ~8 bytes
+0x820E56B0 = {}  # vtable @0x8206AC48, ~8 bytes
+0x820E68D8 = {}  # vtable @0x8206ACCC, ~8 bytes
+0x820EE8F0 = {}  # code-ref @0x820EE8D8, ~24 bytes
+0x820FBAB4 = {}  # code-ref @0x820FBA9C, ~12 bytes
+0x8211E538 = {}  # code-ref @0x8211E520, ~204 bytes
+0x82123F40 = {}  # code-ref @0x82123F28, ~104 bytes
+0x8212D8D8 = {}  # vtable @0x82005A64, ~16 bytes
+0x8212D8E8 = {}  # vtable @0x82005A68, ~16 bytes
+0x8212D8F8 = {}  # vtable @0x82005A6C, ~16 bytes
+0x8212DD20 = {}  # vtable @0x82005C2C, ~40 bytes
+0x8212DD48 = {}  # vtable @0x82005C30, ~40 bytes
+0x8212DD70 = {}  # vtable @0x82005C34, ~40 bytes
+0x8212DD98 = {}  # vtable @0x82005C38, ~40 bytes
+0x8212E1C8 = {}  # vtable @0x82005C6C, ~32 bytes
+0x8212E1E8 = {}  # vtable @0x82005D08, ~4 bytes
+0x8212E210 = {}  # vtable @0x82005EF4, ~32 bytes
+0x8212E230 = {}  # code-ref @0x82137F7C, ~16 bytes
+0x8212E240 = {}  # code-ref @0x82137AB4, ~16 bytes
+0x8212E250 = {}  # code-ref @0x82137B04, ~16 bytes
+0x8212E260 = {}  # code-ref @0x82137B54, ~16 bytes
+0x8212E270 = {}  # code-ref @0x82137C7C, ~16 bytes
+0x8212E280 = {}  # code-ref @0x82137FCC, ~16 bytes
+0x8212E290 = {}  # code-ref @0x82137D5C, ~16 bytes
+0x8212E2A0 = {}  # code-ref @0x8213801C, ~16 bytes
+0x8212E2B0 = {}  # code-ref @0x82137DAC, ~16 bytes
+0x8212E2C0 = {}  # code-ref @0x8213806C, ~16 bytes
+0x82139830 = {}  # vtable @0x8200F128, ~8 bytes
+0x8216DEF4 = {}  # code-ref @0x8216DEDC, ~24 bytes
+0x82182B20 = {}  # vtable @0x8201A07C, ~112 bytes
+0x821B7924 = {}  # code-ref @0x821B790C, ~12 bytes
+0x82213A2C = {}  # code-ref @0x82213A14, ~68 bytes
+0x82228540 = {}  # vtable @0x82022AE4, ~80 bytes
+0x82228590 = {}  # vtable @0x82022AEC, ~24 bytes
+0x82228710 = {}  # vtable @0x82022B74, ~80 bytes
+0x82260588 = {}  # vtable @0x82028068, ~8 bytes
+0x82266E0C = {}  # code-ref @0x82266DF4, ~8 bytes
+0x82266EC8 = {}  # code-ref @0x82266EB0, ~8 bytes
+0x82266F80 = {}  # code-ref @0x82266F68, ~8 bytes
+0x82267000 = {}  # code-ref @0x82266FE8, ~8 bytes
+0x822670A8 = {}  # code-ref @0x82267090, ~8 bytes
+0x82267114 = {}  # code-ref @0x822670FC, ~8 bytes
+0x822673A0 = {}  # code-ref @0x82267388, ~8 bytes
+0x822673FC = {}  # code-ref @0x822673E4, ~8 bytes
+0x8226748C = {}  # code-ref @0x82267478, ~356 bytes
+0x82267628 = {}  # code-ref @0x82267614, ~308 bytes
+0x822677FC = {}  # code-ref @0x822677E4, ~148 bytes
+0x82269AB0 = {}  # code-ref @0x82269A98, ~136 bytes
+0x82285548 = {}  # code-ref @0x82285530, ~16 bytes
+0x82298CB0 = {}  # vtable @0x82031AE0, ~16 bytes
+0x822CCC20 = {}  # code-ref @0x822CCC0C, ~12 bytes
+0x823B1360 = {}  # code-ref @0x823B14C0, ~32 bytes
+0x823B1380 = {}  # code-ref @0x823B14DC, ~20 bytes
+0x8248DEC0 = {}  # vtable @0x824B0020, ~20 bytes
+
+# Not a function start (tried 2026-11-07 and taken back): the first multiplayer
+# run's "XThread::Execute - No function registered at 8228BAB0" names a
+# `b 0x8228BAB8` inside the UTF-8 text conversion at 0x8228BA08 (it compares the
+# code page with 65001), so the thread's start address the game passed was
+# wrong to begin with. Splitting the function there broke the conversion (a
+# crash 7 ms in). The cause is upstream; see NOTES.md.
+# (16:40: the cause was that cod2mp loaded the campaign's default.xex; fixed by
+# Cod2App::OnLoadXexImage.)
+
+# A jump table the codegen sized too small (results/acct2-cod2-scripts/q/switches.py,
+# 2026-11-07): 9 cases translated, 14 in the table at 0x8231F008 (its first label
+# sits right after the table's 14 words).
+[[switch_tables]]
+address = 0x8231F004
+register = 28
+labels = [0x8231F040, 0x8231F0A8, 0x8231F204, 0x8231F1A4, 0x8231F9F0, 0x8231F9F0, 0x8231F28C, 0x8231F30C, 0x8231F30C, 0x8231F418, 0x8231F4E4, 0x8231F74C, 0x8231F5E0, 0x8231F8B8]

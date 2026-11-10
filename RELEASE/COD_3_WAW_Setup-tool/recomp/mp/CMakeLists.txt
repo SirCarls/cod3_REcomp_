@@ -100,6 +100,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/test_syslink_mp.cpp  # [claude-9b-think] tests: host or join a system link match from the front end (cod3_test_syslink)
     ${COD3_SRC}/game/mp/pose_debug_mp.cpp  # [claude-9b] rival players' poses between draws, measurement (cod3_debug_pose_mp)
     ${COD3_SRC}/game/mp/server_step_mp.cpp  # [claude-9b] the host's game in fixed updates (cod3mp_server_hz, off until tested)
+    ${COD3_SRC}/render/native_compare.cpp  # [rexglue-native] 2026-11-09 ngl_side.cpp's live compare (cod3mp doesn't attach it yet: off)
     ${COD3_SRC}/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start
     ${COD3_SRC}/test_input.cpp
     ${COD3_SRC}/ui/announcement_feed.cpp
@@ -144,6 +145,9 @@ cod3_render_link(cod3mp)  # [rust-renderer] made by the top folder's cmake/cod3_
 if(TARGET ngl_vk)
     target_link_libraries(cod3mp PRIVATE ngl_vk)
     target_compile_definitions(cod3mp PRIVATE COD3_NGL_VK=1)
+    if(COD3_RENDERDOC_INCLUDE_DIR)  # the SDK's renderdoc_app.h, found by the top folder (ngl_side.cpp needs it)
+        target_include_directories(cod3mp PRIVATE "${COD3_RENDERDOC_INCLUDE_DIR}")
+    endif()
 endif()
 
 if(MINGW)

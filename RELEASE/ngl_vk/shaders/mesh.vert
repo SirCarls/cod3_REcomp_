@@ -32,9 +32,9 @@ layout(location = 8) flat out uvec4 light_colors;
 layout(location = 9) flat out vec3 ambient;
 layout(location = 10) out vec3 vertex_normal;
 layout(location = 11) flat out uint flags;
-layout(location = 12) flat out vec3 eye_x;     // the world-view-projection's rows for x, y and w, each of unit length:
-layout(location = 13) flat out vec3 eye_y;     // a normal in the mesh's space turned toward the eye (shiny surfaces)
-layout(location = 14) flat out vec3 eye_w;
+layout(location = 12) flat out vec4 eye_x;     // the world-view-projection's rows for x, y and w, each of unit length:
+layout(location = 13) flat out vec4 eye_y;     // a normal in the mesh's space turned toward the eye (shiny surfaces);
+layout(location = 14) flat out vec4 eye_w;     // their w's: the eye's place in the mesh's own space (x, y, z)
 layout(location = 15) out vec4 shadow_position;   // in the sun's shadow map's clip space (mesh.frag's sun_reaching)
 
 // The sun's shadow (ngl_vk_set_sun_shadow): the camera's clip space to the light's, Direct3D's row by row like the
@@ -57,10 +57,20 @@ void main()
         mat4 m = draw.world_view_projection;
         vec3 x = vec3(m[0][0], m[1][0], m[2][0]), y = vec3(m[0][1], m[1][1], m[2][1]);
         vec3 w = vec3(m[0][3], m[1][3], m[2][3]);
+        // [rexglue-native] 2026-11-09: the eye's place in the mesh's own space (the fabric's sheen and highlights,
+        // mesh.frag): the point where clip x, y and w are all 0, x . e + m[3][0] = y . e + m[3][1] = w . e + m[3][3] = 0.
+        // A projection without perspective has no such point (w is the same everywhere): then a point far back along
+        // the depth row (z), so the way toward the eye is the same for every pixel, as it is there.
+        vec3 z = vec3(m[0][2], m[1][2], m[2][2]);
+        mat3 rows = transpose(mat3(x, y, w));       // rows * e = (x . e, y . e, w . e)
+        float scale = length(x) * length(y) * length(w);
+        vec3 eye = scale > 0.0 && abs(determinant(rows)) > 1e-6 * scale
+                   ? inverse(rows) * -vec3(m[3][0], m[3][1], m[3][3])
+                   : position - 1e6 * (dot(z, z) > 0.0 ? normalize(z) : vec3(0.0, 0.0, 1.0));
 
-        eye_x = dot(x, x) > 0.0 ? normalize(x) : vec3(0.0);
-        eye_y = dot(y, y) > 0.0 ? normalize(y) : vec3(0.0);
-        eye_w = dot(w, w) > 0.0 ? normalize(w) : vec3(0.0);
+        eye_x = vec4(dot(x, x) > 0.0 ? normalize(x) : vec3(0.0), eye.x);
+        eye_y = vec4(dot(y, y) > 0.0 ? normalize(y) : vec3(0.0), eye.y);
+        eye_w = vec4(dot(w, w) > 0.0 ? normalize(w) : vec3(0.0), eye.z);
     }
     ambient = draw.ambient;
     tint = uint(gl_InstanceIndex);          // the draw's tint, shading and flags, passed as its first instance
@@ -74,6 +84,19 @@ void main()
                  ? mix(float(c >> 24) / 255.0, draw.fog.z,
                        clamp((gl_Position.w - draw.fog.x) / (draw.fog.y - draw.fog.x), 0.0, 1.0))
                  : 0.0;
+    // [waw-decomp] 2026-11-10: a start below 0 asks for exponential fog instead, as Call of Duty 2's vertex shaders
+    // make it: the amount at the end x (1 - 2^(start x the distance)). Their distance is the length of the corner's
+    // place in view space (sqrt of its dot product with itself), the way to the eye itself, not the view's depth
+    // (clip w), so it is measured from the eye's place above, in the mesh's own units, times the length of the
+    // matrix's w row (a scaled model's scale; 1 for a mesh in the world's units, clip w being the view's depth); a
+    // draw without perspective (the eye put far back there) keeps the depth.
+    if (draw.fog.x < 0.0) {
+        mat4 m = draw.world_view_projection;
+        float units = length(vec3(m[0][3], m[1][3], m[2][3]));
+        float from_eye = length(position - vec3(eye_x.w, eye_y.w, eye_w.w));
+        float eye_distance = from_eye < 1e5 ? from_eye * units : max(gl_Position.w, 0.0);
+        fog_amount = draw.fog.z * (1.0 - exp2(draw.fog.x * eye_distance));
+    }
     fog_rgb = vec3(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u)) / 255.0;
     gl_Position.y = -gl_Position.y;         // Direct3D's clip space has y up, Vulkan's down; z is 0..1 in both
 }

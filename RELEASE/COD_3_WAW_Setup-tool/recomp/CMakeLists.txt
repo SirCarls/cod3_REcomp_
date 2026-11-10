@@ -127,6 +127,7 @@ set(COD3_SOURCES
     src/ui/film_text.cpp  # [acct2-ocr] the films' burned-in cards in the chosen language (campaign only)
     src/game/watchdog.cpp
     src/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start (both programs)
+    src/render/native_compare.cpp  # [rexglue-native] 2026-11-09 the native renderer and the emulated GPU side by side, live (cod3_native_compare; campaign first)
     src/ui/announcement_feed.cpp
     src/ui/console_pages.cpp
     src/ui/console_view.cpp
@@ -172,6 +173,7 @@ cod3_render_link(cod3)
 # native renderer at NGL's level (dev/agents/acct2-bro/COD3-NGL-PLAN.md). Only the cod3_debug_ngl_side check uses it,
 # off by default; Linux builds with the Vulkan headers and glslc only, the others build without it (the check then
 # only counts). COD3_NGL_VK_DIR defaults to engine/'s neighbor, or the folder two up from this one.
+# [rexglue-native] 2026-11-09: Windows builds have it too (below); the setup tool gives both builds COD3_ENGINE_DIR.
 set(COD3_NGL_VK_DIR "" CACHE PATH "The project's ngl_vk/ folder (the native renderer's Vulkan library)")
 set(_cod3_ngl_vk "${COD3_NGL_VK_DIR}")
 if(NOT _cod3_ngl_vk AND COD3_ENGINE_DIR AND EXISTS "${COD3_ENGINE_DIR}/../ngl_vk/CMakeLists.txt")
@@ -180,14 +182,39 @@ endif()
 if(NOT _cod3_ngl_vk AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk/CMakeLists.txt")
     get_filename_component(_cod3_ngl_vk "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk" ABSOLUTE)
 endif()
-if(NOT WIN32 AND _cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt")
-    find_package(Vulkan QUIET)
+# [rexglue-native] 2026-11-09: Windows too. ngl_vk opens the Vulkan loader when it starts, so it needs only the Vulkan
+# headers and glslc (which runs on the build PC). The Windows build made on Linux takes the headers from its
+# CMAKE_PREFIX_PATH, the SDK's install (rexglue-sdk/out/install/mingw/include/vulkan), never the build PC's own.
+# [rexglue-native] 2026-11-10 (2.40.0): Windows builds stay without ngl_vk for now (COD3_NGL_VK_WINDOWS=ON to try it):
+# the release candidate's Windows game drew the forest's world white under Wine (owner 13:20: "forest within wine
+# looks bad now"), so on Windows cod3_native_vulkan is still ignored, and said so in the log, until that is found.
+option(COD3_NGL_VK_WINDOWS "Build the native renderer (ngl_vk) into the Windows game too (not ready)" OFF)  # [rexglue-native]
+if(_cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt" AND (NOT WIN32 OR COD3_NGL_VK_WINDOWS))  # [rexglue-native]
+    if(CMAKE_CROSSCOMPILING)  # [rexglue-native]
+        find_path(NGL_VK_VULKAN_INCLUDE_DIR vulkan/vulkan.h NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH  # [rexglue-native]
+            NO_CMAKE_ENVIRONMENT_PATH)  # [rexglue-native]
+    else()  # [rexglue-native]
+        find_package(Vulkan QUIET)
+        set(NGL_VK_VULKAN_INCLUDE_DIR "${Vulkan_INCLUDE_DIR}")  # [rexglue-native] the headers only (as before: the system's)
+    endif()  # [rexglue-native]
     find_program(COD3_NGL_VK_GLSLC NAMES glslc HINTS "${Vulkan_GLSLC_EXECUTABLE}")
-    if(Vulkan_FOUND AND COD3_NGL_VK_GLSLC)
+    if(NGL_VK_VULKAN_INCLUDE_DIR AND COD3_NGL_VK_GLSLC)  # [rexglue-native] (was Vulkan_FOUND: the loader too)
         add_subdirectory("${_cod3_ngl_vk}" "${CMAKE_CURRENT_BINARY_DIR}/ngl_vk")
         target_link_libraries(cod3 PRIVATE ngl_vk)
         target_compile_definitions(cod3 PRIVATE COD3_NGL_VK=1)
         message(STATUS "cod3: ngl_vk from ${_cod3_ngl_vk} (cod3_debug_ngl_side)")
+        # ngl_side.cpp shows its picture through the SDK's Vulkan presenter (cod3_ngl_side_show). Those headers
+        # include renderdoc_app.h by its bare name; the SDK keeps it in include/renderdoc (installed) or
+        # thirdparty/renderdoc (source tree), neither on the SDK targets' include path.
+        get_target_property(_cod3_rex_includes rex::runtime INTERFACE_INCLUDE_DIRECTORIES)
+        find_path(COD3_RENDERDOC_INCLUDE_DIR renderdoc_app.h
+            HINTS ${_cod3_rex_includes} "${rexglue_DIR}/../../../include" "${REXSDK_DIR}/thirdparty"
+            PATH_SUFFIXES renderdoc NO_DEFAULT_PATH)
+        if(COD3_RENDERDOC_INCLUDE_DIR)
+            target_include_directories(cod3 PRIVATE "${COD3_RENDERDOC_INCLUDE_DIR}")
+        else()
+            message(WARNING "cod3: the SDK's renderdoc_app.h wasn't found; ngl_side.cpp won't build")
+        endif()
     else()
         message(STATUS "cod3: no ngl_vk (Vulkan headers or glslc missing); cod3_debug_ngl_side only counts")
     endif()

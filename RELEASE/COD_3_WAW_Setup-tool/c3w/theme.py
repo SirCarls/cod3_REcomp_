@@ -74,6 +74,12 @@ THEME_ORDER = ["cod3", "olive", "parchment", "contrast"]
 # 3 tab's own colors are the "cod3" theme above. A tab can also use any of
 # the four themes instead (its theme picker lists its own colors first).
 GAME_PALETTES: Dict[str, Theme] = {t.id: t for t in (
+    # [acct2-bro] Big Red One: warm khaki and sand, the division's red as the accent.
+    Theme("bro", "Big Red One", "Khaki, sand and the division's red.", _game(
+        (20, 18, 13), (27, 24, 18), (46, 41, 31), (64, 57, 42), (82, 72, 52),
+        (56, 50, 37), (80, 70, 50), (128, 52, 40), (24, 21, 16), (42, 37, 27), (118, 104, 80), 0.75,
+        (234, 226, 206), (162, 152, 128), (196, 54, 42), (232, 108, 90),
+        (132, 188, 100), (228, 182, 86), (236, 100, 84))),
     # (Its borders are a warm gray, not red: a red box reads as a mistake.)
     Theme("waw", "World at War", "Charcoal, blood red and bone white.", _game(
         (14, 12, 12), (22, 18, 18), (40, 34, 33), (58, 48, 46), (76, 60, 56),
@@ -85,6 +91,12 @@ GAME_PALETTES: Dict[str, Theme] = {t.id: t for t in (
         (48, 52, 58), (70, 76, 85), (112, 82, 50), (19, 21, 24), (34, 37, 42), (98, 104, 114), 0.7,
         (226, 228, 230), (148, 154, 162), (214, 128, 44), (232, 156, 82),
         (126, 190, 110), (230, 186, 86), (228, 96, 80))),
+    # [waw-decomp] Call of Duty 4: night-vision green on near black, desert tan for the text.
+    Theme("cod4", "Call of Duty 4", "Night black, desert tan and night-vision green.", _game(
+        (13, 15, 13), (19, 22, 19), (36, 41, 36), (52, 59, 52), (68, 77, 68),
+        (46, 52, 46), (68, 77, 68), (70, 110, 60), (17, 20, 17), (32, 37, 32), (110, 118, 100), 0.7,
+        (226, 220, 200), (156, 152, 134), (120, 196, 86), (160, 220, 128),
+        (130, 196, 106), (224, 186, 92), (226, 98, 82))),
     Theme("coduo", "United Offensive", "Olive drab, khaki and field green.", _game(
         (17, 20, 13), (23, 27, 18), (42, 48, 32), (58, 66, 43), (74, 84, 54),
         (52, 59, 38), (74, 84, 54), (104, 112, 60), (21, 25, 16), (38, 44, 28), (112, 124, 74), 0.75,
@@ -144,6 +156,16 @@ DISPLAY_FONTS: Dict[str, Tuple[Tuple[str, str], ...]] = {
               ("TeX Gyre Pagella", "bold"), ("URW Palladio L", "bold"), ("Liberation Serif", "bold"),
               ("Times New Roman", "bold"), ("FreeSerif", "bold"), ("Nimbus Roman", "bold"),
               ("DejaVu Serif", "bold")),
+    # [waw-decomp] Call of Duty 4: a square, technical sans.
+    "cod4": (("Bahnschrift SemiBold", "normal"), ("Eurostile", "bold"), ("Michroma", "normal"),
+             ("Segoe UI Black", "normal"), ("Verdana", "bold"),
+             ("Saira Condensed", "bold"), ("Roboto Condensed", "bold"), ("Ubuntu Condensed", "normal"),
+             ("Liberation Sans Narrow", "bold"), ("DejaVu Sans Condensed", "bold"), ("Arial", "bold")),
+    # [acct2-bro] Stencil type where the system has it (stenciled crates and vehicles), else a heavy sans.
+    "bro": (("Stencil", "normal"), ("Stardos Stencil", "bold"), ("Allerta Stencil", "normal"),
+            ("Black Ops One", "normal"), ("Franklin Gothic Heavy", "normal"), ("Franklin Gothic Medium", "normal"),
+            ("Arial Black", "normal"), ("DejaVu Sans Condensed", "bold"), ("Liberation Sans Narrow", "bold"),
+            ("Nimbus Sans Narrow", "bold"), ("Arial", "bold"), ("DejaVu Sans", "bold")),
 }
 
 
@@ -412,7 +434,7 @@ def setup_fonts(root, windows: bool = False) -> None:
     tkfont.nametofont("TkHeadingFont", root=root).configure(family=family, size=size, weight="bold")
 
 
-GAME_ORDER = ("cod3", "waw", "cod2", "coduo")   # games.GAME_ORDER (which imports nothing from here)
+GAME_ORDER = ("cod3", "bro", "waw", "cod2", "cod4", "coduo")   # games.GAME_ORDER [waw-decomp] cod4 (which imports nothing from here)
 _assigned: Dict[int, Dict[str, Tuple[str, str]]] = {}   # per Tk interpreter
 
 

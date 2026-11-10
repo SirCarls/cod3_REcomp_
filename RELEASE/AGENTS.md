@@ -23,6 +23,12 @@ A PC port of Call of Duty 3 (Xbox 360), built from the player's own disc, and, l
 - **Generated code is never edited by hand** (`recomp/generated/`). SDK changes are numbered patches in `COD_3_WAW_Setup-tool/patches/`.
 - **Performance work never changes game speed**: the game clock follows real time.
 - **Quake III's source (GPL) is for understanding and names only.** Code here is MIT; never copy GPL code in.
+- **Native rendering is required for every game** (owner 2026-11-07 18:06: "Yes native rendering is required for all
+  of these"): World at War, Call of Duty 4, Call of Duty 2 and the rest each get a native renderer (as Big Red One and
+  Call of Duty 3 have, through `ngl_vk/`); the SDK's GPU emulation is the reference and a fallback, not how a game
+  ships. Plan and sources: `dev/agents/acct2-bro/NATIVE-RENDERERS.md`.
+- **Every outside project is for information only, whatever its license** (owner 2026-11-07): KisakCOD, KisakBlack,
+  OpenCoD1, IW4x, and IW4L although it is Apache-2.0. Read them for names, formats and behavior; never copy their code.
 
 ## Working alongside other agents
 

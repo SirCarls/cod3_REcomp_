@@ -1,0 +1,128 @@
+address	name	group	stack_bytes	register_args	returns	stand_in_return	params	size	problems
+000634D0	nglSaveScreenshot	debug	0		void	zero	int param_1	73	
+00064660	nglResetDeviceBindings	frame	0		void	zero	void	43	
+00064EC0	nglEndFrame	frame	0		void	zero	void	1201	
+00064690	nglBeginFrame	frame	0	edx	void	zero	void	231	ret from tail-called 0x00066ED0
+00064650	nglGetScreenHeight	frame	0		undefined4	480	void	6	
+00064640	nglGetScreenWidth	frame	0		undefined4	640	void	6	
+000778B0	nglSetFrameMemorySize	frame	0		void	zero	undefined4 param_1, uint param_2, char param_3	526	
+00064570	nglShutdown	frame	0		void	zero	void	1	
+0005E670	nglSetEndFrameCallback	frame	0		void	zero	undefined4 param_1, undefined4 param_2	20	
+00075ED0	nglInitRenderStates	frame	0	ecx	void	zero	byte * param_1	376	ret from tail-called 0x00075780
+000649E0	nglSelectVideoMode	frame	0		void	zero	void * this, int param_1, uint param_2	456	
+00064BC0	nglInit	frame	0		void	zero	void	767	
+0005E650	nglSetPreSwapCallback	frame	0		void	zero	undefined4 param_1, undefined4 param_2	20	
+0006F8D0	nglSetAmbientColor	light	0		void	zero	undefined4 param_1, undefined4 param_2, undefined4 param_3	131	
+0006F7C0	nglCreateLightSet	light	0		undefined4 *	block	void	140	
+0006F960	nglAddDirectionalLight	light	0		void	zero	uint param_1, undefined4 * param_2, undefined4 * param_3	136	
+00070120	nglEvalLight	light	0		float *	block	float * param_1, int param_2, float * param_3	49	
+0006F9F0	nglAddPointLight	light	0		void	zero	uint param_1, float * param_2, float param_3, float param_4, float * param_5	177	
+0006F580	nglLightSetAddLight	light	0		void	zero	undefined4 param_1, undefined4 param_2, uint param_3	273	
+000760C0	nglSetVertexShaderCached	material	0		void	zero	undefined4 * param_1	89	
+000760A0	nglSetPixelShaderProgramCached	material	0		void	zero	int * param_1	32	
+000761F0	nglVertexShader_Init	material	0		void	zero	undefined4 * param_1, undefined4 param_2, undefined4 param_3	18	
+00076210	nglPixelShader_Init	material	0		void	zero	undefined4 * param_1, undefined4 param_2	11	
+00075AC0	nglSetBlendMode	material	12	ecx	void	zero	void * this, int param_1, int param_2, int param_3	684	
+00076470	nglInitShaderConstants	material	0		void	zero	char param_1	331	
+00045790	nglInitShaders	material	0		void	zero	void	185	ret from tail-called 0x00046970
+00046870	cdDebug_InitMaterial	material	0	ecx	void	zero	undefined4 * param_1	28	
+00045640	nglAdvanceShaderTime	material	0		void	zero	undefined4 * param_1, float param_2	68	
+00047200	ShaderPCUV_InitMaterial	material	12	ecx	void	zero	void * this, undefined4 param_1, undefined4 param_2, undefined4 param_3	35	
+00045F40	nglToggleShaderByName	material	0		void	zero	char * param_1	935	
+00046560	cdSimpleInstance_AddListToScene	material	0	ecx	void	zero	float * param_1	288	
+00046360	cdSimpleInstance_FreeList	material	0	ecx	void	zero	int param_1	11	
+00046320	cdSimpleInstance_InitList	material	8	ecx	void	zero	void * this, undefined4 param_1, undefined4 param_2	54	
+00046370	cdSimpleInstance_ShrinkList	material	0	ecx	void	zero	int param_1	69	
+00093B90	nglFreeFileBuffer	memory	0		void	zero	uint * param_1	66	
+00093A50	nglReadFile	memory	0		undefined4	zero	char * param_1, undefined4 * param_2, size_t param_3, uint param_4	310	
+00063520	nglAddRef	memory	0		void	zero	int * param_1	7	
+00068850	nglListAddMesh	mesh	0		undefined4	zero	float param_1, float * param_2, uint * param_3, float * param_4	1812	
+00066960	nglVertexBuffer_Unlock	mesh	0		void	zero	void	1	
+0007A400	nglIndexBuffer_Lock	mesh	8	ecx	int	scratch	void * this, uint param_1	13	
+0007A410	nglIndexBuffer_Unlock	mesh	0		void	zero	void	1	
+0007A3D0	nglIndexBuffer_Free	mesh	0	ecx	void	zero	uint * param_1	22	
+00066940	nglLockVertexBuffer	mesh	8	ecx	int	scratch	void * this, int param_1	18	
+00067450	nglFindMesh	mesh	0		void	zero	undefined4 param_1	17	
+000673C0	nglSetMeshFileManager	mesh	0		void	zero	undefined4 param_1	10	
+000673E0	nglSetMeshManager	mesh	0		void	zero	undefined4 param_1	10	
+00066760	nglSkipList_InitHead	mesh	0	ecx	void	zero	int param_1	53	
+00064040	nglSkipList_RandomLevel	mesh	0	ecx	int	zero	uint * param_1	61	
+0006BF70	nglFlushDebugLineBatch	mesh	0		void	zero	void	133	
+0007A3A0	nglIndexBuffer_Alloc	mesh	4	ecx	bool	one	void * this, size_t param_1	31	
+00066850	nglCreateVertexBuffer	mesh	8	ecx	uint	block	void * this, size_t param_1	115	
+000669E0	nglVertexBuffer_Destroy	mesh	0	ecx	void	zero	uint * param_1	44	
+00067950	nglParseMesh	mesh	0		uint	zero	undefined4 param_1, int param_2	2103	
+00066DA0	nglMeshBuilder_Begin	mesh	0		void	zero	uint param_1, uint param_2, int param_3, undefined4 * param_4	291	
+0001D280	nglMeshBuilder_AddStrip	mesh	0		void	zero	uint param_1, uint param_2	181	
+00067250	nglMeshBuilder_End	mesh	0		int	zero	void	222	
+00062A10	nglListAddCustomNode	mesh	0		void	zero	int param_1, int param_2, int * param_3	82	
+0007A420	nglIndexBuffer_Write	mesh	12	ecx	void	zero	void * this, undefined4 * param_1, uint param_2, uint param_3	41	
+0007A4C0	nglMeshSection_FreeBuffers	mesh	0		void	zero	int param_1	75	
+000669A0	nglVertexBuffer_Free	mesh	4	ecx	void	zero	void * this, int param_1	63	
+00078890	nglDrawMeshSection	mesh	0		void	zero	int param_1	83	
+00067470	nglMeshFileFirstMesh	mesh	0		undefined4	zero	int param_1	18	
+000674B0	nglMeshNext	mesh	0		int	zero	int param_1	13	
+00067720	nglReleaseMeshFile	mesh	0		void	zero	undefined4 param_1	21	
+000673D0	nglGetMeshFileManager	mesh	0		undefined4	block	void	6	
+000673F0	nglGetMeshManager	mesh	0		undefined4	block	void	6	
+00068230	nglLoadMeshFile	mesh	0		undefined4 *	block	undefined4 * param_1	80	
+0001F0B0	nglVertexWriter_Init	mesh	0		void	zero	void	49	
+0005E270	nglListAddQuad	quad	0		void	zero	undefined4 * param_1	209	
+0009D5B0	nglQuadBatch_SetMaterial	quad	0		void	zero	int param_1, undefined4 param_2, byte param_3, int param_4	628	
+0009D200	nglQuadBatch_Reserve	quad	0		undefined4	zero	int param_1	64	
+0009D240	nglQuadBatch_Draw	quad	0		void	zero	void	173	
+0005E430	nglSetClearFlags	scene	0		void	zero	undefined4 param_1	17	
+00062FC0	nglPushScene	scene	0		undefined4 *	block	int param_1	185	
+0005E730	nglPopScene	scene	0		void	zero	void	18	
+0005E490	nglSetSceneDepthEnable	scene	0		void	zero	undefined1 param_1	17	
+0005E4B0	nglSetSceneDepthTest	scene	0		void	zero	undefined1 param_1	17	
+00029200	nglSphereInFrustum	scene	0		uint	zero	float * param_1, float param_2	147	
+0005E5C0	nglSetSceneCallback	scene	0		void	zero	int param_1, undefined4 param_2, undefined4 param_3	112	
+0005E470	nglSetColorWriteMask	scene	0		void	zero	undefined4 param_1	17	
+0005E750	nglSetCurrentScene	scene	0		undefined4	zero	undefined4 param_1	16	
+00061B70	nglSetViewportRect	scene	0		void	zero	float param_1, float param_2, float param_3, float param_4	328	
+0005EAA0	nglSetClearColor	scene	0		void	zero	undefined4 param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4	100	
+00061CE0	nglSetPerspective	scene	0		void	zero	undefined4 param_1, undefined4 param_2, undefined4 param_3	83	
+00062250	nglGetViewMatrix	scene	0		int	block	void	36	
+00061CC0	nglSetAspect	scene	0		void	zero	undefined4 param_1	32	ret from tail-called 0x0005FC90
+0005FC90	nglUpdateScene	scene	0		void	zero	char param_1	7338	
+00061F30	nglGetMatrix	scene	0		void	zero	undefined4 * param_1, undefined4 param_2	776	
+00061D90	nglSetViewMatrix	scene	0		void	zero	undefined4 * param_1	40	ret from tail-called 0x0005FC90
+0005E4D0	nglSetFog	scene	0		void	zero	float param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4	96	
+0005EB60	nglSetFogColor	scene	0		void	zero	undefined4 param_1, undefined4 param_2, undefined4 param_3	103	
+000456F0	nglGetSceneFogColor	scene	0		void	zero	undefined4 * param_1	80	
+0005E450	nglSetClearDepth	scene	0		void	zero	undefined4 param_1	20	
+00061DC0	nglSetCameraMatrix	scene	0		void	zero	float * param_1	354	
+00061D40	nglSetOrthographic	scene	0		void	zero	undefined4 param_1, undefined4 param_2	80	
+00061940	nglSetSceneViewportRect	scene	0		void	zero	undefined4 param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4	87	
+00062DB0	nglProjectPointCopy	scene	0		void	zero	undefined4 * param_1, float * param_2	55	
+00065F00	nglGetTextExtent	text	0		void	zero	int param_1, byte * param_2, undefined4 * param_3, undefined4 * param_4, float param_5, float param_6	663	
+000661C0	nglListAddText	text	0		void	zero	int param_1, char * param_2, undefined4 param_3, undefined4 param_4, undefined4 param_5, undefined4 param_6, undefined4 param_7, undefined4 param_8	244	
+00066490	nglListAddTextf	text	0		void	zero	int param_1, undefined4 param_2, undefined4 param_3, undefined4 param_4, undefined4 param_5, undefined4 param_6, undefined4 param_7, char * param_8	102	
+000662C0	nglGetTextExtentf	text	0		void	zero	int param_1, undefined4 * param_2, undefined4 * param_3, char * param_4	80	
+00066310	nglGetTextSizef	text	0		void	zero	int param_1, undefined4 * param_2, undefined4 * param_3, float param_4, float param_5, char * param_6	86	
+000659F0	nglReleaseFont	text	0		void	zero	undefined4 param_1	21	
+000658F0	nglLoadFont	text	0		undefined4 *	block	undefined4 * param_1	77	
+000658C0	nglFindFontAddRef	text	0		void	zero	undefined4 param_1	40	
+00063630	nglReleaseTexture	texture	0		void	zero	undefined4 param_1	21	
+000635A0	nglLoadTexture	texture	0		int *	ngl_texture_load(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	undefined4 * param_1, uint * param_2, uint param_3	94	
+0006A760	nglSetTexture	texture	0		void	zero	int param_1, int param_2, byte param_3, undefined4 param_4	179	
+0006A6C0	nglUnbindTextures	texture	0		void	zero	void	158	
+00063530	nglFindTexture	texture	0		void	zero	undefined4 param_1	17	
+000633B0	nglSetTextureManager	texture	0		void	zero	undefined4 param_1	10	
+0006AAE0	nglGetBackBufferTexture	texture	0		undefined4 *	block	void	36	
+00078810	nglSetRenderTargetCached	texture	0		void	zero	int param_1, int param_2, int param_3, int param_4	123	
+0006ECE0	nglFreeTexture	texture	0		void	zero	uint param_1	338	
+0006EEA0	nglCreateTexture	texture	0		undefined4 *	block	uint param_1, undefined4 param_2, undefined4 param_3, int param_4, int param_5	469	
+0006AAB0	nglGetFrontBufferTexture	texture	0		undefined4 *	block	void	36	
+0006B070	nglLoadDDS	texture	0		uint	zero	undefined4 * param_1, int * param_2	1151	
+0006A340	nglTextureGetSurfaces	texture	0	ecx	void	zero	int param_1	198	
+00079020	nglParseDDSPalette	texture	0		uint	zero	undefined4 param_1, int param_2	205	
+00073A70	nglSetRenderTarget	texture	0		void	zero	undefined4 param_1	29	
+00072B10	nglAllocFogTextures	texture	0		void	zero	void	81	
+00063650	nglLoadAnimatedTextureList	texture	0		uint	zero	int param_1, char * param_2, int param_3	541	
+0007B130	nglFreePalette	texture	0		void	zero	uint * param_1	74	
+0006A820	nglTexture_Lock	texture	0		undefined4	one	int param_1, uint param_2	59	
+0006A860	nglTexture_Unlock	texture	0		void	zero	void	1	
+0005E3F0	nglSceneAddRenderTarget	texture	0		void	zero	int param_1	63	
+000633C0	nglGetTextureManager	texture	0		undefined4	block	void	6	

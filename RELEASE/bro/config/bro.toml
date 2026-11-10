@@ -1,0 +1,151 @@
+# Call of Duty 2: Big Red One, the port's settings [acct2-bro-game]
+#
+# Copy this file next to the game (an installed game: <output>/bro/bro.toml, beside bin/), or point BRO_SETTINGS at
+# it. Every setting below is at its default. Each one also has an environment variable (in brackets); a variable
+# that is set wins over this file, as the setup tool's Play page and the test runs use them.
+
+version = 1
+
+[display]
+# Frames a second at most. Leave it out for the game's own pace (the Xbox's 30); 0 = no limit; 1-1000. [BRO_MAX_FPS]
+# max_fps = 0
+# The frame-rate counter in the top right corner and in the window's title. [BRO_SHOW_FPS]
+show_fps = false
+# A log line every this many seconds with the frame rate and the frame's parts (game, drawing, wait); 0 = never.
+# [BRO_FPS_LOG]
+fps_log = 0
+# Frames in step with the display; false shows them as they come. [BRO_VSYNC]
+vsync = true
+# The window fills the screen. [BRO_FULLSCREEN]
+fullscreen = false
+# A window at all; false draws offscreen (tests). [BRO_WINDOW]
+window = true
+# The window opens below the window in use without taking the focus (or the mouse), and on X11 it stays under the
+# other windows and can't be given the focus until it's clicked; click it to play (full screen, if asked for, starts
+# then). For test runs on a PC someone is using. [BRO_START_IN_BACKGROUND]
+start_in_background = false
+# The picture's size, "<width>x<height>"; left out, twice the game's 640 x 480. [BRO_VK_SIZE]
+# size = "1920x1440"
+# The field of view: the angle across the picture, in degrees, 1-160. Left out, the game's own. [BRO_FOV]
+# fov = 100
+# Movies at their own speed, the game's 30 pictures a second, whatever max_fps is (the frames keep the limit);
+# false plays them at the frame rate (to compare). [BRO_MOVIE_PACING]
+movie_pacing = true
+# Skip every movie (each ends at once, as if it had played out): for test runs that aren't about the movies.
+# [BRO_SKIP_MOVIES]
+skip_movies = false
+
+[input]
+# The sticks' dead zone, 0 to 0.9 of their travel: inside it a stick is at rest, and the rest of its travel is
+# stretched over the whole range. 0 leaves it to the game's own. [BRO_DEAD_ZONE]
+dead_zone = 0
+# The mouse turns the view by how far it moves, as on the PC, never by the frame rate; false moves the right stick
+# instead, as before. Either way only while the window holds the mouse. [BRO_RAW_MOUSE]
+raw_mouse = true
+# As the PC games' "sensitivity": each count of the mouse turns the view 0.022 degrees times this, whatever the frame
+# rate. [BRO_MOUSE_SENSITIVITY]
+mouse_sensitivity = 5
+# On top of that, side to side and up and down apart. [BRO_MOUSE_SCALE_X] [BRO_MOUSE_SCALE_Y]
+mouse_scale_x = 1.0
+mouse_scale_y = 1.0
+# Pushing the mouse forward looks down. [BRO_INVERT_Y]
+invert_y = false
+# With raw_mouse = false: how far the right stick moves for each pixel the mouse moves. [BRO_MOUSE_SPEED]
+mouse_speed = 1600
+# While aiming down the sights the mouse turns slower by the zoom, as in CoD3 (the field of view against the one
+# before aiming); this multiplies that, 0.05-4. [BRO_ZOOM_SENSITIVITY]
+zoom_sensitivity = 1.0
+# In play the keyboard and the mouse do the game's own actions, as in CoD3 ([binds] below); false: every key is only
+# the controller's button in [keys], as before. [BRO_BINDS]
+binds = true
+# The same binds in CoD3's own text (cod3.toml's cod3_binds_kbm_p1), so a line from CoD3 works here:
+# "fire=MOUSE1;aim=MOUSE2;use=F;...". [binds] below wins over it. [BRO_BINDS_KBM]
+# binds_kbm = ""
+
+# The controller's button for each of the Xbox pad's: SDL's names, "a" "b" "x" "y" being the bottom, right, left and
+# top face buttons whatever they are labeled, then "leftshoulder" "rightshoulder" "lefttrigger" "righttrigger"
+# "start" "back" "dpup" "dpdown" "dpleft" "dpright" "leftstick" "rightstick" (the stick clicks), or "none".
+[pad]
+a = "a"
+b = "b"
+x = "x"
+y = "y"
+black = "rightshoulder"
+white = "leftshoulder"
+lt = "lefttrigger"
+rt = "righttrigger"
+start = "start"
+back = "back"
+up = "dpup"
+down = "dpdown"
+left = "dpleft"
+right = "dpright"
+lthumb = "leftstick"
+rthumb = "rightstick"
+
+# [acct2-bro] CoD3's key binds: in play each key does one of the game's own actions (not a controller button), with
+# CoD3's action names and default keys. Up to two keys an action, comma-separated, and up to three actions a key; ""
+# leaves an action without a key. Key names as CoD3 writes them: letters and digits, SPACE TAB ENTER ESCAPE
+# BACKSPACE SHIFT CTRL ALT CAPSLOCK UPARROW DOWNARROW LEFTARROW RIGHTARROW INS DEL HOME END PGUP PGDN F1-F12 KP_0-KP_9
+# KP_ENTER SEMICOLON COMMA = - . / ` [ \ ] ', MOUSE1 (left) MOUSE2 (right) MOUSE3 (middle) MOUSE4 MOUSE5, MWHEELUP
+# MWHEELDOWN; SDL's names work too ("Left Ctrl"). In the game's menus, on loading screens and in movies the keys are
+# the controller's ([keys] below), so the menus work as before; in play a key with an action doesn't press its
+# controller button. CoD3's smoke grenade, binoculars, hold breath and weapon slots have no command of their own in
+# Big Red One: they stay on the controller's buttons ([keys]).
+[binds]
+fire = "MOUSE1"
+aim = "MOUSE2"
+use = "F"
+reload = "R"
+usereload = ""          # use or reload, the controller's X
+melee = "V, MOUSE3"
+usemelee = ""           # use or melee
+frag = "G"
+sprint = "SHIFT"
+leanleft = "Q"
+leanright = "E"
+leanleftnext = ""       # lean left while aiming, switch weapons otherwise
+leanrightnext = ""
+jump = "SPACE"          # jump; from crouch or prone, stand up
+moveup = ""             # raise stance, jump when standing
+usemoveup = ""
+crouch = "C"            # crouch; again, stand up
+crouchhold = ""         # crouch while held
+prone = "CTRL"          # go prone; again, stand up
+pronehold = ""          # prone while held
+lowerstance = ""
+raisestance = ""
+weapnext = "MWHEELDOWN"
+weapprev = "MWHEELUP"
+weapalt = ""            # the weapon's other mode
+scores = ""             # objectives while held (the controller's back shows them too)
+
+# The keyboard's keys and the mouse's buttons for each of the pad's inputs and the sticks' directions: key names as
+# SDL writes them ("W", "Space", "Left Ctrl", "Left Shift", "Return", "Escape", "Tab", "Up", "Keypad 8", ...) and
+# mouse1 (left) to mouse5 (SDL's numbers: mouse2 the middle, mouse3 the right), up to four each, comma-separated; ""
+# for none. In play, a key that has an action in [binds] does only that.
+[keys]
+move_forward = "W"
+move_back = "S"
+move_left = "A"
+move_right = "D"
+look_up = "Up"
+look_down = "Down"
+look_left = "Left"
+look_right = "Right"
+a = "Space"
+b = "Left Ctrl"
+x = "R"
+y = "F"
+black = "E"
+white = "Q"
+lt = "Z,mouse3"
+rt = "X,mouse1"
+start = "Return"
+back = "Escape"
+up = "1"
+down = "2"
+left = "3"
+right = "4"
+lthumb = "Left Shift"
+rthumb = "V"

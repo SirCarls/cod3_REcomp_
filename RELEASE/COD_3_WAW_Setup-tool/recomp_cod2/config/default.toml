@@ -1,0 +1,139 @@
+# Codegen overrides for Call of Duty 2's default.xex (Xbox 360, USA/Europe),
+# SHA-1 16da73ad198bea9f8203063ddb51172508064fb0, title ID 415607D1,
+# version 0.0.0.1, built 2005-10-06. [acct2-cod2]
+#
+# The same keys as Call of Duty 3's recomp/config/default.toml (the SDK's
+# src/codegen/config.cpp reads them). Addresses here are CoD2's own; how each
+# one was found is in dev/agents/acct2-cod2/NOTES.md.
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (C runtime). Both found by their translated code: the same
+# instructions, addresses aside, as Call of Duty 3's setjmp 0x82351CC0 and
+# longjmp 0x8234EEC0 (1.000 match, every other function under 0.16).
+# Com_Error (0x8233AB80) longjmps back to the frame loop; the codegen turns
+# each setjmp call into a host setjmp keyed by the guest jmp_buf address and
+# each longjmp into the host's. Call of Duty 3 hooks its longjmp instead
+# because its script threads switch stacks with it; nothing in CoD2 is known
+# to do that (to check if a script error hangs). Another IW-engine recomp
+# hung after a match when its longjmp was recompiled, not the host's.
+# ---------------------------------------------------------------------------
+setjmp_address = 0x8229F930
+longjmp_address = 0x8229BF80
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own: code reached only through
+# a data pointer (vtable slots, callback tables) or a code-built address, with
+# no .pdata entry. Found by tools/find_missing_funcs.py on the flat image
+# (tools/xex_dump.py; its PE header's ImageBase 0x00400000 set to the load
+# address 0x82000000 first). The first run stopped at the first of them:
+# "Call to invalid or unregistered function at guest address 0x82494B78"
+# (vtable @0x824B0020). As in Call of Duty 3's file, the codegen works out
+# each one's extent itself; the comment has the scan's size estimate.
+# ---------------------------------------------------------------------------
+[functions]
+0x820C1AE0 = {}  # vtable @0x82065A98, ~8 bytes
+0x820C4918 = {}  # vtable @0x82065AFC, ~8 bytes
+0x820C4928 = {}  # vtable @0x82065B10, ~8 bytes
+0x820C4930 = {}  # vtable @0x82065B14, ~8 bytes
+0x820C4938 = {}  # vtable @0x82065B18, ~8 bytes
+0x820C4940 = {}  # vtable @0x82065B20, ~8 bytes
+0x820C4978 = {}  # vtable @0x82065B40, ~8 bytes
+0x820C4998 = {}  # vtable @0x82065B50, ~8 bytes
+0x820C49A8 = {}  # vtable @0x82065B58, ~8 bytes
+0x820C49B8 = {}  # vtable @0x82065B60, ~8 bytes
+0x820C9F28 = {}  # vtable @0x82065D58, ~8 bytes
+0x820CAAC0 = {}  # vtable @0x82065D9C, ~8 bytes
+0x820CAAC8 = {}  # vtable @0x82065DA0, ~8 bytes
+0x820CE320 = {}  # vtable @0x82065DFC, ~8 bytes
+0x820CE328 = {}  # vtable @0x82065E00, ~8 bytes
+0x820CE338 = {}  # vtable @0x82065E14, ~8 bytes
+0x820CE340 = {}  # vtable @0x82065E1C, ~8 bytes
+0x820CE348 = {}  # vtable @0x82065E20, ~8 bytes
+0x820CE350 = {}  # vtable @0x82065E24, ~8 bytes
+0x820CE358 = {}  # vtable @0x82065E28, ~8 bytes
+0x820E5910 = {}  # vtable @0x82066734, ~8 bytes
+0x820E7BA0 = {}  # vtable @0x82066870, ~8 bytes
+0x820E8CF0 = {}  # vtable @0x820668D0, ~8 bytes
+0x820E8D00 = {}  # vtable @0x820668E4, ~8 bytes
+0x820E8D08 = {}  # vtable @0x820668E8, ~8 bytes
+0x820E8D10 = {}  # vtable @0x820668EC, ~8 bytes
+0x820E8D18 = {}  # vtable @0x820668F0, ~8 bytes
+0x820E8D28 = {}  # vtable @0x820668FC, ~8 bytes
+0x820E8D30 = {}  # vtable @0x82066900, ~8 bytes
+0x820E8D50 = {}  # vtable @0x82066910, ~8 bytes
+0x820E8D70 = {}  # vtable @0x82066920, ~8 bytes
+0x820E8D80 = {}  # vtable @0x82066928, ~8 bytes
+0x820E8D90 = {}  # vtable @0x82066930, ~8 bytes
+0x820EF940 = {}  # code-ref @0x820EF928, ~24 bytes
+0x820FCAFC = {}  # code-ref @0x820FCAE4, ~12 bytes
+0x8211F580 = {}  # code-ref @0x8211F568, ~204 bytes
+0x82124F88 = {}  # code-ref @0x82124F70, ~104 bytes
+0x8212E920 = {}  # vtable @0x820059D4, ~16 bytes
+0x8212E930 = {}  # vtable @0x820059D8, ~16 bytes
+0x8212E940 = {}  # vtable @0x820059DC, ~16 bytes
+0x8212ED68 = {}  # vtable @0x82005B9C, ~40 bytes
+0x8212ED90 = {}  # vtable @0x82005BA0, ~40 bytes
+0x8212EDB8 = {}  # vtable @0x82005BA4, ~40 bytes
+0x8212EDE0 = {}  # vtable @0x82005BA8, ~40 bytes
+0x8212F210 = {}  # vtable @0x82005BDC, ~32 bytes
+0x8212F230 = {}  # vtable @0x82005C78, ~4 bytes
+0x8212F258 = {}  # vtable @0x82005E64, ~32 bytes
+0x8212F278 = {}  # code-ref @0x82138FC4, ~16 bytes
+0x8212F288 = {}  # code-ref @0x82138AFC, ~16 bytes
+0x8212F298 = {}  # code-ref @0x82138B4C, ~16 bytes
+0x8212F2A8 = {}  # code-ref @0x82138B9C, ~16 bytes
+0x8212F2B8 = {}  # code-ref @0x82138CC4, ~16 bytes
+0x8212F2C8 = {}  # code-ref @0x82139014, ~16 bytes
+0x8212F2D8 = {}  # code-ref @0x82138DA4, ~16 bytes
+0x8212F2E8 = {}  # code-ref @0x82139064, ~16 bytes
+0x8212F2F8 = {}  # code-ref @0x82138DF4, ~16 bytes
+0x8212F308 = {}  # code-ref @0x821390B4, ~16 bytes
+0x8213A878 = {}  # vtable @0x8200F098, ~8 bytes
+0x8216EF3C = {}  # code-ref @0x8216EF24, ~24 bytes
+0x82183B68 = {}  # vtable @0x82019FF4, ~112 bytes
+0x821B896C = {}  # code-ref @0x821B8954, ~12 bytes
+0x82214A74 = {}  # code-ref @0x82214A5C, ~68 bytes
+0x82229588 = {}  # vtable @0x82022A6C, ~80 bytes
+0x822295D8 = {}  # vtable @0x82022A74, ~24 bytes
+0x82229758 = {}  # vtable @0x82022AFC, ~80 bytes
+0x822615D0 = {}  # vtable @0x82027FF0, ~8 bytes
+0x82267E54 = {}  # code-ref @0x82267E3C, ~8 bytes
+0x82267F10 = {}  # code-ref @0x82267EF8, ~8 bytes
+0x82267FC8 = {}  # code-ref @0x82267FB0, ~8 bytes
+0x82268048 = {}  # code-ref @0x82268030, ~8 bytes
+0x822680F0 = {}  # code-ref @0x822680D8, ~8 bytes
+0x8226815C = {}  # code-ref @0x82268144, ~8 bytes
+0x822683E8 = {}  # code-ref @0x822683D0, ~8 bytes
+0x82268444 = {}  # code-ref @0x8226842C, ~8 bytes
+0x822684D4 = {}  # code-ref @0x822684C0, ~356 bytes
+0x82268670 = {}  # code-ref @0x8226865C, ~308 bytes
+0x82268844 = {}  # code-ref @0x8226882C, ~148 bytes
+0x8226AAF8 = {}  # code-ref @0x8226AAE0, ~136 bytes
+0x82286590 = {}  # code-ref @0x82286578, ~16 bytes
+0x822B4E80 = {}  # code-ref @0x822B4E6C, ~12 bytes
+0x82385880 = {}  # code-ref @0x823859E0, ~32 bytes
+0x823858A0 = {}  # code-ref @0x823859FC, ~20 bytes
+0x823EF160 = {}  # vtable @0x8203B0DC, ~44 bytes
+0x82494B78 = {}  # vtable @0x824B0020, ~20 bytes
+
+# Found by the second run ("Call to invalid or unregistered function at guest
+# address 0x8229E1C8"): a 4-byte function (Ghidra's FUN_8229e1c8) that a table
+# at 0x824C874C points at twice; the codegen had it inside the function at
+# 0x8229E120. The only Ghidra function start that data points at and the
+# codegen's table lacks (scripts: ghidra_missing.py, NOTES.md).
+0x8229E1C8 = { size = 4 }  # data pointer @0x824C874C @0x824C8750
+
+# ---------------------------------------------------------------------------
+# Jump tables the codegen sized too small (its translated switch has fewer
+# cases than the table in the image holds), found by
+# results/acct2-cod2-scripts/q/switches.py (each table read from the image,
+# entry by entry, while the entries are code addresses). The first one
+# stopped the game with "Switch case out of range" (SIGILL) right after a
+# level started (run 2026-11-07 16:00): 0x82433740, under CG_Draw2D, switches
+# on a stack argument (lwz r11,404(r1)) with no bounds check before it, so the
+# codegen saw only case 0 of its 4.
+# ---------------------------------------------------------------------------
+[[switch_tables]]
+address = 0x824337B4
+register = 11
+labels = [0x824337C8, 0x824337D0, 0x82433B00, 0x82433B00]

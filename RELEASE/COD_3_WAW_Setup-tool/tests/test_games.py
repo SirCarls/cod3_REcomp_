@@ -24,10 +24,26 @@ ALL_IDS = list(theme.ALL_PALETTES)
 
 
 class GameTableTests(unittest.TestCase):
-    def test_four_tabs_in_order(self):
-        self.assertEqual(games.GAME_ORDER, ["cod3", "waw", "cod2", "coduo"])
+    def test_six_tabs_in_order(self):
+        # [acct2-bro] Big Red One's tab second, beside Call of Duty 3: both build a game from your disc.
+        # [waw-decomp] Call of Duty 4 after Call of Duty 2.
+        self.assertEqual(games.GAME_ORDER, ["cod3", "bro", "waw", "cod2", "cod4", "coduo"])
         self.assertEqual([g.tab for g in games.GAMES],
-                         ["Call of Duty 3", "World at War", "Call of Duty 2", "United Offensive"])
+                         ["Call of Duty 3", "Big Red One", "World at War", "Call of Duty 2", "Call of Duty 4",
+                          "United Offensive"])
+        self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_status", "log"])
+        self.assertEqual(games.game("bro").actions, ("build", "play"))
+        self.assertEqual(theme.GAME_ORDER, tuple(games.GAME_ORDER))
+
+    def test_xbox_360_ports_build_and_play(self):
+        # [waw-decomp] World at War, Call of Duty 2 and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py).
+        self.assertEqual(games.X360_PORTS, ("waw", "cod2", "cod4"))
+        for gid in games.X360_PORTS:
+            self.assertEqual(PAGES[gid][:2], [f"{gid}_setup", f"{gid}_play"])
+            self.assertEqual(games.game(gid).actions[:2], ("build", "play"))
+            self.assertNotIn("Rust", games.game(gid).tagline)
+        self.assertIn("rip", games.game("waw").actions)          # World at War's content rip stays
+        self.assertIn("cod2_copy", PAGES["cod2"])               # and Call of Duty 2's New copy
 
     def test_every_page_has_a_label_and_the_log_is_everywhere(self):
         for g in games.GAMES:
@@ -53,7 +69,7 @@ class GameTableTests(unittest.TestCase):
         self.assertEqual(games.game("nope").id, games.DEFAULT_GAME)
 
     def test_port_status_rows(self):
-        for gid in ("waw", "cod2", "coduo"):
+        for gid in ("bro", "waw", "cod2", "cod4", "coduo"):
             rows = games.PORT_STATUS[gid]
             self.assertTrue(rows)
             for m in rows:
@@ -69,7 +85,7 @@ class TabStateTests(unittest.TestCase):
         st = self.state({})
         self.assertEqual(st.game, "cod3")
         self.assertEqual(st.page_for("cod3"), "setup")
-        self.assertEqual(st.page_for("cod2"), "cod2_copy")
+        self.assertEqual(st.page_for("cod2"), "cod2_setup")   # [waw-decomp]
         self.assertEqual(st.theme_for("waw"), "waw")   # each tab's own colors
         self.assertEqual(st.theme_for("cod3"), "cod3")
         self.assertEqual(st.accent_for("cod2"), "")
@@ -109,7 +125,7 @@ class TabStateTests(unittest.TestCase):
                          "ui_themes": {"cod2": "neon", "waw": 5}, "ui_accents": {"cod2": "blue", "waw": "#12"}})
         self.assertEqual(st.game, "cod3")
         self.assertEqual(st.page_for("cod3"), "setup")
-        self.assertEqual(st.page_for("cod2"), "cod2_copy")
+        self.assertEqual(st.page_for("cod2"), "cod2_setup")   # [waw-decomp]
         self.assertEqual(st.theme_for("cod2"), "cod2")
         self.assertEqual(st.accent_for("cod2"), "")
         self.assertEqual(st.accent_for("waw"), "")
@@ -128,11 +144,11 @@ class TabStateTests(unittest.TestCase):
 
     def test_show_and_step(self):
         st = self.state({})
-        self.assertEqual(st.show("cod2"), ("cod2", "cod2_copy"))
+        self.assertEqual(st.show("cod2"), ("cod2", "cod2_setup"))   # [waw-decomp]
         self.assertEqual(st.show("cod2", "cod2_server"), ("cod2", "cod2_server"))
         self.assertEqual(st.show("cod2", "play"), ("cod2", "cod2_server"))   # not this tab's page
         self.assertEqual(st.show("nope"), ("cod2", "cod2_server"))
-        self.assertEqual(st.step(1), "coduo")
+        self.assertEqual(st.step(1), "cod4")   # [waw-decomp]
         st.show("coduo")
         self.assertEqual(st.step(1), "cod3")    # wraps around
         st.show("cod3")
@@ -151,7 +167,7 @@ class GamePaletteTests(unittest.TestCase):
         for g in games.GAMES:
             self.assertIn(g.palette, theme.ALL_PALETTES)
             self.assertIn(g.id, theme.DISPLAY_FONTS)
-        self.assertEqual(len({theme.colors(g.palette)["accent"] for g in games.GAMES}), 4)
+        self.assertEqual(len({theme.colors(g.palette)["accent"] for g in games.GAMES}), len(games.GAMES))   # [waw-decomp] 6
 
     def test_readable_in_every_palette_and_accent(self):
         for pid in theme.ALL_PALETTES:
@@ -639,7 +655,7 @@ class LookTests(unittest.TestCase):
         self.assertEqual(theme.picker_label("cod3", "cod3"), "Call of Duty 3")
         self.assertEqual(theme.picker_label("cod3", "waw"), "Brass and black")
         self.assertEqual(theme.picker_label("waw", "waw"), "World at War")
-        for own in ("cod3", "waw", "cod2", "coduo"):
+        for own in ("cod3", "bro", "waw", "cod2", "coduo"):
             labels = [theme.picker_label(t, own) for t in theme.palettes_for(own)]
             self.assertEqual(len(set(labels)), len(labels))
             for t in theme.palettes_for(own):
@@ -673,12 +689,13 @@ class LookTests(unittest.TestCase):
     def test_each_game_gets_its_own_title_type(self):
         linux = ["DejaVu Sans", "DejaVu Serif", "Liberation Sans", "Liberation Serif", "Barlow Semi Condensed"]
         fonts = theme.assign_display_fonts(games.GAME_ORDER, linux, "UI")
-        self.assertEqual(len({f for f, _ in fonts.values()}), 4, fonts)
+        self.assertEqual(len({f for f, _ in fonts.values()}), len(games.GAMES), fonts)   # [waw-decomp] 6
         self.assertEqual(fonts["cod3"], ("Barlow Semi Condensed", "bold"))
         windows = ["Impact", "Georgia", "Palatino Linotype", "Bahnschrift", "Arial"]
         fonts = theme.assign_display_fonts(games.GAME_ORDER, windows, "UI")
-        self.assertEqual([fonts[g][0] for g in games.GAME_ORDER], ["Bahnschrift", "Impact", "Georgia",
-                                                                   "Palatino Linotype"])
+        # [waw-decomp] Call of Duty 4 (5th) finds none of its own among these five and shares Arial with Big Red One.
+        self.assertEqual([fonts[g][0] for g in games.GAME_ORDER], ["Bahnschrift", "Arial", "Impact", "Georgia",
+                                                                   "Arial", "Palatino Linotype"])
         bare = theme.assign_display_fonts(games.GAME_ORDER, ["DejaVu Serif"], "UI")
         self.assertEqual(bare["cod3"], ("UI", "bold"))      # nothing of its own: the UI font
 

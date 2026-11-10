@@ -20,7 +20,7 @@ import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
-from . import common, pc_games, upscale, waw
+from . import bro, common, pc_games, upscale, waw
 
 PROFILES_DIR = "profiles"
 FORMAT = "cod3-setup-profile"
@@ -40,7 +40,18 @@ SETTING_TYPES: Dict[str, type] = {
     "cleanup": bool, "keep_sdk": bool, "upscale_textures": bool, "upscale_model": str,
     "tracy": bool,   # [acct2-decomp] 2026-11-05 the SDK with the Tracy profiler (More options)
     "upscale_noise": int, "upscale_scale": int, "cod3_windowed": bool, "cod3_args": str,
+    # [acct2-bro] Big Red One's tab: its disc and the Play page's choices (bro.PlayOptions)
+    "bro_source": str, "bro_level": str, "bro_fullscreen": bool, "bro_vsync": bool, "bro_size": str,
+    "bro_mouse_look": bool, "bro_mouse_speed": int, "bro_mute": bool,
 }
+# [waw-decomp] World at War, Call of Duty 2 and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py): each
+# one's disc and its Play page's choices (x360_ports.PlayOptions.to_settings).
+PORT_IDS = ("cod2", "waw", "cod4")
+for _port in PORT_IDS:
+    SETTING_TYPES.update({f"port_{_port}_source": str, f"port_{_port}_program": str,
+                          f"port_{_port}_fullscreen": bool, f"port_{_port}_mute": bool,
+                          f"port_{_port}_skip_films": bool, f"port_{_port}_fov": int,
+                          f"port_{_port}_max_fps": int, f"port_{_port}_graphics_api": str})
 # Settings older versions kept that mean nothing now: left out quietly.
 # "fidelityfx" (on for everyone) meant AMD CAS / FSR 1, which every build has
 # since SDK patch 0064; [acct2-decomp] "fidelityfx_sdk", the AMD FidelityFX SDK
@@ -54,19 +65,27 @@ for _game in PC_GAME_IDS:
                           f"{_game}_hostname": str, f"{_game}_max_clients": int})
 # Settings that hold paths (a list of paths for waw_map_packs).
 PATH_KEYS = ("cod3_source", "waw_steam", "waw_xbox360", "waw_pc_disc", "output_dir", "work_dir",
-             "waw_map_packs") + tuple(f"{g}_{k}" for g in PC_GAME_IDS for k in ("install", "copy_dir"))
+             "waw_map_packs") + tuple(f"{g}_{k}" for g in PC_GAME_IDS for k in ("install", "copy_dir")) + \
+    ("bro_source",) + tuple(f"port_{p}_source" for p in PORT_IDS)   # [acct2-bro] [waw-decomp]
 # Settings with a fixed set of values.
 ALLOWED: Dict[str, tuple] = {
     "waw_alternative": (waw.XBOX360, waw.PC_DISC),
     "upscale_model": tuple(upscale.MODELS),
     "upscale_noise": tuple(upscale.NOISE_LEVELS),
     "upscale_scale": tuple(upscale.SCALES),
+    "bro_level": tuple(key for key, _ in bro.LEVELS),   # [acct2-bro]
+    "bro_size": bro.WINDOW_SIZES,
 }
+for _port in PORT_IDS:   # [waw-decomp]
+    ALLOWED[f"port_{_port}_graphics_api"] = ("auto", "vulkan", "d3d12")
 for _game in PC_GAME_IDS:
     ALLOWED[f"{_game}_language"] = pc_games.LANGUAGES
 JOBS_RANGE = (1, 256)
 # Whole numbers with a range: (low, high).
-INT_RANGES: Dict[str, tuple] = {"jobs": JOBS_RANGE}
+INT_RANGES: Dict[str, tuple] = {"jobs": JOBS_RANGE, "bro_mouse_speed": bro.MOUSE_SPEED_RANGE}   # [acct2-bro]
+for _port in PORT_IDS:   # [waw-decomp] 0 = the game's own field of view; -1 = the port's own frame limit
+    INT_RANGES[f"port_{_port}_fov"] = (0, 140)
+    INT_RANGES[f"port_{_port}_max_fps"] = (-1, 1000)
 for _game in PC_GAME_IDS:
     INT_RANGES[f"{_game}_port"] = pc_games.PORT_RANGE
     INT_RANGES[f"{_game}_max_clients"] = pc_games.MAX_CLIENTS_RANGE

@@ -2,6 +2,8 @@
 each game, each tab's own sidebar, and the pages of the World at War, Call
 of Duty 2 and United Offensive tabs.
 
+- Big Red One [acct2-bro]: Set up (your Xbox disc, then Build: c3w/bro.py), Play
+  and Port status.
 - World at War: Content (its sources, map packs and "Rip content", moved
   here from Call of Duty 3's Set up page), Mods & maps (when switched on)
   and Port status.
@@ -14,15 +16,18 @@ helpers (v_out, _row, _open, _info, _start_task ...).
 """
 from __future__ import annotations
 
+import subprocess
 import threading
+import time
 import tkinter as tk
 import tkinter.font as tkfont
 from pathlib import Path
 from tkinter import ttk
 from typing import Dict, List, Optional
 
-from . import common, games, gui_art, pc_games, theme, waw, widgets
-from .common import SetupError
+from . import bro, common, games, gui_art, pc_games, theme, waw, widgets
+from .common import IS_WINDOWS, SetupError
+from .pipeline import TOOL_VERSION
 from .widgets import hint, px, section, tip
 
 DISC_TYPES = [("Disc images", "*.iso *.ISO")]
@@ -30,6 +35,7 @@ HERO_H = games.HERO_H                   # the header's usual height, for the fir
 # The main buttons in the bottom bar: (key, label). Upper case, like a launcher's.
 ACTION_LABELS = {"build": "BUILD", "play": "PLAY", "rip": "RIP CONTENT", "copy": "MAKE A NEW COPY",
                  "server": "START LAN SERVER", "stop": "STOP SERVER"}
+BRO_DEFAULT_SIZE = "Default"   # [acct2-bro] the window size list's first entry: the port's own size
 STATE_STYLES = {games.READY: "ChipGood.TLabel", games.TESTING: "ChipWarn.TLabel", games.NEXT: "ChipInfo.TLabel",
                 games.LATER: "ChipDim.TLabel"}
 
@@ -216,13 +222,23 @@ class Games:
                 self.btn_play_bar.pack(side="left", padx=(px(6), 0))
                 tip(self.btn_play_bar, "Start Call of Duty 3.", reason=lambda: self._play_exe()[1]
                     if self._play_exe()[0] is None else "")
-            elif g.id == games.WAW:
-                self.btn_rip = ttk.Button(f, text=ACTION_LABELS["rip"], style="Big.Accent.TButton",
-                                          command=self._start_rip)
-                self.btn_rip.pack(side="left")
-                tip(self.btn_rip, "Rip World at War's files for the new engine (Ctrl+B).",
-                    reason=self.v_build_reason.get)
-            else:
+            elif g.id == games.BRO:   # [acct2-bro]
+                build = ttk.Button(f, text=ACTION_LABELS["build"], style="Big.Accent.TButton", command=self._bro_build)
+                build.pack(side="left")
+                tip(build, "Build Big Red One from your disc (Ctrl+B). Nothing is downloaded before you approve the "
+                    "list.", reason=self._bro_build_reason)
+                play = ttk.Button(f, text=ACTION_LABELS["play"], style="Big.TButton", command=self._play_bro)
+                play.pack(side="left", padx=(px(6), 0))
+                tip(play, "Start Big Red One.", reason=self._bro_play_reason)
+                self.bro_actions = {"build": build, "play": play}
+            elif g.id in games.X360_PORTS:   # [waw-decomp] Build and Play (gui_ports.py); World at War also rips
+                self._port_make_actions(f, g.id, ACTION_LABELS)
+                if g.id == games.WAW:
+                    self.btn_rip = ttk.Button(f, text=ACTION_LABELS["rip"], style="Big.TButton", command=self._start_rip)
+                    self.btn_rip.pack(side="left", padx=(px(6), 0))
+                    tip(self.btn_rip, "Rip World at War's files for Call of Duty 3 (its Content page).",
+                        reason=self._rip_blocker)
+            else:   # United Offensive: the Rust tools' New copy and LAN server
                 copy = ttk.Button(f, text=ACTION_LABELS["copy"], style="Big.Accent.TButton",
                                   command=lambda gid=g.id: self._pc_make_copy(gid))
                 copy.pack(side="left")
@@ -247,6 +263,8 @@ class Games:
 
     def _action_buttons(self) -> List[ttk.Button]:
         out = [self.btn_build, self.btn_play_bar, self.btn_rip, self.btn_cancel, self.btn_open_out]
+        out += list(getattr(self, "bro_actions", {}).values())   # [acct2-bro]
+        out += self._port_action_buttons()   # [waw-decomp]
         for b in self.pc_actions.values():
             out += [b["copy"], b["server"]]
         return out
@@ -260,6 +278,18 @@ class Games:
         gid = self.tabs.game
         if gid == games.COD3:
             self._shortcut_build()
+        elif gid == games.BRO:   # [acct2-bro]
+            why = self._bro_build_reason()
+            if why:
+                self.v_status.set(why)
+            else:
+                self._bro_build()
+        elif gid in games.X360_PORTS:   # [waw-decomp]
+            why = self._port_build_reason(gid)
+            if why:
+                self.v_status.set(why)
+            else:
+                self._port_build(gid)
         elif gid == games.WAW:
             if str(self.btn_rip.cget("state")) != "disabled":
                 self._start_rip()
@@ -286,6 +316,8 @@ class Games:
         self.btn_play_bar.configure(state="normal" if exe else "disabled", style=self._action_style(accent=bool(exe)))
         rip_why = "" if busy else self._rip_blocker()
         self.btn_rip.configure(state="disabled" if busy or rip_why else "normal")
+        bro_why = self._bro_update_actions(busy)   # [acct2-bro]
+        port_why = self._port_update_actions(busy)   # [waw-decomp]
         for gid, b in self.pc_actions.items():
             copy_why = self._pc_copy_reason(gid)
             b["copy"].configure(state="disabled" if copy_why else "normal")
@@ -294,7 +326,11 @@ class Games:
                                   style=self._action_style(accent=running),
                                   state="disabled" if self._pc_server_reason(gid) else "normal")
         gid = self.tabs.game
-        if gid == games.WAW:
+        if gid == games.BRO:   # [acct2-bro]
+            reason = bro_why
+        elif gid in games.X360_PORTS:   # [waw-decomp]
+            reason = port_why.get(gid, "")
+        elif gid == games.WAW:
             reason = rip_why
         elif gid in self.pc_actions:
             reason = "" if busy else (self._pc_copy_reason(gid) or "")
@@ -309,7 +345,296 @@ class Games:
     def _reason_clicked(self) -> None:
         """The reason under the main button was clicked: the page that fixes it."""
         gid = self.tabs.game
-        self.show_page({games.COD3: "setup", games.WAW: "waw_content"}.get(gid, f"{gid}_copy"))
+        self.show_page({games.COD3: "setup", games.BRO: "bro_setup",   # [acct2-bro]
+                        games.WAW: "waw_setup", games.COD2: "cod2_setup",   # [waw-decomp]
+                        games.COD4: "cod4_setup"}.get(gid, f"{gid}_copy"))
+
+
+    # ------------------------------------------------------------------ Big Red One [acct2-bro] (c3w/bro.py)
+    def _init_bro_settings(self, s: dict) -> None:
+        """Big Red One's disc and Play choices, from settings.json."""
+        play = bro.PlayOptions.from_settings(s)
+        self.v_bro_source = tk.StringVar(value=s.get("bro_source") if isinstance(s.get("bro_source"), str) else "")
+        self.v_bro_level = tk.StringVar()
+        self.v_bro_size = tk.StringVar()
+        self.v_bro_fullscreen = tk.BooleanVar()
+        self.v_bro_vsync = tk.BooleanVar()
+        self.v_bro_mouse_look = tk.BooleanVar()
+        self.v_bro_mouse_speed = tk.StringVar()
+        self.v_bro_mute = tk.BooleanVar()
+        self._bro_set_play(play)
+        self.v_bro_status = tk.StringVar(value="")
+        self.v_bro_play_reason = tk.StringVar(value="")
+        self._bro_disc_why = "Checking your disc..."   # why Build can't start for the disc ("" = it can)
+        self._bro_gen = 0
+        self._bro_proc = None
+        self.v_bro_source.trace_add("write", lambda *a: self._bro_check_disc())
+
+    def _bro_set_play(self, play: "bro.PlayOptions") -> None:
+        self.v_bro_level.set(dict(bro.LEVELS).get(play.level, bro.LEVELS[0][1]))
+        self.v_bro_size.set(play.size or BRO_DEFAULT_SIZE)
+        self.v_bro_fullscreen.set(play.fullscreen)
+        self.v_bro_vsync.set(play.vsync)
+        self.v_bro_mouse_look.set(play.mouse_look)
+        self.v_bro_mouse_speed.set(str(play.mouse_speed))
+        self.v_bro_mute.set(play.mute)
+
+    def _bro_play_options(self) -> "bro.PlayOptions":
+        level = next((key for key, label in bro.LEVELS if label == self.v_bro_level.get()), "")
+        size = self.v_bro_size.get().strip()
+        speed = pc_games.parse_int(self.v_bro_mouse_speed.get(), *bro.MOUSE_SPEED_RANGE)
+        return bro.PlayOptions(level=level, size="" if size == BRO_DEFAULT_SIZE else size,
+                               fullscreen=bool(self.v_bro_fullscreen.get()), vsync=bool(self.v_bro_vsync.get()),
+                               mouse_look=bool(self.v_bro_mouse_look.get()),
+                               mouse_speed=bro.DEFAULT_MOUSE_SPEED if speed is None else speed,
+                               mute=bool(self.v_bro_mute.get()))
+
+    def _bro_settings(self) -> dict:
+        return {"bro_source": self.v_bro_source.get(), **self._bro_play_options().to_settings()}
+
+    def _bro_apply_settings(self, s: dict) -> None:
+        if isinstance(s.get("bro_source"), str):
+            self.v_bro_source.set(s["bro_source"])
+        merged = {**self._bro_play_options().to_settings(), **{k: v for k, v in s.items() if k.startswith("bro_")}}
+        self._bro_set_play(bro.PlayOptions.from_settings(merged))
+
+    def _bro_out(self) -> Optional[Path]:
+        out = self._out_path()
+        return out / bro.OUTPUT_SUBDIR if out else None
+
+    # ------------------------------------------------------------------ Big Red One: Set up
+    def _page_bro_setup(self, t) -> None:
+        t.columnconfigure(0, weight=1)
+        widgets.page_header(t, "Set up", "Make Call of Duty 2: Big Red One from your own Xbox disc, then press "
+                                         "Build. Your disc is only read, never changed.", columns=1)
+        self.pages["bro_setup"]["on_show"] = self._bro_check_disc
+        d = section(t, "Your disc", 1, columns=1)
+        self._grid_cols(d)
+        self._row(d, 0, "Big Red One (Xbox)", self.v_bro_source, [
+            ("ISO...", lambda: self._pick_file(self.v_bro_source, "Big Red One disc image", DISC_TYPES),
+             "Pick the disc image (.iso, full or trimmed)."),
+            ("Folder...", lambda: self._pick_dir(self.v_bro_source, "Folder copied from the Big Red One disc"),
+             "Pick a folder holding the disc's files (default.xbe and the rest).")],
+            tooltip="Your original Xbox Call of Duty 2: Big Red One: its disc image, or a folder copied from it.")
+        self.lbl_bro_status = hint(d, var=self.v_bro_status)
+        self.lbl_bro_status.grid(row=1, column=1, columnspan=2, sticky="w", pady=(px(2), 0))
+
+        o = section(t, "Where it goes", 3, columns=1)
+        self._grid_cols(o)
+        self._row(o, 0, "Output folder", self.v_out, [
+            ("Browse...", lambda: self._pick_dir(self.v_out, "Output folder"), ""),
+            ("Open", lambda: self._open(str(self._bro_out() or "")), "The game's folder (bro/ in the output folder).")],
+            tooltip="The same output folder as the other tabs: Big Red One goes into its bro/ folder.")
+        hint(o, "The game goes into bro/ there: the disc's files (about 4 GB), the port, your saves and a launcher "
+                "(play.sh). The build itself takes about 1.5 GB in the work folder for the hour it runs.").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
+
+        b = section(t, "The build", 5, columns=1)
+        hint(b, "The same steps as Call of Duty 3: your disc is checked and its files copied; xboxrecomp (the "
+                "recompiler, MIT) and Capstone are downloaded once, after you approve them; default.xbe is turned "
+                "into C (about an hour, mostly on one core); then it is built with Vulkan graphics and SDL2 sound. "
+                "A build that stops goes on where it stopped.").pack(anchor="w")
+        opts = ttk.Frame(b)
+        opts.pack(anchor="w", pady=(px(8), 0))
+        tip(ttk.Checkbutton(opts, text="Install what's missing (listed for approval first)", variable=self.v_install),
+            "The same setting as Call of Duty 3's: the build's packages (CMake, a C compiler, SDL2, Vulkan, glslc, "
+            "OpenSSL) through your package manager.").pack(anchor="w")
+        tip(ttk.Checkbutton(opts, text="Delete the build files when done", variable=self.v_cleanup),
+            "The same setting as Call of Duty 3's. The recompiled C is the game's code; it stays in the work "
+            "folder only while it is needed.").pack(anchor="w")
+        ok, why = bro.supported()
+        if not ok:
+            hint(b, why, style="Warn.TLabel").pack(anchor="w", pady=(px(8), 0))
+        bf = ttk.Frame(b)
+        bf.pack(anchor="w", pady=(px(10), px(18)))
+        widgets.button_row(bf, [("Check disc", self._bro_check_disc, "Read the disc again."),
+                                ("Show log", lambda: self.show_page("log"), "The build's output.")])
+
+    def _bro_check_disc(self) -> None:
+        """Checks the disc off the UI thread (it reads default.xbe, and a folder's file list)."""
+        if not hasattr(self, "v_bro_source"):
+            return
+        self._bro_gen += 1
+        gen, text = self._bro_gen, self.v_bro_source.get()
+        if not text.strip():
+            self._bro_disc_why = "Build needs your Big Red One disc: choose its .iso (or a folder) on Set up."
+            self._bro_show_status("Choose your disc image (.iso) or a folder copied from the disc.", "Hint.TLabel")
+            self._update_actions()
+            return
+        self._bro_disc_why = "Checking your disc..."
+        self._bro_show_status("Checking...", "Hint.TLabel")
+
+        def work():
+            disc, line = bro.check_disc(text)
+
+            def done():
+                if gen != self._bro_gen:
+                    return   # a newer check started meanwhile
+                self._bro_disc_why = "" if disc else line
+                self._bro_show_status(line, "Good.TLabel" if disc else "Warn.TLabel")
+                self._update_actions()
+            self.q.put(("call", done))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _bro_show_status(self, text: str, style: str) -> None:
+        self.v_bro_status.set(text)
+        if hasattr(self, "lbl_bro_status"):
+            self.lbl_bro_status.configure(style=style)
+
+    def _bro_build_reason(self) -> str:
+        """Why Big Red One's Build can't start ("" when it can)."""
+        if self.worker and self.worker.is_alive():
+            return "Busy: wait for the job running now, or cancel it."
+        ok, why = bro.supported()
+        if not ok:
+            return why
+        if self._bro_disc_why:
+            return self._bro_disc_why
+        if self._out_path() is None:
+            return "Build needs an output folder: choose one on Set up."
+        return ""
+
+    def _bro_build(self) -> None:
+        why = self._bro_build_reason()
+        if why:
+            self.v_status.set(why)
+            return
+        opts = bro.BuildOptions(source=self.v_bro_source.get(), output_dir=str(self._out_path()),
+                                work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
+                                jobs=self._jobs(), install_deps=bool(self.v_install.get()),
+                                cleanup=bool(self.v_cleanup.get()), tool_version=TOOL_VERSION)
+        self._save_quietly()
+        common.APPROVAL.reset()
+
+        def work(runner: common.Runner) -> str:
+            return bro.run_build(opts, runner, self.log, self.cancel,
+                                 on_step=lambda i, n, title: self.q.put(("step", i, n, title)))
+        self.show_page("log")
+        self._start_task("Build Big Red One", work, [("Play", lambda: self.show_page("bro_play")),
+                                                     ("Open game folder", lambda: self._open(str(self._bro_out())))])
+
+    # ------------------------------------------------------------------ Big Red One: Play
+    def _page_bro_play(self, t) -> None:
+        t.columnconfigure(0, weight=1)
+        widgets.page_header(t, "Play", "Start Big Red One, with the port's own settings.", columns=1)
+        self.pages["bro_play"]["on_show"] = self._update_actions
+        g = section(t, "Call of Duty 2: Big Red One", 1, columns=1)
+        self._grid_cols(g)
+        top = ttk.Frame(g)
+        top.grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.btn_bro_play_page = ttk.Button(top, text="Play Big Red One", style="Accent.TButton",
+                                            command=self._play_bro)
+        self.btn_bro_play_page.pack(side="left")
+        self.lbl_bro_play_reason = ttk.Label(top, textvariable=self.v_bro_play_reason, style="Hint.TLabel",
+                                             wraplength=px(440), justify="left")
+        self.lbl_bro_play_reason.pack(side="left", padx=(px(14), 0))
+        hint(g, "Keyboard: W A S D move, the mouse looks, the left and right mouse buttons are the triggers, Space "
+                "is A, Ctrl B, R X, F Y, Q and E white and black, Enter Start, Esc Back. A gamepad works too.").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+
+        s = section(t, "Settings", 3, columns=1)
+        self._grid_cols(s)
+        rows = (("Start in", ttk.Combobox(s, textvariable=self.v_bro_level, state="readonly", width=18,
+                                          values=[label for _, label in bro.LEVELS]),
+                 "The menus, or straight into a level."),
+                ("Window size", ttk.Combobox(s, textvariable=self.v_bro_size, state="readonly", width=18,
+                                             values=[BRO_DEFAULT_SIZE] + [x for x in bro.WINDOW_SIZES if x]),
+                 "The size the game draws at (Default: 1280 x 960 in a window)."),
+                ("Mouse speed", ttk.Spinbox(s, from_=bro.MOUSE_SPEED_RANGE[0], to=bro.MOUSE_SPEED_RANGE[1],
+                                            increment=100, textvariable=self.v_bro_mouse_speed, width=8),
+                 f"How far the view turns for the mouse ({bro.DEFAULT_MOUSE_SPEED} is the port's own)."))
+        for r, (label, field, help_text) in enumerate(rows):
+            ttk.Label(s, text=label).grid(row=r, column=0, sticky="w", pady=px(3))
+            field.grid(row=r, column=1, sticky="w", pady=px(3))
+            tip(field, help_text)
+        boxes = ttk.Frame(s)
+        boxes.grid(row=len(rows), column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        for text, var, help_text in (("Fullscreen", self.v_bro_fullscreen, "Fill the screen instead of a window."),
+                                     ("VSync", self.v_bro_vsync, "Wait for the screen's refresh (no tearing)."),
+                                     ("Mouse look", self.v_bro_mouse_look,
+                                      "The mouse turns the view while the window has the focus."),
+                                     ("Mute", self.v_bro_mute, "No sound.")):
+            tip(ttk.Checkbutton(boxes, text=text, variable=var), help_text).pack(side="left", padx=(0, px(14)))
+        hint(s, "Saved for the next start. The game keeps its own options and saves in saves/.").grid(
+            row=len(rows) + 1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+
+        f = section(t, "Folders", 5, columns=1)
+        bf = ttk.Frame(f)
+        bf.pack(anchor="w", pady=(0, px(18)))
+        widgets.button_row(bf, [("Open game folder", lambda: self._open(str(self._bro_out() or "")),
+                                 "bro/ in the output folder: the game, its saves and play.sh."),
+                                ("Open saves", lambda: self._open(str((self._bro_out() or Path()) / "saves")), ""),
+                                ("Open logs", lambda: self._open(str((self._bro_out() or Path()) / "logs")),
+                                 "bro.log: what the game wrote at its last start; build.log: the last build.")])
+
+    def _bro_play_reason(self) -> str:
+        out = self._out_path()
+        if out is None:
+            return "Choose an output folder on Set up first."
+        if self.worker and self.worker.is_alive():
+            return "A job is running: wait for it to finish (or Cancel it)."
+        cmd, why = bro.play_command(out)
+        if cmd is None:
+            return why
+        if self._bro_proc is not None and self._bro_proc.poll() is None:
+            return "Big Red One is running."
+        return ""
+
+    def _play_bro(self) -> None:
+        why = self._bro_play_reason()
+        if why:
+            self._info("Not started", why, kind="warning")
+            return
+        opts = self._bro_play_options()
+        problems = opts.problems()
+        if problems:
+            self._info("Not started", "\n".join(problems), kind="warning")
+            return
+        out = self._out_path()
+        cmd, _ = bro.play_command(out)
+        lay = bro.layout(out, out)
+        self._save()
+        lay.logs.mkdir(parents=True, exist_ok=True)
+        log_path = lay.logs / "bro.log"
+        if log_path.exists():
+            log_path.replace(lay.logs / "bro.previous.log")
+        self.log.info("Launching: " + " ".join(cmd) + f" (its output: {log_path})")
+        started = time.monotonic()
+
+        def ended(code: int) -> None:
+            took = time.monotonic() - started
+            self.q.put(("call", lambda: (self.log.info(f"Big Red One exited after {took / 60:.1f} min (exit code "
+                                                       f"{code}); its output is in {log_path}."),
+                                         self._update_actions())))
+        try:
+            with open(log_path, "wb") as f:
+                kwargs = {} if IS_WINDOWS else {"start_new_session": True}
+                self._bro_proc = common.start_and_collect(cmd, on_exit=ended, cwd=str(lay.out),
+                                                          env=bro.play_env(opts), stdout=f,
+                                                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                                          **kwargs)
+        except OSError as e:
+            self._info("Could not start", f"Big Red One didn't start.\n{e}", kind="error")
+            return
+        self.v_status.set("Big Red One is starting...")
+        self._update_actions()
+
+    def _bro_update_actions(self, busy: bool) -> str:
+        """Big Red One's Build and Play buttons and its Play page; returns the reason Build is off."""
+        if not hasattr(self, "bro_actions"):
+            return ""
+        why = "" if busy else self._bro_build_reason()
+        play_why = self._bro_play_reason()
+        built = bro.installed(self._out_path()) is not None if self._out_path() else False
+        self.bro_actions["build"].configure(state="disabled" if busy or why else "normal",
+                                            style=self._action_style(accent=not built))
+        self.bro_actions["play"].configure(state="disabled" if play_why else "normal",
+                                           style=self._action_style(accent=built))
+        if hasattr(self, "btn_bro_play_page"):
+            self.btn_bro_play_page.configure(state="disabled" if play_why else "normal")
+            self.v_bro_play_reason.set(play_why or "Ready: built from your disc.")
+            self.lbl_bro_play_reason.configure(style="Warn.TLabel" if play_why else "Good.TLabel")
+        return why
 
     # ------------------------------------------------------------------ port status pages
     def _page_status(self, t, game_id: str) -> None:

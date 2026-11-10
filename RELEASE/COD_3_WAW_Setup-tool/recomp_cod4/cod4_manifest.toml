@@ -1,0 +1,17 @@
+# The recompiler's manifest for Call of Duty 4: Modern Warfare (Xbox 360), the campaign program, built with the same
+# ReXGlue SDK and patches as Call of Duty 3 (../recomp/). [acct2-cod4]
+# Made with `rexglue init` (SDK 0.10.0), then given the project's own config file.
+#
+# assets/ holds the game's files from the player's Xbox 360 disc (Call of Duty 4: Modern Warfare (World),
+# default.xex SHA-1 2f3148ca7e4c17140e0d44714e204f570197af51). The multiplayer program, default_mp.xex, has its own
+# folder, mp/ (as Call of Duty 3's cod3mp).
+
+[project]
+name = "cod4"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated/default"
+includes = ["config/default.toml"]

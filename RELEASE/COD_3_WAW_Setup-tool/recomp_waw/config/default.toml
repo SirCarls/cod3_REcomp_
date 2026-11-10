@@ -1,0 +1,541 @@
+# Codegen overrides for World at War's Xbox 360 default.xex (campaign and Nazi Zombies). [acct2-waw]
+# Title: Call of Duty: World at War (USA, Europe), default.xex SHA-1 9972cdb7c1bf2f54c6ef7d58c9eb3b6d4a724708.
+#
+# Still to come, the way Call of Duty 3's ../recomp/config/default.toml has them:
+#   more [functions]                  functions only reachable through data pointers (tools/find_missing_funcs.py)
+#   [[midasm_hook]]                   the port's hooks, one block each, with the reason
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (the C runtime's), found 2026-11-07 in the generated code:
+#   setjmp 0x8244D650 stores f14-f31, r13, v64-v127, LR (+308), CR (+304) and r1 (+144) into the buffer in r3,
+#     clears +312 and returns 0; its 10 callers include Com_Init 0x8223D768 and Com_Frame 0x8223D8C0 (the frame
+#     loop's error frame) and 0x82327060, next to Scr_Error 0x82326D10. The decomp's PC pairing
+#     calls it _setjmp3.
+#   longjmp 0x8244DCD0 reads +312 (an unwind path through 0x82455CB0 / 0x82470E3C when set), else restores LR, r1
+#     and CR from the same offsets and returns the value in r4.
+# Com_Error leaves the failing frame with longjmp to the setjmp of the thread's frame loop. Recompiled as plain
+# functions, longjmp would return into the code that raised the error instead. With both addresses the codegen
+# makes host setjmp/longjmp calls keyed by the guest buffer. (MW2's Xbox 360 recomp names the same pair for the same
+# reason; Call of Duty 3 hooks longjmp instead because of its script fibers, which World at War's VM doesn't use.)
+# ---------------------------------------------------------------------------
+setjmp_address = 0x8244D650
+longjmp_address = 0x8244DCD0
+
+# ---------------------------------------------------------------------------
+# Function boundaries the analyzer cannot discover on its own
+# ---------------------------------------------------------------------------
+[functions]
+# Reached only by tail branches and outside every .pdata range: the codegen's first pass stopped on them
+# ("target not in any function", 2026-11-07). Codegen discovers their extent itself.
+0x82392D50 = {}  # b from 0x8239367C (in 0x82393598)
+0x823AEAF0 = {}  # b from 0x823B2AAC (in 0x823B2940); 16 bytes in the decomp's Ghidra pass
+
+# Functions only reachable through data pointers (vtable slots, callbacks, code references) that have no .pdata
+# entry: tools/find_missing_funcs.py on the decrypted image (tools/xex_dump.py) against the codegen's function
+# table, 2026-11-07. The first run stopped on the first one ("Call to invalid or unregistered function at guest
+# address 0x82450238", a 4-byte function the decomp's Ghidra pass labels KeTlsAlloc, reached from 0x824505A0).
+0x82450238 = {}  # code-ref @0x824505A0
+0x82146FF0 = {}  # vtable @0x82493A58
+0x82147080 = {}  # vtable @0x82493A50
+0x821892E8 = {}  # vtable @0x82016B94
+0x8227D388 = {}  # code-ref @0x8227D4F4
+0x822C8480 = {}  # code-ref @0x822CB31C
+0x822C84A0 = {}  # code-ref @0x822CB338
+0x823936A8 = {}  # vtable @0x82098B90
+0x823936B0 = {}  # vtable @0x82098B60
+0x82398740 = {}  # vtable @0x8203C20C
+0x823AF418 = {}  # vtable @0x820993E0
+0x823B1AB0 = {}  # vtable @0x82098DA0
+0x823B1AF8 = {}  # vtable @0x82098D94
+0x823B2A60 = {}  # vtable @0x82098B5C
+0x823B2A68 = {}  # vtable @0x82098B34
+0x823B2A70 = {}  # vtable @0x820995C0
+0x823B2A80 = {}  # vtable @0x8209959C
+0x823B2A98 = {}  # vtable @0x820995D0
+
+# ---------------------------------------------------------------------------
+# Calls through a table of function pointers that the codegen takes for switches (src/waw_hooks.cpp)
+# ---------------------------------------------------------------------------
+# `lis/addi` (a table's address), `lwzx` (an entry), `mtctr`, `bctr` is also how a jump table looks, so the codegen
+# wrote a switch for these two, with wrong cases: the first run with the disc's files (2026-11-07 15:17) trapped
+# ("Switch case out of range") in sub_82146FD8 on the fastfile thread. Each hook calls CTR's target at the `bctr` and
+# returns, which is what the original does. A scan of the generated code for switches on a table's base register, with
+# 1-2 cases or with function cases, found these two of 266.
+[[midasm_hook]]
+address = 0x82146FEC  # bctr of sub_82146FD8: the entry r3 of the table at 0x82493A50 (0x82147080, ..., 0x82146FF0)
+name = "waw_ctr_tail_call"
+registers = ["ctx", "base"]
+return = true
+
+[[midasm_hook]]
+address = 0x82189318  # bctr of sub_821892E8: a 28-byte record's function, from a table found through r3
+name = "waw_ctr_tail_call"
+registers = ["ctx", "base"]
+return = true
+
+# ---------------------------------------------------------------------------
+# The sound callback's processor and floating-point state (src/waw_hooks.cpp)
+# ---------------------------------------------------------------------------
+# 0x82396FB0 is the callback the runtime's audio worker calls. The sound code looks up per-processor state by the
+# processor number in the PCR (`lbz r9,268(r13)` in sub_823B1CD8) and only the sound engine's processor has any. The
+# hook gives the worker that processor before the callback runs (MW2's Xbox 360 recomp notes the same need: XAudio2's
+# workers wait by processor), and masks the host's floating-point exceptions on the worker, which the runtime leaves
+# unmasked there.
+[[midasm_hook]]
+address = 0x82396FB0
+name = "waw_sound_callback_start"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The game's console (src/waw_hooks.cpp)
+# ---------------------------------------------------------------------------
+# Com_PrintMessage (0x8223A538, the decomp's name; r3 channel, r4 text): every console line also goes into the log
+# (waw_log_console).
+[[midasm_hook]]
+address = 0x8223A538
+name = "waw_console_print"
+registers = ["ctx", "base"]
+
+# Com_Frame (0x8223D8C0): a debug console command once the game is up (waw_debug_command), through Cbuf_AddText
+# (0x82238978).
+[[midasm_hook]]
+address = 0x8223D8C0
+name = "waw_frame_start"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The front end's menus (src/waw_hooks.cpp)
+# ---------------------------------------------------------------------------
+# Menus_OpenByName (0x8225FDF0; r4 the menu's name) and UI_SetActiveMenu (0x82267380; r3 the local client, r4 the
+# front end's state), the decomp's names: each menu the game opens goes into the log (waw_log_menus), so a test can
+# tell which screen it is on.
+[[midasm_hook]]
+address = 0x8225FDF0
+name = "waw_menu_open"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8225F248
+name = "waw_menu_close"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82267380
+name = "waw_set_active_menu"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The frame-rate audit's counters (src/waw_hooks.cpp, waw_log_clocks; off by default, the counting is a few atomic adds)
+# ---------------------------------------------------------------------------
+# Each at its function's first instruction, the decomp's names: SV_Frame (r3 msec), G_RunFrame (r3 levelTime),
+# ClientThink_real, Pmove, PmoveSingle, CG_DrawActiveFrame (r4 serverTime), Scr_IncTime, BG_RunLerpFrameRate.
+[[midasm_hook]]
+address = 0x822C0010
+name = "waw_count_server_frame"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x821BFD28
+name = "waw_count_game_frame"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x821A60B8
+name = "waw_count_usercmd"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820E9BD0
+name = "waw_count_pmove"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820E8E10
+name = "waw_count_pmove_step"
+registers = ["ctx", "base"]
+
+# FX_GenerateVerts 0x82165E38: where its time goes (with waw_log_frame_parts)
+[[midasm_hook]]
+address = 0x82165E48
+name = "waw_fx_start"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165E54
+name = "waw_fx_part0"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165E78
+name = "waw_fx_part1"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165E80
+name = "waw_fx_part2"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165E8C
+name = "waw_fx_part3"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165F40
+name = "waw_fx_part4"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82165F4C
+name = "waw_fx_part5"
+registers = ["ctx", "base"]
+
+# Inside 0x82101D68 (FX_GenerateVerts' first call): the tube meshes 0x82416DD0 and the flames 0x822B5188, timed apart
+[[midasm_hook]]
+address = 0x82101DF8
+name = "waw_fx_tubes_start"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82101DFC
+name = "waw_fx_tubes_end"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82101E08
+name = "waw_fx_flames_start"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82101E0C
+name = "waw_fx_flames_end"
+registers = ["ctx", "base"]
+
+# waw_extra_worker: slot 9's collision-trace state, after CM_LoadMap's own CM_InitThreadData calls for contexts 0-5
+[[midasm_hook]]
+address = 0x8222CFDC
+name = "waw_extra_worker_trace"
+registers = ["ctx", "base"]
+
+# waw_move_hz: Pmove's command time onto the step grid (r31), and each PmoveSingle piece at most one step (r10, r11)
+[[midasm_hook]]
+address = 0x820E9C40
+name = "waw_move_grid"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820E9C88
+name = "waw_move_step"
+registers = ["ctx", "base"]
+
+# waw_move_snap_hz (11-08): Sys_SnapVector 0x822A30B0, the velocity cut toward zero at the end of each PmoveSingle
+# (its only caller, 0x820E9BB8). Returns true to skip the cut on steps that don't cross the fixed clock's boundary.
+[[midasm_hook]]
+address = 0x822A30B0
+name = "waw_move_snap"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# PM_StepSlideMove 0x820EA328, counted for the jump question (ps in r29): the step-down's PM_ProjectVelocity call
+# after a stepped move, the 9-unit step-down's PM_ClipVelocity call, and the jump clamp 0x820DB6B0's call.
+[[midasm_hook]]
+address = 0x820EA6DC
+name = "waw_count_step_down_project"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820EA810
+name = "waw_count_step_down_clip"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820EA824
+name = "waw_count_jump_clamp"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8212C8A8
+name = "waw_count_client_frame"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8232CEC8
+name = "waw_count_script_tick"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x820D7080
+name = "waw_count_anim_lerp"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x824733A0  # BinkDoFrame: a movie picture decoded (the clocks line's "movie pictures")
+name = "waw_count_bink_picture"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The native renderer's census (src/waw_hooks.cpp, waw_debug_native_census; off by default; NATIVE-RENDERER.md step 1)
+# ---------------------------------------------------------------------------
+# The render thread's pass setup 0x82437A90 (r3 the command buffer context, r4 the pass index) and
+# R_DrawIndexedPrimitive 0x82432268 (r4 the draw's arguments), each at its first instruction.
+[[midasm_hook]]
+address = 0x82437A90
+name = "waw_native_pass"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82432268
+name = "waw_native_draw"
+registers = ["ctx", "base"]
+
+# The tess buffer's draw 0x824322B8 (2D and effects: the tess path 0x82428578 calls it after its pass setup), at its
+# first instruction.
+[[midasm_hook]]
+address = 0x824322B8
+name = "waw_native_draw_tess"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# Where the main thread's frame time goes (src/waw_hooks.cpp, waw_log_frame_parts; off by default; the 500 fps target)
+# ---------------------------------------------------------------------------
+# Marks on the main thread's path through a frame (Com_Frame_Try_Block_Function 0x8223C200): its start, the end of
+# its frame wait (0x8223C3D4, the loop's exit), the client frame 0x822CD980, SCR_UpdateScreen 0x821458F8,
+# R_RenderScene 0x82405400 and Com_Statmon 0x8223C130. SV_Frame and CG_DrawActiveFrame mark through the counters above.
+[[midasm_hook]]
+address = 0x8223C200
+name = "waw_part_frame_start"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8223C3D4
+name = "waw_part_wait_done"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x822CD980
+name = "waw_part_client"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x821458F8
+name = "waw_part_screen"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82405400
+name = "waw_part_scene"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8223C130
+name = "waw_part_tail"
+registers = ["ctx", "base"]
+
+# Finer marks inside the scene and the frame's end (19:17): R_RenderScene's calls 0x82405078, 0x8243FA60, 0x82403400;
+# CG_Draw2D 0x82101540; SCR_DrawScreenField 0x82145288; 0x82418CF0, SCR_UpdateFrame's last renderer call.
+[[midasm_hook]]
+address = 0x82405078
+name = "waw_part_scene2"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8243FA60
+name = "waw_part_scene3"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82403400
+name = "waw_part_scene4"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82101540
+name = "waw_part_2d"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82145288
+name = "waw_part_screen_field"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82418CF0
+name = "waw_part_end_frame"
+registers = ["ctx", "base"]
+
+# The scene step's worker commands (19:34): 0x8242CF40 queues one, r3 its type (counted with waw_log_frame_parts).
+[[midasm_hook]]
+address = 0x8242CF40
+name = "waw_count_worker_cmd"
+registers = ["ctx", "base"]
+
+# The command queues' time (19:48): before and after each call to 0x8242C870 (one command, or up to ten, from
+# queue r3): four in the workers' loop 0x8242CBD8, four in 0x8242CCA8, where the main thread helps (timed with
+# waw_log_frame_parts).
+[[midasm_hook]]
+address = 0x8242CC2C
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC30
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC40
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC44
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC64
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC68
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC78
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CC7C
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD1C
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD20
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD40
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD44
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD64
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD68
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD88
+name = "waw_queue_call"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x8242CD8C
+name = "waw_queue_return"
+registers = ["ctx", "base"]
+
+# One more scene worker (waw_extra_worker, 11-07 20:25; off by default): game thread slot 9. See waw_hooks.cpp.
+[[midasm_hook]]
+address = 0x8242CF20
+name = "waw_extra_worker_loop"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82240AEC
+name = "waw_extra_worker_slot"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x822409D4
+name = "waw_extra_worker_create"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82240A14
+name = "waw_thread_name_create"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82240944
+name = "waw_thread_name_start"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# Native model skinning, rigid, one-bone and two-bone vertices (src/waw_hooks.cpp, `waw_native_skin`; 0 by default)
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x824472B0  # the entry of the rigid skinning function (r3 the surface, r5 the bone matrices, r6 the output)
+name = "waw_native_skin_rigid"
+registers = ["ctx", "base"]
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82447434  # its one exit (`b` to the register restore): the check compares here
+name = "waw_native_skin_rigid_end"
+registers = ["ctx", "base"]
+
+# The weighted path's one-bone vertices (11-07 22:55; 0x82447438 calls it first)
+[[midasm_hook]]
+address = 0x82446A98  # its entry (r3 the source vertices, r4 a u16 bone offset a vertex, r5 the count, r6 the bones, r7 the output)
+name = "waw_native_skin_one_bone"
+registers = ["ctx", "base"]
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82446C20  # its one exit (`b` to the register restore; the no-vertices branch lands here too)
+name = "waw_native_skin_one_bone_end"
+registers = ["ctx", "base"]
+
+# The weighted path's two-bone vertices (11-07 23:00)
+[[midasm_hook]]
+address = 0x82446C28  # its entry (r3 the source vertices, r4 six bytes a vertex: two bone offsets and a weight, r5 the count, r6 the bones, r7 the output)
+name = "waw_native_skin_two_bones"
+registers = ["ctx", "base"]
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82446E14  # its one exit (`b` to the register restore; the no-vertices branch lands here too)
+name = "waw_native_skin_two_bones_end"
+registers = ["ctx", "base"]
+
+# The three-bone vertices (10 bytes a record: bone offsets at +0, +2, +6, weights at +4, +8) and the four-bone ones (14
+# bytes: offsets at +0, +2, +6, +10, weights at +4, +8, +12), the same way.
+[[midasm_hook]]
+address = 0x82446E18  # its entry (the same registers as the two-bone one)
+name = "waw_native_skin_three_bones"
+registers = ["ctx", "base"]
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x82447040  # its one exit (the no-vertices branch lands here too)
+name = "waw_native_skin_three_bones_end"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82447048  # its entry (the same registers as the two-bone one)
+name = "waw_native_skin_four_bones"
+registers = ["ctx", "base"]
+return_on_true = true
+
+[[midasm_hook]]
+address = 0x824472AC  # its one exit (the no-vertices branch lands here too)
+name = "waw_native_skin_four_bones_end"
+registers = ["ctx", "base"]

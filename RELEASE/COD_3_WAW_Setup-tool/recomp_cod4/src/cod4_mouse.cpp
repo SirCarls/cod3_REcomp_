@@ -2,6 +2,9 @@
 
 #include "cod4_mouse.h"
 
+#include "cod4_f2.h"  // [f2-menus] the pointer is let go while the F2 window is open
+#include "f2/f2_common.h"  // [f2-menus] 2026-11-11 f2::accel: mouse acceleration and the sensitivity randomizer inside the game
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -10,6 +13,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>  // [f2-menus] the test mouse
 #include <utility>
 #include <vector>
 
@@ -32,6 +36,12 @@ REXCVAR_DEFINE_STRING(cod4_debug_mouse, "", "cod4",
                       "Debug: mouse counts \"dx,dy\" added at every read, as if the mouse moved (a turn test without "
                       "a mouse); once a second the log shows what the game made of them and how far CL_MouseMove "
                       "turned the view");
+// [f2-menus] 2026-11-11 04:00 (owner 03:24: "just so we are clear FPS cannot affect mouse input."): a test mouse
+// that sends events at its own rate, for the check that the frame rate has no part in the mouse.
+REXCVAR_DEFINE_STRING(cod4_debug_mouse_events, "", "cod4",
+                      "Debug: a test mouse \"dx,dy,hz\": dx,dy counts hz times a second from a thread of its own, as "
+                      "a mouse sends them whatever the game draws; once a second the log shows the counts handed to "
+                      "the game");
 
 REXCVAR_DECLARE(bool, mnk_mode);
 
@@ -52,9 +62,40 @@ float g_dy = 0.0f;
 int64_t NowNs() { return Clock::now().time_since_epoch().count(); }
 
 void AddMotion(float dx, float dy) {
+  // [f2-menus] 2026-11-11 03:20 mouse acceleration and the sensitivity randomizer inside the game (f2_accel,
+  // f2_sens_random; both off by default, and then this changes nothing): each mouse event's counts with the time
+  // since the event before it, so a flick comes out the same at any frame rate. Mouse events come on one thread.
+  {
+    thread_local int64_t last_ns = 0;  // [f2-menus] 04:00 a thread's own: the test mouse has its own
+    const int64_t now = NowNs();
+    const double ms = last_ns ? double(now - last_ns) / 1e6 : 0.0;
+    last_ns = now;
+    f2::accel::Apply(&dx, &dy, ms);
+  }
   std::lock_guard lock(g_mutex);
   g_dx += dx;
   g_dy += dy;
+}
+
+// [f2-menus] 2026-11-11 04:00 cod4_debug_mouse_events: started once, at the first read that finds the setting.
+std::atomic<bool> g_test_mouse_on{false};
+void StartTestMouseOnce() {
+  static std::atomic<bool> tried{false};
+  if (tried.exchange(true)) return;
+  const std::string text = REXCVAR_GET(cod4_debug_mouse_events);
+  int dx = 0, dy = 0, hz = 0;
+  if (text.empty() || std::sscanf(text.c_str(), "%d,%d,%d", &dx, &dy, &hz) != 3 || hz < 1 || hz > 8000) return;
+  g_test_mouse_on.store(true, std::memory_order_relaxed);
+  REXLOG_INFO("cod4: test mouse: {},{} counts {} times a second from its own thread", dx, dy, hz);
+  std::thread([dx, dy, hz] {
+    const auto period = std::chrono::nanoseconds(1'000'000'000LL / hz);
+    auto next = std::chrono::steady_clock::now();
+    for (;;) {
+      next += period;
+      std::this_thread::sleep_until(next);
+      AddMotion(float(dx), float(dy));
+    }
+  }).detach();
 }
 
 void ClearMotion() {
@@ -67,6 +108,9 @@ bool InGame() { return NowNs() - g_last_read_ns.load(std::memory_order_relaxed) 
 }  // namespace
 
 bool Enabled() { return REXCVAR_GET(cod4_mouse_look) && REXCVAR_GET(mnk_mode); }
+
+// [f2-menus] 2026-11-11 00:50 for the F2 window (f2::SetLevelRuns), as waw::mouse::InGameplay.
+bool InGameplay() { return InGame(); }
 
 void Listener::OnMouseMove(rex::ui::MouseEvent& e) {
   UpdateCapture();
@@ -96,7 +140,8 @@ void Listener::OnMouseDown(rex::ui::MouseEvent& e) {
 
 void Listener::UpdateCapture() {
   if (!window) return;
-  const bool want = Enabled() && InGame() && window->HasFocus();
+  const bool want = Enabled() && InGame() && window->HasFocus() &&
+                    cod4::f2ui::GameGetsInput();  // [f2-menus] not while the F2 window (or an SDK window) is in use
   if (want == captured_) return;
   ClearMotion();  // motion from before the switch belongs to the menu, not to the view
   if (want) {
@@ -194,7 +239,9 @@ void GetMouseMovement(Ctx& ctx, uint8_t* base, Game game) {
   const uint32_t sp = ctx.r1.u32;
 
   int32_t dx = 0, dy = 0;
-  if (Enabled()) {
+  StartTestMouseOnce();  // [f2-menus] 04:00 cod4_debug_mouse_events
+  const bool test_mouse = g_test_mouse_on.load(std::memory_order_relaxed);
+  if (Enabled() || test_mouse) {
     std::lock_guard lock(g_mutex);
     dx = static_cast<int32_t>(std::trunc(g_dx));
     dy = static_cast<int32_t>(std::trunc(g_dy));
@@ -206,10 +253,50 @@ void GetMouseMovement(Ctx& ctx, uint8_t* base, Game game) {
     dx += debug.dx;
     dy += debug.dy;
   }
+  // [f2-menus] 2026-11-11 03:20 the test's counts go through the same curve once a read, with the read's time, so
+  // a scripted run can check it (what the curve adds or takes is kept to whole counts, the rest carried).
+  if (debug.on) {
+    static int64_t last_ns = 0;
+    static float carry_x = 0.0f, carry_y = 0.0f;
+    const int64_t now = NowNs();
+    const double ms = last_ns ? double(now - last_ns) / 1e6 : 0.0;
+    last_ns = now;
+    float tx = float(debug.dx), ty = float(debug.dy);
+    f2::accel::Apply(&tx, &ty, ms);
+    tx += carry_x - float(debug.dx);
+    ty += carry_y - float(debug.dy);
+    const int32_t more_x = static_cast<int32_t>(std::trunc(tx)), more_y = static_cast<int32_t>(std::trunc(ty));
+    carry_x = tx - float(more_x);
+    carry_y = ty - float(more_y);
+    dx += more_x;
+    dy += more_y;
+  }
   if (dx != 0 || dy != 0) {
     const uint32_t slot = (LoadBe32(base, cl + kMouseIndex) & 1u) * 4u;
     StoreBe32(base, cl + kMouseDx + slot, LoadBe32(base, cl + kMouseDx + slot) + uint32_t(dx));
     StoreBe32(base, cl + kMouseDy + slot, LoadBe32(base, cl + kMouseDy + slot) + uint32_t(dy));
+  }
+
+  // [f2-menus] 04:00 the test mouse: the counts handed to the game each second (the same at any frame rate).
+  if (test_mouse) {
+    static int64_t events_start = 0;
+    static int64_t sum_x = 0, sum_y = 0;
+    static int events_reads = 0;
+    const int64_t now = NowNs();
+    if (events_start == 0) {
+      events_start = now;
+    } else {
+      ++events_reads;
+      sum_x += dx;
+      sum_y += dy;
+      if (now - events_start >= 1'000'000'000) {
+        REXLOG_INFO("cod4: test mouse: {} reads, {},{} counts handed to the game in {:.1f} ms", events_reads, sum_x,
+                    sum_y, double(now - events_start) / 1e6);
+        events_start = now;
+        sum_x = sum_y = 0;
+        events_reads = 0;
+      }
+    }
   }
 
   game();
@@ -266,7 +353,8 @@ template <typename Game>
 void MouseMove(uint8_t* base, Game game) {
   const uint32_t cl = g_client_active.load(std::memory_order_relaxed);
   const DebugCounts debug = ReadDebugCounts();
-  if (!debug.on || cl == 0) {
+  // [f2-menus] 04:00 the turn is logged for the test mouse (cod4_debug_mouse_events) too.
+  if ((!debug.on && !cod4::mouse::g_test_mouse_on.load(std::memory_order_relaxed)) || cl == 0) {
     game();
     return;
   }
@@ -303,8 +391,9 @@ void MouseMove(uint8_t* base, Game game) {
                   c.times, c.sum / t.calls, counts != 0 ? c.sum / t.calls / counts : 0.0);
     list += item;
   }
-  REXLOG_INFO("cod4: mouse turn: {} calls, frame ms {:.1f} on average, {} changed words: {}", t.calls,
-              double(t.msec_sum) / t.calls, t.changes.size(), list.empty() ? "none" : list);
+  REXLOG_INFO("cod4: mouse turn: {} calls, frame ms {:.1f} on average, {} changed words: {}; the window {:.1f} ms",
+              t.calls, double(t.msec_sum) / t.calls, t.changes.size(), list.empty() ? "none" : list,
+              double(now_ns - t.window_start) / 1e6);  // [f2-menus] 04:00 the window, for degrees a second
   t.changes.clear();
   t.calls = 0;
   t.msec_sum = 0;

@@ -2,7 +2,7 @@
 #
 # To replace one with your own picture, save a PNG named <file>.png (the first
 # column, exactly, "$" and all) in <game folder>/data/cod3/user_textures_png/
-# and press "Build user texture pack" in the setup tool (Play tab). The rules
+# and press "Build texture pack" in the setup tool (Textures page). The rules
 # (PNG, RGBA 8-bit, the same aspect ratio, sizes, alpha) are in
 # docs/TEXTURE_REPLACEMENT.md. Start from the ripped original,
 # data/cod3/textures/<file>.png, so the picture lines up with the model.

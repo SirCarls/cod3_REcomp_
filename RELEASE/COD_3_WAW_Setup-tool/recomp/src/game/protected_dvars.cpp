@@ -62,6 +62,14 @@ REXCVAR_DEFINE_INT32(aim_slowdown, 100, "cod3/Aim",
     .range(0, 100)
     .validator([](std::string_view v) { return OwnWriteAllowed("aim_slowdown", v); });
 
+// [acct2-ocr] 2026-11-05 The levitation fix (game/movement/stuck_fix.h), the match's like the movement rule.
+REXCVAR_DEFINE_INT32(levitation_fix, 1, "cod3/Movement",
+                     "Match rule (server_sided_protected): 1 the game's stuck fix frees a player from walls only, "
+                     "never by lifting them out of another player or soldier (no levitation glitch); 0 Call of "
+                     "Duty 3's own. The host's in a match")
+    .range(0, 1)
+    .validator([](std::string_view v) { return OwnWriteAllowed("levitation_fix", v); });
+
 // TEST ONLY: play this machine as a guest in a pretend match, with these
 // server values, so every protection path can be tried in the campaign.
 // "<seconds>:<name>=<value>;...;<seconds>:end" (seconds after the first
@@ -100,6 +108,10 @@ const std::vector<Entry>& Entries() {
       {Id::kAimSlowdown, "aim_slowdown", 0, 100, 100, 100,
        "How hard Sticky Aim pulls the view toward an enemy, in percent of the game's own (0-100; it can never "
        "be stronger). Set by the host."},
+      // [acct2-ocr] the levitation fix (game/movement/stuck_fix.h)
+      {Id::kLevitationFix, "levitation_fix", 0, 1, 1, 1,
+       "1: a stuck player is freed from walls only, never lifted out of another player or soldier (no "
+       "levitation glitch); 0: Call of Duty 3's own. Set by the host; in the campaign you are the host."},
   };
   return list;
 }
@@ -111,6 +123,7 @@ int32_t& OwnStorage(Id id) {
     case Id::kAlternateMovementSpeeds: return REXCVAR_GET(alternate_movement_speeds);
     case Id::kStickyAim: return REXCVAR_GET(sticky_aim);        // [claude-9b]
     case Id::kAimSlowdown: return REXCVAR_GET(aim_slowdown);    // [claude-9b]
+    case Id::kLevitationFix: return REXCVAR_GET(levitation_fix);  // [acct2-ocr]
     default: return REXCVAR_GET(alternate_movement_jumps);
   }
 }
@@ -264,7 +277,8 @@ Match CurrentMatch() {
     return m;
   }
   m.running = mp::IsMatchRunning();
-  m.host = !m.running || mp::IsHost();
+  // [acct2-ocr] 2026-11-07: a match no other console plays (split screen) is this machine's own.
+  m.host = !m.running || mp::IsHost() || mp::IsLocalOnlyMatch();
   return m;
 }
 

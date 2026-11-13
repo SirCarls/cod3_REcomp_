@@ -12,6 +12,10 @@
 //
 // Campaign program only for now: cod3mp doesn't build the protected category
 // until its transport exists.
+// [acct2-ocr] 2026-11-07: cod3mp builds it too (recomp/mp/CMakeLists.txt). There the tab is shown outside a
+// match and in a match no other console plays (split screen: game/multiplayer.h IsLocalOnlyMatch); in a system
+// link match it stays hidden until a host-to-guest channel exists. cod3mp has no CoD4 movement yet
+// (game/movement/hooks_mp.cpp is stage 1), so its tab leaves the movement rule out.
 
 #pragma once
 

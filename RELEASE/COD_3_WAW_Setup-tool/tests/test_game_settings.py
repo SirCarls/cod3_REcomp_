@@ -104,7 +104,8 @@ class TableTests(unittest.TestCase):
         bad = [{"cod3_render_resolution": "320x240"}, {"cod3_render_resolution": "639x360"},
                {"cod3_render_resolution": "15361x4320"}, {"cod3_render_resolution": "1920x4321"},
                {"cod3_render_resolution": "1920X1080"}, {"cod3_render_method": "fast"},
-               {"cod3_render_method": ""}, {"cod3_render_percent": 24}, {"cod3_render_percent": 101},
+               # [rexglue-native-settings] 2026-11-11 201, was 101: the tool and the game take 25-200 since 2026-10-27
+               {"cod3_render_method": ""}, {"cod3_render_percent": 24}, {"cod3_render_percent": 201},
                {"cod3_render_percent": True}, {"cod3_render_percent": "50"}]
         for values in bad:
             with self.assertRaises(SetupError, msg=repr(values)):
@@ -166,6 +167,24 @@ class TableTests(unittest.TestCase):
         text = source.read_text(encoding="utf-8")
         for key in ("cod3_depth_of_field", "cod3_motion_blur"):
             m = re.search(rf"REXCVAR_DEFINE_BOOL\({key}, (true|false),", text)
+            self.assertIsNotNone(m, key)
+            self.assertIs(gs.BY_KEY[key].default, m.group(1) == "true", key)
+
+    def test_text_settings_match_the_game_source(self):
+        """[acct2-ocr] 2026-11-07 The Text language list, the text kinds and the added letters: the same values,
+        order and defaults as the game's own settings (game/text_language.cpp, game/font_fill.cpp)."""
+        src = TOOL / "recomp" / "src" / "game"
+        if not (src / "text_language.cpp").is_file():
+            self.skipTest("the tool's copy of the game source has no text_language.cpp yet")
+        text = (src / "text_language.cpp").read_text(encoding="utf-8")
+        lang = re.search(r'REXCVAR_DEFINE_STRING\(cod3_text_language, "([\w-]+)".*?\.allowed\(\{(.*?)\}\)', text, re.S)
+        self.assertEqual(lang.group(1), gs.BY_KEY["cod3_text_language"].default)
+        self.assertEqual(re.findall(r'"([\w-]+)"', lang.group(2)),
+                         [v for v, _ in gs.BY_KEY["cod3_text_language"].choices])
+        fill = (src / "font_fill.cpp").read_text(encoding="utf-8")
+        for key in ("cod3_text_menus", "cod3_text_prompts", "cod3_text_objectives", "cod3_text_subtitles",
+                    "cod3_text_loading", "cod3_text_credits", "cod3_text_film_cards", "cod3_font_fill"):
+            m = re.search(rf"REXCVAR_DEFINE_BOOL\({key}, (true|false),", text + fill)
             self.assertIsNotNone(m, key)
             self.assertIs(gs.BY_KEY[key].default, m.group(1) == "true", key)
 

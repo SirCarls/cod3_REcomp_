@@ -26,6 +26,7 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "cod2_f2.h"  // [f2-menus] the F2 window's CONSOLE page
 #include "game/test_start.h"
 
 REXCVAR_DEFINE_BOOL(cod2_log_game_prints, true, "cod2/Debug",
@@ -166,6 +167,12 @@ REX_HOOK_RAW(sub_8233B1F8) {
   if (ctx.r3.u32 != 4 && Allowed()) {
     const std::string text = GuestString(base, ctx.r4.u32);
     if (!text.empty()) REXLOG_INFO("cod2: game: {}", text);
+  }
+  // [f2-menus] every printed line for the F2 window's CONSOLE page (the log setting above doesn't matter to it)
+  if (ctx.r3.u32 != 4) {
+    std::string line = GuestString(base, ctx.r4.u32);
+    while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
+    if (!line.empty()) cod2::f2ui::NoteConsoleLine(ctx.r3.s32, line);
   }
   __imp__sub_8233B1F8(ctx, base);
 }

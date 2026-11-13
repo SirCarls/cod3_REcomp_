@@ -5,15 +5,20 @@ steps to that of cod3").
 The Big Red One tab (games.py) builds it in the same steps as Call of Duty 3's Set up page:
 
 1. Check the disc: an Xbox disc image (.iso: redump or trimmed XISO) or a folder copied from the disc, whose
-   default.xbe is the one the port was made from (the port's tables name addresses in that program).
-2. Copy the disc's files into <output>/bro/game: the game reads them from there.
+   default.xbe is one the port builds from (KNOWN_XBE: the Collector's Edition the port was made from, the World,
+   German and French/Spanish/Italian discs; the port's tables name addresses in that program).
+2. Copy the disc's files into <output>/bro/game: the game reads them from there. Only default.xbe is needed before
+   the next steps, so the rest is copied beside them, then checked against the disc's list of MD5s (DISC_LISTS)
+   ([acct2-ocr] 2026-11-12).
 3. Fetch xboxrecomp (MIT; the recompiler for original Xbox programs) at the commit the port was made with into
    the work folder's tools/, and a Python with Capstone (the disassembler xboxrecomp uses). Both are listed for
    approval first, like every download.
 4. Recompile default.xbe to C with xboxrecomp's own steps: its parser, the disassembly (seeded with
    bro/config/seed_functions.json), function IDs, ABI analysis, then the lift, with bro/config/
-   stand_in_functions.tsv as the manual functions. About an hour, mostly the disassembly. The C is the game's
-   code, so it stays in the work folder and is deleted with it.
+   stand_in_functions.tsv as the manual functions. About 17 minutes on a fast PC (a Ryzen 9 5900X), 12 of them the
+   disassembly; it was 105, 99 of them the disassembly, before bro/patches/xboxrecomp-lazy-decode.patch ([acct2-bro]
+   2026-11-08, owner 09:43 "Is there a way to speed up the setup tool for the big red one?": the same C, byte for
+   byte). The C is the game's code, so it stays in the work folder and is deleted with it.
 5. Build bro/ with CMake against that C: graphics on ../ngl_vk; the window, sound and pads through SDL3, the static
    SDL3 Call of Duty 3's SDK builds when that SDK is in the same work folder (both games then use one SDL), else the
    system's own SDL3 (owner 2026-11-07 10:04: "Ok just use what cod3 has").
@@ -56,10 +61,30 @@ XBOXRECOMP_COMMIT = "f0f8a461496a4f23d9b0aeaa284b8d70ba7ab82b"
 # built or run to install it).
 CAPSTONE = "capstone==5.0.9"
 
-# The default.xbe the port was made from (MD5): its tables (stand-ins, seeds) name addresses in this program.
+# The discs the port builds from, by the MD5 of their default.xbe ([acct2-ocr] 2026-11-12, the owner 18:07: "we need
+# to make sure the setup tool has the MD5s of the discs that can be used"). Each disc's own default.xbe is
+# recompiled, so the C is that disc's program; the port's tables (bro/config: stand-ins, seeds) name addresses, and
+# none of them is in code that differs between the four. The World and German discs' code is the Collector's
+# Edition's byte for byte (only 37 bytes of .rdata differ); the French, Spanish and Italian disc has 12 KB of other
+# code in one level's section (LIBEATOR), none of it at an address the port names. All four recompile, build and
+# play: on 2026-11-12 each disc's own build ran the first level for 75 s at 60 fps, its log's warnings the same as
+# the Collector's Edition's, and the French, Spanish and Italian disc's also the level with the other code (liberator).
 KNOWN_XBE: Dict[str, str] = {
-    "3b50372b121dc4e51b2b3dbda7cba19d": "Call of Duty 2: Big Red One, the disc the port was made from",
+    "3b50372b121dc4e51b2b3dbda7cba19d": "Call of Duty 2: Big Red One, Collector's Edition (World), the disc the port "
+                                        "was made from",
+    "96b46e06c8181e31800c97aa0c73a62f": "Call of Duty 2: Big Red One (World)",
+    "1eb034b61c1462328f95b2b65205df21": "Call of Duty 2: Big Red One (Europe: French, Spanish, Italian)",
+    "43293b5fb91f7f3595a87af2a652474f": "Call of Duty 2: Big Red One (Germany)",
 }
+# Each of those discs' files: c3w/disc_md5/bro_<name>.tsv (md5, size, path; disc_files.load_list's format), made from
+# the discs read in place with c3w/xiso.py: names, sizes and checksums only. The copy is checked against it.
+DISC_LISTS: Dict[str, str] = {
+    "3b50372b121dc4e51b2b3dbda7cba19d": "bro_world_ce",
+    "96b46e06c8181e31800c97aa0c73a62f": "bro_world",
+    "1eb034b61c1462328f95b2b65205df21": "bro_europe_fr_es_it",
+    "43293b5fb91f7f3595a87af2a652474f": "bro_germany",
+}
+DISC_MD5_DIR = Path(__file__).resolve().parent / "disc_md5"
 
 # The levels a start can go straight into (the game's own map names, as its chapter list uses them; the
 # BRO_DEVMAP setting of bro/src/input/bro_pad.c). The first entry is the game's own start: the menus.
@@ -98,10 +123,10 @@ WORK_ROOM = 1_500_000_000
 # The recompiler's steps: (key, what the log says, share of the build's time).
 STEPS: Tuple[Tuple[str, str, float], ...] = (
     ("xbe_parser", "Reading default.xbe", 0.01),
-    ("disasm", "Disassembling (the long step: about an hour)", 0.80),
-    ("func_id", "Naming functions", 0.04),
-    ("abi_analysis", "Working out how each function is called", 0.05),
-    ("recomp", "Turning the program into C", 0.10),
+    ("disasm", "Disassembling (the long step: 10-20 minutes)", 0.69),
+    ("func_id", "Naming functions", 0.01),
+    ("abi_analysis", "Working out how each function is called", 0.01),
+    ("recomp", "Turning the program into C", 0.28),
 )
 
 
@@ -208,8 +233,9 @@ def check_disc(text: str) -> Tuple[Optional[Disc], str]:
     if not disc.known:
         if "big red one" not in disc.info.title.lower():
             return None, f"This is {disc.info.title or 'another game'}, not {GAME_NAME}."
-        return None, (f"This {GAME_NAME} isn't the version the port was made from (its default.xbe's MD5 is "
-                      f"{disc.xbe_md5}), so its tables wouldn't fit. Please report it, with that MD5.")
+        return None, (f"This {GAME_NAME} isn't the version the port was made from, nor another disc it builds from "
+                      f"(its default.xbe's MD5 is {disc.xbe_md5}), so the port's tables may not fit it. Please "
+                      "report it, with that MD5.")
     what = "disc image" if disc.kind == "iso" else "folder"
     return disc, f"Found: {disc.known} ({what}, {disc.files} files, {human(disc.size)})."
 
@@ -552,6 +578,19 @@ def ensure_python(lay: Layout, runner: Runner, log: Log) -> Path:
 def copy_game(disc: Disc, lay: Layout, log: Log, cancel: threading.Event) -> None:
     """The disc's files into <output>/bro/game (files already there at the same size are kept, so a build that
     stopped goes on), and default.xbe into the work folder for the recompiler."""
+    copy_files(disc, lay, log, cancel)
+    xbe = _folder_xbe(lay.game)
+    if xbe is None:
+        raise SetupError(f"default.xbe didn't arrive in {lay.game}.")
+    lay.xbe.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(xbe, lay.xbe)
+    if hashlib.md5(lay.xbe.read_bytes()).hexdigest() != disc.xbe_md5:
+        raise SetupError("default.xbe changed while it was copied: build again.")
+
+
+def copy_files(disc: Disc, lay: Layout, log: Log, cancel) -> None:
+    """The disc's files into <output>/bro/game (files already there at the same size are kept). `cancel`: anything
+    with is_set()."""
     if disc.kind == "iso":
         with XisoImage(disc.path) as img:
             img.extract(lay.game, log, cancel)
@@ -560,13 +599,163 @@ def copy_game(disc: Disc, lay: Layout, log: Log, cancel: threading.Event) -> Non
             raise SetupError(f"The disc folder {disc.path} and the game folder {lay.game} are inside each other: "
                              "pick the disc's folder, or another output folder.")
         _copy_folder(disc.path, lay.game, log, cancel)
-    xbe = _folder_xbe(lay.game)
-    if xbe is None:
-        raise SetupError(f"default.xbe didn't arrive in {lay.game}.")
+
+
+def place_xbe(disc: Disc, lay: Layout) -> None:
+    """default.xbe into the work folder for the recompiler, read straight from the disc ([acct2-ocr] 2026-11-12):
+    the recompiler needs only this file, so the rest of the disc is copied beside it (GameCopy)."""
+    if disc.kind == "iso":
+        with XisoImage(disc.path) as img:
+            data = img.read("default.xbe")
+    else:
+        xbe = _folder_xbe(disc.path)
+        if xbe is None:
+            raise SetupError(f"{disc.path.name} has no default.xbe any more.")
+        data = xbe.read_bytes()
+    if hashlib.md5(data).hexdigest() != disc.xbe_md5:
+        raise SetupError("default.xbe changed while it was read: build again.")
     lay.xbe.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(xbe, lay.xbe)
-    if hashlib.md5(lay.xbe.read_bytes()).hexdigest() != disc.xbe_md5:
-        raise SetupError("default.xbe changed while it was copied: build again.")
+    tmp = lay.xbe.with_name(lay.xbe.name + ".part")
+    tmp.write_bytes(data)
+    tmp.replace(lay.xbe)
+
+
+class _Either:
+    """Set when any of the events is: a cancel the user can press and a stop the build can give."""
+
+    def __init__(self, *events: threading.Event):
+        self._events = events
+
+    def is_set(self) -> bool:
+        return any(e.is_set() for e in self._events)
+
+
+class _NoBar:
+    """A Log whose lines go on as they are and whose progress is dropped: the step in front owns the bar."""
+
+    def __init__(self, log: Log):
+        self._log = log
+
+    def progress(self, frac: Optional[float], text: str = "") -> None:
+        pass
+
+    def __getattr__(self, name: str):
+        return getattr(self._log, name)
+
+
+class GameCopy:
+    """The disc's files copied into <output>/bro/game on a thread of their own while default.xbe is recompiled and
+    the game is built ([acct2-ocr], the owner 2026-11-12 18:07: "work on making the decompilation process for BRO
+    quicker"): neither step reads them, only the game does, so the copy (a few GB; 51 s on the owner's PC, minutes
+    from a DVD drive or a slow disk) no longer waits in front of them. The copy is then checked against the disc's
+    list (check_game_files), on the same thread. finish() waits for both, raises what they met and logs the check;
+    stop() ends them early (the build stopped)."""
+
+    def __init__(self, disc: Disc, lay: Layout, log: Log, cancel: threading.Event):
+        self._stop = threading.Event()
+        self._error: Optional[BaseException] = None
+        self._checked: Optional[FilesCheck] = None
+        self._game = lay.game
+        self._log = log
+        self._seconds = 0.0
+        self._thread = threading.Thread(target=self._run, name="bro-game-copy", daemon=True,
+                                        args=(disc, lay, _NoBar(log), _Either(cancel, self._stop)))
+
+    def start(self) -> "GameCopy":
+        self._thread.start()
+        return self
+
+    def _run(self, disc: Disc, lay: Layout, log, cancel) -> None:
+        t0 = time.monotonic()
+        try:
+            copy_files(disc, lay, log, cancel)
+            self._checked = check_game_files(disc, lay.game, cancel)
+        except BaseException as e:      # handed to finish(), on the build's own thread
+            self._error = e
+        self._seconds = time.monotonic() - t0
+
+    def finish(self) -> None:
+        if self._thread.is_alive():
+            self._log.progress(None, "Copying the game's files: finishing")
+        self._thread.join()
+        if self._error is not None:
+            raise self._error
+        what = "Copied and checked" if self._checked is not None else "Copied"
+        self._log.info(f"{what} the game's files beside the recompile ({format_minutes(self._seconds)}).")
+        if self._checked is not None:
+            report_game_files(self._checked, self._log, self._game)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=60)
+
+
+@dataclass
+class FilesCheck:
+    """The game's files against their disc's list (check_game_files)."""
+    disc: str                                       # the disc's name (KNOWN_XBE)
+    listed: int                                     # files on the disc's list
+    same: int                                       # of them, the same size and MD5 in the game folder
+    problems: List[str] = field(default_factory=list)   # one line per file that isn't
+
+
+def disc_list(xbe_md5: str) -> Dict[str, "object"]:
+    """The files of the disc with this default.xbe (lower-case path: disc_files.Known), or {} for a disc without a
+    list."""
+    key = DISC_LISTS.get(xbe_md5)
+    if not key:
+        return {}
+    from . import disc_files     # its reader of the md5/size/path lists (Call of Duty 3's use the same format)
+    return disc_files.load_list(DISC_MD5_DIR / f"{key}.tsv")
+
+
+def check_game_files(disc: Disc, game: Path, cancel=None) -> Optional[FilesCheck]:
+    """Every file on the disc's list against the one in `game` (the copy in <output>/bro/game): there, the same
+    size and the same MD5. Reads every listed file (about 3-4 GB, beside the recompile). None for a disc without a
+    list. Only reads."""
+    known = disc_list(disc.xbe_md5)
+    if not known:
+        return None
+    have = {p.relative_to(game).as_posix().lower(): p for p in _folder_files(game)} if game.is_dir() else {}
+    check = FilesCheck(disc.known or disc.info.title or GAME_NAME, len(known), 0)
+    for low, k in sorted(known.items()):
+        if cancel is not None and cancel.is_set():
+            raise common.Cancelled()
+        p = have.get(low)
+        if p is None:
+            check.problems.append(f"missing: {k.path}")
+            continue
+        size = p.stat().st_size
+        if size != k.size:
+            check.problems.append(f"another size ({size} bytes, the disc's has {k.size}): {k.path}")
+            continue
+        h = hashlib.md5()
+        with open(p, "rb") as f:
+            for chunk in iter(lambda: f.read(8 << 20), b""):
+                if cancel is not None and cancel.is_set():
+                    raise common.Cancelled()
+                h.update(chunk)
+        if h.hexdigest() != k.md5:
+            check.problems.append(f"changed or damaged (another MD5): {k.path}")
+            continue
+        check.same += 1
+    return check
+
+
+def report_game_files(check: FilesCheck, log: Log, game: Path, shown: int = 10) -> None:
+    """check_game_files' result in the log: one line when all is well, else a warning and the files. The build goes
+    on either way (a damaged file may be one the game never reads), but the player is told."""
+    if not check.problems:
+        log.info(f"Checked the game's files: all {check.listed} are the same as on the disc ({check.disc}).")
+        return
+    log.warn(f"{len(check.problems)} of the {check.listed} game files aren't the same as on the disc ({check.disc}). "
+             "The disc or its copy may be damaged, and the game may not run right where it reads them. To fix it, "
+             f"delete these files from {game} and build again from a good copy of the disc: the build copies what "
+             "is missing.")
+    for line in check.problems[:shown]:
+        log.warn(f"  {line}")
+    if len(check.problems) > shown:
+        log.warn(f"  ... and {len(check.problems) - shown} more")
 
 
 def _copy_folder(src: Path, dest: Path, log: Log, cancel: threading.Event) -> None:
@@ -707,8 +896,9 @@ def _progress_lines(log: Log, what: str, frac) -> Callable[[str], None]:
     return handle
 
 
-# About how long the recompile's steps take in all; STEPS' shares are of this time.
-RECOMPILE_SECONDS = 3600
+# About how long the recompile's steps take in all; STEPS' shares are of this time. [acct2-bro] 2026-11-08 measured
+# (lazy233, Ryzen 9 5900X): xbe_parser 0 s, disasm 706 s, func_id 7 s, abi_analysis 5 s, recomp 300 s.
+RECOMPILE_SECONDS = 1020
 
 
 class _StepClock:
@@ -903,7 +1093,7 @@ def play_command(output: Path) -> Tuple[Optional[List[str]], str]:
         ended = last_build(Path(output)) if output else ""
         if ended:
             return None, (f"Not built yet. {ended} Press Build again: it goes on from where it stopped. The "
-                          "disassembly takes about an hour; leave the tool open until it says Done.")
+                          "disassembly takes 10-20 minutes; leave the tool open until it says Done.")
         return None, "Not built yet: choose your disc on Big Red One's Set up page and press Build."
     lay = layout(Path(output), Path(output))
     return [str(exe), str(lay.game), str(lay.saves)], ""
@@ -934,7 +1124,8 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
         raise SetupError("Choose an output folder first (Set up).")
     work = Path(os.path.expanduser(o.work_dir.strip() or str(common.default_work_dir())))
     lay = layout(Path(os.path.expanduser(o.output_dir.strip())), work)
-    titles = ["Checking the disc", "Checking this PC", "Copying the game's files", "Getting xboxrecomp and Capstone",
+    titles = ["Checking the disc", "Checking this PC", "Copying the game's files (beside the next steps)",
+              "Getting xboxrecomp and Capstone",
               "Recompiling default.xbe", "Building", "Installing"]
 
     def step(i: int) -> None:
@@ -978,19 +1169,26 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
     tools = ensure_tools(runner, log, o.install_deps, found, lay.sdk_sdl3)
     log.info("SDL3: " + (f"Call of Duty 3's SDK's ({tools.sdl3})" if tools.sdl3 else "the system's"))
     step(2)
-    copy_game(disc, lay, log, cancel)
-    step(3)
-    ensure_xboxrecomp(lay, tools.git, runner, log)
-    py = ensure_python(lay, runner, log)
-    stamp = common.read_json(lay.stamp)
-    if not (isinstance(stamp, dict) and stamp.get("key") == recompile_key(lay, disc.xbe_md5)
-            and (lay.xboxrecomp / ".git").exists()):
-        prepare_xboxrecomp(lay, tools.git, runner, log)
-    step(4)
-    recompile(lay, py, disc.xbe_md5, runner, log,
-              on_step=lambda what, frac: log.progress(frac, what))
-    step(5)
-    exe = build(lay, tools, o.jobs, runner, log)
+    # default.xbe first; the rest of the disc is copied beside the recompile and the build (GameCopy).
+    place_xbe(disc, lay)
+    copier = GameCopy(disc, lay, log, cancel).start()
+    try:
+        step(3)
+        ensure_xboxrecomp(lay, tools.git, runner, log)
+        py = ensure_python(lay, runner, log)
+        stamp = common.read_json(lay.stamp)
+        if not (isinstance(stamp, dict) and stamp.get("key") == recompile_key(lay, disc.xbe_md5)
+                and (lay.xboxrecomp / ".git").exists()):
+            prepare_xboxrecomp(lay, tools.git, runner, log)
+        step(4)
+        recompile(lay, py, disc.xbe_md5, runner, log,
+                  on_step=lambda what, frac: log.progress(frac, what))
+        step(5)
+        exe = build(lay, tools, o.jobs, runner, log)
+        copier.finish()
+    except BaseException:
+        copier.stop()
+        raise
     step(6)
     install(lay, exe, disc, o.tool_version)
     if o.cleanup:

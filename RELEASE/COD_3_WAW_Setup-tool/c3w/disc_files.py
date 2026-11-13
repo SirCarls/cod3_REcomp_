@@ -18,7 +18,10 @@ Used by:
     off the disc again when it's missing or cut off;
   - c3w/censored.py, which swaps 84 campaign archives with the German disc's
     (a file that is another known disc's version of the same path counts as
-    "from another disc", not as changed; assets/censored/ is not looked at).
+    "from another disc", not as changed; assets/censored/ is not looked at),
+    and six level archives with copies it made (listed with their MD5s in
+    assets/censored/levels.tsv: such a copy counts as "censored", not as
+    changed).
 
 Nothing is changed and nothing is run: files are only read.
 """
@@ -211,6 +214,8 @@ def _open(target: Path) -> _Source:
 #   missing     on the disc, not in the folder
 #   other_disc  not on this disc, but the same file as on another known disc
 #               (the Play page's "Add voices from another disc" puts them there)
+#   censored    [acct2-decomp] a level archive's copy made by the censored campaign
+#               (c3w/censored.py; its size and MD5 are in assets/censored/levels.tsv)
 #   extra       not on any known disc (the tool's own files, or added by hand)
 STATUS_TEXT = {
     "ok": "Same as the disc",
@@ -218,6 +223,7 @@ STATUS_TEXT = {
     "size": "Another size (cut off or changed)",
     "missing": "Missing",
     "other_disc": "From another disc",
+    "censored": "The censored campaign's copy",
     "extra": "Not on the disc",
 }
 PROBLEMS = ("changed", "size", "missing")
@@ -258,9 +264,11 @@ class Report:
                 f"(by {how})")
         bad = [f"{self.count(s)} {STATUS_TEXT[s].lower()}" for s in PROBLEMS if self.count(s)]
         text += "; " + ", ".join(bad) if bad else "; nothing missing or changed"
-        more = self.count("other_disc"), self.count("extra")
-        if any(more):
-            text += f". Also {more[0]} from another disc and {more[1]} not on any disc"
+        more = [f"{n} {what}" for n, what in ((self.count("other_disc"), "from another disc"),
+                                              (self.count("censored"), "made by the censored campaign"),
+                                              (self.count("extra"), "not on any disc")) if n]
+        if more:
+            text += ". Also " + ", ".join(more)
         return text + "."
 
 
@@ -279,6 +287,7 @@ def check(target: Path, disc: Optional[Disc] = None, deep: bool = True,
             return report
         known = known_files(disc)
         others = [(d, known_files(d)) for d in DISCS if d is not disc]
+        made = _censored_copies(src)
         have = {rel.lower(): (rel, size) for rel, size in src.files()}
         total = sum(size for rel, size in have.values()) if deep else 0
         done = 0
@@ -301,6 +310,7 @@ def check(target: Path, disc: Optional[Disc] = None, deep: bool = True,
             # [acct2-decomp] another disc's version of a file of the same name (the
             # censored campaign swaps 84 archives: c3w/censored.py) is from that disc
             other = next(((d, x) for d, x in cands if x.size == size and (not deep or x.md5 == md5)), None)
+            mine = made.get(low)
             if k is not None:
                 if size != k.size:
                     status = "size"
@@ -311,6 +321,11 @@ def check(target: Path, disc: Optional[Disc] = None, deep: bool = True,
                 if status != "ok" and other is not None:
                     report.rows.append(Row(rel, "other_disc", size, md5, other[1].size, other[1].md5,
                                            other[0].name))
+                    continue
+                # [acct2-decomp] a level archive's copy the censored campaign made (c3w/censored.py)
+                if status != "ok" and mine is not None and size == mine[0] and (not deep or md5 == mine[1]):
+                    report.rows.append(Row(rel, "censored", size, md5, k.size, k.md5,
+                                           "made from the game's own file by the censored campaign"))
                     continue
                 report.rows.append(Row(rel, status, size, md5, k.size, k.md5))
             elif other is not None:
@@ -323,6 +338,15 @@ def check(target: Path, disc: Optional[Disc] = None, deep: bool = True,
         return report
     finally:
         src.close()
+
+
+def _censored_copies(src: _Source) -> Dict[str, Tuple[int, str]]:
+    """[acct2-decomp] The level copies c3w/censored.py made for a game folder (lower-case path:
+    size, MD5), from assets/censored/levels.tsv; none for a disc image or without the list."""
+    if not isinstance(src, _FolderSource):
+        return {}
+    from . import censored          # here: censored imports this module
+    return {rel.lower(): (m.size, m.md5) for rel, m in censored.made_copies(src.root).items()}
 
 
 def write_tsv(report: Report, path: Path) -> None:

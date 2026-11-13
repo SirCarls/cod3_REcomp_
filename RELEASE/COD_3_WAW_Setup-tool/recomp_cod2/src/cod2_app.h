@@ -30,7 +30,12 @@ class Cod2App : public rex::ReXApp {
   // (game/debug_shots.h) once the runtime is up.
   void OnPostSetup() override;
   void OnShutdown() override;
+  // [f2-menus] The F2 settings window (cod2_f2.h): its fonts, colors and the window itself.
+  void OnConfigureFonts(ImFontAtlas* atlas) override;
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override;
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
 
  private:
   std::filesystem::path userdata_dir_;
+  std::filesystem::path config_path_;  // [f2-menus] the settings file the F2 window saves to (OnConfigurePaths)
 };

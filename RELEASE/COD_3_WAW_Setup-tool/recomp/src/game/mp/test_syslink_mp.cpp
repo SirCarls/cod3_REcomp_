@@ -57,6 +57,15 @@ REXCVAR_DEFINE_STRING(cod3_test_syslink, "", "cod3",
 REXCVAR_DEFINE_STRING(cod3_test_syslink_map, "", "cod3",
                       "Tests only: the map cod3_test_syslink host picks, by file name (mp_merv, poissons, "
                       "ederdam, mp_fuel, mpmaynne, rouen, forest, mp_hosta, verdun); empty: the page's own");
+// [rexglue-native] 2026-11-09: the create page's game mode, as its combo's index (the page's A, 0x823B0980, reads
+// the mode combo's u16 at + 0x18 into the match settings, 0x82680CA8 + 89, and takes 0..8). A joiner plays the
+// session's mode, so a match in another mode has to be created in it (hq1: the host's own mp_gametype hq and
+// map_restart left the joiner in War). The names of the indexes: the log's create page line and the "mp_gametype
+// given initial values" warning show them; rexglue-native's NOTES has the list once read.
+REXCVAR_DEFINE_INT32(cod3_test_syslink_mode, -1, "cod3",
+                     "Tests only: the game mode cod3_test_syslink host picks, as the create page's index (0-8); "
+                     "-1: the page's own")
+    .range(-1, 8);
 REXCVAR_DEFINE_INT32(cod3_test_syslink_timeout, 120, "cod3",
                      "Tests only: seconds cod3_test_syslink may take to reach a match before it logs FAILED")
     .range(10, 900);
@@ -466,6 +475,15 @@ void Step(PPCContext& ctx, uint8_t* base) {
         return;
       }
       g::WriteU16(base, map_combo + kComboIndex, static_cast<uint16_t>(found));
+    }
+    // [rexglue-native] 2026-11-09 cod3_test_syslink_mode: the mode combo's index, as the map's above.
+    const int32_t mode = REXCVAR_GET(cod3_test_syslink_mode);
+    if (mode >= 0) {
+      if (!Valid(mode_combo)) {
+        Finish(End::kFailed, "the create page has no game mode list");
+        return;
+      }
+      g::WriteU16(base, mode_combo + kComboIndex, static_cast<uint16_t>(mode));
     }
     const int map_index = g::ReadU16(base, map_combo + kComboIndex);
     REXLOG_INFO("cod3mp: test syslink: create page: map {} ({}), mode {}, max players choice {}", map_index,

@@ -6,7 +6,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstring>  // [rexglue-native-f2] 2026-11-11 f2c1 std::strlen (TextFitted)
 #include <ctime>
+#include <string>   // [rexglue-native-f2] 2026-11-11 f2c1 (TextFitted)
 #include <vector>
 
 #include <imgui.h>
@@ -18,6 +20,32 @@
 namespace cod3::ui {
 
 namespace {
+
+// [rexglue-native-f2] 2026-11-11 f2c1 One line of text, cut to what is left of the cell's width with "..."
+// at its end when it is longer. The Problems page's Message column (its last, stretched column) ran past the
+// window's right edge and was cut mid-word with nothing to say so; each row's tooltip has the whole message.
+// Rows stay one line high, as the page's list clipper needs.
+void TextFitted(const char* text) {
+  const size_t len = std::strlen(text);
+  const float avail = ImGui::GetContentRegionAvail().x;
+  if (avail <= 0.0f || ImGui::CalcTextSize(text, text + len).x <= avail) {
+    ImGui::TextUnformatted(text, text + len);
+    return;
+  }
+  const float dots = ImGui::CalcTextSize("...").x;
+  size_t lo = 0, hi = len;  // the longest start of the text that fits with "..." after it
+  while (lo < hi) {
+    const size_t mid = (lo + hi + 1) / 2;
+    if (ImGui::CalcTextSize(text, text + mid).x + dots <= avail)
+      lo = mid;
+    else
+      hi = mid - 1;
+  }
+  while (lo > 0 && (static_cast<unsigned char>(text[lo]) & 0xC0) == 0x80) --lo;  // not inside a UTF-8 letter
+  std::string shown(text, lo);
+  shown += "...";
+  ImGui::TextUnformatted(shown.c_str());
+}
 
 // "21:14:03" into `buf` (no allocation: it runs for each row shown, every frame).
 const char* ClockText(std::chrono::system_clock::time_point t, char (&buf)[16]) {
@@ -158,11 +186,13 @@ void DrawProblemsPage() {
     s.filters_changed = true;
 
   const uint64_t errors = log.error_lines(), warnings = log.warning_lines(), dropped = log.dropped_lines();
+  ImGui::PushTextWrapPos(0.0f);  // [rexglue-native-f2] 2026-11-11 f2c1 wraps to the page (it ran past the edge)
   ImGui::TextColored(palette.muted,
                      "This session: %llu errors and %llu warnings from the game, the port and the SDK, in %zu "
                      "kinds, newest first. Hover a row for details, right-click to copy it.%s",
                      static_cast<unsigned long long>(errors), static_cast<unsigned long long>(warnings), s.list.size(),
                      dropped ? " Some later kinds weren't kept (the list is full)." : "");
+  ImGui::PopTextWrapPos();  // [rexglue-native-f2] 2026-11-11 f2c1
   if (s.list.empty()) {
     ImGui::TextDisabled("No warnings or errors so far.");
     return;
@@ -227,7 +257,7 @@ void DrawProblemsPage() {
       ImGui::TableNextColumn();
       ImGui::TextUnformatted(p.code.empty() ? "" : p.code.c_str());
       ImGui::TableNextColumn();
-      ImGui::TextUnformatted(p.text.c_str());
+      TextFitted(p.text.c_str());  // [rexglue-native-f2] 2026-11-11 f2c1 was TextUnformatted; cut with "..."
       ImGui::PopID();
     }
   }

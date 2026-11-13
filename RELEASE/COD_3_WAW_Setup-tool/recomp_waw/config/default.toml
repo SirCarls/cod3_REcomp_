@@ -539,3 +539,98 @@ return_on_true = true
 address = 0x824472AC  # its one exit (the no-vertices branch lands here too)
 name = "waw_native_skin_four_bones_end"
 registers = ["ctx", "base"]
+
+# [waw-decomp] Title update 7's fixes, redone as our own hooks on the disc program (src/waw_tu_fixes.cpp; how each
+# was found: dev/agents/waw-decomp/TITLE-UPDATES.md). Each has its own setting, on by default when the update's was.
+# waw_fix_rifle_grenade_switch: PM_Weapon_FinishWeaponChange 0x820F0D18, before the test of whether to start a
+# second weapon change (r11; r27 = the new weapon's WeaponDef). Not a branch target.
+[[midasm_hook]]
+address = 0x820F0E4C
+name = "waw_fix_rifle_grenade_switch_hook"
+registers = ["ctx", "base"]
+
+# waw_fix_vehicle_push_while_mantling: the vehicle push 0x821F1F68, at its first instruction (r4 = the pushed
+# entity). Returns true to leave at once when that entity is a mantling player.
+[[midasm_hook]]
+address = 0x821F1F68
+name = "waw_fix_vehicle_push_while_mantling_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# waw_fix_standing_but_looks_crouched: PM_Footsteps 0x820E8408 on its in-air path, after PM_Footstep_LadderMove
+# returns and before PM_Footsteps does (r27 = pm, r25 = pml). Not a branch target.
+[[midasm_hook]]
+address = 0x820E84E8
+name = "waw_fix_standing_but_looks_crouched_hook"
+registers = ["ctx", "base"]
+
+# ... and in PM_Footsteps_NotMoving 0x820E3EF0, the second instruction of each check for the flinch animation (neither
+# a branch target): returns true only while that fix asks for the idle legs, to go on at the idle instead.
+[[midasm_hook]]
+address = 0x820E407C
+name = "waw_fix_stance_idle_skip_flinch_hook"
+registers = ["ctx", "base"]
+jump_address_on_true = 0x820E40B0
+
+[[midasm_hook]]
+address = 0x820E40E0
+name = "waw_fix_stance_idle_skip_flinch_hook"
+registers = ["ctx", "base"]
+jump_address_on_true = 0x820E4104
+
+# waw_fix_dpad_item_firing: PM_Weapon_ShouldBeFiring 0x820EDB80, at the branch after `cmpwi cr6, r4, 0` (r6 = ps,
+# r5 = should fire), which every path reaches. Not a branch target.
+[[midasm_hook]]
+address = 0x820EDC00
+name = "waw_fix_dpad_item_firing_hook"
+registers = ["ctx", "base"]
+
+# [waw-decomp] waw_sun_shadows (src/waw_render_fixes.cpp, off by default): the sun shadow map draws as blue/purple
+# patches and a dot grid through the GPU emulation (2026-11-09). The scene setup 0x82403400 tests sm_sunEnable's value
+# in r9 here; the hook makes it 0 unless waw_sun_shadows is on. Not a branch target.
+[[midasm_hook]]
+address = 0x824039C0
+name = "waw_sun_shadows_hook"
+registers = ["ctx", "base"]
+
+# [f2-menus] game_draw_size (../recomp/src/f2/f2_render_size.cpp, "console" by default): the size the game draws its 3D
+# scene at. The video setup 0x823F9088 (the same code as Call of Duty 4's 0x82135318)
+# picks 1024x600 (896x680 on 4:3) and stores it into its record (r31) at +8 / +0xC. Here, at the height's store
+# (`stw r10,12(r31)`, the width's store just before it is the branch target), the hook can make it the screen's size
+# (+0x10 / +0x14, 1280x720) and drop the 2x MSAA (+0x18) when that doesn't fit the emulated EDRAM. Not a branch target.
+[[midasm_hook]]
+address = 0x823F9170
+name = "iw3_game_draw_size_hook"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# [waw-decomp-waw] 2026-11-11: the native renderer's hooks (src/waw_native.cpp; record only unless
+# waw_debug_native_side draws its check pictures; both settings off by default).
+# ---------------------------------------------------------------------------
+# 0x824224DC: the draw-list loop's (0x824223D0, IW3's R_DrawSurfs) call of a tess function through the table at
+# 0x820ABEC4 (`bctrl`): r31 the run's context, r28 the surface type x 4, r30 the pass index. Not a branch target.
+[[midasm_hook]]
+address = 0x824224DC
+name = "waw_native_run"
+registers = ["ctx", "base"]
+
+# 0x8243226C: R_DrawIndexedPrimitive's (0x82432268) second instruction (the first has the census's hook): r3 the
+# prim state (the command buffer state + 0xF0), r4 the draw's arguments. Not a branch target.
+[[midasm_hook]]
+address = 0x8243226C
+name = "waw_native_indexed"
+registers = ["ctx", "base"]
+
+# 0x824322BC: the tess buffers' draw's (0x824322B8) second instruction: r3 the command buffer state, r4 the draw's
+# arguments. Not a branch target.
+[[midasm_hook]]
+address = 0x824322BC
+name = "waw_native_tess"
+registers = ["ctx", "base"]
+
+# 0x8235E6D8: Direct3D's swap, at its first instruction (the only caller of VdSwap): the frame's end on the thread
+# that draws.
+[[midasm_hook]]
+address = 0x8235E6D8
+name = "waw_native_swap"
+registers = ["ctx", "base"]

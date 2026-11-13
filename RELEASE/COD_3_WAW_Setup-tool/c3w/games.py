@@ -37,13 +37,14 @@ class Game:
 # The page keys and their labels. "log" is in every tab's sidebar (one page,
 # shared: everything the tool and the programs it starts write goes there).
 PAGE_LABELS: Dict[str, str] = {
-    "setup": "Set up", "play": "Play", "textures": "Textures", "tools": "Tools", "log": "Log",
+    # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): "Textures & censoring"
+    "setup": "Set up", "play": "Play", "textures": "Textures & censoring", "tools": "Tools", "log": "Log",
     "about": "About",
     "bro_setup": "Set up", "bro_play": "Play", "bro_status": "Port status",   # [acct2-bro]
     "waw_setup": "Set up", "waw_play": "Play", "cod2_setup": "Set up", "cod2_play": "Play",   # [waw-decomp]
     "cod4_setup": "Set up", "cod4_play": "Play", "cod4_status": "Port status",
     "waw_content": "Content", "maps": "Mods & maps", "waw_status": "Port status",
-    "cod2_copy": "New copy", "cod2_server": "LAN server", "cod2_status": "Port status",
+    "cod2_status": "Port status",   # [f2-menus] 2026-11-10 its New copy and LAN server pages are gone (see COD2)
     "coduo_copy": "New copy", "coduo_server": "LAN server", "coduo_status": "Port status",
 }
 SHARED_PAGES = ("log",)
@@ -58,19 +59,20 @@ GAMES: Tuple[Game, ...] = (
          ("bro_setup", "bro_play", "bro_status", "log"), ("build", "play")),
     # [waw-decomp] 2026-11-09: World at War and Call of Duty 2 recompiled from the Xbox 360 disc on Call of Duty 3's
     # SDK (owner 11-07 11:49: "the setup tool says rust, but it should be the same as cod3's SDK"); Call of Duty 4
-    # new. World at War keeps its Content page (the rip for Call of Duty 3), Call of Duty 2 its New copy and LAN
-    # server pages.
+    # new. World at War keeps its Content page (the rip for Call of Duty 3).
+    # [f2-menus] 2026-11-10 (owner 18:13: "CoD2's New copy and LAN server pages shouldn't be there"): Call of Duty 2's
+    # tab is the Xbox 360 port only. The two pages were tools for the PC game; United Offensive's tab still has them.
     Game(WAW, "World at War", "World at War", "WaW", ("CALL OF DUTY", "WORLD AT WAR"),
          "Recompiled for PC from your own Xbox 360 disc", "waw",
          ("waw_setup", "waw_play", "waw_content", "maps", "waw_status", "log"), ("build", "play", "rip")),
     Game(COD2, "Call of Duty 2", "Call of Duty 2", "CoD2", ("CALL OF DUTY", "2"),
          "Recompiled for PC from your own Xbox 360 disc", "cod2",
-         ("cod2_setup", "cod2_play", "cod2_copy", "cod2_server", "cod2_status", "log"), ("build", "play")),
+         ("cod2_setup", "cod2_play", "cod2_status", "log"), ("build", "play")),
     Game(COD4, "Call of Duty 4: Modern Warfare", "Call of Duty 4", "CoD4", ("CALL OF DUTY 4", "MODERN WARFARE"),
          "Recompiled for PC from your own Xbox 360 disc", "cod4",
          ("cod4_setup", "cod4_play", "cod4_status", "log"), ("build", "play")),
     Game(CODUO, "Call of Duty: United Offensive", "United Offensive", "UO", ("CALL OF DUTY", "UNITED OFFENSIVE"),
-         "Rust engine tools: new copy and LAN server", "coduo",
+         "Tools for your PC game: a data-only copy and a LAN server", "coduo",   # [f2-menus] no "Rust engine"
          ("coduo_copy", "coduo_server", "coduo_status", "log"), ("copy", "server")),
 )
 GAME_ORDER: List[str] = [g.id for g in GAMES]
@@ -228,7 +230,7 @@ _PC_PORT = (
     Milestone("Network code", READY, "Checked against the game: 177 functions match."),
     Milestone("LAN server", TESTING, "Lists and joins; players spectate. Needs a test with your game."),
     Milestone("Gameplay", NEXT, "Spawning, movement, weapons, game types."),
-    Milestone("Rust client", LATER, "Joining servers from the Rust version."),
+    Milestone("Own client", LATER, "Joining servers with a program of our own."),   # [f2-menus] was "Rust client"
 )
 PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
     BRO: (   # [acct2-bro] dev/agents/acct2-bro/NOTES.md has the runs behind these
@@ -254,7 +256,6 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
         Milestone("Campaign", TESTING, "All 27 levels load and play; a 60 fps limit with fixed movement steps."),
         Milestone("Multiplayer", TESTING, "System link between two copies through the menus."),
         Milestone("Native renderer", NEXT, "Recording each draw (step N1)."),
-        Milestone("New copy and LAN server", READY, "For the PC game (New copy, LAN server pages)."),
     ),
     COD4: (
         Milestone("Recompile", READY, "Your Xbox 360 programs on Call of Duty 3's SDK, Linux and Windows."),

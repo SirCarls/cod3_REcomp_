@@ -67,6 +67,7 @@
 #include "ui/problem_log.h"
 #include "ui/start_problem.h"  // [acct2-decomp] Windows: a start that fails says why
 #include "ui/theme.h"
+#include "ui/f2_tour.h"  // [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
 #include "generated/default/cod3_init.h"
 
 REXCVAR_DEFINE_INT32(cod3_settings_version, 0, "cod3",
@@ -616,6 +617,10 @@ void Cod3App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     cod3::LogFramePacingOnce(window());
     // [keybinds] Keys held when an overlay opens or the window loses focus are let go.
     cod3::binds::OnUiFrame();
+    // [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (ui/f2_tour.h): nothing unless
+    // cod3_debug_f2_tour is set; the window opens and closes outside the drawing (deferred), as its own [x] does.
+    cod3::ui::f2tour::Tick([this]() { app_context().CallInUIThreadDeferred([this]() { ToggleSettings(); }); },
+                           settings_ != nullptr);
   };
   // Above the ImGui drawer (z 64) so the toggle key never reaches a text box.
   window()->AddInputListener(&key_listener_, 200);

@@ -80,10 +80,31 @@ class RegionalDiscTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             iso = Path(tmp) / "cod3_de.iso"
             iso.write_bytes(b"")
-            with mock.patch.object(inputs, "_disc_kind",
-                                   side_effect=lambda p, known: "cod3" if GERMANY in set(known) else None):
+            with mock.patch.object(inputs, "_disc_info",
+                                   side_effect=lambda p, known: ("cod3", GERMANY) if GERMANY in set(known)
+                                   else (None, None)):
                 found = inputs.scan(Path(tmp), pipeline.KNOWN_XEX)
             self.assertEqual(found.cod3_iso, iso)
+            self.assertEqual(found.cod3_discs, {GERMANY: iso})
+
+    def test_with_several_discs_the_usa_europe_one_is_built(self):
+        """[acct2-decomp] The other discs are for the Play page (voices, the censored campaign): the
+        USA/Europe disc is the one with the multiplayer program, so it is built, whatever the names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            t = Path(tmp)
+            names = {"Call of Duty 3 (Europe) (Fr,Es,It).iso": FR_ES_IT, "Call of Duty 3 (Germany).iso": GERMANY,
+                     "Call of Duty 3 (USA, Europe).iso": USA, "another copy (Germany).iso": GERMANY}
+            for n in names:
+                (t / n).write_bytes(b"")
+            with mock.patch.object(inputs, "_disc_info", side_effect=lambda p, known: ("cod3", names[p.name])):
+                found = inputs.scan(t, pipeline.KNOWN_XEX)
+                self.assertEqual(found.cod3_iso.name, "Call of Duty 3 (USA, Europe).iso")
+                self.assertEqual({k: p.name for k, p in found.cod3_discs.items()},
+                                 {FR_ES_IT: "Call of Duty 3 (Europe) (Fr,Es,It).iso",
+                                  GERMANY: "Call of Duty 3 (Germany).iso", USA: "Call of Duty 3 (USA, Europe).iso"})
+                (t / "Call of Duty 3 (USA, Europe).iso").unlink()
+                found = inputs.scan(t, pipeline.KNOWN_XEX)
+                self.assertEqual(found.cod3_iso.name, "Call of Duty 3 (Germany).iso")   # KNOWN_XEX's order
 
 
 class ConsoleLanguageSettingTests(unittest.TestCase):

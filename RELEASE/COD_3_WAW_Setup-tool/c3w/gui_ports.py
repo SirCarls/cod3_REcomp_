@@ -12,7 +12,7 @@ import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from . import common, widgets, x360_ports
 from .common import IS_WINDOWS
@@ -32,6 +32,8 @@ class Ports:
         self.port_procs: Dict[str, Optional[subprocess.Popen]] = {}
         self.port_widgets: Dict[str, dict] = {}
         self.port_actions: Dict[str, dict] = {}
+        # [f2-menus] what each game's own settings file had when its Play page last read it (_port_gs_load)
+        self.port_gs: Dict[str, dict] = {}
         for pid in x360_ports.PORT_ORDER:
             p = x360_ports.PORTS[pid]
             src = s.get(f"port_{pid}_source")
@@ -39,7 +41,7 @@ class Ports:
                  "status": tk.StringVar(value=""), "play_reason": tk.StringVar(value=""),
                  "program": tk.StringVar(), "fullscreen": tk.BooleanVar(), "mute": tk.BooleanVar(),
                  "skip_films": tk.BooleanVar(), "fov": tk.StringVar(), "max_fps": tk.StringVar(),
-                 "graphics_api": tk.StringVar()}
+                 "graphics_api": tk.StringVar(), "gs_reason": tk.StringVar(value="")}
             self.port_vars[pid] = v
             self._port_set_play(pid, x360_ports.PlayOptions.from_settings(p, s))
             self.port_disc_why[pid] = "Checking your disc..."
@@ -59,6 +61,18 @@ class Ports:
         v["graphics_api"].set(o.graphics_api)
 
     def _port_play_options(self, pid: str) -> "x360_ports.PlayOptions":
+        """[f2-menus] What a start from here passes: the program only. The Settings rows are the game's own
+        settings and go into its file (_port_gs_save), not onto the command line."""
+        p = x360_ports.PORTS[pid]
+        program = self._port_program(pid)
+        return x360_ports.PlayOptions(program="" if program == p.programs[0].name else program)
+
+    def _port_program(self, pid: str) -> str:
+        p, v = x360_ports.PORTS[pid], self.port_vars[pid]
+        return next((q.name for q in p.programs if q.label == v["program"].get()), p.programs[0].name)
+
+    def _port_form_options(self, pid: str) -> "x360_ports.PlayOptions":
+        """The rows as settings.json and the profiles keep them (the names of before)."""
         p, v = x360_ports.PORTS[pid], self.port_vars[pid]
         program = next((q.name for q in p.programs if q.label == v["program"].get()), "")
         try:
@@ -80,7 +94,7 @@ class Ports:
         out: dict = {}
         for pid in x360_ports.PORT_ORDER:
             out[f"port_{pid}_source"] = self.port_vars[pid]["source"].get()
-            o = self._port_play_options(pid)
+            o = self._port_form_options(pid)
             o.fov = max(o.fov, 0.0)
             o.max_fps = max(o.max_fps, -1)
             out.update(o.to_settings(x360_ports.PORTS[pid]))
@@ -91,9 +105,128 @@ class Ports:
             p = x360_ports.PORTS[pid]
             if isinstance(s.get(f"port_{pid}_source"), str):
                 self.port_vars[pid]["source"].set(s[f"port_{pid}_source"])
-            o = self._port_play_options(pid)
+            o = self._port_form_options(pid)
             merged = {**o.to_settings(p), **{k: val for k, val in s.items() if k.startswith(f"port_{pid}_")}}
             self._port_set_play(pid, x360_ports.PlayOptions.from_settings(p, merged))
+
+    # ------------------------------------------------------------------ the game's own settings
+    # [f2-menus] 2026-11-10 (owner: "check the cod3 tab for references. Also check for redundancy"): the Play page's
+    # Settings rows are the game's own settings file (x360_ports.load_game_settings / save_game_settings), the one
+    # F2 writes in the game, as Call of Duty 3's Game settings are. Read when the page is shown, the program is
+    # changed or the game ends; written by Save settings and before Play.
+    def _port_gs_form(self, pid: str) -> Tuple[dict, List[str]]:
+        """(the rows as the game's settings, what is wrong with them)."""
+        p, v = x360_ports.PORTS[pid], self.port_vars[pid]
+        values: dict = {"fullscreen": bool(v["fullscreen"].get()), "audio_mute": bool(v["mute"].get())}
+        problems: List[str] = []
+        if p.skip_films:
+            values[p.skip_films] = bool(v["skip_films"].get())
+        if p.fov:
+            text = v["fov"].get().strip()
+            try:
+                fov = 0 if text in ("", NO_FOV) else int(round(float(text)))
+            except (ValueError, OverflowError):
+                fov = -1
+            if fov != 0 and not 40 <= fov <= 140:
+                problems.append("the field of view goes from 40 to 140")
+            else:
+                values[p.fov] = fov
+        if p.max_fps:
+            text = v["max_fps"].get().strip()
+            if text:   # empty: the file's line, or the port's own default, stays
+                try:
+                    limit = int(text)
+                except ValueError:
+                    limit = -1
+                if not 0 <= limit <= p.max_fps_top:
+                    problems.append(f"the frame limit goes from 0 ({p.max_fps_zero}) to {p.max_fps_top}")
+                else:
+                    values[p.max_fps] = limit
+        if IS_WINDOWS:
+            api = v["graphics_api"].get()
+            values[f"{p.settings_prefix}_graphics_api"] = api if api in x360_ports.GRAPHICS_APIS else "auto"
+        return values, problems
+
+    def _port_gs_changed(self, pid: str) -> dict:
+        """The rows that differ from what the file had (nothing while a row is wrong or the game isn't built)."""
+        state = self.port_gs.get(pid) or {}
+        if not state.get("file"):
+            return {}
+        values, problems = self._port_gs_form(pid)
+        if problems:
+            return {}
+        loaded = state["loaded"]
+        return {k: val for k, val in values.items()
+                if k not in loaded or loaded[k] != val or type(loaded[k]) is not type(val)}
+
+    def _port_gs_load(self, pid: str, keep_edits: bool = False) -> None:
+        """Fill the rows from the game's file. A row the file has no line for keeps what it shows (what the tool
+        had saved for it: until 2026-11-10 these were passed at each start), so it is written at the next Save or
+        Play; an empty frame limit shows the port's own default."""
+        p, v = x360_ports.PORTS[pid], self.port_vars[pid]
+        out = self._out_path()
+        program = self._port_program(pid)
+        state = self.port_gs.get(pid) or {}
+        if out is None or not x360_ports.installed(p, out):
+            self.port_gs[pid] = {"file": None, "loaded": {}}
+            v["gs_reason"].set("")
+            return
+        file = (str(out), program)
+        if keep_edits and state.get("file") == file and self._port_gs_changed(pid):
+            return   # rows changed here and not saved yet: they stay
+        try:
+            values, have = x360_ports.load_game_settings(p, out, program)
+        except (OSError, common.SetupError) as e:
+            self.port_gs[pid] = {"file": None, "loaded": {}}
+            v["gs_reason"].set(str(e))
+            return
+        for key in have:
+            value = values[key]
+            if key == "fullscreen":
+                v["fullscreen"].set(bool(value))
+            elif key == "audio_mute":
+                v["mute"].set(bool(value))
+            elif key == p.skip_films:
+                v["skip_films"].set(bool(value))
+            elif key == p.fov:
+                v["fov"].set(str(value) if value else NO_FOV)
+            elif key == p.max_fps:
+                v["max_fps"].set(str(value))
+            elif key.endswith("_graphics_api"):
+                v["graphics_api"].set(value)
+        if p.max_fps and p.max_fps not in have and not v["max_fps"].get().strip():
+            v["max_fps"].set(str(values[p.max_fps]))
+        self.port_gs[pid] = {"file": file, "loaded": values}
+        v["gs_reason"].set("")
+
+    def _port_gs_save(self, pid: str, quiet: bool = False) -> bool:
+        """Write the changed rows into the game's file. False when they can't be written (the reason is shown)."""
+        p, v = x360_ports.PORTS[pid], self.port_vars[pid]
+        state = self.port_gs.get(pid) or {}
+        out = self._out_path()
+        if out is None or not state.get("file"):
+            return True   # not built yet: no file to write to
+        _, problems = self._port_gs_form(pid)
+        why = ""
+        if problems:
+            why = "; ".join(problems) + "."
+            why = why[0].upper() + why[1:]
+        else:
+            changed = self._port_gs_changed(pid)
+            if not changed:
+                return True
+            try:
+                x360_ports.save_game_settings(p, out, changed, state["file"][1])
+            except (OSError, common.SetupError) as e:
+                why = str(e)
+            else:
+                state["loaded"].update(changed)
+                v["gs_reason"].set(f"Saved in {x360_ports.settings_file_name(p, state['file'][1])}.")
+                return True
+        v["gs_reason"].set(why)
+        if not quiet:
+            self._info("Not saved", why, kind="warning")
+        return False
 
     def _port_out(self, pid: str) -> Optional[Path]:
         out = self._out_path()
@@ -230,8 +363,9 @@ class Ports:
         p, v = x360_ports.PORTS[pid], self.port_vars[pid]
         key = f"{pid}_play"
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "Play", f"Start {p.name}, with the port's own settings.", columns=1)
-        self.pages[key]["on_show"] = self._update_actions
+        widgets.page_header(t, "Play", f"Start {p.name}, and change its settings before it starts.", columns=1)
+        self.pages[key]["on_show"] = lambda g=pid: (self._port_gs_load(g, keep_edits=True), self._update_actions())
+        v["program"].trace_add("write", lambda *a, g=pid: self._port_gs_load(g))   # [f2-menus] each program its file
         g = section(t, p.name, 1, columns=1)
         self._grid_cols(g)
         top = ttk.Frame(g)
@@ -243,20 +377,24 @@ class Ports:
                            justify="left")
         reason.pack(side="left", padx=(px(14), 0))
         self.port_widgets.setdefault(pid, {}).update({"play_btn": btn, "play_reason": reason})
+        # [f2-menus] 2026-11-10 As on Call of Duty 3's Play page: the game's own F2 window has these and more.
+        hint(g, "In the game: F2 opens the settings window (display and resolution, frame limit, field of view, "
+                "controls and more). The Settings below are the same ones, kept in the game's own file: change "
+                "them here or there.").grid(row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
 
         s = section(t, "Settings", 3, columns=1)
         self._grid_cols(s)
         rows = [("Program", ttk.Combobox(s, textvariable=v["program"], state="readonly", width=18,
                                          values=[q.label for q in p.programs]),
-                 "The campaign, or multiplayer when the port has it.")]
+                 "The campaign, or multiplayer when the port has it. Each has its own settings file.")]
         if p.fov:
             rows.append(("Field of view", ttk.Combobox(s, textvariable=v["fov"], width=10,
                                                        values=[NO_FOV, "65", "80", "90", "100", "110", "120"]),
-                         "Degrees, 40-140; the game's own when left as it is."))
+                         "Degrees, 40-140; Game's own leaves it to the game."))
         if p.max_fps:
-            rows.append(("Frame limit", ttk.Spinbox(s, from_=0, to=1000, increment=30, textvariable=v["max_fps"],
-                                                    width=8),
-                         "Frames a second, 0 = none; empty = the port's own."))
+            rows.append(("Frame limit", ttk.Spinbox(s, from_=0, to=p.max_fps_top, increment=30,
+                                                    textvariable=v["max_fps"], width=8),   # [f2-menus] per port
+                         f"Frames a second, up to {p.max_fps_top}; 0 = {p.max_fps_zero}."))
         if IS_WINDOWS:
             rows.append(("Graphics API", ttk.Combobox(s, textvariable=v["graphics_api"], state="readonly", width=10,
                                                       values=list(x360_ports.GRAPHICS_APIS)),
@@ -267,15 +405,26 @@ class Ports:
             tip(fld, help_text)
         boxes = ttk.Frame(s)
         boxes.grid(row=len(rows), column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        checks = [("Fullscreen", v["fullscreen"], "Fill the screen instead of a window."),
+        checks = [("Fullscreen", v["fullscreen"], "Fill the screen instead of a window (the game's display mode; "
+                                                  "F2 > Video has it too)."),   # [f2-menus]
                   ("Mute", v["mute"], "No sound.")]
         if p.skip_films:
             checks.append(("Skip the start-up films", v["skip_films"], "Straight to Press START."))
         for text, var, help_text in checks:
             tip(ttk.Checkbutton(boxes, text=text, variable=var), help_text).pack(side="left", padx=(0, px(14)))
-        hint(s, f"Saved for the next start. The game keeps its own settings in {p.settings_prefix}.toml and its "
-                "saves in userdata/, in its folder.").grid(row=len(rows) + 1, column=0, columnspan=3, sticky="w",
-                                                         pady=(px(6), 0))
+        # [f2-menus] 2026-11-10 the rows are the game's own file now: a Save button and what happened, as on
+        # Call of Duty 3's page
+        bar = ttk.Frame(s)
+        bar.grid(row=len(rows) + 1, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
+        save = ttk.Button(bar, text="Save settings", command=lambda: self._port_gs_save(pid))
+        save.pack(side="left")
+        tip(save, "Write these to the game's own settings file now. Play does it too.")
+        ttk.Label(bar, textvariable=v["gs_reason"], style="Hint.TLabel", wraplength=px(440),
+                  justify="left").pack(side="left", padx=(px(14), 0))
+        files = " and ".join(x360_ports.settings_file_name(p, q.name) for q in p.programs)
+        hint(s, f"The game's own settings, in its folder ({files}): the game reads them when it starts and F2 "
+                "changes the same ones. Its saves are in userdata/.").grid(
+            row=len(rows) + 2, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
 
         f = section(t, "Folders", 5, columns=1)
         bf = ttk.Frame(f)
@@ -307,6 +456,10 @@ class Ports:
             return
         p = x360_ports.PORTS[pid]
         out = self._out_path()
+        if (self.port_gs.get(pid) or {}).get("file") != (str(out), self._port_program(pid)):
+            self._port_gs_load(pid)   # [f2-menus] the page wasn't shown yet for this folder and program
+        if not self._port_gs_save(pid):   # the rows go into the game's file first; why not is shown
+            return
         cmd, _ = x360_ports.play_command(p, out, self._port_play_options(pid))
         root = out / p.subdir
         self._save()
@@ -320,6 +473,7 @@ class Ports:
             took = time.monotonic() - started
             self.q.put(("call", lambda: (self.log.info(f"{p.name} exited after {took / 60:.1f} min (exit code "
                                                        f"{code}); its log is in {logs}."),
+                                         self._port_gs_load(pid),   # [f2-menus] what F2 changed in the game
                                          self._update_actions())))
         try:
             with open(out_log, "wb") as f:

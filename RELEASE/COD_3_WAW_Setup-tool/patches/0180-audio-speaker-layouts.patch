@@ -1,0 +1,678 @@
+diff --git a/include/rex/audio/conversion.h b/include/rex/audio/conversion.h
+index 42cdddb..47d58fb 100644
+--- a/include/rex/audio/conversion.h
++++ b/include/rex/audio/conversion.h
+@@ -144,4 +144,34 @@ inline void sequential_6_BE_to_interleaved_2_LE(float* output, const float* inpu
+ }
+ #endif
+ 
++// A 7.1 device (SDL's order: fl fr fc lf bl br sl sr). The fronts, center and
++// LFE as for 5.1; each guest surround plays on the side and the back speaker
++// of its side, weighted by `wide`. Scalar on every architecture: 2,048
++// floats per 5.33 ms frame.
++inline void sequential_6_BE_to_interleaved_8_LE(float* output, const float* input,
++                                                size_t ch_sample_count, const SurroundMix& mix,
++                                                const WideMix& wide, float gain) {
++  const float c = mix.center * gain;
++  const float l = mix.lfe * gain;
++  const float back = mix.surround * wide.back * gain;
++  const float side = mix.surround * wide.side * gain;
++  for (size_t sample = 0; sample < ch_sample_count; sample++) {
++    const float fl = rex::byte_swap(input[0 * ch_sample_count + sample]);
++    const float fr = rex::byte_swap(input[1 * ch_sample_count + sample]);
++    const float fc = rex::byte_swap(input[2 * ch_sample_count + sample]);
++    const float lf = rex::byte_swap(input[3 * ch_sample_count + sample]);
++    const float bl = rex::byte_swap(input[4 * ch_sample_count + sample]);
++    const float br = rex::byte_swap(input[5 * ch_sample_count + sample]);
++    float* out = &output[sample * 8];
++    out[0] = std::clamp(fl * gain, -1.0f, 1.0f);
++    out[1] = std::clamp(fr * gain, -1.0f, 1.0f);
++    out[2] = std::clamp(fc * c, -1.0f, 1.0f);
++    out[3] = std::clamp(lf * l, -1.0f, 1.0f);
++    out[4] = std::clamp(bl * back, -1.0f, 1.0f);
++    out[5] = std::clamp(br * back, -1.0f, 1.0f);
++    out[6] = std::clamp(bl * side, -1.0f, 1.0f);
++    out[7] = std::clamp(br * side, -1.0f, 1.0f);
++  }
++}
++
+ }  // namespace rex::audio::conversion
+diff --git a/include/rex/audio/downmix.h b/include/rex/audio/downmix.h
+index e91cc1e..a21dd81 100644
+--- a/include/rex/audio/downmix.h
++++ b/include/rex/audio/downmix.h
+@@ -1,6 +1,6 @@
+ /**
+  * @file        audio/downmix.h
+- * @brief       Output-stage mix parameters: 5.1 fold, 5.1 matrix and master gain
++ * @brief       Output-stage mix parameters: 5.1 fold, 5.1 matrix, 7.1 spread and master gain
+  *
+  * @copyright   Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
+  *              All rights reserved.
+@@ -49,6 +49,18 @@ struct SurroundMix {
+   float lfe = 1.0f;
+ };
+ 
++/**
++ * How the guest's two surround channels reach a 7.1 device, which has a pair
++ * at the sides (90-110 degrees) and a pair behind (135-150 degrees). A 5.1
++ * mix places its surrounds at about 110 degrees (ITU-R BS.775), between the
++ * two pairs, so by default each surround plays on both at -3 dB: the same
++ * power, heard between them. Applied on top of SurroundMix::surround.
++ */
++struct WideMix {
++  float side = 0.70710678f;
++  float back = 0.70710678f;
++};
++
+ /// Safe to call from any thread. The output stage picks the new values up on
+ /// its next device callback.
+ void SetStereoFold(const StereoFold& fold);
+@@ -57,7 +69,10 @@ StereoFold GetStereoFold();
+ void SetSurroundMix(const SurroundMix& mix);
+ SurroundMix GetSurroundMix();
+ 
+-/// Linear master gain applied to the stereo fold and to 5.1 passthrough alike.
++void SetWideMix(const WideMix& wide);
++WideMix GetWideMix();
++
++/// Linear master gain applied to every layout (stereo, headphones, 5.1, 7.1).
+ /// 1.0 is unity. Above unity can clip, and the output stage clamps.
+ void SetOutputGain(float linear);
+ float GetOutputGain();
+diff --git a/include/rex/audio/headphones.h b/include/rex/audio/headphones.h
+new file mode 100644
+index 0000000..7460c36
+--- /dev/null
++++ b/include/rex/audio/headphones.h
+@@ -0,0 +1,182 @@
++/**
++ * @file        audio/headphones.h
++ * @brief       The guest's 5.1 render placed around a listener's head, for headphones
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <algorithm>
++#include <array>
++#include <cmath>
++#include <cstddef>
++#include <cstdint>
++
++#include <rex/audio/downmix.h>
++#include <rex/types.h>
++
++namespace rex::audio::conversion {
++
++/**
++ * A 5.1 render on headphones as five speakers in a room: front left and right
++ * at 30 degrees, center straight ahead, the surrounds at 110 degrees (ITU-R
++ * BS.775). Each speaker reaches both ears, the far ear later and with less
++ * treble, the way a head shadows sound:
++ *
++ *  - The time between the ears is Woodworth's spherical head (radius 8.75 cm):
++ *    13 samples at 48 kHz for the front pair, 26 for the surrounds.
++ *  - The treble is Brown and Duda's one-pole head shadow (1998): one
++ *    first-order shelf per ear, flat at low frequencies (a head doesn't shadow
++ *    them). Each speaker's two shelves are scaled together so the treble
++ *    reaching both ears adds up to what the speaker gives, so no direction
++ *    sounds brighter or duller than straight ahead (the center is
++ *    untouched): the ear facing a front speaker gets +2.8 dB of treble and
++ *    the far ear -10.8 dB; for a surround +3.0 dB and -21 dB.
++ *  - The surrounds lose a little treble (a one-pole low-pass at 10 kHz), the
++ *    ear's own cue for sound from behind.
++ *
++ * No measured head data: everything is a few filters per speaker, so it costs
++ * next to nothing and needs no download. Center and surround take the 5.1
++ * weights (SurroundMix), because these are speakers like a 5.1 room's; the
++ * LFE takes the stereo fold's weight (StereoFold::lfe), because headphones
++ * are a two-channel destination. The level matches the stereo fold: one
++ * front channel alone gives both ears together the power the fold gives its
++ * side.
++ *
++ * Keeps state from one call to the next (the delays and the filters), so one
++ * object follows one stream: Reset() when a stream opens. Not thread-safe;
++ * the output stage calls it from the device callback only.
++ */
++class HeadphoneMix {
++ public:
++  static constexpr float kSampleRate = 48000.0f;
++
++  HeadphoneMix() {
++    for (size_t i = 0; i < kSpeakers; ++i) Configure(i);
++    Reset();
++  }
++
++  void Reset() {
++    for (auto& line : delay_) line.fill(0.0f);
++    for (auto& ears : shelf_) {
++      for (auto& shelf : ears) shelf.x1 = shelf.y1 = 0.0f;
++    }
++    rear_lp_.fill(0.0f);
++    pos_ = 0;
++  }
++
++  // The input is the guest's frame: 6 channels one after another (fl fr fc
++  // lf bl br), big-endian floats, ch_sample_count samples each. The output
++  // is interleaved stereo, little-endian, clamped to [-1, 1].
++  void Process(float* output, const float* input, size_t ch_sample_count, const SurroundMix& mix,
++               float lfe, float gain) {
++    const float scale = kLevel * gain;
++    for (size_t sample = 0; sample < ch_sample_count; ++sample) {
++      const float fl = rex::byte_swap(input[0 * ch_sample_count + sample]);
++      const float fr = rex::byte_swap(input[1 * ch_sample_count + sample]);
++      const float fc = rex::byte_swap(input[2 * ch_sample_count + sample]);
++      const float lf = rex::byte_swap(input[3 * ch_sample_count + sample]);
++      const float bl = rex::byte_swap(input[4 * ch_sample_count + sample]);
++      const float br = rex::byte_swap(input[5 * ch_sample_count + sample]);
++      float feed[kSpeakers] = {fl, fr, fc * mix.center, bl * mix.surround, br * mix.surround};
++      for (size_t r = 0; r < 2; ++r) {
++        float& state = rear_lp_[r];
++        state += kRearLowPass * (feed[3 + r] - state);
++        state = Flush(state);
++        feed[3 + r] = state;
++      }
++      float ear[2] = {lf * lfe, lf * lfe};
++      for (size_t i = 0; i < kSpeakers; ++i) {
++        auto& line = delay_[i];
++        line[pos_] = feed[i];
++        for (size_t e = 0; e < 2; ++e) {
++          const float x = line[(pos_ - delay_samples_[i][e]) & kDelayMask];
++          ear[e] += shelf_[i][e].Run(x);
++        }
++      }
++      pos_ = (pos_ + 1) & kDelayMask;
++      output[sample * 2] = std::clamp(ear[0] * scale, -1.0f, 1.0f);
++      output[sample * 2 + 1] = std::clamp(ear[1] * scale, -1.0f, 1.0f);
++    }
++  }
++
++  // For tests: the delay in samples and the treble gain (above a few kHz) of
++  // speaker i (0 fl, 1 fr, 2 fc, 3 bl, 4 br) at ear e (0 left, 1 right).
++  uint32_t delay_samples(size_t i, size_t e) const { return delay_samples_[i][e]; }
++  float treble_gain(size_t i, size_t e) const { return treble_[i][e]; }
++
++  // Both ears together get the power the stereo fold gives its side for one
++  // front channel: 2 * kLevel^2 = (1 / (1 + 0.7071))^2.
++  static constexpr float kLevel = 0.41421356f;
++
++ private:
++  static constexpr size_t kSpeakers = 5;
++  static constexpr uint32_t kDelayLength = 64;  // more than the longest delay (26)
++  static constexpr uint32_t kDelayMask = kDelayLength - 1;
++  // 1 - exp(-2 pi 10 kHz / 48 kHz)
++  static constexpr float kRearLowPass = 0.73005f;
++
++  struct Shelf {
++    float b0 = 1.0f, b1 = 0.0f, a1 = 0.0f;
++    float x1 = 0.0f, y1 = 0.0f;
++    float Run(float x) {
++      const float y = Flush(b0 * x + b1 * x1 - a1 * y1);
++      x1 = x;
++      y1 = y;
++      return y;
++    }
++  };
++
++  // Filter state that has decayed to nothing is set to zero, so silence
++  // never leaves denormals behind (slow on x86).
++  static float Flush(float v) { return std::fabs(v) < 1e-20f ? 0.0f : v; }
++
++  void Configure(size_t i) {
++    constexpr double kPi = 3.14159265358979323846;
++    constexpr double kHeadRadius = 0.0875;  // m
++    constexpr double kSpeedOfSound = 343.0;  // m/s
++    constexpr double kAzimuth[kSpeakers] = {-30.0, 30.0, 0.0, -110.0, 110.0};  // degrees, left < 0
++    const double azimuth = kAzimuth[i];
++
++    // Brown & Duda: alpha = (1 + amin/2) + (1 - amin/2) cos(theta / theta_min * 180 deg),
++    // theta the angle between the source and the ear, amin 0.1, theta_min 150 deg.
++    double alpha[2];
++    const double ear_azimuth[2] = {-90.0, 90.0};
++    for (size_t e = 0; e < 2; ++e) {
++      double theta = std::fabs(azimuth - ear_azimuth[e]);
++      if (theta > 180.0) theta = 360.0 - theta;
++      alpha[e] = 1.05 + 0.95 * std::cos(theta / 150.0 * kPi);
++    }
++    const double norm = std::sqrt(2.0 / (alpha[0] * alpha[0] + alpha[1] * alpha[1]));
++
++    // Woodworth: (a / c) (lateral + sin lateral), lateral the angle off the
++    // middle plane (110 degrees is 70 degrees off it, behind).
++    const double lateral = std::asin(std::fabs(std::sin(azimuth * kPi / 180.0)));
++    const double itd = kHeadRadius / kSpeedOfSound * (lateral + std::sin(lateral));
++    const uint32_t far_delay = static_cast<uint32_t>(std::lround(itd * kSampleRate));
++    const size_t far_ear = azimuth < 0.0 ? 1 : 0;
++
++    // H(s) = (1 + alpha s / (2 w0)) / (1 + s / (2 w0)), w0 = c / a, by the
++    // bilinear transform (s = 2 fs (1 - 1/z) / (1 + 1/z)).
++    const double tk = kSampleRate / (kSpeedOfSound / kHeadRadius);
++    for (size_t e = 0; e < 2; ++e) {
++      const double a = alpha[e] * norm;
++      Shelf& shelf = shelf_[i][e];
++      shelf.b0 = static_cast<float>((1.0 + a * tk) / (1.0 + tk));
++      shelf.b1 = static_cast<float>((1.0 - a * tk) / (1.0 + tk));
++      shelf.a1 = static_cast<float>((1.0 - tk) / (1.0 + tk));
++      treble_[i][e] = static_cast<float>(a);
++      delay_samples_[i][e] = azimuth != 0.0 && e == far_ear ? far_delay : 0;
++    }
++  }
++
++  std::array<std::array<float, kDelayLength>, kSpeakers> delay_ = {};
++  std::array<std::array<Shelf, 2>, kSpeakers> shelf_ = {};
++  uint32_t delay_samples_[kSpeakers][2] = {};
++  float treble_[kSpeakers][2] = {};
++  std::array<float, 2> rear_lp_ = {};
++  uint32_t pos_ = 0;
++};
++
++}  // namespace rex::audio::conversion
+diff --git a/include/rex/audio/output_device.h b/include/rex/audio/output_device.h
+index 7f3916b..fb26801 100644
+--- a/include/rex/audio/output_device.h
++++ b/include/rex/audio/output_device.h
+@@ -9,6 +9,7 @@
+ #pragma once
+ 
+ #include <string>
++#include <string_view>
+ #include <vector>
+ 
+ namespace rex::audio {
+@@ -31,4 +32,43 @@ std::vector<std::string> ListOutputDevices();
+ /// Safe to call from any thread.
+ std::string CurrentOutputDevice();
+ 
++/// What the guest's 5.1 sound is mixed for, the `audio_output_layout`
++/// setting: "auto" (the default) follows the device (2 channels or fewer:
++/// stereo; 8 or more: 7.1; anything else: 5.1), the others ask for one
++/// whatever the device has. "headphones" places the five speakers around the
++/// listener's head (rex/audio/headphones.h). A layout with more channels than
++/// the device has is mixed down by the system. The setting is live: a change
++/// reopens the sound stream (a moment of silence).
++enum class OutputLayout { kAuto, kStereo, kHeadphones, kSurround51, kSurround71 };
++
++/// The setting's value for a layout, and back ("5.1" and "7.1" may also be
++/// written "51" or "71"; case and spaces don't matter; anything else is auto).
++inline const char* OutputLayoutName(OutputLayout layout) {
++  switch (layout) {
++    case OutputLayout::kStereo: return "stereo";
++    case OutputLayout::kHeadphones: return "headphones";
++    case OutputLayout::kSurround51: return "5.1";
++    case OutputLayout::kSurround71: return "7.1";
++    default: return "auto";
++  }
++}
++
++inline OutputLayout ParseOutputLayout(std::string_view value) {
++  std::string v;
++  for (const char ch : value) {
++    if (ch == ' ' || ch == '\t') continue;
++    v += (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a') : ch;
++  }
++  if (v == "stereo" || v == "2.0") return OutputLayout::kStereo;
++  if (v == "headphones" || v == "headphone") return OutputLayout::kHeadphones;
++  if (v == "5.1" || v == "51") return OutputLayout::kSurround51;
++  if (v == "7.1" || v == "71") return OutputLayout::kSurround71;
++  return OutputLayout::kAuto;
++}
++
++/// The layout the sound is mixed for now and how many channels go to the
++/// device, for showing ("" before audio starts), e.g. "7.1 (8 channels; the
++/// device's own)". Safe to call from any thread.
++std::string CurrentOutputLayout();
++
+ }  // namespace rex::audio
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+index 528cf24..d4862e2 100644
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -20,6 +20,8 @@
+ #include <unordered_map>
+ 
+ #include <rex/audio/audio_driver.h>
++#include <rex/audio/headphones.h>
++#include <rex/audio/output_device.h>
+ #include <rex/thread.h>
+ 
+ #include <SDL3/SDL.h>
+@@ -53,6 +55,14 @@ class SDLAudioDriver : public AudioDriver {
+   SDL_AudioStream* sdl_stream_ = nullptr;
+   bool sdl_initialized_ = false;
+   uint8_t sdl_device_channels_ = 0;
++  // The layout the open stream is mixed for (audio_output_layout, decided in
++  // OpenStream), and its text for CurrentOutputLayout. With 2 channels the
++  // callback runs the headphone mix instead of the stereo fold when the
++  // layout is kHeadphones. headphone_mix_ keeps its state across callbacks
++  // and is reset when a stream opens (before the device runs).
++  std::atomic<OutputLayout> mixing_for_{OutputLayout::kStereo};
++  std::string layout_text_;
++  conversion::HeadphoneMix headphone_mix_;
+ 
+   static constexpr uint64_t kDeviceCheckIntervalMs = 2000;
+   std::mutex stream_mutex_ = {};
+diff --git a/src/audio/downmix.cpp b/src/audio/downmix.cpp
+index 6d88b68..0cce0f7 100644
+--- a/src/audio/downmix.cpp
++++ b/src/audio/downmix.cpp
+@@ -1,6 +1,6 @@
+ /**
+  * @file        audio/downmix.cpp
+- * @brief       Output-stage mix parameters: 5.1 fold, 5.1 matrix and master gain
++ * @brief       Output-stage mix parameters: 5.1 fold, 5.1 matrix, 7.1 spread and master gain
+  *
+  * @copyright   Copyright (c) 2026 Tom Clay <tomc@tctechstuff.com>
+  *              All rights reserved.
+@@ -17,10 +17,11 @@ namespace {
+ 
+ // One output device exists, so the mix parameters are process state. The
+ // reader is the SDL device callback, which runs every 5.33 ms, so a plain
+-// mutex costs nothing and avoids a torn read across the four weights.
++// mutex costs nothing and avoids a torn read across the weights.
+ std::mutex g_mutex;
+ StereoFold g_fold = {};
+ SurroundMix g_mix = {};
++WideMix g_wide = {};
+ float g_gain = 1.0f;
+ 
+ }  // namespace
+@@ -45,6 +46,16 @@ SurroundMix GetSurroundMix() {
+   return g_mix;
+ }
+ 
++void SetWideMix(const WideMix& wide) {
++  std::lock_guard<std::mutex> lock(g_mutex);
++  g_wide = wide;
++}
++
++WideMix GetWideMix() {
++  std::lock_guard<std::mutex> lock(g_mutex);
++  return g_wide;
++}
++
+ void SetOutputGain(float linear) {
+   std::lock_guard<std::mutex> lock(g_mutex);
+   g_gain = linear;
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+index 0fc4a1f..f725a83 100644
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -34,6 +34,9 @@ REXCVAR_DEFINE_BOOL(audio_mute, false, "Audio", "Mute audio output");
+ REXCVAR_DEFINE_STRING(audio_device, "", "Audio",
+                       "Sound output device, by the name rex::audio::ListOutputDevices gives; empty "
+                       "follows the system's default device");
++REXCVAR_DEFINE_STRING(audio_output_layout, "auto", "Audio",
++                      "What the sound is mixed for: auto (the device's own: stereo, 5.1 or 7.1), "
++                      "stereo, headphones (the 5.1 speakers placed around your head), 5.1 or 7.1");
+ 
+ namespace rex::audio {
+ namespace {
+@@ -44,6 +47,10 @@ std::string g_current_device;
+ // Set by audio_device's change callback, so the audio thread acts on a new
+ // choice at its next frame instead of at its next check.
+ std::atomic<bool> g_device_setting_changed{false};
++// The same for audio_output_layout (a new layout reopens the stream), and the
++// layout the sound is mixed for now, for CurrentOutputLayout.
++std::atomic<bool> g_layout_setting_changed{false};
++std::string g_current_layout;
+ 
+ struct PlaybackDevice {
+   SDL_AudioDeviceID id;
+@@ -102,6 +109,16 @@ std::string DefaultDeviceName(const std::vector<PlaybackDevice>& devices) {
+ // The setting's value (read under the settings' own lock, so any thread may
+ // change it meanwhile).
+ std::string WantedDevice() { return rex::cvar::GetFlagByName("audio_device"); }
++OutputLayout WantedLayout() { return ParseOutputLayout(rex::cvar::GetFlagByName("audio_output_layout")); }
++
++const char* LayoutTitle(OutputLayout layout) {
++  switch (layout) {
++    case OutputLayout::kHeadphones: return "Headphones";
++    case OutputLayout::kSurround51: return "5.1";
++    case OutputLayout::kSurround71: return "7.1";
++    default: return "Stereo";
++  }
++}
+ 
+ }  // namespace
+ 
+@@ -116,6 +133,11 @@ std::string CurrentOutputDevice() {
+   return g_current_device;
+ }
+ 
++std::string CurrentOutputLayout() {
++  std::lock_guard lock(g_device_mutex);
++  return g_current_layout;
++}
++
+ }  // namespace rex::audio
+ 
+ namespace rex::audio::sdl {
+@@ -150,8 +172,12 @@ bool SDLAudioDriver::Initialize() {
+     rex::cvar::RegisterChangeCallback("audio_device", [](std::string_view, std::string_view) {
+       g_device_setting_changed = true;
+     });
++    rex::cvar::RegisterChangeCallback("audio_output_layout", [](std::string_view, std::string_view) {
++      g_layout_setting_changed = true;
++    });
+   }
+   g_device_setting_changed = false;
++  g_layout_setting_changed = false;
+ 
+   const auto devices = PlaybackDevices();
+   std::string outputs;
+@@ -185,57 +211,96 @@ bool SDLAudioDriver::Initialize() {
+ bool SDLAudioDriver::OpenStream(SDL_AudioDeviceID device) {
+   const SDL_AudioDeviceID target = device ? device : SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK;
+   burst_frames_.store(0, std::memory_order_relaxed);  // a new device: its period is learned again
++  const OutputLayout wanted = WantedLayout();
+   SDL_AudioSpec desired_spec = {};
+   SDL_AudioSpec obtained_spec = {};
+   desired_spec.freq = frame_frequency_;
+   desired_spec.format = SDL_AUDIO_F32LE;
+-  desired_spec.channels = frame_channels_;
+-  sdl_device_channels_ = frame_channels_;
+-  sdl_stream_ = SDL_OpenAudioDeviceStream(target, &desired_spec, SDLCallback, this);
+-  if (!sdl_stream_) {
+-    REXAPU_ERROR("SDL_OpenAudioDeviceStream() failed: {}", SDL_GetError());
+-    return false;
+-  }
+-
+-  SDL_AudioDeviceID sdl_device = SDL_GetAudioStreamDevice(sdl_stream_);
+-  if (!sdl_device) {
+-    REXAPU_ERROR("SDL_GetAudioStreamDevice() failed: {}", SDL_GetError());
+-    CloseStream();
+-    return false;
+-  }
++  // The channels handed to SDL: 2 (stereo, headphones), 6 (5.1, and auto
++  // until the device is known) or 8 (7.1).
++  const auto channels_for = [](OutputLayout layout) -> uint8_t {
++    switch (layout) {
++      case OutputLayout::kStereo:
++      case OutputLayout::kHeadphones: return 2;
++      case OutputLayout::kSurround71: return 8;
++      default: return 6;
++    }
++  };
++  const auto open = [&](uint8_t channels) {
++    desired_spec.channels = channels;
++    sdl_device_channels_ = channels;
++    sdl_stream_ = SDL_OpenAudioDeviceStream(target, &desired_spec, SDLCallback, this);
++    if (!sdl_stream_) {
++      REXAPU_ERROR("SDL_OpenAudioDeviceStream() with {} channels failed: {}", static_cast<int>(channels),
++                   SDL_GetError());
++      return SDL_AudioDeviceID{0};
++    }
++    const SDL_AudioDeviceID opened = SDL_GetAudioStreamDevice(sdl_stream_);
++    if (!opened) {
++      REXAPU_ERROR("SDL_GetAudioStreamDevice() failed: {}", SDL_GetError());
++      CloseStream();
++    }
++    return opened;
++  };
++  // auto follows the device: 2 channels or fewer get the stereo fold (a
++  // 1-channel device too, then SDL collapses it to mono; handing it a 6ch
++  // stream instead would use the system's own downmix), 8 or more the 7.1
++  // spread, anything between the 5.1 render as it is (SDL maps it to 3-7
++  // channels). The device's own channels are asked before a stream is open:
++  // once one is, PipeWire reports the stream's channels, not the sink's (on
++  // the owner's PC a stereo sink said 6 with a 6-channel stream open, 2
++  // before), so a stereo device used to get 6 channels and PipeWire's
++  // downmix. Asked after opening too, for a system that can't take the
++  // channels asked for.
++  const auto layout_for = [](int channels) {
++    return channels <= 2 ? OutputLayout::kStereo
++           : channels >= 8 ? OutputLayout::kSurround71
++                           : OutputLayout::kSurround51;
++  };
++  SDL_AudioSpec preferred = {};
++  const bool preferred_known =
++      SDL_GetAudioDeviceFormat(target, &preferred, NULL) && preferred.channels > 0;
++  OutputLayout layout = wanted;
++  if (wanted == OutputLayout::kAuto && preferred_known) layout = layout_for(preferred.channels);
++  SDL_AudioDeviceID sdl_device = open(channels_for(layout));
++  if (!sdl_device) return false;
+ 
+   if (!SDL_GetAudioDeviceFormat(sdl_device, &obtained_spec, NULL)) {
+     REXAPU_WARN("SDL_GetAudioDeviceFormat() failed: {}", SDL_GetError());
+     obtained_spec = desired_spec;
+   }
+-
+-  // A 1-channel device gets the stereo fold too, then SDL collapses to mono.
+-  // Handing it a 6ch stream instead would use SDL's own downmix.
+-  if (obtained_spec.channels <= 2) {
+-    CloseStream();
+-    desired_spec.channels = 2;
+-    sdl_device_channels_ = 2;
+-    sdl_stream_ = SDL_OpenAudioDeviceStream(target, &desired_spec, SDLCallback, this);
+-    if (!sdl_stream_) {
+-      REXAPU_ERROR("SDL_OpenAudioDeviceStream() stereo fallback failed: {}", SDL_GetError());
+-      return false;
+-    }
+-    sdl_device = SDL_GetAudioStreamDevice(sdl_stream_);
+-    if (!sdl_device) {
+-      REXAPU_ERROR("SDL_GetAudioStreamDevice() failed after stereo fallback: {}", SDL_GetError());
+-      CloseStream();
+-      return false;
++  if (wanted == OutputLayout::kAuto) {
++    const OutputLayout opened_as = layout_for(obtained_spec.channels);
++    if (!preferred_known || (opened_as == OutputLayout::kStereo && layout != OutputLayout::kStereo)) {
++      layout = opened_as;
++      const uint8_t fit = channels_for(layout);
++      if (fit != sdl_device_channels_) {
++        CloseStream();
++        sdl_device = open(fit);
++        if (!sdl_device) return false;
++      }
+     }
+   }
++  const int device_channels = preferred_known ? preferred.channels : obtained_spec.channels;
++  headphone_mix_.Reset();
++  mixing_for_.store(layout, std::memory_order_relaxed);
++  layout_text_ = fmt::format("{} ({} channels; {})", LayoutTitle(layout),
++                             static_cast<int>(sdl_device_channels_),
++                             wanted == OutputLayout::kAuto ? "the device's own" : "chosen");
++  if (sdl_device_channels_ > device_channels && device_channels > 0) {
++    layout_text_ += fmt::format(", the system mixes it down to the device's {}", device_channels);
++  }
+ 
+   // The endpoint layout decides which mix the callback runs, and it is the
+   // first thing worth knowing when a report says the balance is wrong on one
+   // speaker setup and right on another.
+   const char* device_name = SDL_GetAudioDeviceName(sdl_device);
+-  REXAPU_INFO("audio endpoint '{}' ({}): {} ch, {} Hz, format 0x{:04X}; submitting {} ch",
++  REXAPU_INFO("audio endpoint '{}' ({}): {} ch ({} with the stream open), {} Hz, format 0x{:04X}; "
++              "submitting {} ch, mixed for {} (audio_output_layout {})",
+               device_name ? device_name : "?", device ? "chosen in audio_device" : "system default",
+-              obtained_spec.channels, obtained_spec.freq,
+-              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_));
++              device_channels, obtained_spec.channels, obtained_spec.freq,
++              static_cast<uint32_t>(obtained_spec.format), static_cast<int>(sdl_device_channels_),
++              LayoutTitle(layout), OutputLayoutName(wanted));
+ 
+   if (!SDL_ResumeAudioDevice(sdl_device)) {
+     REXAPU_ERROR("SDL_ResumeAudioDevice() failed: {}", SDL_GetError());
+@@ -260,6 +325,7 @@ void SDLAudioDriver::UpdateCurrentDevice() {
+                                  : nullptr;
+   std::lock_guard lock(g_device_mutex);
+   g_current_device = name ? name : "";
++  g_current_layout = sdl_stream_ ? layout_text_ : std::string();
+ }
+ 
+ // Runs on the audio thread for every frame, so it is a clock read unless the
+@@ -267,7 +333,8 @@ void SDLAudioDriver::UpdateCurrentDevice() {
+ // unplugged and plugged back in, the setting reset, or the system's default
+ // output switched; SDL itself moves a stream on the system default).
+ void SDLAudioDriver::CheckDevice() {
+-  const bool changed = g_device_setting_changed.exchange(false);
++  const bool layout_changed = g_layout_setting_changed.exchange(false);
++  const bool changed = g_device_setting_changed.exchange(false) || layout_changed;
+   const uint64_t now = SDL_GetTicks();
+   if (!changed && now < next_device_check_) return;
+   next_device_check_ = now + kDeviceCheckIntervalMs;
+@@ -323,15 +390,17 @@ void SDLAudioDriver::CheckDevice() {
+ 
+     if (!changed && follow.empty() && wanted.empty() && opened_on_ == 0) {
+       UpdateCurrentDevice();  // the default may have moved
+-    } else if (device == opened_on_ && (sdl_stream_ || (!changed && follow.empty()))) {
++    } else if (!layout_changed && device == opened_on_ && (sdl_stream_ || (!changed && follow.empty()))) {
+       // The device decided on last time: nothing to do (also when it failed
+       // to open, so a broken device or a missing sound server isn't retried
+       // and logged every 2 s; a changed setting tries again).
+       UpdateCurrentDevice();
+     } else {
+-      if (!wanted.empty() && !device) {
++      if (!wanted.empty() && !device && !layout_changed) {
+         REXAPU_WARN("audio_device '{}' isn't connected; using the system's default output", wanted);
+       }
++      // A new audio_output_layout reopens the stream on the same device.
++      if (layout_changed) REXAPU_INFO("audio: audio_output_layout is now '{}'", OutputLayoutName(WantedLayout()));
+       opened_on_ = device;
+       CloseStream();
+       if (!OpenStream(device) && device) OpenStream(0);
+@@ -393,6 +462,7 @@ void SDLAudioDriver::Shutdown() {
+   {
+     std::lock_guard lock(g_device_mutex);
+     g_current_device.clear();
++    g_current_layout.clear();
+   }
+   if (sdl_initialized_) {
+     SDL_QuitSubSystem(SDL_INIT_AUDIO);
+@@ -429,7 +499,10 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+   // Snapshot once. A change mid-callback would split the frame across two mixes.
+   const StereoFold fold = GetStereoFold();
+   const SurroundMix mix = GetSurroundMix();
++  const WideMix wide = GetWideMix();
+   const float gain = GetOutputGain();
++  const bool headphones =
++      driver->mixing_for_.load(std::memory_order_relaxed) == OutputLayout::kHeadphones;
+   uint32_t taken = 0;  // frames taken in this callback (the device's period)
+   while (additional_amount > 0) {
+     static uint32_t sdl_callback_count = 0;
+@@ -458,15 +531,24 @@ void SDLAudioDriver::SDLCallback(void* userdata, SDL_AudioStream* stream, int ad
+       } else {
+         switch (driver->sdl_device_channels_) {
+           case 2:
+-            conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_, fold,
+-                                                            gain);
++            if (headphones) {
++              driver->headphone_mix_.Process(data, buffer, channel_samples_, mix, fold.lfe, gain);
++            } else {
++              conversion::sequential_6_BE_to_interleaved_2_LE(data, buffer, channel_samples_, fold,
++                                                              gain);
++            }
+             break;
+           case 6:
+             conversion::sequential_6_BE_to_interleaved_6_LE(data, buffer, channel_samples_, mix,
+                                                             gain);
+             break;
++          case 8:
++            conversion::sequential_6_BE_to_interleaved_8_LE(data, buffer, channel_samples_, mix,
++                                                            wide, gain);
++            break;
+           default:
+             assert_unhandled_case(driver->sdl_device_channels_);
++            std::memset(data, 0, len);
+             break;
+         }
+       }

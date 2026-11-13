@@ -48,6 +48,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstring>  // [acct2-cod3-motion] std::memcpy (cod3_debug_drawn_trace_diff)
 #include <functional>
 #include <mutex>
 #include <string>
@@ -59,6 +60,8 @@
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/logging.h>
+#include <rex/system/kernel_state.h>  // [acct2-cod3-motion] cod3_debug_drawn_trace_diff: which guest pages can be read
+#include <rex/system/xmemory.h>
 
 #include "game/guest.h"
 #include "game/movement/step_view.h"  // [claude-9b] the aim and lean drawn between steps
@@ -173,6 +176,74 @@ REXCVAR_DEFINE_BOOL(cod3_server_smooth_ride_vehicle, true, "cod3/Game",
                     "screen; off: only where the game draws it at its update position")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// [acct2-ocr] 2026-11-07 (owner 13:18: "The camera or NPCs can be jittering depending on the vehicle. It's related to
+// our fps changes. saint lo intro car ride has it. really bad."). Run acct2-ocr-jit1 (saint_lo from the start, ~280
+// fps): the intro ride's camera is mode 15 of 0x82447D48 the whole way, and the player rides no vehicle there
+// (RiddenVehicle 0), so none of the view smoothing above applies. Each second the camera turned 0.4-2.0 degrees and
+// moved up to 0.8 units in each of the 60 frames with a game update and not at all in the 200-230 frames between,
+// while the jeep and its riders are drawn between updates (cod3_server_smooth_body): a 60 Hz judder against them.
+// The modes set here: after 0x824505E8, a camera the game left exactly as the last update set it is drawn between
+// its places at the last two updates, by Back(), as the moving things are (one update behind at most). A camera that
+// changed since the update (the player turns it, or the game moves it every frame) is left as it is, and so is a cut.
+// [acct2-cod3-motion] 2026-11-07 Run acct2-cod3-motion-hostage-250-v: mode 21 (0x82447D48 returns it while the
+// playerState's pm_type, cg +0x24 -> +0x34, is above 3: the player killed) moved the camera in update frames alone (137
+// moves, 128 of them with an update; 329 frames it stood still while the game's camera moved): the death camera stepped
+// at 60 Hz until the level restarted. Mode 21 is in the default now (the same drawing as mode 15).
+REXCVAR_DEFINE_INT32(cod3_server_smooth_cams, (1 << 15) | (1 << 21), "cod3/Game",
+                     "With cod3_server_hz and cod3_server_smooth, the camera modes of the game's view setup whose "
+                     "camera the game sets in its updates alone (a scripted ride, such as Saint-Lo's opening drive; "
+                     "the camera after the player is killed) drawn between the updates, one bit each (bit n: mode n; "
+                     "default modes 15 and 21); 0: off (the camera moves in steps of the update rate there)")
+    .range(0, (1 << 23) - 1)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-ocr] 2026-11-07 (owner 13:18, the vehicle jitter; 13:55: "Keep going with bug checks"). Run
+// acct2-ocr-veh-crssrds (crssrds from the start, uncapped, ~170 fps): about 45 s in, for 5 s in camera mode 12 of
+// 0x82447D48 (picked when the playerState's +36 is 1: the player linked to something, it seems) with no ridden vehicle,
+// the camera moved 1.5-1.9 units a frame in the 60 frames a second with a game update and 0.02-0.06 in the 100-150
+// between, while it turned in every frame (the player's free look). That camera is at the playerState's origin, which
+// moved in the updates alone, and nothing drew it between them (SmoothView, movement/hooks_sp.cpp, and the vehicle
+// smoothing above need a ridden vehicle or a player moved by the movement steps). The modes set here: after SmoothView, if
+// it moved nothing and the player rides no vehicle, the camera's place is drawn between its places at the last two
+// updates, by Back() (one update behind at most, as the moving things); its angles are left as they are. Not a
+// camera cod3_server_smooth_cams drew this frame, and not a cut.
+REXCVAR_DEFINE_INT32(cod3_server_smooth_linked, 1 << 12, "cod3/Game",
+                     "With cod3_server_hz and cod3_server_smooth, the camera modes of the game's view setup in which "
+                     "the player is carried by something the game moves in its updates (linked to it, not riding a "
+                     "vehicle, as about 45 s into Crossroads) whose camera place is drawn between the updates, one bit "
+                     "each (bit n: mode n; default mode 12); 0: off (the camera moves in steps of the update rate "
+                     "there)")
+    .range(0, (1 << 23) - 1)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] 2026-11-07 (owner 20:31, St-Bert's intro at 250 fps: "still doesn't look smooth. The npc's jolt
+// around"). Run acct2-cod3-motion-stbert-trace1 (cod3_debug_view_trace, camera mode 12 the whole drive): the playerState,
+// the player's entity and the game's camera move only in frames with an update (4.6-5.0 units each), and
+// cod3_server_smooth_linked drew the camera between them evenly (its move a frame follows the frame's milliseconds) --
+// except in the frames where SmoothView moved the camera itself (1 to 7 a second, its update offset): those cleared the
+// linked camera's history, so the next frame started a new camera at the game's place, a whole update ahead (one jump
+// of ~5 units), and it then stood still until the next update (two or three frames). The whole picture jumped forward
+// and stopped several times a second while the riders and the trucks around moved evenly: the "jolting". On: the
+// history is kept from the game's own camera place (as 0x824505E8 left it) also in the frames SmoothView draws, so
+// nothing starts over; those frames are still drawn as SmoothView placed them (the same update offset).
+REXCVAR_DEFINE_BOOL(cod3_server_smooth_linked_keep, true, "cod3/Game",
+                    "With cod3_server_smooth_linked, its camera keeps its place at the last two updates through frames "
+                    "the movement's view smoothing draws, so it never starts over in the middle of a ride (off: it "
+                    "starts over after each such frame: a jump of one update, then a stop)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] 2026-11-07 Runs acct2-cod3-motion-stbert-250/1000-after (cod3_debug_server_step): with the place
+// drawn evenly, St-Bert's truck ride still turned 0.26-0.38 degrees a frame in the 60 frames a second with an update and
+// not at all in the 100-180 between, for 4 s while the truck takes a bend (the game turns the linked player's view in
+// its updates; cod3_server_smooth_linked drew the place alone, and the vehicle view smoothing needs a ridden vehicle).
+// On: in those modes the camera's angles are drawn between their values at the last two updates too, by Back(), when
+// they changed in the updates alone (a view the player turns between updates is left as it is), and its axis turned
+// with them; not a cut (90 degrees or more in an update).
+REXCVAR_DEFINE_BOOL(cod3_server_smooth_linked_turn, true, "cod3/Game",
+                    "With cod3_server_smooth_linked, its camera also turns smoothly between the game's updates when "
+                    "the game turns it (a ride taking a bend); off: it turns in steps of the update rate")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // [claude-9b-think] 2026-10-27 UNTESTED ride9 (claude-9b-test's ride8, the hostage ride at 180 fps: the trace passed,
 // the camera on the ride's pose, but the frame captures showed the jeep's inside +90 / -45 / -45 px each 60 Hz cycle,
 // ride 0 as 1). The renderer draws a vehicle where its scene node says, and the vehicles' draw fills that from the
@@ -188,6 +259,21 @@ REXCVAR_DEFINE_INT32(cod3_server_smooth_body, 1, "cod3/Game",
                      "two updates, the ridden one on the camera's pose; 2: also soldiers and other players between "
                      "their own last two updates")
     .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] 2026-11-07 (owner 18:59: 500 fps uncapped; 10-26: "I wanna make sure these fixes work on ANY
+// framerate"). The game's clock counts whole milliseconds (Com_Frame's msec from its millisecond clock), while the
+// frame limiter (frame_rate.cpp) paces frames in real time: at 144 fps (6.94 ms) the frames get 7, 7, 7, ... 6 ms, at
+// 240 fps 4, 4, 4, 4, 4, 5, at 300 fps 3, 3, 4, and uncapped anything. Everything drawn between updates (Back()) and
+// the camera between movement steps moved by those whole milliseconds, up to 20-50 % more or less in one frame than
+// in the next while the frames reach the screen evenly: a fine judder at many rates (none at 60, 125, 250, 500, 1000).
+// On: the drawing uses the game's clock plus the part of a millisecond it hasn't counted yet (the real time since the
+// last frames, less their milliseconds: always within one millisecond), so things move by the real time between
+// frames. Only how frames between updates are drawn; the game's clock, its updates and the usercmds are unchanged.
+REXCVAR_DEFINE_BOOL(cod3_server_draw_subms, true, "cod3/Game",
+                    "Draw moving things and the camera between the game's updates by the real time to a fraction of a "
+                    "millisecond (the game's clock counts whole milliseconds, which made them move unevenly at frame "
+                    "rates that aren't a whole number of milliseconds a frame); off: by whole milliseconds")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [claude-9b] 2026-10-27
@@ -215,6 +301,74 @@ REXCVAR_DEFINE_BOOL(cod3_server_step_draw, true, "cod3/Game",
                     "With cod3_server_hz, frames without a game update still draw the soldiers, "
                     "vehicles and other animated models, in the last update's pose; off: those frames "
                     "leave them out (they flicker above the update rate)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [rexglue-native npc] 2026-11-09 (owner 15:37: "NPC animations and skeletons can get malformed at low fps. This can't
+// be FPS based"; 15:38: Mace, the soldier against the tank at the start, around 38 fps, emulated and native rendering).
+// [rexglue-native npc] Bit 0 of an animated model's +196 also tells the next game update whether the model was drawn
+// [rexglue-native npc] since the last one: G_RunFrame's tail sets it (0x8253F438) and a draw clears it. The update
+// [rexglue-native npc] reads it for the animation's detail (0x82421AA8: still set and entity +636 bit 1 clear ->
+// [rexglue-native npc] 0x820C2568 with class 5, the coarsest, for models nobody saw) and in the game code that uses
+// [rexglue-native npc] the skeleton only for models on screen (Actor_UpdateEyeInformation, 0x823D5308, 0x823E54C8,
+// [rexglue-native npc] 0x82410B20, 0x82550068, and the "drawn?" answers 0x82463D88 and 0x8249DED0). On the console
+// [rexglue-native npc] every update came after a draw. Below cod3_server_hz frames a second a frame runs two or more
+// [rexglue-native npc] updates back to back (GameUpdates), so each update after a frame's first saw every model as
+// [rexglue-native npc] not drawn: the coarsest animation detail (the frame then draws that update's skeleton, its
+// [rexglue-native npc] coarse bones next to older ones: "malformed") and the off-screen paths above. With this on,
+// [rexglue-native npc] those updates see the models the last frame drew as drawn again, as the console's would;
+// [rexglue-native npc] models it didn't draw keep the bit. A frame with one update or none is unchanged.
+// [acct2-bro] 2026-11-12 rn60c: on by default. The coarsest class is also the soldiers' simpler model (three
+// [acct2-bro] surfaces for the detailed one's six), so with this off every soldier in view changed model for one
+// [acct2-bro] frame whenever a frame ran two updates (any hitch): the owner's "a brief frame where a soldier's pose
+// [acct2-bro] malforms" (11-11 15:32). Measured in Saint-Lo's camp with live pictures saved (which slow those
+// [acct2-bro] frames): dev/agents/rexglue-native/RENDER-NOTES.md, 11-12, "the soldiers that flash for one frame".
+REXCVAR_DEFINE_BOOL(cod3_anim_lod_between_updates, true, "cod3",
+                    "When a frame runs two or more game updates (below cod3_server_hz frames a second), each update "
+                    "after the first sees the soldiers and other animated models the last frame drew as drawn, as on "
+                    "the console (their animation detail and the game's on-screen checks); off: as before")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native npc] 2026-11-09 so a run's screenshots can be matched to the frames that ran two or more updates.
+REXCVAR_DEFINE_INT32(cod3_debug_frame_updates, 0, "cod3",
+                     "Log one line for each of the next N drawn frames of a level: the game updates it ran and, for "
+                     "the updates after its first, how many animated models got the coarsest animation detail "
+                     "(0: off; setting it again starts again)")
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native npc] 2026-11-09 (main: is the soldier against the tank drawn malformed below 60 frames a second?
+// [rexglue-native npc] a still every few seconds misses a fault that lasts one frame) Read only: every bone of the
+// [rexglue-native npc] animated models near the player, frame by frame, for limb lengths and jumps (PoseBonesLines).
+REXCVAR_DEFINE_INT32(cod3_debug_pose_bones, 0, "cod3",
+                     "Log for each of the next N drawn frames of a level the bones of the 3 animated models nearest "
+                     "the player (each bone's origin in its model's own space) and the frame's game updates (0: off; "
+                     "setting it again starts again)")
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native npc] 2026-11-09 (main: the soldier against the tank at mace2's start, in world space, at 38 and at 60:
+// [rexglue-native npc] does his place on the tank jump in frames with two updates, do his root and limbs come apart?)
+// [rexglue-native npc] Read only (PoseWorldLines).
+REXCVAR_DEFINE_INT32(cod3_debug_pose_bones_near, 0, "cod3",
+                     "With cod3_debug_pose_bones: 0 the 3 animated models nearest the player, in their model's space; "
+                     "-1 the vehicle nearest the player, N > 0 the entity numbered N: that entity and one animated "
+                     "model near it (cod3_debug_pose_bones_pick) in world space, once a drawn frame: their origins, "
+                     "angles and scene nodes, the model's place in the entity's frame, and its bones placed by its node")
+    .range(-1, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native-bugs] 2026-11-11 nl1 (owner 07:29: "st lo ride car jitter isn't in-sync with the player": in his
+// [rexglue-native-bugs] recording the truck's bed and benches shake against the view while the scenery outside does not).
+// [rexglue-native-bugs] Which entities draw a vehicle and what is inside it, and from what: the game's draw for each type
+// [rexglue-native-bugs] fills an entity's scene node from its server origin (+336), from the drawn origin (+112, which the
+// [rexglue-native-bugs] smoothing here sets between updates) or from its trajectory's base (+32). Read only (NearEntitiesLines).
+REXCVAR_DEFINE_INT32(cod3_debug_near_entities, 0, "cod3",
+                     "Log once a second every entity the client game draws within N units of the camera: its number, "
+                     "type, trajectory type, flags, bones, server / drawn / scene-node origins, which of them the node "
+                     "was drawn from, and how often the node moved in frames with and without a game update (0: off)")
+    .range(0, 100000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+REXCVAR_DEFINE_INT32(cod3_debug_pose_bones_pick, 0, "cod3",
+                     "With cod3_debug_pose_bones_near: the model traced: 0 the animated model nearest that entity when "
+                     "the trace starts; N > 0 the entity numbered N")
+    .range(0, 100000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DEFINE_BOOL(cod3_server_step_sync, true, "cod3/Game",
@@ -349,8 +503,30 @@ struct History {
   float angles_prev[3] = {};
   float angles_cur[3] = {};
 };
-std::unordered_map<uint32_t, History> g_history;  // by entity address
+std::unordered_map<uint32_t, History> g_history;  // by entity address (entities numbered past the table below)
 History g_player;                                 // the player's entity (for a ridden vehicle's view)
+
+// [acct2-cod3-motion] 2026-11-07 (acct2-bro's profile of St-Bert, native renderer, uncapped: the map's lookups took
+// 1.8 % of the game's main thread) The histories in a flat table by the entity's slot: its number (+500) is its handle,
+// the slot's index in the low 14 bits and a generation above (32972 = generation 2, index 204), as EntityOfHandle reads
+// handles. The map above only past the table. A slot keeps the entity address it is for and starts over for another (and
+// the callers start over for another number).
+struct HistorySlot {
+  uint32_t ent = 0;
+  History h;
+};
+constexpr int32_t kHistorySlots = 4096;  // as many as the entity handles (EntityOfHandle)
+std::vector<HistorySlot> g_history_flat(kHistorySlots);
+History& HistoryOf(uint8_t* base, uint32_t ent) {
+  const int32_t index = g::ReadS32(base, ent + kEntNumber) & 0x3FFF;
+  if (index >= kHistorySlots) return g_history[ent];
+  HistorySlot& s = g_history_flat[static_cast<size_t>(index)];
+  if (s.ent != ent) {
+    s.ent = ent;
+    s.h = History{};
+  }
+  return s.h;
+}
 
 // [claude-9b] 2026-10-27 The player's view angles after the last two updates (cod3_server_smooth_view),
 // and the last update in whose interval they changed in a frame without an update (turned by the
@@ -456,6 +632,8 @@ struct DrawCounts {
 DrawCounts g_draw[2];
 int g_kind = 1;               // the current frame's kind (set in SV_Frame)
 int g_draw_updates = 1;       // [claude-9b] the current frame's updates (cod3_debug_view_trace)
+int g_es_msec = 0;            // [acct2-cod3-motion] the current frame's milliseconds (cod3_debug_entity_steps)
+uint64_t g_es_refents = 0;    // [acct2-cod3-motion] RE_AddRefEntityToScene calls (cod3_debug_entity_steps)
 int32_t g_last_cg_time = 0;   // CG_DrawActiveFrame's r3 last time
 uint32_t g_last_snap_time = 0;
 bool DebugOn() { return REXCVAR_GET(cod3_debug_server_step); }
@@ -510,6 +688,73 @@ void CountModels(uint8_t* base, bool after) {
   g_armed_kind = g_kind;
 }
 
+// [rexglue-native npc] 2026-11-09 cod3_anim_lod_between_updates (see its definition): the animated models the last
+// [rexglue-native npc] frame drew (bit 0 of +196 clear at the frame's start, before its first update), by handle and
+// [rexglue-native npc] model, and the bit cleared on them again before each further update of the frame (only where the
+// [rexglue-native npc] handle still names the same entity with the same model, so a model freed by an update is
+// [rexglue-native npc] never written).
+struct DrawnModel {
+  uint32_t handle, model;
+};
+std::vector<DrawnModel> g_drawn_models;  // game thread
+uint64_t g_redrawn_marks = 0;            // cod3_debug_server_step: models seen as drawn again, since the last line
+// [rexglue-native npc] cod3_debug_server_step: the animation detail the updates chose (0x82421AA8, below), by the
+// [rexglue-native npc] update's place in its frame ([0] the first, [1] a later one): models, and of them the coarsest
+// [rexglue-native npc] (class 5: not drawn since the last update).
+bool g_update_later = false;
+uint64_t g_lod_models[2] = {}, g_lod_coarse[2] = {};
+
+// [rexglue-native npc] The entity a handle of the animated list names, or 0 (as CountModels resolves it).
+uint32_t AnimatedEntity(uint8_t* base, uint32_t h) {
+  const uint32_t index = h & 0x3FFF;
+  if (index >= 4096) return 0;
+  const uint32_t slot = kEntityHandles + 8 * index;
+  if (g::ReadU32(base, slot + 4) != (h >> 14)) return 0;
+  const uint32_t ent = g::ReadU32(base, slot);
+  return ValidGuest(ent) ? ent : 0;
+}
+
+void NoteDrawnModels(uint8_t* base) {  // [rexglue-native npc]
+  g_drawn_models.clear();
+  const uint32_t handles = g::ReadU32(base, kAnimatedList);
+  const int32_t count = std::min<int32_t>(g::ReadS32(base, kAnimatedList + 8), 4096);
+  for (int32_t i = 0; ValidGuest(handles) && i < count; ++i) {
+    const uint32_t h = g::ReadU32(base, handles + 4 * i);
+    const uint32_t ent = AnimatedEntity(base, h);
+    const uint32_t model = ent ? g::ReadU32(base, ent + 508) : 0;
+    if (!ValidGuest(model) || (g::ReadU32(base, model + 196) & 1)) continue;  // not drawn: keeps its bit
+    g_drawn_models.push_back({h, model});
+  }
+}
+
+void MarkDrawnAgain(uint8_t* base) {  // [rexglue-native npc]
+  for (const DrawnModel& d : g_drawn_models) {
+    const uint32_t ent = AnimatedEntity(base, d.handle);
+    if (!ent || g::ReadU32(base, ent + 508) != d.model) continue;
+    g::WriteU32(base, d.model + 196, g::ReadU32(base, d.model + 196) & ~1u);
+    ++g_redrawn_marks;
+  }
+}
+
+// [rexglue-native npc] cod3_debug_frame_updates: the frame lines still to log, and this frame's coarsest models in
+// [rexglue-native npc] its updates after the first (counted by 0x82421AA8's hook while lines are logged).
+int32_t g_frame_lines_left = 0, g_frame_lines_asked = 0;
+uint64_t g_frame_number = 0;
+uint32_t g_frame_coarse_later = 0;
+bool FrameLinesOn() { return g_frame_lines_left > 0; }
+void FrameUpdatesLine(int64_t updates, int msec) {
+  const int32_t asked = REXCVAR_GET(cod3_debug_frame_updates);
+  if (asked != g_frame_lines_asked) g_frame_lines_left = g_frame_lines_asked = asked;
+  ++g_frame_number;
+  if (g_frame_lines_left <= 0) return;
+  --g_frame_lines_left;
+  REXLOG_INFO("cod3: server step: frame {}: {} game updates ({} ms); coarsest models in its later updates {} "
+              "(cod3_anim_lod_between_updates {})",
+              g_frame_number, updates, msec, g_frame_coarse_later,
+              REXCVAR_GET(cod3_anim_lod_between_updates) ? "on" : "off");
+  g_frame_coarse_later = 0;
+}
+
 // [claude-9b] 2026-10-27 The camera between updates (cod3_debug_server_step; owner 02:34: "First person
 // within vehicles has a LOT of judder/jerky movement ... cars and bikes seem to be effected as
 // well"). At each frame's start the last frame's camera is still in the client game's refdef
@@ -526,6 +771,18 @@ CameraCounts g_camera[2];
 float g_cam_last[6] = {};
 bool g_cam_have = false;
 uint32_t g_cam_mode = 0;  // the last mode 0x82447D48 returned
+uint64_t g_upcam_blended = 0;  // [acct2-ocr] frames whose camera cod3_server_smooth_cams drew between updates
+bool g_upcam_drawn = false;  // [acct2-ocr] cod3_server_smooth_cams drew this frame's camera (smooth_linked leaves it)
+uint64_t g_linked_blended = 0, g_linked_moved = 0;  // [acct2-ocr] cod3_server_smooth_linked: drawn; SmoothView moved
+uint64_t g_linked_turned = 0;  // [acct2-cod3-motion] cod3_server_smooth_linked_turn: frames its angles were drawn
+// [acct2-cod3-motion] cod3_debug_view_trace: what cod3_server_smooth_linked did this frame (-1 not its mode or off,
+// 0 left the camera, 1 drew it between updates, 2 SmoothView had moved it, 3 a new camera or a cut)
+int g_linked_trace = -1;
+float g_linked_trace_off[3] = {};
+bool g_upcam_trace = false;  // cod3_server_smooth_cams drew this frame's camera
+// [acct2-cod3-motion] cod3_server_smooth_linked_keep: the camera's place as 0x824505E8 left it this frame
+float g_game_cam[3] = {};
+bool g_game_cam_have = false;
 float AngleDiff(float a, float b) {
   float d = std::fmod(a - b, 360.0f);
   if (d > 180.0f) d -= 360.0f;
@@ -585,12 +842,35 @@ int32_t Lead() {
 }
 
 // How much of the last update is not drawn yet: 1 right after it, 0 when the next is due.
+// [acct2-cod3-motion] cod3_server_draw_subms: the real time since the clock started counting, less the milliseconds
+// the game counted (within one millisecond either way while both clocks run together; 0 after a stall).
+struct SubMs {
+  bool have = false;
+  std::chrono::steady_clock::time_point last{};
+  double acc = 0.0;  // milliseconds
+};
+SubMs g_subms;
+void SubMsFrame(int msec) {
+  const auto now = std::chrono::steady_clock::now();
+  if (g_subms.have) {
+    const double real_ms = std::chrono::duration<double, std::milli>(now - g_subms.last).count();
+    if (real_ms > 250.0 || msec > 250 || msec < 0)
+      g_subms.acc = 0.0;  // a level load, a long hitch: start again
+    else
+      g_subms.acc = std::clamp(g_subms.acc + real_ms - double(msec), -0.999, 0.999);
+  }
+  g_subms.last = now;
+  g_subms.have = true;
+}
+double SubMsFraction() { return REXCVAR_GET(cod3_server_draw_subms) ? g_subms.acc : 0.0; }
+
 float Back() {
   const int hz = g_clock.hz;
   if (hz <= 0) return 0.0f;
   const int64_t last = TickEnd(g_clock.tick, hz), next = TickEnd(g_clock.tick + 1, hz);
   if (next <= last) return 0.0f;
-  const float into = float(g_clock.time - last) / float(next - last);
+  // [acct2-cod3-motion] with the part of a millisecond the game's clock hasn't counted (cod3_server_draw_subms)
+  const float into = float((double(g_clock.time - last) + SubMsFraction()) / double(next - last));
   return 1.0f - std::clamp(into, 0.0f, 1.0f);
 }
 
@@ -619,6 +899,414 @@ uint32_t PlayerEntity(uint8_t* base) {
   return g::ReadU32(base, table + 4 * (client + 1));
 }
 
+// [rexglue-native npc] 2026-11-09 cod3_debug_pose_bones: after a frame's game updates (the bones the frame will draw:
+// [rexglue-native npc] only updates write them), one line for each of the 3 animated models nearest the player
+// [rexglue-native npc] (within 1000 units): the frame (as cod3_debug_frame_updates numbers it), its updates, the
+// [rexglue-native npc] entity's number and distance, and each bone's origin in the model's own space ([model +0x70]
+// [rexglue-native npc] +0x30, 0x40 bytes a bone, the origin row at +0x30, model +0xAB of them: ride_bones.cpp's layout).
+// [rexglue-native npc] Reads only; the limb lengths and jumps are worked out from the log afterwards.
+int32_t g_bone_lines_left = 0, g_bone_lines_asked = 0;
+void PoseBonesLines(uint8_t* base, int64_t updates) {
+  if (REXCVAR_GET(cod3_debug_pose_bones_near) != 0) return;  // [rexglue-native npc] world space: PoseWorldLines
+  const int32_t asked = REXCVAR_GET(cod3_debug_pose_bones);
+  if (asked != g_bone_lines_asked) g_bone_lines_left = g_bone_lines_asked = asked;
+  if (g_bone_lines_left <= 0) return;
+  const uint32_t player = PlayerEntity(base);
+  const uint32_t handles = g::ReadU32(base, kAnimatedList);
+  if (!ValidGuest(player) || !ValidGuest(handles)) return;
+  --g_bone_lines_left;
+  float eye[3];
+  ReadVec(base, player + kEntServerOrigin, eye);
+  struct Near {
+    float d2;
+    uint32_t ent, model;
+  };
+  Near nearest[3] = {{1e12f, 0, 0}, {1e12f, 0, 0}, {1e12f, 0, 0}};
+  const int32_t count = std::min<int32_t>(g::ReadS32(base, kAnimatedList + 8), 4096);
+  for (int32_t i = 0; i < count; ++i) {
+    const uint32_t ent = AnimatedEntity(base, g::ReadU32(base, handles + 4 * i));
+    if (!ent || ent == player) continue;
+    const uint32_t model = g::ReadU32(base, ent + 508);
+    if (!ValidGuest(model) || !ValidGuest(g::ReadU32(base, model + 0x70))) continue;
+    float at[3];
+    ReadVec(base, ent + kEntServerOrigin, at);
+    const float d2 = Dist2(at, eye);
+    if (d2 > 1000.0f * 1000.0f) continue;
+    for (int k = 0; k < 3; ++k) {
+      if (d2 >= nearest[k].d2) continue;
+      for (int m = 2; m > k; --m) nearest[m] = nearest[m - 1];
+      nearest[k] = {d2, ent, model};
+      break;
+    }
+  }
+  for (const Near& n : nearest) {
+    if (!n.ent) continue;
+    const uint32_t buf = g::ReadU32(base, n.model + 0x70);
+    const uint32_t bones = std::min<uint32_t>(g::ReadU8(base, n.model + 0xAB), 200);
+    std::string text;
+    text.reserve(bones * 26);
+    for (uint32_t b = 0; b < bones; ++b) {
+      float o[3];
+      ReadVec(base, buf + 0x30 + 0x40 * b + 0x30, o);
+      text += fmt::format(" {:.2f},{:.2f},{:.2f}", o[0], o[1], o[2]);
+    }
+    REXLOG_INFO("cod3: pose bones: frame {} updates {} entity {} at {:.0f} units, {} bones:{}", g_frame_number, updates,
+                g::ReadS32(base, n.ent + kEntNumber), std::sqrt(n.d2), bones, text);
+  }
+}
+
+// [rexglue-native npc] 2026-11-09 cod3_debug_pose_bones_near (see the setting). Logged after the client game's frame
+// [rexglue-native npc] (CG_DrawActiveFrame's hook), when each entity's scene node (+548: axis node +28 / +40 / +52,
+// [rexglue-native npc] origin node +68) holds where the renderer draws it (the game's draw, then
+// [rexglue-native npc] cod3_server_smooth_body's move) and the bones are those the frame drew (only updates write them).
+// [rexglue-native npc] A bone's world place: its origin in model space along the node's axis rows, plus the node's origin
+// [rexglue-native npc] (0x8242E450's matrix). The center and the model traced are chosen once and kept; the choice is
+// [rexglue-native npc] logged once with the candidates, and with where the traced entity, its actor (+0x214) and the
+// [rexglue-native npc] structures their words point at hold the center's address or number (a link), and where the center
+// [rexglue-native npc] holds the traced one's. Reads only.
+void AnglesToAxis(const float a[3], float axis[3][3]);  // [rexglue-native npc] defined below
+uint32_t EntityOfHandle(uint8_t* base, uint32_t h);      // [rexglue-native npc] defined below
+bool GuestReadable(uint32_t a, uint32_t bytes);          // [rexglue-native npc] defined below
+constexpr uint32_t kPwModel = 508;               // [rexglue-native npc] the entity's animated model (CountModels)
+constexpr uint32_t kPwSceneFlags = 0x278;        // [rexglue-native npc] 0x40000000: a scripted scene's actor
+constexpr uint32_t kPwActor = 0x214;             // [rexglue-native npc] its actor (actor +0 = the entity)
+constexpr uint32_t kPwModelStamp = 0xAC;         // [rexglue-native npc] the update counter when its animation last ran
+constexpr uint32_t kPwModelArmed = 0xC4;         // [rexglue-native npc] bit 0: not drawn since the last update
+constexpr uint32_t kPwAnimCounter = 0x82A2ABC0;  // [rexglue-native npc] the animation's update counter
+constexpr uint32_t kPwNodeStamp = 256;           // [rexglue-native npc] = level +164: in this frame's draw list
+constexpr uint32_t kPwEntScan = 0x400, kPwActorScan = 0xB00, kPwPointedScan = 0x40;  // [rexglue-native npc]
+struct PoseWorld {  // [rexglue-native npc]
+  int32_t asked = 0, left = 0, center_ask = 0, pick = 0, tries = 0, settle = 0;
+  uint32_t center = 0, target = 0;
+  int32_t center_number = 0, target_number = 0;
+  bool done = false;
+};
+PoseWorld g_pw;  // [rexglue-native npc]
+
+struct PwPlace {  // [rexglue-native npc]
+  float server[3] = {}, angles[3] = {}, drawn[3] = {}, drawn_angles[3] = {}, node[3] = {}, axis[3][3] = {};
+  bool node_ok = false, listed = false;
+};
+void PwRead(uint8_t* base, uint32_t ent, PwPlace& p) {  // [rexglue-native npc]
+  ReadVec(base, ent + kEntServerOrigin, p.server);
+  ReadVec(base, ent + kEntServerAngles, p.angles);
+  ReadVec(base, ent + kEntDrawnOrigin, p.drawn);
+  ReadVec(base, ent + kEntDrawnAngles, p.drawn_angles);
+  const uint32_t node = g::ReadU32(base, ent + kEntSceneNode);
+  p.node_ok = ValidGuest(node);
+  if (!p.node_ok) return;
+  ReadVec(base, node + kNodeOrigin, p.node);
+  for (int a = 0; a < 3; ++a) ReadVec(base, node + kNodeAxis + 12 * a, p.axis[a]);
+  p.listed = g::ReadU32(base, node + kPwNodeStamp) == g::ReadU32(base, kLevelSnapTime);
+}
+std::string PwVec(const float v[3], int digits = 2) {  // [rexglue-native npc]
+  return fmt::format("{:.{}f},{:.{}f},{:.{}f}", v[0], digits, v[1], digits, v[2], digits);
+}
+// [rexglue-native npc] p in the frame of origin o and axis rows ax: its parts along each row.
+void PwInFrame(const float p[3], const float o[3], const float ax[3][3], float out[3]) {
+  const float d[3] = {p[0] - o[0], p[1] - o[1], p[2] - o[2]};
+  for (int k = 0; k < 3; ++k) out[k] = d[0] * ax[k][0] + d[1] * ax[k][1] + d[2] * ax[k][2];
+}
+// [rexglue-native npc] The number of the vehicle it rides (+16 bit 0x00100000, the handle at +432); -1: none.
+int32_t PwRides(uint8_t* base, uint32_t ent) {
+  if (!(g::ReadU32(base, ent + kEntFlags) & kEntOnVehicleFlag)) return -1;
+  const uint32_t veh = EntityOfHandle(base, g::ReadU32(base, ent + kEntVehicleRidden));
+  return veh ? g::ReadS32(base, veh + kEntNumber) : 0;
+}
+std::string PwDescribe(uint8_t* base, uint32_t ent, const float from[3]) {  // [rexglue-native npc]
+  float at[3];
+  ReadVec(base, ent + kEntServerOrigin, at);
+  const uint32_t model = g::ReadU32(base, ent + kPwModel);
+  const int bones =
+      ValidGuest(model) && ValidGuest(g::ReadU32(base, model + 0x70)) ? int(g::ReadU8(base, model + 0xAB)) : 0;
+  float angles[3];  // [rexglue-native npc] 2026-11-09 second pass: the angles and the model too
+  ReadVec(base, ent + kEntServerAngles, angles);
+  return fmt::format("entity {} type {} at {:.0f} units ({:.0f} {:.0f} {:.0f}) angles {:.0f} {:.0f} {:.0f} flags {:08x} "
+                     "rides {} scene {:08x} {:08x} model {:08x} bones {}",
+                     g::ReadS32(base, ent + kEntNumber), int(g::ReadU8(base, ent)), std::sqrt(Dist2(at, from)), at[0],
+                     at[1], at[2], angles[0], angles[1], angles[2], g::ReadU32(base, ent + kEntFlags),
+                     PwRides(base, ent), g::ReadU32(base, ent + kPwSceneFlags), g::ReadU32(base, ent + kPwSceneFlags + 4),
+                     model, bones);
+}
+// [rexglue-native npc] Where [at, at + bytes) holds `addr` or `number`, itself or in the first words of a structure one
+// [rexglue-native npc] of its words points at (the guest's heaps or the image's data, readable pages only).
+std::string PwLinks(uint8_t* base, uint32_t at, uint32_t bytes, uint32_t addr, int32_t number) {
+  if (!ValidGuest(at) || !GuestReadable(at, bytes)) return " (not readable)";
+  std::string out;
+  for (uint32_t off = 0; off < bytes && out.size() < 1500; off += 4) {
+    const uint32_t v = g::ReadU32(base, at + off);
+    if (v == addr) {
+      out += fmt::format(" +0x{:X}=address", off);
+    } else if (number > 0 && v == uint32_t(number)) {
+      out += fmt::format(" +0x{:X}=number", off);
+    } else if (ValidGuest(v) && v >= 0x40000000u && !(v >= 0x82000000u && v < 0x825C0000u) && v != at &&
+               GuestReadable(v, kPwPointedScan)) {
+      for (uint32_t k = 0; k < kPwPointedScan; k += 4) {
+        const uint32_t w = g::ReadU32(base, v + k);
+        if (w == addr)
+          out += fmt::format(" +0x{:X}->+0x{:X}=address", off, k);
+        else if (number > 0 && w == uint32_t(number))
+          out += fmt::format(" +0x{:X}->+0x{:X}=number", off, k);
+      }
+    }
+  }
+  return out.empty() ? std::string(" none") : out;
+}
+
+// [rexglue-native npc] Chooses the center and the model traced (logged once); false while there is none yet.
+bool PwChoose(uint8_t* base, uint32_t player) {
+  float eye[3];
+  ReadVec(base, player + kEntServerOrigin, eye);
+  const uint32_t handles = g::ReadU32(base, kAnimatedList);
+  const int32_t count = std::min<int32_t>(g::ReadS32(base, kAnimatedList + 8), 4096);
+  const uint32_t listed = std::min<uint32_t>(g::ReadU32(base, kEntListCount), 0x4000);
+  uint32_t center = 0;
+  float best = 1e30f;
+  std::string vehicles;
+  int found = 0;
+  for (uint32_t i = 0; i < listed; ++i) {  // the client game's entities
+    const uint32_t e = g::ReadU32(base, kEntList + 4 * i);
+    if (!ValidGuest(e) || e == player) continue;
+    bool is = false;
+    if (g_pw.center_ask < 0) {
+      const int type = g::ReadU8(base, e);
+      is = type == 14 || type == 15;
+      if (is && found++ < 12) vehicles += fmt::format(" [{}]", PwDescribe(base, e, eye));
+    } else {
+      is = g::ReadS32(base, e + kEntNumber) == g_pw.center_ask;
+    }
+    float at[3];
+    ReadVec(base, e + kEntServerOrigin, at);
+    if (is && Dist2(at, eye) < best) {
+      best = Dist2(at, eye);
+      center = e;
+    }
+  }
+  if (!center && g_pw.center_ask > 0) {  // not in the client game's list: the animated list
+    for (int32_t i = 0; ValidGuest(handles) && i < count; ++i) {
+      const uint32_t e = AnimatedEntity(base, g::ReadU32(base, handles + 4 * i));
+      if (e && g::ReadS32(base, e + kEntNumber) == g_pw.center_ask) center = e;
+    }
+  }
+  if (!center) {
+    if (g_pw.tries++ % 600 == 0)
+      REXLOG_INFO("cod3: pose world: frame {}: no {} yet ({} entities in the client game's list)", g_frame_number,
+                  g_pw.center_ask < 0 ? std::string("vehicle") : fmt::format("entity {}", g_pw.center_ask), listed);
+    return false;
+  }
+  float from[3];
+  ReadVec(base, center + kEntServerOrigin, from);
+  struct Near {
+    float d2;
+    uint32_t ent;
+  };
+  Near nearest[6] = {{1e30f, 0}, {1e30f, 0}, {1e30f, 0}, {1e30f, 0}, {1e30f, 0}, {1e30f, 0}};
+  uint32_t target = 0;
+  for (int32_t i = 0; ValidGuest(handles) && i < count; ++i) {
+    const uint32_t e = AnimatedEntity(base, g::ReadU32(base, handles + 4 * i));
+    if (!e || e == center || e == player) continue;
+    const uint32_t model = g::ReadU32(base, e + kPwModel);
+    if (!ValidGuest(model) || !ValidGuest(g::ReadU32(base, model + 0x70))) continue;
+    if (g_pw.pick > 0 && g::ReadS32(base, e + kEntNumber) == g_pw.pick) target = e;
+    float at[3];
+    ReadVec(base, e + kEntServerOrigin, at);
+    const float d2 = Dist2(at, from);
+    for (int k = 0; k < 6; ++k) {
+      if (d2 >= nearest[k].d2) continue;
+      for (int m = 5; m > k; --m) nearest[m] = nearest[m - 1];
+      nearest[k] = {d2, e};
+      break;
+    }
+  }
+  if (g_pw.pick == 0) target = nearest[0].ent;
+  if (!target) {
+    if (g_pw.tries++ % 600 == 0)
+      REXLOG_INFO("cod3: pose world: frame {}: no animated model {} yet", g_frame_number,
+                  g_pw.pick > 0 ? fmt::format("numbered {}", g_pw.pick) : std::string("near the center"));
+    return false;
+  }
+  std::string near_list;
+  for (const Near& n : nearest)
+    if (n.ent) near_list += fmt::format(" [{}]", PwDescribe(base, n.ent, from));
+  g_pw.center = center;
+  g_pw.target = target;
+  g_pw.center_number = g::ReadS32(base, center + kEntNumber);
+  g_pw.target_number = g::ReadS32(base, target + kEntNumber);
+  REXLOG_INFO("cod3: pose world: frame {}: center ({}): {}; the vehicles in the client game's list ({}):{}",
+              g_frame_number, g_pw.center_ask < 0 ? "the vehicle nearest the player" : "the entity asked for",
+              PwDescribe(base, center, eye), found, vehicles.empty() ? std::string(" none") : vehicles);
+  REXLOG_INFO("cod3: pose world: the animated models nearest the center:{}", near_list);
+  // [rexglue-native npc] 2026-11-09 second pass (npc6: the tank beside the soldiers at mace2's start is no vehicle entity
+  // [rexglue-native npc] and no animated model near them): every entity of the client game's list within 600 units of
+  // [rexglue-native npc] the center (the player's too), whatever its type, so the tank can be named by its number.
+  std::string around;
+  int around_n = 0;
+  for (uint32_t i = 0; i < listed && around_n < 40; ++i) {
+    const uint32_t e = g::ReadU32(base, kEntList + 4 * i);
+    if (!ValidGuest(e) || e == center) continue;
+    float at[3];
+    ReadVec(base, e + kEntServerOrigin, at);
+    if (Dist2(at, from) > 600.0f * 600.0f) continue;
+    ++around_n;
+    around += fmt::format(" [{}{}]", e == player ? "the player: " : "", PwDescribe(base, e, from));
+  }
+  REXLOG_INFO("cod3: pose world: the client game's entities within 600 units of the center ({}):{}", around_n, around);
+  REXLOG_INFO("cod3: pose world: traced ({}): {}", g_pw.pick > 0 ? "the entity asked for" : "the nearest",
+              PwDescribe(base, target, from));
+  const uint32_t actor = g::ReadU32(base, target + kPwActor);
+  REXLOG_INFO("cod3: pose world: where the traced entity holds the center ({:08x}, number {}):{}; its actor ({:08x}):{}; "
+              "where the center holds the traced one ({:08x}, number {}):{}",
+              center, g_pw.center_number, PwLinks(base, target, kPwEntScan, center, g_pw.center_number), actor,
+              ValidGuest(actor) ? PwLinks(base, actor, kPwActorScan, center, g_pw.center_number) : std::string(" none"),
+              target, g_pw.target_number, PwLinks(base, center, kPwEntScan, target, g_pw.target_number));
+  return true;
+}
+
+// [rexglue-native npc] Once a drawn frame, after the client game's frame (CG_DrawActiveFrame's hook).
+void PoseWorldLines(uint8_t* base) {
+  const int32_t center_ask = REXCVAR_GET(cod3_debug_pose_bones_near);
+  const int32_t asked = REXCVAR_GET(cod3_debug_pose_bones);
+  const int32_t pick = REXCVAR_GET(cod3_debug_pose_bones_pick);
+  if (center_ask == 0 || asked <= 0) {
+    if (g_pw.asked) g_pw = PoseWorld{};
+    return;
+  }
+  if (asked != g_pw.asked || center_ask != g_pw.center_ask || pick != g_pw.pick) {  // set again: start again
+    g_pw = PoseWorld{};
+    g_pw.asked = g_pw.left = asked;
+    g_pw.center_ask = center_ask;
+    g_pw.pick = pick;
+  }
+  if (g_pw.done || g_pw.left <= 0) return;
+  const uint32_t player = PlayerEntity(base);
+  if (!ValidGuest(player) || !ValidGuest(g::ReadU32(base, kAnimatedList))) return;
+  // [rexglue-native npc] chosen after the level's first 30 drawn frames: the scripts place the soldiers in its first
+  // [rexglue-native npc] updates (npc4: jumps of 22-60 units in frames 534-550, the level's first 20 frames)
+  if (!g_pw.center && ++g_pw.settle <= 30) return;
+  if (!g_pw.center && !PwChoose(base, player)) return;
+  if (g::ReadS32(base, g_pw.center + kEntNumber) != g_pw.center_number ||
+      g::ReadS32(base, g_pw.target + kEntNumber) != g_pw.target_number) {
+    REXLOG_INFO("cod3: pose world: frame {}: entity {} or {} is gone; the trace ends", g_frame_number,
+                g_pw.center_number, g_pw.target_number);
+    g_pw.done = true;
+    return;
+  }
+  --g_pw.left;
+  PwPlace c, t;
+  PwRead(base, g_pw.center, c);
+  PwRead(base, g_pw.target, t);
+  float axis[3][3];
+  AnglesToAxis(c.angles, axis);
+  float off_server[3], off_node[3] = {};
+  PwInFrame(t.server, c.server, axis, off_server);
+  if (c.node_ok && t.node_ok) PwInFrame(t.node, c.node, c.axis, off_node);
+  const uint32_t model = g::ReadU32(base, g_pw.target + kPwModel);
+  const uint32_t buf = ValidGuest(model) ? g::ReadU32(base, model + 0x70) : 0;
+  const uint32_t n = ValidGuest(buf) && t.node_ok ? std::min<uint32_t>(g::ReadU8(base, model + 0xAB), 200) : 0;
+  std::string text = fmt::format(
+      "frame {} updates {} back {:.3f} counter {} | center {} server {} angles {} drawn {} node {} axis {} {} {} "
+      "listed {} | model {} server {} angles {} drawn {} drawn_angles {} node {} axis {} {} {} listed {} flags {:08x} "
+      "rides {} stamp {} undrawn {} | offset server {} node {} | {} bones:",
+      g_frame_number, g_draw_updates, Back(), g::ReadU32(base, kPwAnimCounter), g_pw.center_number, PwVec(c.server),
+      PwVec(c.angles), PwVec(c.drawn), PwVec(c.node), PwVec(c.axis[0], 4), PwVec(c.axis[1], 4), PwVec(c.axis[2], 4),
+      int(c.listed), g_pw.target_number, PwVec(t.server), PwVec(t.angles), PwVec(t.drawn), PwVec(t.drawn_angles),
+      PwVec(t.node), PwVec(t.axis[0], 4), PwVec(t.axis[1], 4), PwVec(t.axis[2], 4), int(t.listed),
+      g::ReadU32(base, g_pw.target + kEntFlags), PwRides(base, g_pw.target),
+      ValidGuest(model) ? g::ReadU32(base, model + kPwModelStamp) : 0u,
+      ValidGuest(model) ? (g::ReadU32(base, model + kPwModelArmed) & 1u) : 0u, PwVec(off_server), PwVec(off_node), n);
+  text.reserve(text.size() + n * 26);
+  for (uint32_t b = 0; b < n; ++b) {
+    float o[3], w[3];
+    ReadVec(base, buf + 0x30 + 0x40 * b + 0x30, o);
+    for (int k = 0; k < 3; ++k) w[k] = o[0] * t.axis[0][k] + o[1] * t.axis[1][k] + o[2] * t.axis[2][k] + t.node[k];
+    text += fmt::format(" {:.2f},{:.2f},{:.2f}", w[0], w[1], w[2]);
+  }
+  REXLOG_INFO("cod3: pose world: {}", text);
+}
+
+// [rexglue-native-bugs] 2026-11-11 nl1 cod3_debug_near_entities (see the setting): once a drawn frame, after the client
+// [rexglue-native-bugs] game's frame. Each entity near the camera: its scene node's place, frame by frame, to count the
+// [rexglue-native-bugs] frames it moved in with and without a game update (a thing drawn only at its update pose moves in
+// [rexglue-native-bugs] update frames alone); once a second (game time) one line each, nearest first.
+struct NearTrack {
+  float node[3] = {};
+  bool have = false;
+  uint32_t moved_update = 0, moved_between = 0, frames_update = 0, frames_between = 0;
+  int64_t seen = 0;  // the game time it was last near the camera
+};
+std::unordered_map<int32_t, NearTrack> g_near;  // by entity number
+int64_t g_near_next = 0;
+
+const char* NodeFrom(const float node[3], const float server[3], const float drawn[3], const float trbase[3]) {
+  if (Same(node, server)) return "server";
+  if (Same(node, drawn)) return "drawn";
+  if (Same(node, trbase)) return "base";
+  return "other";
+}
+
+void NearEntitiesLines(uint8_t* base) {
+  const int32_t radius = REXCVAR_GET(cod3_debug_near_entities);
+  if (radius <= 0) {
+    if (!g_near.empty()) g_near.clear();
+    return;
+  }
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  if (local > 3) return;
+  float cam[3];
+  ReadVec(base, kCgBase + local * kCgSize + kCgViewOrigin, cam);
+  const bool update_frame = (g_kind ? g_draw_updates : 0) > 0;
+  const bool log_now = g_clock.time >= g_near_next;
+  struct Line {
+    float d2;
+    std::string text;
+  };
+  std::vector<Line> lines;
+  const uint32_t listed = std::min<uint32_t>(g::ReadU32(base, kEntListCount), 0x4000);
+  for (uint32_t i = 0; i < listed; ++i) {
+    const uint32_t e = g::ReadU32(base, kEntList + 4 * i);
+    if (!ValidGuest(e)) continue;
+    float server[3];
+    ReadVec(base, e + kEntServerOrigin, server);
+    const float d2 = Dist2(server, cam);
+    if (d2 > float(radius) * float(radius)) continue;
+    const uint32_t node = g::ReadU32(base, e + kEntSceneNode);
+    if (!ValidGuest(node)) continue;
+    const int32_t number = g::ReadS32(base, e + kEntNumber);
+    float node_o[3];
+    ReadVec(base, node + kNodeOrigin, node_o);
+    NearTrack& t = g_near[number];
+    if (t.have) {
+      if (!Same(node_o, t.node)) ++(update_frame ? t.moved_update : t.moved_between);
+      ++(update_frame ? t.frames_update : t.frames_between);
+    }
+    for (int k = 0; k < 3; ++k) t.node[k] = node_o[k];
+    t.have = true;
+    t.seen = g_clock.time;
+    if (!log_now) continue;
+    float drawn[3], trbase[3];
+    ReadVec(base, e + kEntDrawnOrigin, drawn);
+    ReadVec(base, e + kEntTrBase, trbase);
+    const uint32_t model = g::ReadU32(base, e + kPwModel);
+    const uint32_t bones = ValidGuest(model) && ValidGuest(g::ReadU32(base, model + 0x70)) ? g::ReadU8(base, model + 0xAB) : 0;
+    lines.push_back(Line{d2, fmt::format("num {} type {} tr {} flags {:08x} rides {} bones {} dist {:.0f} server {} "
+                                         "drawn {} node {} from {} off {:.2f} moved {}/{} with an update, {}/{} without",
+                                         number, g::ReadU8(base, e), g::ReadS32(base, e + kEntPosType),
+                                         g::ReadU32(base, e + kEntFlags), PwRides(base, e), bones, std::sqrt(d2),
+                                         PwVec(server), PwVec(drawn), PwVec(node_o),
+                                         NodeFrom(node_o, server, drawn, trbase), std::sqrt(Dist2(node_o, server)),
+                                         t.moved_update, t.frames_update, t.moved_between, t.frames_between)});
+    t.moved_update = t.moved_between = t.frames_update = t.frames_between = 0;
+  }
+  if (!log_now) return;
+  g_near_next = g_clock.time + 1000;
+  for (auto it = g_near.begin(); it != g_near.end();)  // forget what left the camera's surroundings
+    it = g_clock.time - it->second.seen > 5000 ? g_near.erase(it) : std::next(it);
+  std::sort(lines.begin(), lines.end(), [](const Line& a, const Line& b) { return a.d2 < b.d2; });
+  REXLOG_INFO("cod3: near entities: time {} camera {} mode {} player {}: {} within {} units", g_clock.time, PwVec(cam),
+              g_cam_mode, g::ReadS32(base, PlayerEntity(base) + kEntNumber), lines.size(), radius);
+  for (size_t k = 0; k < lines.size() && k < 48; ++k) REXLOG_INFO("cod3: near entity {}", lines[k].text);
+}
+
 // [claude-9b] 2026-10-27 The game's values back, each only while it still holds the value drawn (game
 // code that moved or turned the entity since, a script's teleport or an animation's alignment, keeps
 // its own: owner 10-27 03:10 / 03:11, the Saint-Lo guide stuck at the crate above 60 fps, "this fix
@@ -640,6 +1328,7 @@ void PutBackDrawn(uint8_t* base) {
 
 void Forget() {
   g_history.clear();
+  for (HistorySlot& s : g_history_flat) s = HistorySlot{};  // [acct2-cod3-motion]
   g_player = History{};
   g_view = ViewHistory{};
   g_ride = RideHistory{};         // [claude-9b-think]
@@ -927,7 +1616,7 @@ bool RideDrawVehicle(uint8_t* base, uint32_t ent, int32_t pos_type) {
         Saved{ent, {game_angles[0], game_angles[1], game_angles[2]}, {angles[0], angles[1], angles[2]}});
     WriteVec(base, ent + kEntDrawnAngles, angles);
   } else {  // [claude-9b-think] the drawn angles as for any other moving thing (the hook's own path)
-    History& h = g_history[ent];
+    History& h = HistoryOf(base, ent);  // [acct2-cod3-motion] the flat table
     const int32_t number = g::ReadS32(base, ent + kEntNumber);
     if (h.number != number) {
       h = History{};
@@ -1223,6 +1912,15 @@ void DebugLog(uint8_t* base) {
   }
   g_models[0] = ModelCounts{};
   g_models[1] = ModelCounts{};
+  // [rexglue-native npc] 2026-11-09 the animation detail by the update's place in its frame (0x82421AA8's hook).
+  if (g_lod_models[0] || g_lod_models[1])
+    REXLOG_INFO("cod3: server step: animation detail: a frame's first updates {} models, {} of them coarsest (not "
+                "drawn since the last update); later updates {} models, {} coarsest; {} seen as drawn again "
+                "(cod3_anim_lod_between_updates {})",
+                g_lod_models[0], g_lod_coarse[0], g_lod_models[1], g_lod_coarse[1], g_redrawn_marks,
+                REXCVAR_GET(cod3_anim_lod_between_updates) ? "on" : "off");
+  g_lod_models[0] = g_lod_models[1] = g_lod_coarse[0] = g_lod_coarse[1] = 0;
+  g_redrawn_marks = 0;
   for (int k = 1; k >= 0; --k) {
     const CameraCounts& c = g_camera[k];
     if (!c.frames) continue;
@@ -1236,6 +1934,15 @@ void DebugLog(uint8_t* base) {
   }
   g_camera[0] = CameraCounts{};
   g_camera[1] = CameraCounts{};
+  if (g_upcam_blended)  // [acct2-ocr]
+    REXLOG_INFO("cod3: server step: camera drawn between updates in {} frames (cod3_server_smooth_cams)",
+                g_upcam_blended);
+  g_upcam_blended = 0;
+  if (g_linked_blended || g_linked_moved || g_linked_turned)  // [acct2-ocr]
+    REXLOG_INFO("cod3: server step: camera place drawn between updates in {} frames (cod3_server_smooth_linked); "
+                "SmoothView moved it in {}; turned between updates in {} (cod3_server_smooth_linked_turn)",
+                g_linked_blended, g_linked_moved, g_linked_turned);
+  g_linked_blended = g_linked_moved = g_linked_turned = 0;
   g_counts.since = g_clock.time;
   g_counts.frames = g_counts.updates = g_counts.cg_time_moved = g_counts.smoothed = g_counts.redrawn = 0;
   g_counts.turned = g_counts.views = g_counts.bodies = 0;
@@ -1244,6 +1951,9 @@ void DebugLog(uint8_t* base) {
 }  // namespace
 
 namespace cod3::server_step {
+
+// [acct2-cod3-motion] 2026-11-07 (server_step.h)
+float DrawTimeFraction() { return float(SubMsFraction()); }
 
 bool PlayerViewOffset(uint8_t* base, float out[3]) {
   if (Hz() <= 0 || !REXCVAR_GET(cod3_server_smooth) || !g_player.valid) return false;
@@ -1417,6 +2127,7 @@ void PoseFrameEnd(uint8_t* base);  // [claude-9b] cod3_debug_pose (below)
 
 void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems) {
   PutBackDrawn(base);
+  SubMsFrame(msec);  // [acct2-cod3-motion] cod3_server_draw_subms
   if (DebugOn()) {
     CountModels(base, false);
     CountCamera(base);  // the last frame's camera, by that frame's kind (g_kind not updated yet)
@@ -1430,8 +2141,14 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
   int64_t n = due - g_clock.tick;
   const bool long_frame = n > kMaxTicksPerFrame;
   if (long_frame) n = 1;  // a level load, a long hitch: one update with all of its time, as the game
+  // [rexglue-native npc] 2026-11-09 cod3_anim_lod_between_updates: the models the last frame drew, for the updates
+  // [rexglue-native npc] after this frame's first.
+  const bool keep_drawn = n > 1 && REXCVAR_GET(cod3_anim_lod_between_updates);
+  if (keep_drawn) NoteDrawnModels(base);
   for (int64_t i = 0; i < n; ++i) {
     if (i > 0 && REXCVAR_GET(cod3_server_step_sync)) WaitForJobs(ctx, base);
+    if (i > 0 && keep_drawn) MarkDrawnAgain(base);  // [rexglue-native npc] as a draw between them would have
+    g_update_later = i > 0;                         // [rexglue-native npc] cod3_debug_server_step's LOD counts
     const int tick_msec = static_cast<int>(long_frame ? TickEnd(due, hz) - TickEnd(g_clock.tick, hz)
                                                       : TickEnd(g_clock.tick + 1, hz) - TickEnd(g_clock.tick, hz));
     const uint32_t level_time = g::ReadU32(base, kLevelTime);
@@ -1460,6 +2177,9 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
     AdvanceView(base);  // [claude-9b] cod3_server_smooth_view
     AdvanceRide(base);  // [claude-9b-think] cod3_server_smooth_ride
   }
+  g_update_later = false;  // [rexglue-native npc]
+  FrameUpdatesLine(n, msec);  // [rexglue-native npc] cod3_debug_frame_updates
+  PoseBonesLines(base, n);    // [rexglue-native npc] cod3_debug_pose_bones
   if (n == 0 && g_game_armed && REXCVAR_GET(cod3_server_step_draw)) {
     // [claude-9b] no update this frame: its animated models ready to draw (cod3_server_step_draw).
     __imp__sub_8253F438(ctx, base);
@@ -1475,6 +2195,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
   g::WriteU32(base, kSvFrameMsec + 4, 0);
   g_kind = n > 0 ? 1 : 0;
   g_draw_updates = static_cast<int>(n);  // [claude-9b] cod3_debug_view_trace
+  g_es_msec = msec;  // [acct2-cod3-motion] cod3_debug_entity_steps
   if (DebugOn()) {
     CountModels(base, true);
     ++g_draw[g_kind].frames;
@@ -1534,6 +2255,7 @@ REX_HOOK_RAW(SV_Frame) {
     ++g_clock.updates;
     if (msec > 0) g_clock.time += msec;  // only for the debug log's second (hz 0)
     g_kind = 1;
+    g_es_msec = msec;  // [acct2-cod3-motion] cod3_debug_entity_steps
     if (DebugOn()) {
       ++g_draw[1].frames;
       DebugLog(base);
@@ -1565,20 +2287,244 @@ void TraceCamera(uint8_t* base) {
   if (client > 3) return;
   ReadVec(base, kCgBase + client * kCgSize + kCgViewOrigin, g_trace_cam);
 }
+
+// [acct2-cod3-motion] 2026-11-07 the camera's place as the game's view setup left it (cod3_server_smooth_linked_keep).
+void NoteGameCamera(uint8_t* base) {
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  g_game_cam_have = local <= 3;
+  if (g_game_cam_have) ReadVec(base, kCgBase + local * kCgSize + kCgViewOrigin, g_game_cam);
+}
+
+// [acct2-ocr] 2026-11-07 cod3_server_smooth_cams (see the setting): the camera's place and angles at the last two
+// updates, and the frame's camera drawn between them.
+struct UpdateCamera {
+  bool valid = false;
+  uint32_t mode = 0, local = 0;
+  uint64_t update = 0;
+  float prev[6] = {}, cur[6] = {};  // origin, then angles
+};
+UpdateCamera g_upcam;
+
+bool SameCamera(const float a[6], const float b[6]) { return Same(a, b) && Same(a + 3, b + 3); }
+
+void SmoothUpdateCamera(uint8_t* base) {
+  const uint32_t mode = g_cam_mode;
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  if (g_clock.hz <= 0 || !REXCVAR_GET(cod3_server_smooth) || local > 3 || mode >= 23 ||
+      ((uint32_t(REXCVAR_GET(cod3_server_smooth_cams)) >> mode) & 1u) == 0) {
+    g_upcam.valid = false;
+    return;
+  }
+  const uint32_t cg = kCgBase + local * kCgSize;
+  float now[6];
+  ReadVec(base, cg + kCgViewOrigin, now);
+  ReadVec(base, cg + kCgViewAngles, now + 3);
+  for (float f : now)
+    if (!std::isfinite(f)) {
+      g_upcam.valid = false;
+      return;
+    }
+  if (!g_upcam.valid || g_upcam.mode != mode || g_upcam.local != local) {  // a new camera: nothing before it
+    for (int i = 0; i < 6; ++i) g_upcam.prev[i] = g_upcam.cur[i] = now[i];
+    g_upcam.valid = true;
+    g_upcam.mode = mode;
+    g_upcam.local = local;
+    g_upcam.update = g_clock.updates;
+    return;
+  }
+  if (g_upcam.update != g_clock.updates) {  // the first frame since an update: that update's camera
+    const bool next = g_upcam.update + 1 == g_clock.updates;
+    for (int i = 0; i < 6; ++i) {
+      g_upcam.prev[i] = next ? g_upcam.cur[i] : now[i];
+      g_upcam.cur[i] = now[i];
+    }
+    g_upcam.update = g_clock.updates;
+  } else if (!SameCamera(now, g_upcam.cur)) {  // moved since the update: not the update's alone, left
+    for (int i = 0; i < 6; ++i) g_upcam.prev[i] = g_upcam.cur[i] = now[i];
+    return;
+  }
+  if (SameCamera(g_upcam.prev, g_upcam.cur)) return;
+  if (Dist2(g_upcam.prev, g_upcam.cur) >= kMaxSmoothedMove * kMaxSmoothedMove) return;  // a cut
+  for (int i = 3; i < 6; ++i)
+    if (std::fabs(Turn(g_upcam.prev[i], g_upcam.cur[i])) >= kMaxSmoothedTurn) return;
+  const float back = Back();
+  if (back <= 0.0f) return;
+  float out[6];
+  for (int i = 0; i < 3; ++i) out[i] = g_upcam.cur[i] + (g_upcam.prev[i] - g_upcam.cur[i]) * back;
+  for (int i = 3; i < 6; ++i) out[i] = g_upcam.cur[i] - Turn(g_upcam.prev[i], g_upcam.cur[i]) * back;
+  // The axis the game made turned by the same turn as the angles (so whatever it holds beyond them is kept).
+  BodyMove m;
+  MakeBodyMove(g_upcam.cur, g_upcam.cur + 3, out, out + 3, m);
+  float axis[3][3], out_axis[3][3];
+  for (int a = 0; a < 3; ++a) {
+    ReadVec(base, cg + kCgViewAxis + 12 * a, axis[a]);
+    TurnBy(m, axis[a], out_axis[a]);
+    for (float f : out_axis[a])
+      if (!std::isfinite(f)) return;
+  }
+  for (float f : out)
+    if (!std::isfinite(f)) return;
+  WriteVec(base, cg + kCgViewOrigin, out);
+  WriteVec(base, cg + kCgViewAngles, out + 3);
+  for (int a = 0; a < 3; ++a) WriteVec(base, cg + kCgViewAxis + 12 * a, out_axis[a]);
+  ++g_upcam_blended;
+  g_upcam_drawn = true;  // [acct2-ocr] cod3_server_smooth_linked leaves this frame's camera
+}
+
+// [acct2-ocr] 2026-11-07 cod3_server_smooth_linked (see the setting): the camera's place in the first frame after
+// each of the last two updates.
+struct LinkedCamera {
+  bool valid = false;
+  uint32_t mode = 0, local = 0;
+  uint64_t update = 0;
+  float prev[3] = {}, cur[3] = {};
+  float aprev[3] = {}, acur[3] = {};  // [acct2-cod3-motion] its angles (cg +4544) the same way
+};
+LinkedCamera g_linked;
+
+// [acct2-cod3-motion] cod3_server_smooth_linked_turn: the linked camera's angles at the last two updates (kept in
+// every frame SmoothLinkedCamera sees, from the angles as they are then), and drawn between them by Back() when this
+// frame's are still the update's. Returns true when it drew them.
+bool LinkedTurn(uint8_t* base, uint32_t cg, bool first_since_update, bool next) {
+  float a[3];
+  ReadVec(base, cg + kCgViewAngles, a);
+  for (float f : a)
+    if (!std::isfinite(f)) return false;
+  if (first_since_update) {
+    for (int i = 0; i < 3; ++i) {
+      g_linked.aprev[i] = next ? g_linked.acur[i] : a[i];
+      g_linked.acur[i] = a[i];
+    }
+  } else if (!Same(a, g_linked.acur)) {  // turned since the update (the player's look, every frame): left
+    for (int i = 0; i < 3; ++i) g_linked.aprev[i] = g_linked.acur[i] = a[i];
+    return false;
+  }
+  if (!REXCVAR_GET(cod3_server_smooth_linked_turn) || Same(g_linked.aprev, g_linked.acur)) return false;
+  for (int i = 0; i < 3; ++i)
+    if (std::fabs(Turn(g_linked.aprev[i], g_linked.acur[i])) >= kMaxSmoothedTurn) return false;  // a cut
+  const float back = Back();
+  if (back <= 0.0f) return false;
+  float out[3];
+  for (int i = 0; i < 3; ++i) out[i] = g_linked.acur[i] - Turn(g_linked.aprev[i], g_linked.acur[i]) * back;
+  // The axis the game made turned by the same turn (as SmoothUpdateCamera does).
+  BodyMove m;
+  const float zero[3] = {0.0f, 0.0f, 0.0f};
+  MakeBodyMove(zero, g_linked.acur, zero, out, m);
+  float axis[3][3], out_axis[3][3];
+  for (int k = 0; k < 3; ++k) {
+    ReadVec(base, cg + kCgViewAxis + 12 * k, axis[k]);
+    TurnBy(m, axis[k], out_axis[k]);
+    for (float f : out_axis[k])
+      if (!std::isfinite(f)) return false;
+  }
+  for (float f : out)
+    if (!std::isfinite(f)) return false;
+  WriteVec(base, cg + kCgViewAngles, out);
+  for (int k = 0; k < 3; ++k) WriteVec(base, cg + kCgViewAxis + 12 * k, out_axis[k]);
+  if (REXCVAR_GET(cod3_debug_server_step)) ++g_linked_turned;
+  return true;
+}
 }  // namespace
+
+namespace cod3::server_step {
+// [acct2-ocr] 2026-11-07 (server_step.h)
+void SmoothLinkedCamera(uint8_t* base, bool moved) {
+  const bool upcam = g_upcam_drawn;
+  g_upcam_trace = upcam;  // [acct2-cod3-motion] cod3_debug_view_trace
+  const bool have_game_cam = g_game_cam_have;  // [acct2-cod3-motion] this frame's (NoteGameCamera)
+  g_game_cam_have = false;
+  g_upcam_drawn = false;
+  const uint32_t mode = g_cam_mode;
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  const uint32_t client = PlayerClient(base);
+  if (g_clock.hz <= 0 || !REXCVAR_GET(cod3_server_smooth) || local > 3 || mode >= 23 || upcam ||
+      ((uint32_t(REXCVAR_GET(cod3_server_smooth_linked)) >> mode) & 1u) == 0 ||
+      (client && RidesVehicle(base, client))) {
+    g_linked.valid = false;
+    g_linked_trace = -1;  // [acct2-cod3-motion]
+    return;
+  }
+  // [acct2-cod3-motion] cod3_server_smooth_linked_keep: a frame SmoothView drew still keeps the history, from the
+  // game's own camera place this frame.
+  const bool keep_only = moved && REXCVAR_GET(cod3_server_smooth_linked_keep) && have_game_cam;
+  if (moved) {  // SmoothView placed it (the movement steps or the update offset): left
+    if (REXCVAR_GET(cod3_debug_server_step)) ++g_linked_moved;
+    g_linked_trace = 2;  // [acct2-cod3-motion]
+    if (!keep_only) {  // nothing kept (as before)
+      g_linked.valid = false;
+      return;
+    }
+  } else {
+    g_linked_trace = 0;  // [acct2-cod3-motion]
+  }
+  const uint32_t at = kCgBase + local * kCgSize + kCgViewOrigin;
+  float now[3];
+  ReadVec(base, at, now);
+  if (keep_only)
+    for (int i = 0; i < 3; ++i) now[i] = g_game_cam[i];  // [acct2-cod3-motion] the game's place, not SmoothView's
+  for (float f : now)
+    if (!std::isfinite(f)) {
+      g_linked.valid = false;
+      return;
+    }
+  const uint32_t cg = kCgBase + local * kCgSize;  // [acct2-cod3-motion]
+  if (!g_linked.valid || g_linked.mode != mode || g_linked.local != local) {  // a new camera: nothing before it
+    for (int i = 0; i < 3; ++i) g_linked.prev[i] = g_linked.cur[i] = now[i];
+    ReadVec(base, cg + kCgViewAngles, g_linked.acur);  // [acct2-cod3-motion]
+    for (int i = 0; i < 3; ++i) g_linked.aprev[i] = g_linked.acur[i];
+    g_linked.valid = true;
+    g_linked.mode = mode;
+    g_linked.local = local;
+    g_linked.update = g_clock.updates;
+    if (!keep_only) g_linked_trace = 3;  // [acct2-cod3-motion]
+    return;
+  }
+  const bool first_since_update = g_linked.update != g_clock.updates;
+  const bool next_update = g_linked.update + 1 == g_clock.updates;
+  if (first_since_update) {  // the first frame since an update: that update's place
+    for (int i = 0; i < 3; ++i) {
+      g_linked.prev[i] = next_update ? g_linked.cur[i] : now[i];
+      g_linked.cur[i] = now[i];
+    }
+    g_linked.update = g_clock.updates;
+  }
+  // [acct2-cod3-motion] cod3_server_smooth_linked_turn: its angles, in every frame (SmoothView moves its place alone)
+  const bool turned = LinkedTurn(base, cg, first_since_update, next_update);
+  if (turned && !keep_only) g_linked_trace = 4;  // 4: its angles alone
+  if (keep_only) return;  // [acct2-cod3-motion] drawn by SmoothView this frame
+  if (Same(g_linked.prev, g_linked.cur)) return;
+  if (Dist2(g_linked.prev, g_linked.cur) >= kMaxSmoothedMove * kMaxSmoothedMove) return;  // a cut
+  const float back = Back();
+  if (back <= 0.0f) return;
+  float out[3];
+  // The part of the update's move not drawn yet taken off; what moved since the update (bob, lean) is kept.
+  for (int i = 0; i < 3; ++i) out[i] = now[i] + (g_linked.prev[i] - g_linked.cur[i]) * back;
+  for (float f : out)
+    if (!std::isfinite(f)) return;
+  WriteVec(base, at, out);
+  if (REXCVAR_GET(cod3_debug_server_step)) ++g_linked_blended;
+  g_linked_trace = turned ? 5 : 1;  // [acct2-cod3-motion] 5: its angles too
+  for (int i = 0; i < 3; ++i) g_linked_trace_off[i] = out[i] - now[i];
+}
+}  // namespace cod3::server_step
+
 REX_HOOK_RAW(sub_824505E8) {
+  g_upcam_drawn = false;  // [acct2-ocr] set again when cod3_server_smooth_cams draws this frame's camera
   uint32_t at = 0;
   float now[3], draw[3];
   // [claude-9b-think] 2026-10-27 UNTESTED on a ridden vehicle with the view turned every frame (free look), the view
   // turned back by the update's turn not drawn yet (cod3_server_smooth_ride; the tank's turret keeps the first).
   if (!ViewAnglesToDraw(base, at, now, draw) && !RideViewAngles(base, at, now, draw)) {
     __imp__sub_824505E8(ctx, base);
+    NoteGameCamera(base);  // [acct2-cod3-motion] cod3_server_smooth_linked_keep
     RideTurnCamera(base);  // [claude-9b-think] a vehicle camera turned by the vehicle's pose
+    SmoothUpdateCamera(base);  // [acct2-ocr] a camera set in the updates alone (cod3_server_smooth_cams)
     TraceCamera(base);
     return;
   }
   WriteVec(base, at, draw);
   __imp__sub_824505E8(ctx, base);
+  NoteGameCamera(base);  // [acct2-cod3-motion] cod3_server_smooth_linked_keep
   RideTurnCamera(base);  // [claude-9b-think] before the view angles go back: it compares the camera with them
   float after[3];
   ReadVec(base, at, after);
@@ -1776,6 +2722,27 @@ void PoseFrameEnd(uint8_t* base) {
 
 }  // namespace
 
+// [rexglue-native npc] 2026-11-09 0x82421AA8(entity): G_RunFrame's tail (0x82563FC0) picks each animated entity's
+// [rexglue-native npc] animation detail; with cod3_debug_server_step the choices are counted by the update's place in
+// [rexglue-native npc] its frame (the coarsest: bit 0 of the model's +196 still set and entity +636 bit 1 clear, as the
+// [rexglue-native npc] function tests it). The game's own call is unchanged.
+REX_EXTERN(__imp__sub_82421AA8);
+REX_HOOK_RAW(sub_82421AA8) {
+  if (DebugOn() || FrameLinesOn()) {
+    const uint32_t ent = ctx.r3.u32;
+    const uint32_t model = ValidGuest(ent) ? g::ReadU32(base, ent + 508) : 0;
+    if (ValidGuest(model)) {
+      const int later = g_update_later ? 1 : 0;
+      ++g_lod_models[later];
+      if ((g::ReadU32(base, model + 196) & 1) && !((g::ReadU32(base, ent + 636) >> 1) & 1)) {
+        ++g_lod_coarse[later];
+        if (later) ++g_frame_coarse_later;
+      }
+    }
+  }
+  __imp__sub_82421AA8(ctx, base);
+}
+
 // [claude-9b] 2026-10-27 0x8253F438: G_RunFrame's last call (see cod3_server_step_draw).
 REX_HOOK_RAW(sub_8253F438) {
   g_game_armed = true;
@@ -1850,7 +2817,7 @@ REX_HOOK_RAW(CG_CalcEntityLerpPositions) {
   if (ent == PlayerEntity(base)) return;
   float now[3];
   ReadVec(base, ent + (stationary ? kEntTrBase : kEntServerOrigin), now);
-  History& h = g_history[ent];
+  History& h = HistoryOf(base, ent);  // [acct2-cod3-motion] the flat table
   const int32_t number = g::ReadS32(base, ent + kEntNumber);
   if (h.number != number) {  // [claude-9b] another entity in this slot now
     h = History{};
@@ -1901,7 +2868,11 @@ void TraceFrame(uint8_t* base, int32_t cg_time) {
   // [claude-9b-think] on a vehicle the playerState's velocity may stay 0: the vehicle's move counts too.
   // [claude-9b-think] every frame while riding (any cod3_server_smooth_ride, so 0 and 1 compare).
   const uint32_t veh = RiddenVehicle(base, ps);
-  if (v[0] * v[0] + v[1] * v[1] < 1.0f && !veh) return;  // not moving
+  // [acct2-cod3-motion] also every frame in a camera mode the update cameras smooth (cod3_server_smooth_linked / _cams:
+  // a scripted ride where the player stands still on what carries him)
+  const bool update_cam = g_cam_mode < 23 && (((uint32_t(REXCVAR_GET(cod3_server_smooth_linked)) |
+                                                uint32_t(REXCVAR_GET(cod3_server_smooth_cams))) >> g_cam_mode) & 1u);
+  if (v[0] * v[0] + v[1] * v[1] < 1.0f && !veh && !update_cam) return;  // not moving
   ReadVec(base, PlayerEntity(base) + kEntServerOrigin, e);
   ReadVec(base, kCgBase + client * kCgSize + kCgViewOrigin, cam);
   ++logged;
@@ -1911,6 +2882,15 @@ void TraceFrame(uint8_t* base, int32_t cg_time) {
               g::ReadS32(base, ps + 32), o[0], o[1], o[2], e[0], e[1], e[2], g_trace_cam[0], g_trace_cam[1],
               g_trace_cam[2], cam[0], cam[1], cam[2], g_trace_sv, g::ReadS32(base, kLevelTime), g_trace_lead,
               g_clock.tick);
+  // [acct2-cod3-motion] the camera's smoothing this frame: mode, Back(), cod3_server_smooth_linked's state and offset,
+  // cod3_server_smooth_cams drew it, the frame's milliseconds, the part of a millisecond the game's clock hasn't
+  // counted (sub) and the real time this frame's clock was read, in microseconds (rt; for view_steps.py).
+  REXLOG_INFO("cod3: view trace {} cam mode {} back {:.3f} linked {} off {:.2f} {:.2f} {:.2f} upcam {} ms {} sub {:.3f} "
+              "rt {}", logged, g_cam_mode, Back(), g_linked_trace, g_linked_trace_off[0], g_linked_trace_off[1],
+              g_linked_trace_off[2], g_upcam_trace ? 1 : 0, g_es_msec, g_subms.acc,
+              static_cast<long long>(std::chrono::duration_cast<std::chrono::microseconds>(
+                  g_subms.last.time_since_epoch()).count()));
+  for (int i = 0; i < 3; ++i) g_linked_trace_off[i] = 0.0f;
   // [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_ride: one more line a frame on a vehicle. mode: the
   // camera's (0x82447D48); ride: -1 riding, nothing moved, 0 not used, 1 moved by off; drawn: the vehicle drawn from
   // the ride's pose (its yaw dyaw); dP: the vehicle's move in the last update; seat: the playerState origin's;
@@ -1989,9 +2969,18 @@ void TraceFrame(uint8_t* base, int32_t cg_time) {
 }
 }  // namespace
 
+namespace {
+void EntityStepFrame(uint8_t* base);   // [acct2-cod3-motion] cod3_debug_entity_steps (below)
+void EntityStepCamera(uint8_t* base);  // [acct2-cod3-motion]
+void CensusFrame(uint8_t* base);       // [acct2-cod3-motion] cod3_debug_drawn_census (below)
+void CensusFrameDone(uint8_t* base);   // [acct2-cod3-motion]
+}  // namespace
+
 // CG_DrawActiveFrame(serverTime, ...): the client game's frame.
 REX_EXTERN(__imp__CG_DrawActiveFrame);
 REX_HOOK_RAW(CG_DrawActiveFrame) {
+  EntityStepFrame(base);  // [acct2-cod3-motion] a new drawn frame for cod3_debug_entity_steps
+  CensusFrame(base);      // [acct2-cod3-motion] and for cod3_debug_drawn_census
   // [claude-9b] the client game's clock between updates (see g_time_advancing).
   const int32_t in = ctx.r3.s32;
   int32_t out = in;
@@ -2024,8 +3013,13 @@ REX_HOOK_RAW(CG_DrawActiveFrame) {
     cod3::ride_bones::Blend(base, client ? RiddenVehicle(base, client) : 0, Back());
   }
   __imp__CG_DrawActiveFrame(ctx, base);
+  EntityStepCamera(base);  // [acct2-cod3-motion] cod3_debug_entity_steps: the frame's camera
   cod3::movement::EndDrawnStepValues(base);  // [claude-9b] the game's aim and lean back after the client game's frame
   TraceFrame(base, out);
+  CensusFrameDone(base);  // [acct2-cod3-motion] cod3_debug_drawn_census: the camera, the carried people (after the view
+                          // trace, so a drawn trace line follows its frame's view trace line)
+  PoseWorldLines(base);   // [rexglue-native npc] cod3_debug_pose_bones_near: the frame's scene nodes as drawn
+  NearEntitiesLines(base);  // [rexglue-native-bugs] 2026-11-11 nl1 cod3_debug_near_entities
 }
 
 // [claude-9b-think] 2026-10-27 UNTESTED ride6, cod3_debug_view_trace only: 0x82448308(view), the last camera step of
@@ -2156,15 +3150,1283 @@ REX_HOOK_RAW(CG_AddPacketEntities) {
   __imp__CG_AddPacketEntities(ctx, base);
 }
 
+// [acct2-cod3-motion] 2026-11-07 (owner 20:31, St-Bert's intro at cod3_max_fps 250: "still doesn't look smooth. The
+// npc's jolt around and lots of scripts telelporting"; 20:32 "Check all vehicle based intros"). What the camera line of
+// cod3_debug_server_step does for the camera (acct2-ocr's tools/cam_steps.py reads it), for every entity the client
+// game draws: its scene node (entity +548) as the renderer gets it, after the game's draw and the smoothing above
+// (both inside CG_AddCEntity's call): the origin (node +68) and the forward axis (node +28). Per entity, from one drawn
+// frame to the next: how far it moved and turned, in frames with a game update and in frames without one (a thing
+// drawn in steps of the update rate moves only in the first kind), how often it moved back against the last frame's
+// move (A-B-A: a jolt), moves far above its usual one (spikes) and moves of more than kEsJump units (a teleport or a
+// cut). Once a second (game time) one line per entity type and, with N > 1, the N worst entities. Counting only:
+// nothing drawn or run changes.
+REXCVAR_DEFINE_INT32(cod3_debug_entity_steps, 0, "cod3",
+                     "Log once a second, by entity type, how the drawn entities moved between frames with and without "
+                     "a game update (moving only with updates = stepping), jolts back and forth and jumps; N > 1: also "
+                     "the N worst entities. 0: off")
+    .range(0, 64)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace {
+struct EntitySteps {
+  int32_t number = -1;
+  uint8_t type = 0;
+  uint64_t frame = 0;  // the drawn frame it was last seen in (0: never)
+  float origin[3] = {}, fwd[3] = {}, move[3] = {};
+  bool have_move = false;
+  float usual = 0.0f;  // its usual move a frame (units, a slow average)
+  uint32_t samples = 0;
+  // This second: [0] frames without an update, [1] with one or more.
+  uint32_t n[2] = {}, ms[2] = {};
+  double mv[2] = {}, tr[2] = {};
+  uint32_t reversals = 0, spikes = 0, jumps = 0;
+  uint32_t still = 0;  // frames it didn't move at all
+  float max_jump = 0.0f;
+  int jump_kind = -1;
+};
+std::unordered_map<uint32_t, EntitySteps> g_esteps;  // by entity address
+uint64_t g_es_frame = 0;                             // drawn frames (CG_DrawActiveFrame)
+uint64_t g_es_frames[2] = {};                        // this second's, by kind
+int64_t g_es_since = 0;
+constexpr float kEsJump = 32.0f;     // more in one frame: a jump (teleport, cut)
+constexpr float kEsMoving = 5.0f;    // units a second: below it an entity counts as still
+constexpr float kEsReverse = 0.05f;  // the smallest move a reversal is counted for (units)
+
+float Len(const float v[3]) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+
+constexpr uint8_t kEsCameraType = 16;  // the camera, kept as one more "entity" (key 0)
+
+// One drawn place this frame: `key` the entity's address (0 for the camera).
+void EntityStepPoint(uint32_t key, int32_t number, uint8_t type, const float o[3], const float f[3]) {
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(o[i]) || !std::isfinite(f[i])) return;
+  EntitySteps& s = g_esteps[key];
+  if (s.number != number || s.type != type) {  // another entity in this slot now
+    s = EntitySteps{};
+    s.number = number;
+    s.type = type;
+  }
+  if (s.frame != 0 && s.frame + 1 == g_es_frame) {
+    const float m[3] = {o[0] - s.origin[0], o[1] - s.origin[1], o[2] - s.origin[2]};
+    const float dist = Len(m);
+    const float fl = Len(f), sl = Len(s.fwd);
+    float turn = 0.0f;
+    if (fl > 0.0f && sl > 0.0f) {
+      const float c = (f[0] * s.fwd[0] + f[1] * s.fwd[1] + f[2] * s.fwd[2]) / (fl * sl);
+      turn = std::acos(std::clamp(c, -1.0f, 1.0f)) * 57.29578f;
+    }
+    // A jump: far more than its usual move (a fast thing moves more than kEsJump a frame at low frame rates).
+    if (dist > kEsJump && dist > (s.samples >= 30 ? 3.0f * s.usual + 16.0f : 128.0f)) {
+      ++s.jumps;
+      if (dist > s.max_jump) {
+        s.max_jump = dist;
+        s.jump_kind = g_kind;
+      }
+      s.have_move = false;
+    } else {
+      const int k = g_kind ? 1 : 0;
+      ++s.n[k];
+      s.ms[k] += static_cast<uint32_t>(std::max(g_es_msec, 0));
+      s.mv[k] += dist;
+      s.tr[k] += turn;
+      if (dist < 0.001f) ++s.still;
+      if (s.samples > 30 && dist > 2.0f + 6.0f * s.usual) ++s.spikes;
+      if (s.have_move) {
+        const float last = Len(s.move);
+        const float dot = m[0] * s.move[0] + m[1] * s.move[1] + m[2] * s.move[2];
+        if (dist > kEsReverse && last > kEsReverse && dot < -0.5f * dist * last) ++s.reversals;
+      }
+      s.usual = s.samples ? 0.95f * s.usual + 0.05f * dist : dist;
+      ++s.samples;
+      for (int i = 0; i < 3; ++i) s.move[i] = m[i];
+      s.have_move = true;
+    }
+  } else {
+    s.have_move = false;
+  }
+  for (int i = 0; i < 3; ++i) {
+    s.origin[i] = o[i];
+    s.fwd[i] = f[i];
+  }
+  s.frame = g_es_frame;
+}
+
+void EntityStepSample(uint8_t* base, uint32_t ent) {
+  const uint32_t node = g::ReadU32(base, ent + kEntSceneNode);
+  if (!ValidGuest(node)) return;
+  float o[3], f[3];
+  ReadVec(base, node + kNodeOrigin, o);
+  ReadVec(base, node + kNodeAxis, f);
+  EntityStepPoint(ent, g::ReadS32(base, ent + kEntNumber), g::ReadU8(base, ent) & 15, o, f);
+}
+
+// After the client game's frame: the camera it was drawn from (origin cg +4480, forward cg +4496).
+void EntityStepCamera(uint8_t* base) {
+  if (REXCVAR_GET(cod3_debug_entity_steps) <= 0) return;
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  if (local > 3) return;
+  const uint32_t cg = kCgBase + local * kCgSize;
+  float o[3], f[3];
+  ReadVec(base, cg + kCgViewOrigin, o);
+  ReadVec(base, cg + kCgViewAxis, f);
+  EntityStepPoint(0, -2, kEsCameraType, o, f);
+}
+
+// Units (or degrees) a second in this second's frames of one kind.
+float EsSpeed(const EntitySteps& s, int k, bool turn) {
+  if (!s.ms[k]) return 0.0f;
+  return float((turn ? s.tr[k] : s.mv[k]) * 1000.0 / double(s.ms[k]));
+}
+
+// Moving only in frames with an update: drawn in steps of the update rate.
+bool EsStepped(const EntitySteps& s) {
+  const float with = EsSpeed(s, 1, false), without = EsSpeed(s, 0, false);
+  return s.n[0] >= 5 && s.n[1] >= 5 && with > kEsMoving && without < with / 3.0f;
+}
+
+void EntityStepLog(uint8_t* base) {
+  const int setting = REXCVAR_GET(cod3_debug_entity_steps);
+  struct TypeSum {
+    uint32_t drawn = 0, moving = 0, stepped = 0, uneven = 0, reversing = 0;
+    uint32_t reversals = 0, spikes = 0, jumps = 0, still = 0, frames = 0;
+    float max_jump = 0.0f;
+    double with = 0.0, without = 0.0;
+  };
+  TypeSum t[17];  // the entity types, then the camera
+  struct Worst {
+    float score;
+    uint32_t ent;
+  };
+  std::vector<Worst> worst;
+  for (auto it = g_esteps.begin(); it != g_esteps.end();) {
+    EntitySteps& s = it->second;
+    if (s.frame + 2000 < g_es_frame) {  // not drawn for a while: forgotten
+      it = g_esteps.erase(it);
+      continue;
+    }
+    if (s.n[0] + s.n[1] + s.jumps > 0) {
+      TypeSum& ts = t[s.type <= kEsCameraType ? s.type : 0];
+      ++ts.drawn;
+      const float with = EsSpeed(s, 1, false), without = EsSpeed(s, 0, false);
+      const bool moving = with > kEsMoving || without > kEsMoving;
+      if (moving) {
+        ++ts.moving;
+        ts.with += with;
+        ts.without += without;
+        ts.still += s.still;  // a moving thing standing still in some frames: it moves in jerks
+        ts.frames += s.n[0] + s.n[1];
+        if (EsStepped(s))
+          ++ts.stepped;
+        else if (s.n[0] >= 5 && s.n[1] >= 5 && (without < with * 0.7f || without > with * 1.4f))
+          ++ts.uneven;
+      }
+      if (s.reversals >= 5) ++ts.reversing;
+      ts.reversals += s.reversals;
+      ts.spikes += s.spikes;
+      ts.jumps += s.jumps;
+      ts.max_jump = std::max(ts.max_jump, s.max_jump);
+      const float score = std::max(0.0f, with - without) + 2.0f * float(s.reversals) + 5.0f * float(s.spikes) +
+                          20.0f * float(s.jumps);
+      if (setting > 1 && score > 1.0f) worst.push_back(Worst{score, it->first});
+    }
+    ++it;
+  }
+  REXLOG_INFO("cod3: entity steps: {} frames with an update, {} without; camera mode {}", g_es_frames[1],
+              g_es_frames[0], g_cam_mode);
+  for (int k = 0; k <= kEsCameraType; ++k) {
+    const TypeSum& ts = t[k];
+    if (!ts.drawn) continue;
+    REXLOG_INFO("cod3: entity steps: type {} drawn {} moving {} stepped {} uneven {} reversing {}; speed with an update "
+                "{:.1f} without {:.1f} u/s; reversals {} spikes {} jumps {} (max {:.0f}); still in {} of {} frames",
+                k, ts.drawn, ts.moving, ts.stepped, ts.uneven, ts.reversing,
+                ts.moving ? ts.with / ts.moving : 0.0, ts.moving ? ts.without / ts.moving : 0.0, ts.reversals,
+                ts.spikes, ts.jumps, ts.max_jump, ts.still, ts.frames);
+  }
+  std::sort(worst.begin(), worst.end(), [](const Worst& a, const Worst& b) { return a.score > b.score; });
+  for (size_t i = 0; i < worst.size() && i < size_t(setting); ++i) {
+    const uint32_t ent = worst[i].ent;
+    const EntitySteps& s = g_esteps[ent];
+    const bool real = ValidGuest(ent);  // 0: the camera
+    REXLOG_INFO("cod3: entity steps: worst {} ent {} type {} pt {} at {} fl {:08X} with {} {:.1f} u/s {:.1f} deg/s "
+                "without {} {:.1f} u/s {:.1f} deg/s stepped {} rev {} spk {} jmp {} max {:.0f} kind {} "
+                "o {:.0f} {:.0f} {:.0f} still {}",
+                i + 1, s.number, s.type, real ? g::ReadS32(base, ent + kEntPosType) : -1,
+                real ? g::ReadS32(base, ent + 0x3C) : -1, real ? g::ReadU32(base, ent + kEntFlags) : 0u, s.n[1], EsSpeed(s, 1, false), EsSpeed(s, 1, true), s.n[0],
+                EsSpeed(s, 0, false), EsSpeed(s, 0, true), EsStepped(s) ? 1 : 0, s.reversals, s.spikes, s.jumps,
+                s.max_jump, s.jump_kind, s.origin[0], s.origin[1], s.origin[2], s.still);
+  }
+  for (auto& kv : g_esteps) {
+    EntitySteps& s = kv.second;
+    s.n[0] = s.n[1] = s.ms[0] = s.ms[1] = 0;
+    s.mv[0] = s.mv[1] = s.tr[0] = s.tr[1] = 0.0;
+    s.reversals = s.spikes = s.jumps = s.still = 0;
+    s.max_jump = 0.0f;
+    s.jump_kind = -1;
+  }
+  g_es_frames[0] = g_es_frames[1] = 0;
+}
+
+// Once a drawn frame, before its entities are drawn.
+void EntityStepFrame(uint8_t* base) {
+  if (REXCVAR_GET(cod3_debug_entity_steps) <= 0) {
+    if (!g_esteps.empty()) g_esteps.clear();
+    return;
+  }
+  ++g_es_frame;
+  ++g_es_frames[g_kind ? 1 : 0];
+  if (g_clock.time - g_es_since >= 1000 || g_clock.time < g_es_since) {
+    EntityStepLog(base);
+    g_es_since = g_clock.time;
+  }
+}
+}  // namespace
+
+// [acct2-cod3-motion] 2026-11-07 (owner 22:03: "When going over the bridge the npcs get raised in the air"; 22:04: "There
+// are likely other issues similar to that"). A census of where each entity is drawn against where the game has it.
+// After CG_AddCEntity's draw (and the smoothing inside it), the entity's scene node origin (the drawn place) against its
+// server origin (+336) at the game's last two updates: drawn between updates, a thing stays on the line between those
+// two places; off it by more than kCensusOff units it floats, sinks, slides or pops where the game doesn't have it
+// (ours, where the game draws its node at +336). People carried by a vehicle (the rides-a-vehicle flag, or a vehicle
+// within kCensusCarry units that moved with them in the update) also get their place in the vehicle's own frame, drawn
+// (against the vehicle's drawn node) and in the game (against its server origin and angles): a drawn offset that differs
+// from the game's is ours; a game offset that changes is the game's (an animation, or the game moving them on the
+// vehicle). And the game's own jumps (more than kMaxSmoothedMove in one update: a teleport or a cut). Once a second
+// (game time) one line, and with N > 1 the N worst entities (tools/drawn_census.py reads them). Counting only.
+REXCVAR_DEFINE_INT32(cod3_debug_drawn_census, 0, "cod3",
+                     "Log once a second where entities are drawn against where the game has them: off the game's path "
+                     "(floating, sinking, sliding, popping), people drawn off the vehicle that carries them, and the "
+                     "game's own jumps; N > 1: also the N worst entities. 0: off")
+    .range(0, 64)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] One line a drawn frame for one entity (its number + 1): its drawn and game places, the game's last
+// two, and its offsets on its carrier, drawn and in the game.
+REXCVAR_DEFINE_INT32(cod3_debug_drawn_trace, 0, "cod3",
+                     "With cod3_debug_drawn_census, log in every drawn frame where entity N-1 is drawn and where the "
+                     "game has it (0: off)")
+    .range(0, 4097)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] A second entity for the same trace (a rider's vehicle, say): its number + 1.
+REXCVAR_DEFINE_INT32(cod3_debug_drawn_trace_also, 0, "cod3",
+                     "With cod3_debug_drawn_trace, also trace entity N-1 (0: none)")
+    .range(0, 4097)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-cod3-motion] 2026-11-07 (coordinator 22:55: find at run time what switches the St-Bert rider from sitting to
+// standing on his seat at the bridge's crest, without decompiling the level) The traced entity's memory, once a game
+// update: its first kDiffBytes bytes, the same at each pointer in them (the model at +0x1FC, the actor, its animation
+// objects), and at each pointer in its model. A 32-bit word that changes after staying the same for at least N ms of
+// game time is logged ("cod3: drawn diff"): the state the game changed (an animation, a flag, a link), not the
+// counters and places that change all the time.
+REXCVAR_DEFINE_INT32(cod3_debug_drawn_trace_diff, 0, "cod3",
+                     "With cod3_debug_drawn_trace, also watch that entity's memory and the structures it points to "
+                     "once a game update, and log each 32-bit word that changes after staying the same for at least "
+                     "N ms (0: off)")
+    .range(0, 60000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace {
+constexpr float kCensusOff = 2.0f;      // units off the game's path (or its carrier) that count
+constexpr float kCensusCarry = 256.0f;  // how near a vehicle that moved with a person in the update carries them
+
+struct Census {
+  int32_t number = -1;
+  uint8_t type = 0;
+  uint64_t update = 0;
+  bool valid = false;
+  float prev[3] = {}, cur[3] = {};  // the server origin at the last two updates
+  uint64_t frame = 0;               // the drawn frame it was last seen in
+  float drawn[3] = {}, game[3] = {}, angles[3] = {}, axis[3][3] = {};  // that frame's
+  float off[3] = {};                // that frame's drawn place less the nearest point of the game's path
+  float back = 0.0f;                // that frame's Back()
+  uint32_t flags = 0, carrier = 0;  // carrier: the vehicle it rides (the flag); found at the frame's end otherwise
+  int carried_by = 0;               // 1 the flag, 2 a vehicle that moved with it
+  int32_t pos_type = -1;            // the trajectory type its game place was read by
+  // this second
+  uint32_t n = 0, offs = 0, jumps = 0, carried = 0, rel_offs = 0, pt_changes = 0;
+  float max_off = 0.0f, max_up = 0.0f, max_down = 0.0f, max_jump = 0.0f, max_rel = 0.0f, rel_z = 0.0f;
+  float local_min = 1e9f, local_max = -1e9f;  // its game height in its carrier's frame
+  float at[3] = {}, at_game_z = 0.0f;         // its worst frame: where it was drawn, the game's height
+  int32_t carrier_number = -1;
+  // [acct2-cod3-motion] 2026-11-07 a carried person's pose (the bones' heights in the model's space; the St-Bert riders
+  // stood up on their seats at the bridge): the last drawn frame's lowest bone, and this second's rises (the lowest bone
+  // up more than kPoseRise in one drawn frame: the whole body lifted the moment an animation starts) and frames with
+  // the feet up at its origin (lowest bone above kFeetUp: standing on the point it rides at, where a seated rider's feet
+  // hang some 38 units below it)
+  uint64_t pose_frame = 0;
+  float pose_min = 0.0f;
+  uint32_t pose_rises = 0, feet_up = 0;
+  float max_rise = 0.0f;
+};
+constexpr float kPoseRise = 20.0f;
+constexpr float kFeetUp = -12.0f;
+std::unordered_map<uint32_t, Census> g_census;  // by entity address
+uint64_t g_census_frame = 0;
+uint32_t g_census_frames = 0;  // this second's
+int64_t g_census_since = 0;
+
+float Dot(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
+bool IsVehicleType(uint8_t type) { return type == 14 || type == 15; }
+
+// After CG_AddCEntity put the entity into the scene: where it went and where the game has it. The game's place is
+// what its draw fills the node from: the server origin (+336; people and vehicles always, TR_INTERPOLATE things by the
+// plain copy at +112), for a TR_STATIONARY thing its trajectory's base (+32), and for a thing the client game moves by
+// its own trajectory (falling, thrown, flying: any other type) the place the client game worked out (+112, which no
+// smoothing here touches), a point rather than a path.
+void CensusSample(uint8_t* base, uint32_t ent) {
+  const uint32_t node = g::ReadU32(base, ent + kEntSceneNode);
+  if (!ValidGuest(node)) return;
+  const uint8_t type = g::ReadU8(base, ent) & 15;
+  const int32_t pos_type = g::ReadS32(base, ent + kEntPosType);
+  const bool by_server = type == 1 || IsVehicleType(type);
+  const bool at_base = pos_type == kTrStationary && !by_server;
+  const bool own_path = pos_type != kTrStationary && pos_type != kTrInterpolate && !by_server;
+  float d[3], now[3], ang[3];
+  ReadVec(base, node + kNodeOrigin, d);
+  ReadVec(base, ent + (at_base ? kEntTrBase : own_path ? kEntDrawnOrigin : kEntServerOrigin), now);
+  ReadVec(base, ent + kEntServerAngles, ang);
+  for (int i = 0; i < 3; ++i)
+    if (!std::isfinite(d[i]) || !std::isfinite(now[i]) || !std::isfinite(ang[i])) return;
+  const int32_t number = g::ReadS32(base, ent + kEntNumber);
+  Census& c = g_census[ent];
+  if (c.number != number || c.type != type) {  // another entity in this slot now
+    c = Census{};
+    c.number = number;
+    c.type = type;
+  }
+  if (c.valid && c.pos_type != pos_type) {  // drawn by another trajectory type now: its place starts over
+    ++c.pt_changes;
+    c.valid = false;
+  }
+  if (own_path) c.valid = false;  // a point each frame: where the client game put it
+  c.pos_type = pos_type;
+  if (!c.valid || c.update != g_clock.updates) {  // the first draw since an update: that update's place
+    const bool next = c.valid && c.update + 1 == g_clock.updates;
+    const float moved2 = next ? Dist2(c.cur, now) : 0.0f;
+    const bool jump = moved2 >= kMaxSmoothedMove * kMaxSmoothedMove;
+    if (jump) {
+      ++c.jumps;
+      c.max_jump = std::max(c.max_jump, std::sqrt(moved2));
+    }
+    for (int i = 0; i < 3; ++i) {
+      c.prev[i] = next && !jump ? c.cur[i] : now[i];
+      c.cur[i] = now[i];
+    }
+    c.update = g_clock.updates;
+    c.valid = true;
+  } else if (!Same(now, c.cur)) {  // moved by the game since the update: it is drawn where it is now
+    for (int i = 0; i < 3; ++i) c.prev[i] = c.cur[i] = now[i];
+  }
+  // The drawn place against the nearest point of the game's path between its last two places.
+  float ab[3], ad[3];
+  for (int i = 0; i < 3; ++i) {
+    ab[i] = c.cur[i] - c.prev[i];
+    ad[i] = d[i] - c.prev[i];
+  }
+  const float l2 = Dot(ab, ab);
+  const float t = l2 > 0.0f ? std::clamp(Dot(ad, ab) / l2, 0.0f, 1.0f) : 0.0f;
+  for (int i = 0; i < 3; ++i) c.off[i] = d[i] - (c.prev[i] + ab[i] * t);
+  const float off = Len(c.off);
+  ++c.n;
+  if (off > kCensusOff) ++c.offs;
+  if (off > c.max_off) {
+    c.max_off = off;
+    for (int i = 0; i < 3; ++i) c.at[i] = d[i];
+    c.at_game_z = now[2];
+  }
+  c.max_up = std::max(c.max_up, c.off[2]);
+  c.max_down = std::min(c.max_down, c.off[2]);
+  for (int i = 0; i < 3; ++i) {
+    c.drawn[i] = d[i];
+    c.game[i] = now[i];
+    c.angles[i] = ang[i];
+    for (int a = 0; a < 3; ++a) c.axis[a][i] = g::ReadF32(base, node + kNodeAxis + 12 * a + 4 * i);
+  }
+  c.flags = g::ReadU32(base, ent + kEntFlags);
+  c.carrier = 0;
+  c.carried_by = 0;
+  if (c.flags & kEntOnVehicleFlag) {
+    const uint32_t veh = EntityOfHandle(base, g::ReadU32(base, ent + kEntVehicleRidden));
+    if (veh && veh != ent) {
+      c.carrier = veh;
+      c.carried_by = 1;
+    }
+  }
+  c.back = Back();
+  c.frame = g_census_frame;
+}
+
+// The carrier of `c` this frame (0: none): the flagged vehicle, or the nearest vehicle drawn this frame that moved with
+// it in the same update.
+uint32_t CensusCarrier(const Census& c, uint32_t self) {
+  if (c.carried_by == 1) {
+    const auto it = g_census.find(c.carrier);
+    return it != g_census.end() && it->second.frame == c.frame ? c.carrier : 0;
+  }
+  const float move[3] = {c.cur[0] - c.prev[0], c.cur[1] - c.prev[1], c.cur[2] - c.prev[2]};
+  if (Len(move) < 0.5f) return 0;
+  uint32_t best = 0;
+  float best_d2 = kCensusCarry * kCensusCarry;
+  for (const auto& kv : g_census) {
+    const Census& v = kv.second;
+    if (kv.first == self || !IsVehicleType(v.type) || v.frame != c.frame || v.update != c.update) continue;
+    const float vm[3] = {v.cur[0] - v.prev[0], v.cur[1] - v.prev[1], v.cur[2] - v.prev[2]};
+    const float dm[3] = {move[0] - vm[0], move[1] - vm[1], move[2] - vm[2]};
+    if (Len(dm) > 0.5f) continue;
+    const float d2 = Dist2(c.game, v.game);
+    if (d2 < best_d2) {
+      best_d2 = d2;
+      best = kv.first;
+    }
+  }
+  return best;
+}
+
+void CensusTrace(const Census& c, const Census* v, const float gl[3], const float dl[3]) {
+  REXLOG_INFO("cod3: drawn trace {} ent {} type {} back {:.3f} drawn {:.2f} {:.2f} {:.2f} game {:.2f} {:.2f} {:.2f} "
+              "prev {:.2f} {:.2f} {:.2f} off {:.2f} {:.2f} {:.2f} carrier {} ({}) game local {:.2f} {:.2f} {:.2f} "
+              "drawn local {:.2f} {:.2f} {:.2f} carrier angles {:.1f} {:.1f} {:.1f}",
+              c.frame, c.number, c.type, c.back, c.drawn[0], c.drawn[1], c.drawn[2], c.game[0], c.game[1],
+              c.game[2], c.prev[0], c.prev[1], c.prev[2], c.off[0], c.off[1], c.off[2], v ? v->number : -1,
+              v ? c.carried_by : 0, gl[0], gl[1], gl[2], dl[0], dl[1], dl[2], v ? v->angles[0] : 0.0f,
+              v ? v->angles[1] : 0.0f, v ? v->angles[2] : 0.0f);
+}
+
+// [acct2-cod3-motion] 2026-11-07 (owner 22:24 via the coordinator: the riders in his own truck, both renderers) The
+// frame's camera (cg +4480 origin, +4544 angles, +4496 axis), after CG_DrawActiveFrame, for the view trace below.
+float g_cens_cam[3] = {}, g_cens_cam_ang[3] = {}, g_cens_cam_ax[3][3] = {};
+
+// With cod3_debug_drawn_trace: the traced person against the camera and the carrier, as drawn: the camera's place in the
+// carrier's frame (it rides the same truck: constant if the two are drawn alike), the person's place in the camera's
+// frame (forward, left, up) and how high it looks (degrees above the view's level), and the person's up axis in the
+// carrier's frame (does its pose tilt with the truck), with the game's pitch and roll of both (+352).
+// Its pose: the bones' origins in the model's own space (model = entity +0x1FC, bones [model +0x70] +0x30, 0x40 bytes
+// each with the origin at +0x30, count at model +0xAB; ride_bones.cpp): the lowest, highest and mean height, and the
+// first bone's place (the root). A sitting soldier's head is lower than a standing one's; a pose that rises lifts the
+// body off the seat. Returns how many bones were read.
+uint32_t BonesZ(uint8_t* base, uint32_t ent, float& bmin, float& bmax, float& bmean, float root[3]) {
+  bmin = bmax = bmean = 0.0f;
+  root[0] = root[1] = root[2] = 0.0f;
+  uint32_t bones = 0;
+  const uint32_t model = g::ReadU32(base, ent + 0x1FC);
+  if (!ValidGuest(model)) return 0;
+  const uint32_t buf = g::ReadU32(base, model + 0x70);
+  const uint32_t n = g::ReadU8(base, model + 0xAB);
+  if (!ValidGuest(buf) || n == 0) return 0;
+  double sum = 0.0;
+  for (uint32_t b = 0; b < n; ++b) {
+    const float z = g::ReadF32(base, buf + 0x30 + 0x40 * b + 0x30 + 8);
+    if (!std::isfinite(z)) continue;
+    if (bones == 0 || z < bmin) bmin = z;
+    if (bones == 0 || z > bmax) bmax = z;
+    sum += z;
+    ++bones;
+  }
+  if (bones) bmean = float(sum / bones);
+  ReadVec(base, buf + 0x30 + 0x30, root);
+  return bones;
+}
+
+void CensusViewTrace(uint8_t* base, uint32_t ent, const Census& c, const Census* v) {
+  float bmin, bmax, bmean, root[3];
+  const uint32_t bones = BonesZ(base, ent, bmin, bmax, bmean, root);
+  float rc[3], cl[3] = {}, ru[3] = {};
+  for (int i = 0; i < 3; ++i) rc[i] = c.drawn[i] - g_cens_cam[i];
+  float in_cam[3];
+  for (int a = 0; a < 3; ++a) in_cam[a] = Dot(rc, g_cens_cam_ax[a]);
+  const float elev = std::atan2(in_cam[2], std::sqrt(in_cam[0] * in_cam[0] + in_cam[1] * in_cam[1])) * 57.29578f;
+  if (v) {
+    float cv[3];
+    for (int i = 0; i < 3; ++i) cv[i] = g_cens_cam[i] - v->drawn[i];
+    for (int a = 0; a < 3; ++a) {
+      cl[a] = Dot(cv, v->axis[a]);
+      ru[a] = Dot(c.axis[2], v->axis[a]);
+    }
+  }
+  REXLOG_INFO("cod3: drawn view trace {} ent {} cam {:.2f} {:.2f} {:.2f} cam angles {:.2f} {:.2f} {:.2f} cam on carrier "
+              "{:.2f} {:.2f} {:.2f} in cam {:.2f} {:.2f} {:.2f} elev {:.2f} up on carrier {:.3f} {:.3f} {:.3f} game "
+              "pitch/roll {:.2f} {:.2f} carrier {:.2f} {:.2f} carrier drawn {:.2f} {:.2f} {:.2f} mode {} bones {} z "
+              "{:.2f} {:.2f} {:.2f} root {:.2f} {:.2f} {:.2f}",
+              c.frame, c.number, g_cens_cam[0], g_cens_cam[1], g_cens_cam[2], g_cens_cam_ang[0], g_cens_cam_ang[1],
+              g_cens_cam_ang[2], cl[0], cl[1], cl[2], in_cam[0], in_cam[1], in_cam[2], elev, ru[0], ru[1], ru[2],
+              c.angles[0], c.angles[2], v ? v->angles[0] : 0.0f, v ? v->angles[2] : 0.0f, v ? v->drawn[0] : 0.0f,
+              v ? v->drawn[1] : 0.0f, v ? v->drawn[2] : 0.0f, g_cam_mode, bones, bmin, bmax, bmean, root[0], root[1],
+              root[2]);
+}
+
+// cod3_debug_drawn_trace_diff (above): the traced entity's memory, once a game update.
+constexpr uint32_t kDiffBytes = 0x300;  // read at the entity and at each pointer
+constexpr uint32_t kDiffActorAt = 0x214;     // the entity's actor (actor +0 = the entity; 0x823EA0C0 and the states)
+constexpr uint32_t kDiffActorBytes = 0xB00;  // all of it: the state at +0x29C, its name at +0xAD4, moveaway at +0xA7C
+constexpr size_t kDiffMaxRegions = 64;  // structures followed at most
+constexpr int kDiffMaxLines = 96;       // lines a game update at most
+
+struct DiffRegion {
+  uint32_t addr = 0;
+  std::vector<uint32_t> words;
+  std::vector<int64_t> since;  // the game time each word last changed (or was first read)
+};
+struct DiffWatch {
+  uint32_t ent = 0;
+  int32_t number = -1;
+  uint64_t update = 0;
+  std::unordered_map<uint32_t, DiffRegion> regions;  // by where: ~0 the entity, a pointer's offset in it, 0x10000 | an
+                                                     // offset in its model
+};
+DiffWatch g_diff;
+
+// Whether the guest can read [a, a + bytes): every page in it committed and readable (a pointer read from the game's
+// structures may be stale or not a pointer at all).
+bool GuestReadable(uint32_t a, uint32_t bytes) {
+  auto* kernel = REX_KERNEL_STATE();
+  auto* memory = kernel ? kernel->memory() : nullptr;
+  if (!memory || a < 0x10000 || uint64_t(a) + bytes > 0x100000000ull) return false;
+  for (uint64_t page = a & ~0xFFFull; page < uint64_t(a) + bytes; page += 0x1000) {
+    auto* heap = memory->LookupHeap(uint32_t(page));
+    uint32_t protect = 0;
+    if (!heap || !heap->QueryProtect(uint32_t(page), &protect) || !(protect & rex::memory::kMemoryProtectRead))
+      return false;
+  }
+  return true;
+}
+
+// A word that may point at a structure: the guest's heaps or the image's data, not its constants and code.
+bool DiffPointer(uint32_t p) { return ValidGuest(p) && p >= 0x40000000u && !(p >= 0x82000000u && p < 0x825C0000u); }
+
+// The actors' animation states (the animscripts): 0x8253BE28 looks up each state's main and exit function by name
+// ("anim_main_vehicle_in", "anim_exit_vehicle_in", ...; BroFunc 0x82498D50) and keeps them in pairs from 0x82A510B8 and
+// 0x82A51470 (names from dev/waw-decomp/cod3/names.tsv). A changed word that holds one of them is named in the diff:
+// the rider's animscript changing (from vehicle_in, say) is what would stand him up.
+constexpr const char* kAnimStates1[] = {"combat", "concealment_crouch", "concealment_prone", "concealment_stand",
+                                        "cover_crouch", "cover_left", "cover_prone", "cover_right", "cover_stand",
+                                        "cover_wide_left", "cover_wide_right", "death", "debug",
+                                        "grenade_return_throw", "init", "interaction", "moveaway", "pain",
+                                        "reacquire", "run", "scripted", "stop", "grenade_cower", "grenade_recover",
+                                        "vehicle_enter", "vehicle_in", "vehicle_exit", "walk"};
+constexpr const char* kAnimStates2[] = {"wounded", "wounded_attack", "wounded_crawl", "wounded_walk", "ambush"};
+constexpr uint32_t kAnimStates1At = 0x82A510B8, kAnimStates2At = 0x82A51470;
+
+// The actor keeps the address of the state's slot (actor +0x29C the state it is in, +0x2A0 the next one: 0x823EA0C0,
+// which seats a rider on its vehicle's tag, sets vehicle_in there), so a word is named by the slot it points at, or
+// ("fn:") by the function it holds.
+std::string AnimStateOf(uint8_t* base, uint32_t v) {
+  if (v < 0x10000) return {};
+  auto find = [&](const char* const* names, size_t count, uint32_t at) -> std::string {
+    if (v >= at && v < at + 8 * uint32_t(count) && (v & 3) == 0)
+      return std::string((v - at) % 8 ? "exit_" : "main_") + names[(v - at) / 8];
+    for (size_t i = 0; i < count; ++i) {
+      if (g::ReadU32(base, at + 8 * uint32_t(i)) == v) return std::string("fn:main_") + names[i];
+      if (g::ReadU32(base, at + 8 * uint32_t(i) + 4) == v) return std::string("fn:exit_") + names[i];
+    }
+    return {};
+  };
+  std::string s = find(kAnimStates1, std::size(kAnimStates1), kAnimStates1At);
+  return s.empty() ? find(kAnimStates2, std::size(kAnimStates2), kAnimStates2At) : s;
+}
+
+// The game's constant text a word points at (its read-only data: state names such as "animscripted"), or "".
+std::string DiffText(uint8_t* base, uint32_t v) {
+  if (v < 0x82000000u || v >= 0x82100000u) return {};
+  std::string t;
+  for (uint32_t i = 0; i < 48; ++i) {
+    const uint8_t ch = g::ReadU8(base, v + i);
+    if (ch == 0) break;
+    if (ch < 0x20 || ch >= 0x7F || ch == '"') return {};
+    t.push_back(char(ch));
+  }
+  return t.size() >= 3 ? t : std::string();
+}
+
+// One region (`bytes` long): logs its words that changed after staying the same for `stable_ms`.
+void DiffRegionSample(uint8_t* base, DiffRegion& r, uint32_t addr, uint32_t bytes, const std::string& where,
+                      int32_t number, int64_t now, int stable_ms, int& lines) {
+  const size_t n = bytes / 4;
+  if (r.addr != addr || r.words.size() != n) {  // new, or the pointer to it changed: read afresh
+    r.addr = addr;
+    r.words.assign(n, 0);
+    r.since.assign(n, now);
+    for (size_t i = 0; i < n; ++i) r.words[i] = g::ReadU32(base, addr + 4 * uint32_t(i));
+    return;
+  }
+  for (size_t i = 0; i < n; ++i) {
+    const uint32_t w = g::ReadU32(base, addr + 4 * uint32_t(i));
+    if (w == r.words[i]) continue;
+    const int64_t held = now - r.since[i];
+    if (held >= stable_ms && lines < kDiffMaxLines) {
+      float before, after;
+      std::memcpy(&before, &r.words[i], 4);
+      std::memcpy(&after, &w, 4);
+      const std::string was = AnimStateOf(base, r.words[i]), is = AnimStateOf(base, w);
+      std::string state = was.empty() && is.empty() ? std::string()
+                                                   : fmt::format(" state {} -> {}", was.empty() ? "-" : was,
+                                                                 is.empty() ? "-" : is);
+      const std::string text_was = DiffText(base, r.words[i]), text_is = DiffText(base, w);
+      if (!text_was.empty() || !text_is.empty()) state += fmt::format(" text \"{}\" -> \"{}\"", text_was, text_is);
+      REXLOG_INFO("cod3: drawn diff {} ent {} {}+0x{:X} {:08X} -> {:08X} ({:g} -> {:g}) after {} ms{}", g_census_frame,
+                  number, where, 4 * i, r.words[i], w, before, after, held, state);
+      ++lines;
+    }
+    r.words[i] = w;
+    r.since[i] = now;
+  }
+}
+
+void DiffSample(uint8_t* base, uint32_t ent, const Census& c) {
+  const int stable_ms = REXCVAR_GET(cod3_debug_drawn_trace_diff);
+  if (stable_ms <= 0) {
+    if (!g_diff.regions.empty()) g_diff = DiffWatch{};
+    return;
+  }
+  if (g_diff.ent != ent || g_diff.number != c.number) {
+    g_diff = DiffWatch{};
+    g_diff.ent = ent;
+    g_diff.number = c.number;
+  }
+  if (g_diff.update == g_clock.updates) return;  // once a game update
+  g_diff.update = g_clock.updates;
+  if (!GuestReadable(ent, kDiffBytes)) return;
+  const int64_t now = g_clock.time;
+  int lines = 0;
+  DiffRegionSample(base, g_diff.regions[~0u], ent, kDiffBytes, "", c.number, now, stable_ms, lines);
+  // The structures it points to, and those its model points to.
+  std::vector<std::pair<uint32_t, uint32_t>> follow;  // (where, address)
+  for (uint32_t off = 0; off < kDiffBytes; off += 4) {
+    const uint32_t p = g::ReadU32(base, ent + off);
+    if (DiffPointer(p) && p != ent) follow.emplace_back(off, p);
+  }
+  const uint32_t model = g::ReadU32(base, ent + 0x1FC);
+  if (DiffPointer(model) && GuestReadable(model, kDiffBytes)) {
+    for (uint32_t off = 0; off < kDiffBytes; off += 4) {
+      const uint32_t p = g::ReadU32(base, model + off);
+      if (DiffPointer(p) && p != ent && p != model) follow.emplace_back(0x10000u | off, p);
+    }
+  }
+  size_t used = 0;
+  for (const auto& [where, p] : follow) {
+    if (used >= kDiffMaxRegions) break;
+    const uint32_t bytes = where == kDiffActorAt ? kDiffActorBytes : kDiffBytes;
+    if (!GuestReadable(p, bytes)) continue;
+    ++used;
+    const std::string label =
+        (where & 0x10000u) ? fmt::format("[[+0x1FC]+0x{:X}]", where & 0xFFFFu) : fmt::format("[+0x{:X}]", where);
+    DiffRegionSample(base, g_diff.regions[where], p, bytes, label, c.number, now, stable_ms, lines);
+  }
+}
+
+// The end of a drawn frame (after CG_DrawActiveFrame): the carried people's offsets on their carriers.
+void CensusFrameEnd(uint8_t* base) {
+  const int trace = REXCVAR_GET(cod3_debug_drawn_trace), also = REXCVAR_GET(cod3_debug_drawn_trace_also);
+  auto traced = [&](const Census& c) {
+    return (trace > 0 && c.number == trace - 1) || (also > 0 && c.number == also - 1);
+  };
+  for (auto& kv : g_census) {
+    Census& c = kv.second;
+    if (c.frame != g_census_frame) continue;
+    if (IsVehicleType(c.type)) {
+      if (traced(c)) {
+        const float zero[3] = {};
+        CensusTrace(c, nullptr, zero, zero);
+        CensusViewTrace(base, kv.first, c, nullptr);
+      }
+      continue;
+    }
+    const uint32_t carrier = CensusCarrier(c, kv.first);
+    float gl[3] = {}, dl[3] = {};
+    const Census* v = nullptr;
+    if (carrier) {
+      if (c.carried_by == 0) c.carried_by = 2;
+      v = &g_census.find(carrier)->second;  // CensusCarrier found it there
+      float ga[3][3];
+      AnglesToAxis(v->angles, ga);
+      float gr[3], dr[3];
+      for (int i = 0; i < 3; ++i) {
+        gr[i] = c.game[i] - v->game[i];
+        dr[i] = c.drawn[i] - v->drawn[i];
+      }
+      for (int a = 0; a < 3; ++a) {
+        gl[a] = Dot(gr, ga[a]);
+        dl[a] = Dot(dr, v->axis[a]);
+      }
+      const float diff[3] = {dl[0] - gl[0], dl[1] - gl[1], dl[2] - gl[2]};
+      const float rel = Len(diff);
+      ++c.carried;
+      if (rel > kCensusOff) ++c.rel_offs;
+      c.max_rel = std::max(c.max_rel, rel);
+      if (std::fabs(diff[2]) > std::fabs(c.rel_z)) c.rel_z = diff[2];
+      c.local_min = std::min(c.local_min, gl[2]);
+      c.local_max = std::max(c.local_max, gl[2]);
+      c.carrier_number = v->number;
+      if (c.type == 11) {  // an actor riding: its pose (Census::pose_rises, feet_up)
+        float bmin, bmax, bmean, root[3];
+        if (BonesZ(base, kv.first, bmin, bmax, bmean, root)) {
+          if (c.pose_frame + 1 == g_census_frame && bmin - c.pose_min > kPoseRise) {
+            ++c.pose_rises;
+            c.max_rise = std::max(c.max_rise, bmin - c.pose_min);
+          }
+          if (bmin > kFeetUp) ++c.feet_up;
+          c.pose_min = bmin;
+          c.pose_frame = g_census_frame;
+        }
+      }
+    }
+    if (traced(c)) {
+      CensusTrace(c, v, gl, dl);
+      CensusViewTrace(base, kv.first, c, v);
+    }
+    if (trace > 0 && c.number == trace - 1) DiffSample(base, kv.first, c);
+  }
+}
+
+void CensusLog(uint8_t* base) {
+  const int setting = REXCVAR_GET(cod3_debug_drawn_census);
+  uint32_t drawn = 0, off_ents = 0, off_frames = 0, frames = 0, carried = 0, rel_ents = 0, rel_frames = 0, jumps = 0;
+  float max_off = 0.0f, up = 0.0f, down = 0.0f, max_rel = 0.0f, rel_z = 0.0f, max_jump = 0.0f;
+  struct Worst {
+    float score;
+    uint32_t ent;
+  };
+  std::vector<Worst> worst;
+  for (auto it = g_census.begin(); it != g_census.end();) {
+    Census& c = it->second;
+    if (c.frame + 2000 < g_census_frame) {  // not drawn for a while: forgotten
+      it = g_census.erase(it);
+      continue;
+    }
+    if (c.n > 0) {
+      ++drawn;
+      frames += c.n;
+      if (c.offs) {
+        ++off_ents;
+        off_frames += c.offs;
+      }
+      max_off = std::max(max_off, c.max_off);
+      up = std::max(up, c.max_up);
+      down = std::min(down, c.max_down);
+      if (c.carried) {
+        ++carried;
+        if (c.rel_offs) {
+          ++rel_ents;
+          rel_frames += c.rel_offs;
+        }
+        max_rel = std::max(max_rel, c.max_rel);
+        if (std::fabs(c.rel_z) > std::fabs(rel_z)) rel_z = c.rel_z;
+      }
+      jumps += c.jumps;
+      max_jump = std::max(max_jump, c.max_jump);
+      const float range = c.carried ? c.local_max - c.local_min : 0.0f;
+      const float score = (c.offs ? c.max_off + 10.0f * float(c.offs) / float(c.n) : 0.0f) +
+                          (c.rel_offs ? c.max_rel + 10.0f * float(c.rel_offs) / float(std::max(c.carried, 1u)) : 0.0f) +
+                          5.0f * float(c.jumps) + (range > 4.0f ? range : 0.0f) + float(c.pt_changes) +
+                          10.0f * float(c.pose_rises) + (c.feet_up ? 5.0f : 0.0f);
+      if (setting > 1 && score > 0.0f) worst.push_back(Worst{score, it->first});
+    }
+    ++it;
+  }
+  REXLOG_INFO("cod3: drawn census: {} frames; {} entities drawn in {} entity frames; off the game's path by more than "
+              "{:.0f} units: {} entities in {} frames (max {:.1f}; height +{:.1f} / {:.1f}); carried {}, off their "
+              "carrier {} in {} frames (max {:.1f}, height {:.1f}); game jumps {} (max {:.0f}); camera mode {}",
+              g_census_frames, drawn, frames, kCensusOff, off_ents, off_frames, max_off, up, down, carried, rel_ents,
+              rel_frames, max_rel, rel_z, jumps, max_jump, g_cam_mode);
+  std::sort(worst.begin(), worst.end(), [](const Worst& a, const Worst& b) { return a.score > b.score; });
+  for (size_t i = 0; i < worst.size() && i < size_t(setting); ++i) {
+    const uint32_t ent = worst[i].ent;
+    const Census& c = g_census[ent];
+    REXLOG_INFO("cod3: drawn census: worst {} ent {} type {} fl {:08X} pt {} frames {} off {} max {:.1f} up {:.1f} "
+                "down {:.1f} carrier {} by {} carried {} off {} max {:.1f} height {:.1f} game height {:.1f}..{:.1f} "
+                "jumps {} (max {:.0f}) at {:.0f} {:.0f} {:.0f} game z {:.1f} pt changes {} pose rises {} (max {:.1f}) "
+                "feet up {}",
+                i + 1, c.number, c.type, c.flags, g::ReadS32(base, ent + kEntPosType), c.n, c.offs, c.max_off,
+                c.max_up, c.max_down, c.carrier_number, c.carried_by, c.carried, c.rel_offs, c.max_rel, c.rel_z,
+                c.carried ? c.local_min : 0.0f, c.carried ? c.local_max : 0.0f, c.jumps, c.max_jump, c.at[0], c.at[1],
+                c.at[2], c.at_game_z, c.pt_changes, c.pose_rises, c.max_rise, c.feet_up);
+  }
+  for (auto& kv : g_census) {
+    Census& c = kv.second;
+    c.n = c.offs = c.jumps = c.carried = c.rel_offs = c.pt_changes = c.pose_rises = c.feet_up = 0;
+    c.max_off = c.max_up = c.max_down = c.max_jump = c.max_rel = c.rel_z = c.max_rise = 0.0f;
+    c.local_min = 1e9f;
+    c.local_max = -1e9f;
+    c.carrier_number = -1;
+  }
+  g_census_frames = 0;
+}
+
+// Once a drawn frame, before its entities are drawn: the last frame's carried people, then this frame.
+void CensusFrame(uint8_t* base) {
+  if (REXCVAR_GET(cod3_debug_drawn_census) <= 0) {
+    if (!g_census.empty()) g_census.clear();
+    return;
+  }
+  ++g_census_frame;
+  ++g_census_frames;
+  if (g_clock.time - g_census_since >= 1000 || g_clock.time < g_census_since) {
+    CensusLog(base);
+    g_census_since = g_clock.time;
+  }
+}
+
+// After CG_DrawActiveFrame: the frame's camera, then the frame's carried people.
+void CensusFrameDone(uint8_t* base) {
+  if (REXCVAR_GET(cod3_debug_drawn_census) <= 0 || !g_census_frame) return;
+  const uint32_t local = g::ReadU32(base, kActiveLocalClient);
+  if (local <= 3) {
+    const uint32_t cg = kCgBase + local * kCgSize;
+    ReadVec(base, cg + kCgViewOrigin, g_cens_cam);
+    ReadVec(base, cg + kCgViewAngles, g_cens_cam_ang);
+    for (int a = 0; a < 3; ++a) ReadVec(base, cg + kCgViewAxis + 12 * a, g_cens_cam_ax[a]);
+  }
+  CensusFrameEnd(base);
+}
+}  // namespace
+
 // CG_AddCEntity(centity): one entity into the scene, by its type (+0).
 REX_EXTERN(__imp__CG_AddCEntity);
 REX_HOOK_RAW(CG_AddCEntity) {
+  const uint32_t ent = ctx.r3.u32;  // [acct2-cod3-motion] cod3_debug_entity_steps
   if (DebugOn() && ValidGuest(ctx.r3.u32)) {
     DrawCounts& d = g_draw[g_kind];
     ++d.cents;
     ++d.cents_by_type[g::ReadU8(base, ctx.r3.u32) & 15];
   }
+  const uint64_t refents = g_es_refents;
   __imp__CG_AddCEntity(ctx, base);
+  // [acct2-cod3-motion] an entity the draw put into the scene this frame: where it went.
+  if (g_es_refents != refents && ValidGuest(ent) && REXCVAR_GET(cod3_debug_entity_steps) > 0)
+    EntityStepSample(base, ent);
+  if (g_es_refents != refents && ValidGuest(ent) && REXCVAR_GET(cod3_debug_drawn_census) > 0)
+    CensusSample(base, ent);  // [acct2-cod3-motion] cod3_debug_drawn_census
+}
+
+// [acct2-cod3-motion] 2026-11-07 (coordinator 23:50: count the calls to the actors' animscripted entry per actor, with
+// the frame) 0x823ECBB0 is the think of the actors' scripted-animation state: it names the state "animscripted" (actor
+// +0xAD4, the think's debug name, as Actor_Exposed_NonCombat_Think 0x823EB010 writes "noncombat_stop"), and it runs
+// once a game update while the state lasts. It ends the state when the scripted animation's handle (actor +0x298,
+// into the 256-entry table at 0x82A90178: pointer, generation) no longer holds or 0x823C7848(actor) says so (decomp
+// conditions, dev/waw-decomp/cod3/decomp/823E0000.c). Nothing in the engine calls it directly (calls.tsv). The
+// St-Bert bridge riders leave the state 13.5 s after their truck starts, on the crest, and stand up on their seats
+// (NOTES.md). This logs each actor's first call of a spell in the state, every call after which its state changed,
+// and every 60th call, with the scripted animation's object (the handle's entry and its first words: its time and
+// length, if they are there). Off by default; it logs only, and the game's function runs unchanged. Campaign only:
+// server_step.cpp is not part of cod3mp, which has no actors.
+REXCVAR_DEFINE_BOOL(cod3_debug_animscripted_log, false, "cod3",
+                    "Log the actors' scripted-animation think (0x823ECBB0): each actor's first call of a spell, every "
+                    "call that changed its state, and every 60th, with the frame, game time, caller, arguments and the "
+                    "scripted animation's object")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace {
+constexpr uint32_t kLevelInterface = 0x82A2A2A0;  // the engine's functions for the level (G_InitLevelInterface)
+constexpr uint32_t kLevelInterfaceSlots = 1024;
+constexpr uint32_t kAnimscriptedEntry = 0x823ECBB0;
+constexpr uint32_t kActorAnimState = 0x29C;   // the animscript's slot (AnimStateOf names it)
+constexpr uint32_t kActorThinkName = 0xAD4;   // the think state's name ("animscripted", "noncombat_stop", ...)
+constexpr uint32_t kArgDumpWords = 8;         // words logged at each argument that points somewhere readable
+constexpr uint32_t kActorScriptedAnim = 0x298;     // the scripted animation's handle: index in the low 8 bits
+constexpr uint32_t kScriptedAnimTable = 0x82A90178;  // 256 entries of (pointer, generation)
+constexpr uint32_t kScriptedAnimWords = 24;          // words logged at the scripted animation's object
+constexpr uint32_t kAsEvery = 60;                    // and every this many calls of a spell
+
+struct AsActor {
+  uint32_t calls = 0;        // all calls
+  uint32_t spell_calls = 0;  // calls in this spell (calls in consecutive game updates)
+  uint64_t last_update = 0;
+};
+std::mutex g_as_mutex;
+std::unordered_map<int32_t, AsActor> g_as_calls;  // by entity number
+bool g_as_slots_logged = false;
+
+// The scripted animation the actor's handle names: "h HANDLE entry PTR gen G (held|stale) [words] f [floats]".
+std::string ScriptedAnimText(uint8_t* base, uint32_t actor) {
+  if (!actor) return "-";
+  const uint32_t h = g::ReadU32(base, actor + kActorScriptedAnim);
+  const uint32_t entry = kScriptedAnimTable + 8 * (h & 0xFF);
+  const uint32_t p = g::ReadU32(base, entry), gen = g::ReadU32(base, entry + 4);
+  std::string out = fmt::format("h {:08X} entry {:08X} gen {:X} {}", h, p, gen, (h >> 8) == gen ? "held" : "stale");
+  if (p >= 0x10000 && GuestReadable(p, 4 * kScriptedAnimWords)) {
+    std::string words = " [", floats = " f [";
+    for (uint32_t w = 0; w < kScriptedAnimWords; ++w) {
+      const uint32_t v = g::ReadU32(base, p + 4 * w);
+      float f;
+      std::memcpy(&f, &v, 4);
+      words += fmt::format("{}{:08X}", w ? " " : "", v);
+      floats += fmt::format("{}{:g}", w ? " " : "", f);
+    }
+    out += words + "]" + floats + "]";
+  }
+  return out;
+}
+
+// The entity an argument names: an entity (its actor at +0x214 points back at it) or an actor (its +0 the entity).
+uint32_t ActorEntityOf(uint8_t* base, uint32_t v, uint32_t& actor) {
+  if (!DiffPointer(v) || !GuestReadable(v, kDiffActorAt + 4)) return 0;
+  const uint32_t a = g::ReadU32(base, v + kDiffActorAt);
+  if (DiffPointer(a) && GuestReadable(a, kDiffActorBytes) && g::ReadU32(base, a) == v) {
+    actor = a;
+    return v;
+  }
+  const uint32_t e = g::ReadU32(base, v);
+  if (DiffPointer(e) && GuestReadable(e, kDiffActorAt + 4) && g::ReadU32(base, e + kDiffActorAt) == v &&
+      GuestReadable(v, kDiffActorBytes)) {
+    actor = v;
+    return e;
+  }
+  return 0;
+}
+
+// Text an argument points at (an animation's name, say), wherever the guest can read it, or "".
+std::string ArgText(uint8_t* base, uint32_t v) {
+  if (v < 0x10000 || !GuestReadable(v, 1)) return {};
+  std::string t;
+  for (uint32_t i = 0; i < 40; ++i) {
+    if (((v + i) & 0xFFF) == 0 && !GuestReadable(v + i, 1)) return {};
+    const uint8_t ch = g::ReadU8(base, v + i);
+    if (ch == 0) break;
+    if (ch < 0x20 || ch >= 0x7F || ch == '"') return {};
+    t.push_back(char(ch));
+  }
+  return t.size() >= 3 ? t : std::string();
+}
+
+// The actor's animscript and think state, as "scripted/animscripted".
+std::string ActorStates(uint8_t* base, uint32_t actor) {
+  if (!actor) return "-";
+  std::string s = AnimStateOf(base, g::ReadU32(base, actor + kActorAnimState));
+  const std::string think = DiffText(base, g::ReadU32(base, actor + kActorThinkName));
+  return (s.empty() ? std::string("-") : s) + "/" + (think.empty() ? std::string("-") : think);
+}
+
+// Each argument: its value, and its text or its first words when it points somewhere readable.
+std::string ArgsText(uint8_t* base, const uint32_t* args, size_t count, uint32_t ent, uint32_t actor) {
+  std::string out;
+  for (size_t i = 0; i < count; ++i) {
+    const uint32_t v = args[i];
+    out += fmt::format(" r{} {:08X}", 3 + i, v);
+    if (v == 0 || v == ent || v == actor) continue;
+    const std::string text = ArgText(base, v);
+    if (!text.empty()) {
+      out += fmt::format(" \"{}\"", text);
+    } else if (v >= 0x10000 && GuestReadable(v, 4 * kArgDumpWords)) {
+      out += " [";
+      for (uint32_t w = 0; w < kArgDumpWords; ++w)
+        out += fmt::format("{}{:08X}", w ? " " : "", g::ReadU32(base, v + 4 * w));
+      out += "]";
+    }
+  }
+  return out;
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_823ECBB0);
+REX_HOOK_RAW(sub_823ECBB0) {
+  if (!REXCVAR_GET(cod3_debug_animscripted_log)) {
+    __imp__sub_823ECBB0(ctx, base);
+    return;
+  }
+  const uint32_t args[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
+  const double fargs[3] = {ctx.f1.f64, ctx.f2.f64, ctx.f3.f64};
+  const uint32_t caller = uint32_t(ctx.lr);
+  uint32_t actor = 0, ent = 0;
+  int named_by = -1;
+  for (int i = 0; i < 3 && !ent; ++i) {
+    ent = ActorEntityOf(base, args[i], actor);
+    if (ent) named_by = 3 + i;
+  }
+  const int32_t number = ent ? g::ReadS32(base, ent + kEntNumber) : -1;
+  const std::string before = ActorStates(base, actor);
+  uint32_t count = 0, spell = 0;
+  bool log_slots = false;
+  {
+    std::lock_guard<std::mutex> lock(g_as_mutex);
+    AsActor& a = g_as_calls[number];
+    a.spell_calls = (a.calls && a.last_update + 1 >= g_clock.updates) ? a.spell_calls + 1 : 1;
+    a.last_update = g_clock.updates;
+    count = ++a.calls;
+    spell = a.spell_calls;
+    log_slots = !g_as_slots_logged;
+    g_as_slots_logged = true;
+  }
+  if (log_slots) {  // once: whether the level's interface holds it
+    std::string slots;
+    for (uint32_t i = 0; i < kLevelInterfaceSlots; ++i)
+      if (g::ReadU32(base, kLevelInterface + 4 * i) == kAnimscriptedEntry) slots += fmt::format(" {}", i);
+    REXLOG_INFO("cod3: animscripted entry {:08X} in the level interface {:08X} at slot(s):{}", kAnimscriptedEntry,
+                kLevelInterface, slots.empty() ? " none" : slots);
+  }
+  const bool first = spell == 1;
+  const std::string anim_before = first ? ScriptedAnimText(base, actor) : std::string();
+  const std::string arg_text = first ? ArgsText(base, args, std::size(args), ent, actor) : std::string();
+  __imp__sub_823ECBB0(ctx, base);
+  const std::string after = ActorStates(base, actor);
+  if (!first && after == before && spell % kAsEvery != 0) return;
+  REXLOG_INFO("cod3: animscripted call {} (spell {}) ent {} (r{}) frame {} update {} time {} caller {:08X}{} f1-f3 "
+              "{:g} {:g} {:g} state {} -> {} returned {:08X} anim {}{}",
+              count, spell, number, named_by, g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime), caller,
+              arg_text, fargs[0], fargs[1], fargs[2], before, after, ctx.r3.u32,
+              first ? "before " + anim_before + " after " : "", ScriptedAnimText(base, actor));
+}
+
+// [acct2-cod3-motion] 2026-11-07 (coordinator 23:58: find what sets bit 0x8 at the task's +0x10) The only code that
+// sets it (decomp, 823C0000.c / 823D0000.c / 82520000.c) is three stop paths, each of which first calls the actor's
+// current animscript's exit function (the slot at actor +0x29C, +4), then marks the scripted task finished (+0x10 |=
+// 0x4C) and clears the handle at actor +0x298:
+//   0x823C7760(actor), called from 0x824A0634 and 0x824B2414 (level-facing code: 0x824B22C0 is called by 0x824B2D50
+//   and 0x824B2D80, next to the level interface), and then 0x82527808(entity) when entity +0x200 is set;
+//   0x823DE438(actor), called from 0x823E2034 and 0x823E52E4 (0x823E5208, which ~12 actor states call), which also
+//   notifies the entity (0x824927C0 with the string id at 0x82A50F00).
+// With cod3_debug_animscripted_log each call is logged with the actor's entity, the game time, its caller and the
+// return addresses up the guest stack (to find the level code that stops the riders' seat animation at 13.5 s).
+namespace {
+std::string GuestBackChain(uint8_t* base, uint32_t sp, int frames) {
+  std::string out;
+  for (int i = 0; i < frames; ++i) {
+    if (sp < 0x10000 || (sp & 3) || !GuestReadable(sp, 4)) break;
+    const uint32_t next = g::ReadU32(base, sp);
+    if (next <= sp || !GuestReadable(next - 8, 8)) break;
+    out += fmt::format(" {:08X}", g::ReadU32(base, next - 8));  // the LR the caller saved below its back chain
+    sp = next;
+  }
+  return out.empty() ? " -" : out;
+}
+
+void LogTaskStop(PPCContext& ctx, uint8_t* base, const char* which, bool arg_is_entity) {
+  uint32_t actor = 0;
+  uint32_t ent = arg_is_entity ? ctx.r3.u32 : 0;
+  if (!arg_is_entity) ent = ActorEntityOf(base, ctx.r3.u32, actor);
+  const int32_t number = ent && GuestReadable(ent, kEntNumber + 4) ? g::ReadS32(base, ent + kEntNumber) : -1;
+  REXLOG_INFO("cod3: animscripted stop {} ent {} frame {} update {} time {} caller {:08X} stack{} state {} anim {}",
+              which, number, g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime), uint32_t(ctx.lr),
+              GuestBackChain(base, ctx.r1.u32, 8), ActorStates(base, actor), ScriptedAnimText(base, actor));
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_823C7760);
+REX_HOOK_RAW(sub_823C7760) {
+  if (REXCVAR_GET(cod3_debug_animscripted_log)) LogTaskStop(ctx, base, "823C7760", false);
+  __imp__sub_823C7760(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_823DE438);
+REX_HOOK_RAW(sub_823DE438) {
+  if (REXCVAR_GET(cod3_debug_animscripted_log)) LogTaskStop(ctx, base, "823DE438", false);
+  __imp__sub_823DE438(ctx, base);
+}
+
+REX_EXTERN(__imp__sub_82527808);
+REX_HOOK_RAW(sub_82527808) {
+  if (REXCVAR_GET(cod3_debug_animscripted_log)) LogTaskStop(ctx, base, "82527808", true);
+  __imp__sub_82527808(ctx, base);
+}
+
+// [acct2-cod3-motion] 2026-11-08 (coordinator 00:11: log the writer of the actor's state stack when `scripted` ends)
+// The actor's think states are a stack: actor +0xD4 the top's index, the states at actor +0xB8 + 4 * index (0xF the
+// scripted animation's; decomp writers of +0xD4: 0x823CC2A8 pushes (actor, state), 0x823C8D40 pops, 0x823C8E18 and
+// 0x823C8EF8 set it, 0x823CC210 clears it). With cod3_debug_animscripted_log each of them is logged, before and after,
+// when the traced entity (cod3_debug_drawn_trace) is the actor or the scripted state is on top before or after: the
+// stack, the argument, the caller and 8 return addresses up the guest stack. The St-Bert riders leave `scripted` for
+// combat ~13.5 s into their ride with their seat animation still playing; this names who pushes the combat state.
+namespace {
+constexpr uint32_t kActorStateTop = 0xD4;     // the state stack's top index
+constexpr uint32_t kActorStateStack = 0xB8;   // its entries, 4 bytes each
+constexpr uint32_t kStateScripted = 0xF;
+constexpr int32_t kStateStackMax = 16;
+
+struct StateStack {
+  int32_t top = -1;
+  uint32_t states[kStateStackMax] = {};
+};
+
+StateStack ReadStateStack(uint8_t* base, uint32_t actor) {
+  StateStack s;
+  if (!actor || !GuestReadable(actor, kActorStateStack + 4 * kStateStackMax)) return s;
+  const int32_t top = g::ReadS32(base, actor + kActorStateTop);
+  if (top < 0 || top >= kStateStackMax) return s;
+  s.top = top;
+  for (int32_t i = 0; i <= top; ++i) s.states[i] = g::ReadU32(base, actor + kActorStateStack + 4 * uint32_t(i));
+  return s;
+}
+
+std::string StateStackText(const StateStack& s) {
+  if (s.top < 0) return "-";
+  std::string out;
+  for (int32_t i = 0; i <= s.top; ++i) out += fmt::format("{}{:X}", i ? "," : "", s.states[i]);
+  return out;
+}
+
+bool StateTopIs(const StateStack& s, uint32_t state) { return s.top >= 0 && s.states[s.top] == state; }
+
+// Calls the original and logs it when it concerns the traced entity or the scripted state.
+template <typename Original>
+void LogStateOp(PPCContext& ctx, uint8_t* base, const char* which, Original original) {
+  if (!REXCVAR_GET(cod3_debug_animscripted_log)) {
+    original(ctx, base);
+    return;
+  }
+  const uint32_t r3 = ctx.r3.u32, r4 = ctx.r4.u32, r5 = ctx.r5.u32, lr = uint32_t(ctx.lr), sp = ctx.r1.u32;
+  uint32_t actor = 0;
+  const uint32_t ent = ActorEntityOf(base, r3, actor);
+  const StateStack before = ReadStateStack(base, actor);
+  const std::string stack = actor ? GuestBackChain(base, sp, 8) : std::string();
+  const std::string think_before = actor ? ActorStates(base, actor) : std::string();
+  original(ctx, base);
+  if (!actor) return;
+  const StateStack after = ReadStateStack(base, actor);
+  const int32_t number = g::ReadS32(base, ent + kEntNumber);
+  const int32_t trace = REXCVAR_GET(cod3_debug_drawn_trace);
+  const bool traced = trace > 0 && number == trace - 1;
+  if (!traced && !StateTopIs(before, kStateScripted) && !StateTopIs(after, kStateScripted)) return;
+  REXLOG_INFO("cod3: actor state {} ent {} frame {} update {} time {} r4 {:08X} r5 {:08X} stack [{}] -> [{}] think {} -> {} "
+              "caller {:08X} guest{}",
+              which, number, g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime), r4, r5,
+              StateStackText(before), StateStackText(after), think_before, ActorStates(base, actor), lr, stack);
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_823CC2A8);
+REX_HOOK_RAW(sub_823CC2A8) { LogStateOp(ctx, base, "push 823CC2A8", __imp__sub_823CC2A8); }
+
+REX_EXTERN(__imp__sub_823C8D40);
+REX_HOOK_RAW(sub_823C8D40) { LogStateOp(ctx, base, "pop 823C8D40", __imp__sub_823C8D40); }
+
+REX_EXTERN(__imp__sub_823C8E18);
+REX_HOOK_RAW(sub_823C8E18) { LogStateOp(ctx, base, "set 823C8E18", __imp__sub_823C8E18); }
+
+REX_EXTERN(__imp__sub_823C8EF8);
+REX_HOOK_RAW(sub_823C8EF8) { LogStateOp(ctx, base, "set 823C8EF8", __imp__sub_823C8EF8); }
+
+REX_EXTERN(__imp__sub_823CC210);
+REX_HOOK_RAW(sub_823CC210) { LogStateOp(ctx, base, "clear 823CC210", __imp__sub_823CC210); }
+
+// [acct2-cod3-motion] 2026-11-08 (the bridge riders; NOTES "Start here" 00:25) The scripted state's think 0x823ECBB0
+// calls 0x8255F508(entity), which runs the entity's scripted animation once a game update (its CoD2 / WaW relatives are
+// G_Animscripted-like), and pops the state when the entity's record at +0x39C is gone, even while the seat task still
+// holds. The record (0x70 bytes) is made by 0x825547E8, which the level's animscripted start 0x824B22C0 calls: +0x40
+// the animation (its index in the low half), +0x48 set on its first update, +0x50 a blend-out time. With +0x50 > 0,
+// 0x8255F508 ends the animation once its time (the float at 0x82A59DC0 + 52 * slot; slot = the ushort at the entity's
+// anim tree (+0x228) + 24 + 2 * index) passes (length - blend) / length: it notifies the entity and clears +0x40. On
+// the next update it frees the record and the think pops the state. With cod3_debug_animscripted_log, for actors
+// (type 11), this logs:
+// - 0x8255F508 for the traced entity (cod3_debug_drawn_trace) at every call, and for the others when the call changed
+//   the record or its animation, and every 60th call;
+// - 0x825547E8's arguments and the record it made;
+// - the traced entity's notifies (0x824927C0: the id, the caller; the scripted end's id is named).
+// It logs only; the game's functions run unchanged. Campaign only (no actors in cod3mp).
+namespace {
+constexpr uint32_t kEntScripted = 0x39C;          // the scripted-animation record
+constexpr uint32_t kEntAnimTree = 0x228;          // the entity's anim tree (0x823D0950 makes an actor's)
+constexpr uint32_t kScriptedRecordBytes = 0x70;
+constexpr uint32_t kAnimSlotTable = 0x82A59DB0;   // 52-byte entries; the time 0x8255F508 compares is at +16
+constexpr uint32_t kAnimSlotBytes = 52;
+constexpr uint32_t kScriptedEndId = 0x82AB9ADC;   // the end notify's id, once 0x8255F508 has made it
+constexpr uint32_t kScriptedEndText = 0x82065B98;  // and its text
+
+std::unordered_map<int32_t, uint32_t> g_scripted_calls;  // by entity number; guarded by g_as_mutex
+
+bool TracedNumber(int32_t number) {
+  const int32_t trace = REXCVAR_GET(cod3_debug_drawn_trace);
+  return trace > 0 && number == trace - 1;
+}
+
+bool ActorEntity(uint8_t* base, uint32_t ent) {
+  return ValidGuest(ent) && GuestReadable(ent, kEntScripted + 4) && g::ReadU8(base, ent) == 11;
+}
+
+uint32_t ScriptedAnim(uint8_t* base, uint32_t rec) {
+  return rec && GuestReadable(rec, kScriptedRecordBytes) ? g::ReadU32(base, rec + 0x40) : 0;
+}
+
+// "rec R anim A +44 X started S +4C X blend B +54 X slot N time T [the slot's 13 words as floats]".
+std::string ScriptedRecordText(uint8_t* base, uint32_t ent) {
+  const uint32_t rec = g::ReadU32(base, ent + kEntScripted);
+  if (!rec) return "rec 0";
+  if (!GuestReadable(rec, kScriptedRecordBytes)) return fmt::format("rec {:08X} unreadable", rec);
+  const uint32_t anim = g::ReadU32(base, rec + 0x40);
+  std::string out = fmt::format("rec {:08X} anim {:08X} +44 {:08X} started {} +4C {:08X} blend {:g} +54 {:08X}", rec,
+                                anim, g::ReadU32(base, rec + 0x44), g::ReadU32(base, rec + 0x48),
+                                g::ReadU32(base, rec + 0x4C), g::ReadF32(base, rec + 0x50),
+                                g::ReadU32(base, rec + 0x54));
+  const uint32_t tree = g::ReadU32(base, ent + kEntAnimTree);
+  const uint32_t index = anim & 0xFFFF;
+  if (!ValidGuest(tree) || !GuestReadable(tree + 24 + 2 * index, 2)) return out + " tree -";
+  const uint32_t slot = g::ReadU16(base, tree + 24 + 2 * index);
+  out += fmt::format(" slot {}", slot);
+  const uint32_t entry = kAnimSlotTable + kAnimSlotBytes * slot;
+  if (slot && GuestReadable(entry, kAnimSlotBytes)) {
+    out += fmt::format(" time {:g} [", g::ReadF32(base, entry + 16));
+    for (uint32_t w = 0; w < kAnimSlotBytes / 4; ++w)
+      out += fmt::format("{}{:g}", w ? " " : "", g::ReadF32(base, entry + 4 * w));
+    out += "]";
+  }
+  return out;
+}
+
+std::string GuestVec3Text(uint8_t* base, uint32_t p) {
+  if (!ValidGuest(p) || !GuestReadable(p, 12)) return "-";
+  return fmt::format("({:g} {:g} {:g})", g::ReadF32(base, p), g::ReadF32(base, p + 4), g::ReadF32(base, p + 8));
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_8255F508);
+REX_HOOK_RAW(sub_8255F508) {
+  const uint32_t ent = ctx.r3.u32;
+  if (!REXCVAR_GET(cod3_debug_animscripted_log) || !ActorEntity(base, ent)) {
+    __imp__sub_8255F508(ctx, base);
+    return;
+  }
+  const int32_t number = g::ReadS32(base, ent + kEntNumber);
+  const uint32_t caller = uint32_t(ctx.lr);
+  const uint32_t rec = g::ReadU32(base, ent + kEntScripted);
+  const uint32_t anim = ScriptedAnim(base, rec);
+  const std::string before = ScriptedRecordText(base, ent);
+  __imp__sub_8255F508(ctx, base);
+  const uint32_t rec_after = g::ReadU32(base, ent + kEntScripted);
+  const uint32_t anim_after = ScriptedAnim(base, rec_after);
+  uint32_t count = 0;
+  {
+    std::lock_guard<std::mutex> lock(g_as_mutex);
+    count = ++g_scripted_calls[number];
+  }
+  const bool changed = rec != rec_after || anim != anim_after;
+  if (!changed && !TracedNumber(number) && count % kAsEvery != 0) return;
+  REXLOG_INFO("cod3: scripted think ent {} call {} frame {} update {} time {} caller {:08X}{} before {} after {}", number,
+              count, g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime), caller,
+              changed ? " CHANGED" : "", before, ScriptedRecordText(base, ent));
+}
+
+REX_EXTERN(__imp__sub_825547E8);
+REX_HOOK_RAW(sub_825547E8) {
+  const uint32_t ent = ctx.r3.u32;
+  if (!REXCVAR_GET(cod3_debug_animscripted_log) || !ActorEntity(base, ent)) {
+    __imp__sub_825547E8(ctx, base);
+    return;
+  }
+  const uint32_t r4 = ctx.r4.u32, r5 = ctx.r5.u32, r6 = ctx.r6.u32, r7 = ctx.r7.u32, r8 = ctx.r8.u32, r9 = ctx.r9.u32;
+  const double f1 = ctx.f1.f64, f2 = ctx.f2.f64;
+  const uint32_t caller = uint32_t(ctx.lr);
+  const std::string stack = GuestBackChain(base, ctx.r1.u32, 6);
+  const std::string origin = GuestVec3Text(base, r4), angles = GuestVec3Text(base, r5);
+  const std::string before = ScriptedRecordText(base, ent);
+  __imp__sub_825547E8(ctx, base);
+  REXLOG_INFO("cod3: scripted start ent {} frame {} update {} time {} caller {:08X} stack{} origin {} angles {} r6 {:08X} "
+              "r7 {:08X} r8 {:08X} r9 {:08X} f1 {:g} f2 {:g} before {} after {}",
+              g::ReadS32(base, ent + kEntNumber), g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime),
+              caller, stack, origin, angles, r6, r7, r8, r9, f1, f2, before, ScriptedRecordText(base, ent));
+}
+
+REX_EXTERN(__imp__sub_824927C0);
+REX_HOOK_RAW(sub_824927C0) {
+  if (REXCVAR_GET(cod3_debug_animscripted_log) && REXCVAR_GET(cod3_debug_drawn_trace) > 0 &&
+      ActorEntity(base, ctx.r3.u32)) {
+    const int32_t number = g::ReadS32(base, ctx.r3.u32 + kEntNumber);
+    if (TracedNumber(number)) {
+      const uint32_t id = ctx.r4.u32;
+      const bool end = id != 0 && id == g::ReadU32(base, kScriptedEndId);
+      REXLOG_INFO("cod3: scripted notify ent {} id {:08X}{} frame {} update {} time {} caller {:08X}", number, id,
+                  end ? " (the scripted end \"" + ArgText(base, kScriptedEndText) + "\")" : std::string(),
+                  g_census_frame, g_clock.updates, g::ReadS32(base, kLevelTime), uint32_t(ctx.lr));
+    }
+  }
+  __imp__sub_824927C0(ctx, base);
 }
 
 // [claude-9b-think] 2026-10-27 UNTESTED cod3_server_smooth_body: 0x82442338(entity), CG_AddCEntity's draw of types 14
@@ -2201,6 +4463,7 @@ REX_HOOK_RAW(sub_8244B610) {
 // RE_AddRefEntityToScene(refEntity): a model into the renderer's scene.
 REX_EXTERN(__imp__RE_AddRefEntityToScene);
 REX_HOOK_RAW(RE_AddRefEntityToScene) {
+  ++g_es_refents;  // [acct2-cod3-motion] cod3_debug_entity_steps: CG_AddCEntity's draw put one in
   if (DebugOn()) ++g_draw[g_kind].refents;
   __imp__RE_AddRefEntityToScene(ctx, base);
 }

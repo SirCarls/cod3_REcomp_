@@ -39,3 +39,7 @@ uint32_t ngl_texture_find(uint32_t name);
 /* nglFindTexture(name) (0x00063530, the texture manager's find): the same texture, not counted up. The menus look
  * their backgrounds up by name with it. */
 uint32_t ngl_texture_lookup(uint32_t name);
+
+/* [rexglue-native] 2026-11-11: 1 if texture is one ngl_texture_load made under the NGL name `name` (lower case,
+ * without its 4-byte hash), else 0. The loading screen's map is every mission's "texload". */
+int ngl_texture_named(uint32_t texture, const char *name);

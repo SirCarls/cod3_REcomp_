@@ -96,4 +96,30 @@ void AdoptFromGuest(PPCContext& ctx, uint8_t* base);
 // player's cg_fov and cg_fovScale are set again and any scripted view ends.
 void OnLevelStart(PPCContext& ctx, uint8_t* base);
 
+// [acct2-ocr] 2026-11-07 cod3mp split screen: players 2 to 4's own field of view and FOV scale (owner 22:24 "Make
+// sure these controller options account for split-screen. Make sure you do this for everything", 22:26 "every
+// gameplay altering settings"): cod3_fov_p2 .. _p4 (65-160) and cod3_fov_scale_p2 .. _p4 (0.2-2), -1 (the
+// default) = player 1's cg_fov / cg_fovScale. CG_GetViewFov runs for each local client's view, so a player's own
+// values go on that view only, kept within 65-165 as player 1's are; while a level script or an interaction has
+// cgame's cg_fov, that wins, as it does for player 1. The campaign has player 1 only.
+inline constexpr int kViewPlayers = kMultiplayer ? 4 : 1;
+// player 1 to 3 (players 2 to 4): the setting, or -1 when it is player 1's. Any thread.
+float SplitFov(int player);
+float SplitScale(int player);
+// -1 hands it back to player 1's; else limited to 65-160 / 0.2-2. The caller saves (F2 does; the pause menu
+// calls protected_dvars::SaveSettings).
+void SetSplitFov(int player, float fov);
+void SetSplitScale(int player, float scale);
+// What `player`'s view uses (player 0: the player's cg_fov / cg_fovScale), within 65-165. Any thread.
+Settings ViewSettings(int player);
+
+// [acct2-ocr] 2026-11-07 The vehicle field of view scale (cod3_vehicle_fov_scale, 0.5-2: in a vehicle and on a
+// tank's gun) of `player`'s view: cod3mp's players 2 to 4 have their own, cod3_vehicle_fov_scale_p2 .. _p4 (-1, the
+// default: player 1's). The pause menu's VEHICLE FOV SCALE row (game/menu_port_rows.h). Any thread.
+double VehicleScale(int player);
+// Player 1 to 3's own, or -1 when it is player 1's (always -1 for player 0 and in the campaign).
+double OwnVehicleScale(int player);
+// Player 0 sets cod3_vehicle_fov_scale (0.5-2); players 1 to 3 their own, -1 handing it back. The caller saves.
+void SetVehicleScale(int player, double scale);
+
 }  // namespace cod3::fov

@@ -6,7 +6,9 @@
 // x360-family's for CoD4's 360 programs (dev/x360-family/cod4_360/<sp|mp>/names.tsv), checked in the generated code.
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <mutex>
@@ -22,6 +24,8 @@
 #else
 #include "generated/default/cod4_pch.h"
 #endif
+
+#include "cod4_f2.h"  // [f2-menus] the F2 window's console page and its commands
 
 REXCVAR_DEFINE_BOOL(cod4_log_console, true, "cod4",
                     "Copy the game's console output into the log (\"cod4: [console N]\")");
@@ -99,6 +103,7 @@ void cod4_console_print(PPCContext& ctx, uint8_t* base) {
   last.assign(line);
   last_channel = channel;
   REXLOG_INFO("cod4: [console {}] {}", last_channel, line);
+  cod4::f2ui::NoteConsoleLine(last_channel, line);  // [f2-menus] F2's CONSOLE page
 }
 
 void Cod4CensusFrame(uint8_t* base);  // cod4_census.cpp
@@ -143,8 +148,17 @@ void ApplyFov(uint8_t* base) {
 // the first frame); runs cod4_debug_command once, after cod4_debug_command_delay seconds, through the console buffer
 // (how a test reaches a level, as World at War's).
 void cod4_frame_start(PPCContext& ctx, uint8_t* base) {
+  cod4::f2ui::LimitFrameRate();  // [f2-menus] 2026-11-11 cod4_max_fps: the wait at the frame's start
   Cod4CensusFrame(base);  // the census and the audit's counters (cod4_census.cpp), off unless asked for
   ApplyFov(base);         // cod4_fov, off unless set
+  // [f2-menus] Commands from the F2 window (typed on its CONSOLE page, or a row that sets a game dvar), run through
+  // the console buffer like the debug command below.
+  if (cod4::f2ui::HasCommands()) {
+    static std::vector<std::string> f2_commands;
+    cod4::f2ui::TakeCommands(f2_commands);
+    for (const std::string& command : f2_commands) QueueConsoleCommand(ctx, base, command);
+    f2_commands.clear();
+  }
   static const auto first_frame = std::chrono::steady_clock::now();
   const auto since_first_frame = std::chrono::steady_clock::now() - first_frame;
 #ifndef COD4_MP
@@ -237,3 +251,139 @@ REX_HOOK_RAW(sub_821DB338) {
   __imp__sub_821DB338(ctx, base);
 }
 #endif  // !COD4_MP
+
+#ifdef COD4_MP
+// [waw-decomp] 2026-11-09: `cod4_move_snap_hz`, the jump height at any frame rate (multiplayer). World at War's fix
+// (recomp_waw/src/waw_hooks.cpp, waw_move_snap_hz, measured 11-08/11-09) carried over.
+//
+// Multiplayer's PmoveSingle 0x82332168 ends with Sys_SnapVector 0x821A34D8(&ps->velocity) at 0x82332C8C (its only
+// caller): each velocity component through fctiwz and back, a cut toward zero to whole units, once a movement step.
+// Pmove 0x82332CA0 runs one step a drawn frame (at most 66 ms), so while a jump rises the cuts take 0 to 1 unit/s of
+// upward speed a step, and the more steps a second, the lower the jump (World at War: about 38 units at the 360's
+// 60 fps, about 31 at 250 fps and up). The campaign program has no Sys_SnapVector at all: its PmoveSingle 0x82159820
+// ends without the cut (read 2026-11-09), so it needs nothing.
+//
+// With N > 0 the cut runs only on a step whose end is past a boundary of a fixed N Hz clock on the command time
+// (floor(end * N / 1000) > floor(start * N / 1000)), so a jump has the same cuts at any frame rate; 60, the default,
+// gives the 360's own height (the console drew at 60 fps). The step comes from cod4_move_step's record when its end is
+// this player's commandTime, else the game's own cut runs. The server's moves and the client's prediction use the same
+// times, so the two agree. 0 = the game's own cut on every step.
+REXCVAR_DEFINE_INT32(cod4_move_snap_hz, 60, "cod4",
+                     "Multiplayer: round the player's speed only at this rate (Hz), so the jump height doesn't change "
+                     "with the frame rate; 60 = the console's own height, 0 = the game's own rounding every frame");
+REXCVAR_DEFINE_BOOL(cod4_log_jumps, false, "cod4",
+                    "Debug (multiplayer): log how high each jump rises (the first 60 jumps), to check "
+                    "cod4_move_snap_hz at different frame rates");
+
+namespace {
+// The step this thread's Pmove is about to run, recorded by cod4_move_step (Pmove 0x82332CA0 at 0x82332D0C, right
+// after `add r11,r10,r11`: r10 the step's start, ps->commandTime; r11 its end). The server thread and the main thread
+// (prediction) each have their own.
+struct MoveStepRecord {
+  int32_t start = 0;
+  int32_t end = 0;
+  bool valid = false;
+};
+thread_local MoveStepRecord t_move_step;
+
+constexpr uint32_t kSnapReturnAddress = 0x82332C90u;  // after PmoveSingle's `bl 0x821A34D8`
+constexpr uint32_t kPlayerStateCommandTime = 0x00;    // playerState_s.commandTime
+constexpr uint32_t kPlayerStateVelocity = 0x28;       // playerState_s.velocity (after origin at 0x1C)
+
+std::atomic<uint64_t> g_snaps{0};
+std::atomic<uint64_t> g_snaps_skipped{0};
+std::atomic<uint64_t> g_snaps_unmatched{0};
+
+int64_t FloorDiv(int64_t value, int64_t divisor) {
+  const int64_t quotient = value / divisor;
+  return (value % divisor != 0 && (value < 0) != (divisor < 0)) ? quotient - 1 : quotient;
+}
+
+uint32_t ReadGuestWord(const uint8_t* base, uint32_t address) {
+  uint32_t value;
+  std::memcpy(&value, base + address, sizeof(value));
+  return __builtin_bswap32(value);
+}
+
+float ReadGuestFloat(const uint8_t* base, uint32_t address) {
+  const uint32_t bits = ReadGuestWord(base, address);
+  float value;
+  std::memcpy(&value, &bits, sizeof(value));
+  return value;
+}
+
+// cod4_log_jumps: each jump's rise, from the ground height (the last step with almost no upward speed) to the highest
+// origin before the upward speed runs out. Each thread that runs Pmove (the server, the client's prediction) watches
+// its own steps; the log line says which.
+constexpr uint32_t kPlayerStateOrigin = 0x1C;  // playerState_s.origin
+struct JumpWatch {
+  bool rising = false;
+  float ground_z = 0.0f;
+  float top_z = 0.0f;
+  int thread_index = -1;
+};
+thread_local JumpWatch t_jump;
+std::atomic<int> g_jump_threads{0};
+std::atomic<int> g_jumps_logged{0};
+
+void WatchJump(const uint8_t* base, uint32_t ps) {
+  const float z = ReadGuestFloat(base, ps + kPlayerStateOrigin + 8);
+  const float up = ReadGuestFloat(base, ps + kPlayerStateVelocity + 8);
+  if (!t_jump.rising) {
+    if (std::fabs(up) < 1.0f) {
+      t_jump.ground_z = z;
+    } else if (up > 100.0f) {
+      t_jump.rising = true;
+      t_jump.top_z = z;
+    }
+    return;
+  }
+  t_jump.top_z = std::max(t_jump.top_z, z);
+  if (up > 0.0f) return;
+  t_jump.rising = false;
+  if (t_jump.thread_index < 0) t_jump.thread_index = g_jump_threads.fetch_add(1, std::memory_order_relaxed);
+  if (g_jumps_logged.fetch_add(1, std::memory_order_relaxed) < 60) {
+    REXLOG_INFO("cod4: jump: rose {:.2f} units (Pmove thread {}, cod4_move_snap_hz {})", t_jump.top_z - t_jump.ground_z,
+                t_jump.thread_index, REXCVAR_GET(cod4_move_snap_hz));
+  }
+}
+
+// The counts in the log, the first time and then every 20,000 calls.
+void LogSnapCounts(uint64_t calls) {
+  if (calls != 1 && calls % 20000 != 0) return;
+  REXLOG_INFO("cod4: movement: velocity snaps {} (skipped {}, unmatched {}), cod4_move_snap_hz {}",
+              g_snaps.load(std::memory_order_relaxed), g_snaps_skipped.load(std::memory_order_relaxed),
+              g_snaps_unmatched.load(std::memory_order_relaxed), REXCVAR_GET(cod4_move_snap_hz));
+}
+}  // namespace
+
+void cod4_move_step(PPCContext& ctx, uint8_t* base) {
+  (void)base;
+  t_move_step = {ctx.r10.s32, ctx.r11.s32, true};
+}
+
+// Sys_SnapVector's start (r3 the vector). Returns true to skip the cut; called from anywhere but PmoveSingle's end, it
+// does nothing.
+bool cod4_move_snap(PPCContext& ctx, uint8_t* base) {
+  const uint32_t velocity = ctx.r3.u32;
+  if (static_cast<uint32_t>(ctx.lr) != kSnapReturnAddress || velocity < 0x10000 + kPlayerStateVelocity) return false;
+  const uint32_t ps = velocity - kPlayerStateVelocity;
+  const int32_t hz = REXCVAR_GET(cod4_move_snap_hz);
+  bool skip = false;
+  if (hz > 0) {
+    const auto command_time = static_cast<int32_t>(ReadGuestWord(base, ps + kPlayerStateCommandTime));
+    if (t_move_step.valid && t_move_step.end == command_time) {
+      const int64_t rate = std::clamp(hz, 20, 1000);
+      skip = FloorDiv(int64_t{t_move_step.end} * rate, 1000) == FloorDiv(int64_t{t_move_step.start} * rate, 1000);
+    } else {
+      g_snaps_unmatched.fetch_add(1, std::memory_order_relaxed);
+    }
+  }
+  t_move_step.valid = false;
+  if (REXCVAR_GET(cod4_log_jumps)) WatchJump(base, ps);
+  (skip ? g_snaps_skipped : g_snaps).fetch_add(1, std::memory_order_relaxed);
+  static std::atomic<uint64_t> calls{0};
+  LogSnapCounts(calls.fetch_add(1, std::memory_order_relaxed) + 1);
+  return skip;
+}
+#endif  // COD4_MP

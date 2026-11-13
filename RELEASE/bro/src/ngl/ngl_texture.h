@@ -12,6 +12,10 @@ int ngl_texture_last_lock(uint32_t *buffer, uint32_t *width, uint32_t *height, u
 /* The nglTexture the last lock was for (the back buffer while a movie plays), 0 before the first lock. */
 uint32_t ngl_texture_last_locked(void);
 
+/* [rexglue-native] 2026-11-11: how many locks there have been (a movie locks the back buffer for every picture), so
+ * ngl_present.c can tell whether the game has written a new picture since it kept the loading screen's map. */
+unsigned long ngl_texture_lock_count(void);
+
 /* nglGetBackBufferTexture's stand-in: the same block every call, with the 640 x 480 screen's size at +0x10 / +0x14
  * (the game's viewport code divides by it). */
 uint32_t ngl_back_buffer_texture(void);

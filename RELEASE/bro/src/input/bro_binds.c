@@ -358,7 +358,8 @@ static void flush_pending(void)
         return;
     if (length + (int32_t)pending_length >= size)
         return;                     /* no room this time: the next poll */
-    memcpy(XBOX_PTR(data + (uint32_t)length), pending, pending_length);
+    /* [acct2-ocr] 2026-11-12 (written by acct2-bro): the cast, which the Windows build needs */
+    memcpy((void *)(uintptr_t)XBOX_PTR(data + (uint32_t)length), pending, pending_length);
     MEM32(CMD_TEXT_LENGTH) = (uint32_t)(length + (int32_t)pending_length);
     pending_length = 0;
 }
@@ -416,6 +417,13 @@ static void let_go_of_everything(void)
             b.down[code] = 0;
             key_changed(code, 0);
         }
+}
+
+/* [f2-menus] 2026-11-11 input.binds, input.binds_kbm and binds.* read again at the next poll (bro_pad.c's
+ * bro_pad_reload, on the game's thread, so nothing races the poll). */
+void bro_binds_reload(void)
+{
+    b.ready = 0;
 }
 
 int bro_binds_in_play(void)

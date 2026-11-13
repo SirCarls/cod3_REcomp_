@@ -231,7 +231,9 @@ bool TwoValueRow(int row, const char* label, const char* off_text, const char* o
   if (ImGui::Combo(label, &value, names, 2) && (value == 1) != on) changed = StepRow(row, true);
   if (!lock.empty()) ImGui::EndDisabled();
   HelpLine(RowHelp(row));
-  if (!lock.empty()) ImGui::TextDisabled("%s", lock.c_str());
+  // [rexglue-native-f2] 2026-11-11 one note per run of rows locked for the same reason, under the first of them (the
+  // CoD4 rows repeated "Only with the Call of Duty 4 movement style." under each); every locked row stays greyed.
+  if (!lock.empty() && (row == 0 || RowLock(row - 1) != lock)) ImGui::TextDisabled("%s", lock.c_str());
   return changed;
 }
 

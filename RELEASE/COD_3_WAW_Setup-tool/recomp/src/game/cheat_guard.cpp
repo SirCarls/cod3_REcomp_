@@ -66,6 +66,20 @@ constexpr const char* kMultiplayerCheatDvars[] = {
     "mp_debugrenderspawnpoints", "RadarFakeFriendlies", "showvehmap",           "show_playerdist",
     "cg_mpDebugAnimEntity"};
 
+// [acct2-ocr] Owner 2026-11-05 18:17: "add g_speed and g_gravity to the
+// cheats list". The game registers them without its cheat flag; the Cvar_Get
+// hook below adds it in both programs, so the console, configs and the
+// CHEATS USED mark treat them as cheats (sv_cheats 1 first). Level scripts
+// still set g_speed: their setcvar slots write forced (game/addresses.h,
+// Cvar_Set2 force 1), which skips the check.
+constexpr const char* kCheatDvarsBoth[] = {"g_speed", "g_gravity"};
+
+bool IsCheatDvarBoth(std::string_view name) {
+  for (const char* d : kCheatDvarsBoth)
+    if (EqualsNoCase(name, d)) return true;
+  return false;
+}
+
 // set-style commands: the dvar is the second word.
 constexpr const char* kSetStyle[] = {"set", "seta", "sets", "setu", "reset", "toggle", "togglep",
                                      "setfromcvar"};
@@ -100,14 +114,17 @@ void ApplySvCheats(PPCContext& ctx, uint8_t* base, bool on, Source source) {
   }
   REXLOG_INFO("cod3: sv_cheats {} ({})", on ? 1 : 0, SourceName(source));
   if (on)
-    CheatWatch::Get().OneShot("sv_cheats 1");  // the CHEATS USED mark stays until the mission loads again
+    CheatWatch::Get().OneShot(kSvCheatsOneShot);  // the CHEATS USED mark stays until the mission loads again
   else
     CheatWatch::Get().ResetCheats(ctx, base);  // cheat dvars to their defaults, god/noclip/... off
   const std::string text = std::string(on ? "Cheats enabled" : "Cheats disabled") +
                            (mp::IsMatchRunning() ? " by the host" : "");
   if (mp::IsMatchRunning())
     mp::Announce(text);  // reaches every player's feed (and this one's)
-  else
+  else if (!CheatWatch::Get().Active())
+    // [acct2-ocr] Owner 2026-11-05: while the CHEATS USED mark shows, "Cheats
+    // enabled" / "Cheats disabled" is its second line (ui/hud_overlay.cpp),
+    // not a line in the announcement column at the top right.
     hud::AnnouncementFeed::Push(text);
 }
 
@@ -150,6 +167,8 @@ Verdict Check(const std::vector<std::string>& args, Source source, bool cheat_dv
   Verdict v;
   if (args.empty()) return v;
   const std::string& cmd = args[0];
+  // [acct2-ocr] Owner 2026-11-07 18:27 / 18:40: host-only commands and sv_cheats are the host's; in a match no
+  // other console plays this console is the host (mp::IsHost, game/mp/session.cpp).
   const bool guest = mp::IsMatchRunning() && !mp::IsHost();
 
   // Another player's commands never run as console commands here: only the
@@ -319,6 +338,10 @@ REX_HOOK_RAW(Cvar_Get) {
         cod3::cheats::IsMultiplayerCheatDvar(cod3::guest::ReadString(base, ctx.r3.u32, 64)))
       ctx.r5.u64 = ctx.r5.u32 | a::cvar_flag::kCheat;
   }
+  // [acct2-ocr] Both programs: g_speed, g_gravity (kCheatDvarsBoth above).
+  if (ctx.r3.u32 >= 0x10000 &&
+      cod3::cheats::IsCheatDvarBoth(cod3::guest::ReadString(base, ctx.r3.u32, 64)))
+    ctx.r5.u64 = ctx.r5.u32 | a::cvar_flag::kCheat;
   // Was the name there already, as a user-created dvar? (The name is the
   // hook's own argument, already in guest memory.)
   const uint32_t before = game::CvarFindGuest(ctx, base, ctx.r3.u32);

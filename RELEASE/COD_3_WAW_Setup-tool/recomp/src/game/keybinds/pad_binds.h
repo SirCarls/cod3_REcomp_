@@ -38,6 +38,9 @@
 #include <rex/ppc.h>
 
 #include <functional>
+#include <string>  // [f2-menus] 2026-11-11 SeatLayout
+
+#include "game/keybinds/pad_model.h"  // [f2-menus] 2026-11-11 SeatLayout
 
 namespace cod3::binds {
 // Defined in binds.cpp, for pad_binds.cpp (game main thread, at the pad poll):
@@ -59,5 +62,8 @@ void OnPadState(uint8_t* base, uint32_t user, uint32_t state);
 // tables; after it, the second and third actions.
 void BeforePoll(PPCContext& ctx, uint8_t* base);
 void AfterPoll(PPCContext& ctx, uint8_t* base);
+// [f2-menus] 2026-11-11 F2 > CONTROLS > Controller (any thread): seat 0-3's layout as the game last ran it
+// (layout_text: kButtonCount strings, the bindings as the game has them); false before that seat's first sync.
+bool SeatLayout(int seat, pad::Layout* layout, std::string* layout_text);
 
 }  // namespace cod3::binds::padbinds

@@ -19,3 +19,18 @@ int bro_setting_bool(const char *key, const char *env_name, int fallback);
 
 /* 1 when the setting is given at all (by its variable or the file). */
 int bro_setting_given(const char *key, const char *env_name);
+
+/* [f2-menus] 2026-11-09 (the F2 window): a setting changed while the game runs. It wins over the file and over
+ * its environment variable from now on (the player just chose it). 0, or -1 for a key the port doesn't have or a value
+ * that can't be kept (too long, or with a quote). The setting's reader takes it at its next read (its reload). */
+int bro_settings_set(const char *key, const char *value);
+
+/* The settings changed with bro_settings_set written into bro.toml (the file that was read; else BRO_SETTINGS; else
+ * <program folder>/../bro.toml), every other line and comment kept: a key's line gets the new value, a "# key = ..."
+ * line in its section becomes the setting, or the line goes at its section's end (a new section if need be). Written
+ * through a temporary file and a rename. 0, or -1 when it can't be written. */
+int bro_settings_save(void);
+
+/* [f2-menus] Every setting whose key starts with prefix ("cvars."): fn(the rest of its key, its value, user). The ones
+ * changed this run first, then the file's. */
+void bro_settings_each(const char *prefix, void (*fn)(const char *name, const char *value, void *user), void *user);

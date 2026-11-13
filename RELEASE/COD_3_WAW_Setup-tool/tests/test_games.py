@@ -43,7 +43,18 @@ class GameTableTests(unittest.TestCase):
             self.assertEqual(games.game(gid).actions[:2], ("build", "play"))
             self.assertNotIn("Rust", games.game(gid).tagline)
         self.assertIn("rip", games.game("waw").actions)          # World at War's content rip stays
-        self.assertIn("cod2_copy", PAGES["cod2"])               # and Call of Duty 2's New copy
+        # [f2-menus] 2026-11-10 (owner: "CoD2's New copy and LAN server pages shouldn't be there")
+        self.assertEqual(PAGES["cod2"], ["cod2_setup", "cod2_play", "cod2_status", "log"])
+        self.assertIn("coduo_copy", PAGES["coduo"])            # United Offensive's tab keeps its two
+
+    def test_no_rust_engine_wording(self):
+        # [f2-menus] 2026-11-10 (owner: "there's still references to rust engine within the setup tool").
+        for g in games.GAMES:
+            self.assertNotIn("Rust", g.tagline, g.id)
+        for gid, rows in games.PORT_STATUS.items():
+            for m in rows:
+                self.assertNotIn("Rust", m.what + " " + m.note, gid)
+        self.assertNotIn("Rust", pc_games.DEFAULT_HOSTNAME)
 
     def test_every_page_has_a_label_and_the_log_is_everywhere(self):
         for g in games.GAMES:
@@ -60,7 +71,8 @@ class GameTableTests(unittest.TestCase):
 
     def test_owner_of_a_page(self):
         self.assertEqual(games.owner_of("play", PAGES), "cod3")
-        self.assertEqual(games.owner_of("cod2_server", PAGES), "cod2")
+        self.assertEqual(games.owner_of("coduo_server", PAGES), "coduo")
+        self.assertIsNone(games.owner_of("cod2_server", PAGES))   # [f2-menus] the page is gone
         self.assertEqual(games.owner_of("log", PAGES, prefer="coduo"), "coduo")   # shared: stays on the tab
         self.assertEqual(games.owner_of("log", PAGES), "cod3")
         self.assertIsNone(games.owner_of("nope", PAGES))
@@ -145,9 +157,11 @@ class TabStateTests(unittest.TestCase):
     def test_show_and_step(self):
         st = self.state({})
         self.assertEqual(st.show("cod2"), ("cod2", "cod2_setup"))   # [waw-decomp]
-        self.assertEqual(st.show("cod2", "cod2_server"), ("cod2", "cod2_server"))
-        self.assertEqual(st.show("cod2", "play"), ("cod2", "cod2_server"))   # not this tab's page
-        self.assertEqual(st.show("nope"), ("cod2", "cod2_server"))
+        # [f2-menus] 2026-11-10 with cod2_status: the tab's LAN server page is gone
+        self.assertEqual(st.show("cod2", "cod2_status"), ("cod2", "cod2_status"))
+        self.assertEqual(st.show("cod2", "play"), ("cod2", "cod2_status"))   # not this tab's page
+        self.assertEqual(st.show("cod2", "cod2_server"), ("cod2", "cod2_status"))   # nor a page it no longer has
+        self.assertEqual(st.show("nope"), ("cod2", "cod2_status"))
         self.assertEqual(st.step(1), "cod4")   # [waw-decomp]
         st.show("coduo")
         self.assertEqual(st.step(1), "cod3")    # wraps around

@@ -58,6 +58,7 @@ enum class Id : int {
   kAlternateMovementJumps,
   kStickyAim,    // [claude-9b] 0 Sticky Aim off for everyone, 1 each player's own choice (game/sticky_aim.h)
   kAimSlowdown,  // [claude-9b] 0-100: the share of Sticky Aim's pull kept (never above the game's)
+  kLevitationFix,  // [acct2-ocr] 1 the stuck fix frees players from walls only (game/movement/stuck_fix.h)
   kCount
 };
 inline constexpr int kCount = static_cast<int>(Id::kCount);

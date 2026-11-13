@@ -13,6 +13,7 @@ playable Call of Duty 3 recompilation. It installs whatever is missing.
     python3 cod3_waw_setup.py verify-files [<output folder, assets/ or disc image>] [--all] [--quick]
     python3 cod3_waw_setup.py verify-files --list [usa_europe|germany|europe_fr_es_it|japan]  # the discs' MD5s
     python3 cod3_waw_setup.py censored [<output folder>] [--add <German disc>] [--on|--off] [--verify]  # campaign only
+    python3 cod3_waw_setup.py discs [<output folder>] [--table]  # which options need which disc
     python3 cod3_waw_setup.py update [--check] [--yes] [--undo] [--allow|--deny]  # this tool's own updates
     python3 cod3_waw_setup.py bro check|build|play "<Big Red One disc image or folder>"  # Call of Duty 2: Big Red One
     python3 cod3_waw_setup.py cod2|waw|cod4 check|build|play "<Xbox 360 disc image or folder>"  # on CoD3's SDK
@@ -344,8 +345,8 @@ def cmd_verify_files(a: argparse.Namespace) -> int:
 
 def cmd_censored(a: argparse.Namespace) -> int:
     """[acct2-decomp] The censored campaign (c3w/censored.py): the German
-    disc's insignia textures in 84 campaign archives, on or off. Multiplayer
-    and the game's text are not touched."""
+    disc's insignia textures in 84 campaign archives and six levels, on or
+    off. Multiplayer and the game's text are not touched."""
     from c3w import censored
     args = [str(Path(a.target) if a.target else common.default_output_dir())]
     if a.add:
@@ -354,6 +355,13 @@ def cmd_censored(a: argparse.Namespace) -> int:
     args += ["--verify"] if a.verify else []
     args += ["--list"] if a.list else []
     return censored.main(args)
+
+
+def cmd_discs(a: argparse.Namespace) -> int:
+    """[acct2-decomp] Which options need which Call of Duty 3 disc, and where the
+    game in the output folder stands with each (c3w/disc_needs.py). Only reads."""
+    from c3w import disc_needs
+    return disc_needs.main(([a.target] if a.target else []) + (["--table"] if a.table else []))
 
 
 def cmd_update(a: argparse.Namespace) -> int:
@@ -641,6 +649,12 @@ def main() -> int:
     cz.add_argument("--verify", action="store_true", help="tell which version is in use by every file's MD5")
     cz.add_argument("--list", action="store_true", help="list the files it swaps and stop")
     cz.set_defaults(func=cmd_censored)
+
+    # [acct2-decomp] which options need which disc (c3w/disc_needs.py)
+    dn = sub.add_parser("discs", help="which options need which Call of Duty 3 disc, and where your game stands")
+    dn.add_argument("target", nargs="?", help="output folder (default: the output folder)")
+    dn.add_argument("--table", action="store_true", help="only the table, not your game")
+    dn.set_defaults(func=cmd_discs)
 
     up = sub.add_parser("update", help="check for a newer setup tool and, with your yes, install it")
     up.add_argument("--check", action="store_true", help="only say whether there is one")

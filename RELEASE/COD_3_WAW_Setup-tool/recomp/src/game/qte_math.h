@@ -145,9 +145,17 @@ inline Stick ToggleStick(float cx, float cy, bool vertical) {
 // way back and leave the stick centered. A circle drawn with the mouse then
 // rows stroke after stroke, and the game's slip (a push left in a stroke)
 // can't happen by accident.
+// [rexglue-native qte] 2026-11-09 (owner 14:36: "frame rate shouldn't softlock the user within QTEs"): the push
+// now follows the cursor a little past 6 o'clock, to kRowStickLastDegrees. The game counts a stroke when one of
+// its updates sees the stick between 175.2 and 225 degrees (RowboatModel: phase past kRowDonePhase); with the
+// push ending at 6 o'clock that window was only 4.8 degrees wide, so a quick stroke, or any stroke at a low frame
+// rate (the stick is read once a drawn frame), could jump over it and the stroke was lost. 205 degrees gives a
+// 30 degree window and stays clear of the slip: a full push left of -70 on the game's scale starts at about 219.
+inline constexpr float kRowStickLastDegrees = 205.0f;
 inline Stick RowStick(float cx, float cy) {
   const float length = std::sqrt(cx * cx + cy * cy);
-  if (length < kCursorCenter || cx < 0.0f) return {};
+  if (length < kCursorCenter) return {};
+  if (cx < 0.0f && CompassDegrees(cx, -cy) > kRowStickLastDegrees) return {};
   return {cx / length, -cy / length};
 }
 
@@ -165,6 +173,29 @@ inline float SwirlFrameRateFactor(float frames_per_second) {
   if (!(frames_per_second > kConsoleFrameRate)) return 1.0f;
   const float ratio = frames_per_second / kConsoleFrameRate;
   return std::min(ratio * ratio, kMaxSwirlFactor);
+}
+
+// [rexglue-native qte] 2026-11-09 (owner 14:36: "frame rate shouldn't softlock the user within QTEs"; the swirl
+// at the console's 60, the same a second at every frame rate). The receivers don't run once a drawn frame in the
+// port: the campaign's game runs in fixed updates (server_step.cpp, cod3_server_hz, 60 a second), and G_RunFrame
+// updates the player's battle action in each (sub_825012F8 -> InteractState vfunc_2 -> the receiver, with the
+// update's seconds). The stick they read is set once a drawn frame (IN_JoyMove). So the swirl's sum of
+// (1 - cos dθ) sees a new stick direction S = min(drawn frames, updates) times a second:
+//   * the sum a second is ω² / (2 S) and the output, the update's seconds times that, is (1/U) ω² / (2 S);
+//   * the console (60 updates, a new stick in each) gave (1/60) ω² / 120.
+// The factor that gives the console's output is U/60 * S/60 for U updates and D drawn frames a second
+// (S = min(D, U)). At 60 updates: D/60 below 60 drawn frames (where the same stick was read by two or more
+// updates and the old output was 60/D times the console's), 1 at 60 and above (nothing changes there). With
+// cod3_server_hz 0 (one update a drawn frame, U = D) it is (D/60)², SwirlFrameRateFactor's.
+inline constexpr float kMinSwirlFactor = 0.05f;  // 3 drawn frames a second
+
+inline float SwirlRateFactor(float updates_per_second, float drawn_per_second) {
+  if (!(updates_per_second > 0.0f) || !(drawn_per_second > 0.0f)) return 1.0f;
+  const float samples = std::min(drawn_per_second, updates_per_second);
+  const float factor = (updates_per_second / kConsoleFrameRate) * (samples / kConsoleFrameRate);
+  // Within 2% of 1 (the frame rate meters' noise around 60): exactly 1, the game's own number.
+  if (std::fabs(factor - 1.0f) < 0.02f) return 1.0f;
+  return std::clamp(factor, kMinSwirlFactor, kMaxSwirlFactor);
 }
 
 // The swirl turret (sub_8250F648, the cranes) turns by

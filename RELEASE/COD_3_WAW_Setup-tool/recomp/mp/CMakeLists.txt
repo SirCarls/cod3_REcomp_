@@ -24,6 +24,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/main_mp.cpp
     ${COD3_SRC}/cod3mp_app.cpp
     ${COD3_SRC}/game/button_prompts.cpp  # [mp-menus] keys and controller buttons in the game's prompts, per player; its pad state hook calls the keybinds' too
+    ${COD3_SRC}/game/use_hold.cpp  # [acct2-decomp] how long Use is held, and the hints' words (cod3_use_hold_ms)
     ${COD3_SRC}/game/cheat_guard.cpp
     ${COD3_SRC}/game/cheat_watch.cpp
     ${COD3_SRC}/game/color_output.cpp
@@ -39,6 +40,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/engine.cpp
     ${COD3_SRC}/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
     ${COD3_SRC}/game/coronas.cpp  # [claude-9b] light coronas fade at the same speed at any frame rate (cod3_fix_corona_fade)
+    ${COD3_SRC}/game/fx_timing.cpp  # [acct2-cod3-fx] the effects frame by frame (cod3_debug_fx_frames), smoke flicker
     ${COD3_SRC}/game/muzzle_light.cpp  # [claude-9b-think] muzzle-flash lights held for a time, not one drawn frame (cod3_muzzle_light_ms)
     ${COD3_SRC}/game/fov.cpp
     ${COD3_SRC}/game/frame_rate.cpp
@@ -56,6 +58,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/level_hooks.cpp
     ${COD3_SRC}/game/machine_profile.cpp
     ${COD3_SRC}/game/mouse_look.cpp
+    ${COD3_SRC}/f2/f2_accel.cpp  # [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (the ports' shared file)
     ${COD3_SRC}/game/pc_menu.cpp  # [mp-menus] mouse and keyboard in the game's menus, shared with the campaign
     ${COD3_SRC}/game/perf_stats.cpp
     ${COD3_SRC}/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
@@ -66,6 +69,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/rumble.cpp  # [rumble] the first controller doesn't vibrate while the keyboard and mouse are in use
     ${COD3_SRC}/game/render_resolution.cpp
     ${COD3_SRC}/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes checked (split screen's 2-4 views share one frame's lists)
+    ${COD3_SRC}/game/native_memory.cpp  # [memory-360] 2026-11-11 the game's memory past the Xbox 360's limits: a report (cod3_native_memory_report) and more streaming banks (cod3_native_stream_banks_extra), both off; both programs
+    ${COD3_SRC}/game/native_memory_shadow.cpp  # [memory-360] 2026-11-11 stage 3's test: which arena-0 allocations reach the graphics side (cod3_native_memory_shadow, off; moves nothing); both programs
     ${COD3_SRC}/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame (logging only)
     ${COD3_SRC}/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame drawn by ngl_vk beside the GPU emulation (a check)
     ${COD3_SRC}/game/screenshot.cpp
@@ -77,6 +82,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
+    ${COD3_SRC}/game/voice_language.cpp  # [acct2-ocr] Voices from another disc (mp/ banks), heard from the next map
     ${COD3_SRC}/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (its own hook of cod3mp's lookup)
     ${COD3_SRC}/game/font_fill.cpp  # [acct2-ocr] the glyphs the game's fonts lack, added in memory
     ${COD3_SRC}/ui/text_overlay.cpp  # [acct2-ocr] Russian/Chinese/Japanese/Korean text, drawn by us
@@ -85,9 +91,16 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands
     ${COD3_SRC}/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip, _2 to _4)
     ${COD3_SRC}/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, per player
+    ${COD3_SRC}/game/pad_settings.cpp  # [acct2-ocr] 2026-11-07 the controller settings as console settings
+    ${COD3_SRC}/game/menu_controller.cpp  # [acct2-ocr] 2026-11-07 Pause > OPTIONS > CONTROLLER's port rows
+    ${COD3_SRC}/game/menu_port_rows.cpp  # [acct2-ocr] 2026-11-07 the port's settings rows of Pause > OPTIONS
     ${COD3_SRC}/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz
     ${COD3_SRC}/game/movement/rules.cpp  # [claude-9b-think] the movement rules' plain logic (stage 1: the match decision)
     ${COD3_SRC}/game/movement/hooks_mp.cpp  # [claude-9b-think] stage 1: movement settings, decision and logs; moves nothing
+    ${COD3_SRC}/game/movement/touch_pace_mp.cpp  # [acct2-ocr] the touches after a move, 60 a game second per player
+    ${COD3_SRC}/game/movement/levitate_probe_mp.cpp  # [acct2-ocr] dev: the levitation glitch probe (cod3_debug_levitate, off)
+    ${COD3_SRC}/game/movement/stuck_fix_mp.cpp  # [acct2-ocr] the levitation fix: the stuck fix frees players from walls only (levitation_fix)
+    ${COD3_SRC}/game/protected_dvars.cpp  # [acct2-bro] for stuck_fix_mp.cpp's levitation_fix rule (only the campaign built it)
     ${COD3_SRC}/game/watchdog.cpp
     ${COD3_SRC}/game/mp/campaign_only.cpp
     ${COD3_SRC}/game/mp/campaign_stubs.cpp
@@ -100,8 +113,10 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/test_syslink_mp.cpp  # [claude-9b-think] tests: host or join a system link match from the front end (cod3_test_syslink)
     ${COD3_SRC}/game/mp/pose_debug_mp.cpp  # [claude-9b] rival players' poses between draws, measurement (cod3_debug_pose_mp)
     ${COD3_SRC}/game/mp/server_step_mp.cpp  # [claude-9b] the host's game in fixed updates (cod3mp_server_hz, off until tested)
-    ${COD3_SRC}/render/native_compare.cpp  # [rexglue-native] 2026-11-09 ngl_side.cpp's live compare (cod3mp doesn't attach it yet: off)
+    ${COD3_SRC}/game/mp/motion_steps_mp.cpp  # [acct2-cod3-motion] how drawn things and the camera move frame to frame, measurement (cod3mp_debug_entity_steps)
+    ${COD3_SRC}/game/mp/title_update_hq_mp.cpp  # [rexglue-native] title update 3's Headquarters radio fix, redone on the disc code: cod3_tu_hq_radio
     ${COD3_SRC}/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start
+    ${COD3_SRC}/render/native_compare.cpp  # [rexglue-native] 2026-11-09 ngl_side.cpp's live compare (cod3mp doesn't attach it yet: off)
     ${COD3_SRC}/test_input.cpp
     ${COD3_SRC}/ui/announcement_feed.cpp
     ${COD3_SRC}/ui/console_pages.cpp
@@ -109,8 +124,10 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/ui/dvar_domain.cpp
     ${COD3_SRC}/ui/dvar_help.cpp
     ${COD3_SRC}/ui/game_console.cpp
+    ${COD3_SRC}/ui/f2_tour.cpp  # [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
     ${COD3_SRC}/ui/hud_overlay.cpp
     ${COD3_SRC}/ui/problem_log.cpp
+    ${COD3_SRC}/ui/server_tab.cpp  # [acct2-ocr] F2 > Game > Server in cod3mp (matches this PC plays alone)
     ${COD3_SRC}/ui/theme.cpp
     ${COD3_SRC}/ui/waw_dvars.cpp
 )

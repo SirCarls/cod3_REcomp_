@@ -47,6 +47,18 @@ ripper packs them whatever their kind too (hd::packed_whatever_kind).
 Upscaling is optional: if it fails (no Vulkan driver, no graphics card), the
 build carries on and says why.
 
+[acct2-main] 2026-11-04 (owner: "allow for a rebuild of the waifu textures
+without a complete re-build, also an option to delete what is in the
+directory"): the style and noise reduction the copies were made with are kept
+in textures_upscaled/.style, so after a change of either (not only of the
+scale) every copy is made again; copies already made with the new ones, from
+an interrupted run, are kept. rebuild_overrides() makes a build run only the
+upscaling and the HD pack (BuildOptions.only_steps, like a repair: no rip, no
+game build), optionally from scratch (BuildOptions.upscale_from_scratch: the
+copies are deleted first). generated() and delete_generated() list and delete
+what this step and the pack made (textures_upscaled, an old textures_2x,
+hd_textures), never the ripped originals.
+
 For the playable game, the next step packs the copies into data/cod3/
 hd_textures/ (`rip cod3-hd-pack`, run by the pipeline): each one compressed
 in the same GPU format as the game's own texture (DXT1/3/5, ATI2 or 32-bit),
@@ -69,7 +81,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import atlas_cells, user_textures
-from .common import IS_WINDOWS, Cancelled, Log, Runner, SetupError, safe_rmtree
+from .common import IS_WINDOWS, Cancelled, Log, Runner, SetupError, read_json, safe_rmtree, write_json
 
 OUTPUT_NAME = "textures_upscaled"   # next to the ripper's "textures" folder
 # The folder's name from before the scale could be chosen (always 2x). An
@@ -79,6 +91,13 @@ LEGACY_SCALE = 2
 # In OUTPUT_NAME: the scale its copies were made at, written when a run
 # leaves nothing missing.
 SCALE_FILE = ".scale"
+# [acct2-main] In OUTPUT_NAME: the style (waifu2x model) and noise reduction
+# its copies are made with, "<model> <noise>". Its own modification time is
+# when they were chosen: a copy older than that was made with others. A
+# folder from before this file gets one marked LEGACY_STYLE, which counts its
+# copies as made with whatever is chosen next.
+STYLE_FILE = ".style"
+LEGACY_STYLE = "assumed"
 
 # waifu2x's -s: how many times larger the copies are. waifu2x has networks
 # that only remove noise (1x) for its "cunet" model alone, so 1x uses it.
@@ -254,6 +273,87 @@ def record_scale(folder: Path, scale: int) -> None:
     (folder / SCALE_FILE).write_text(f"{scale}\n", encoding="utf-8")
 
 
+# [acct2-main] The style and noise reduction of the copies (STYLE_FILE).
+def style_key(s: "Settings") -> str:
+    """What the copies' look depends on besides the scale: the model waifu2x
+    really uses (1x always uses ONE_X_MODEL) and the noise reduction."""
+    v = s.validated()
+    return f"{ONE_X_MODEL if v.scale == 1 else v.model} {v.noise}"
+
+
+def recorded_style(folder: Path) -> Optional[str]:
+    """The style key written in `folder`, LEGACY_STYLE, or None without a file."""
+    try:
+        return (folder / STYLE_FILE).read_text(encoding="utf-8").strip() or None
+    except OSError:
+        return None
+
+
+def style_since(folder: Path) -> float:
+    """When the copies' style was chosen (STYLE_FILE's own time, so the same
+    clock as the copies' times, even on a network drive); 0 without a
+    file or for LEGACY_STYLE."""
+    if recorded_style(folder) in (None, LEGACY_STYLE):
+        return 0.0
+    try:
+        return (folder / STYLE_FILE).stat().st_mtime
+    except OSError:
+        return 0.0
+
+
+def record_style(folder: Path, key: str) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / STYLE_FILE).write_text(f"{key}\n", encoding="utf-8")
+
+
+def choose_style(folder: Path, s: "Settings", log: Log) -> float:
+    """Before a run: records the style the copies in `folder` are made with
+    and returns `since` for pending(). Copies from before STYLE_FILE existed
+    count as made with the chosen style (a folder from an older setup tool
+    isn't all made again); after a change, every copy older than the change
+    is made again."""
+    key, old = style_key(s), recorded_style(folder)
+    if old == key:
+        return style_since(folder)
+    has_copies = folder.is_dir() and any(folder.glob("*.png"))
+    if has_copies and old in (None, LEGACY_STYLE):
+        if old is None:
+            record_style(folder, LEGACY_STYLE)
+        return 0.0
+    if has_copies:
+        log.info(f"The copies in {folder} were made with {_style_words(old)}; they are made again with "
+                 f"{_style_words(key)}.")
+    record_style(folder, key)
+    return style_since(folder)
+
+
+def settle_style(folder: Path, s: "Settings") -> None:
+    """After a run that left nothing missing: a LEGACY_STYLE folder's copies
+    are all made with `s`. The file then gets the oldest copy's time, so
+    none of them counts as older than the choice."""
+    if recorded_style(folder) != LEGACY_STYLE:
+        return
+    record_style(folder, style_key(s))
+    times = []
+    for png in folder.glob("*.png"):
+        try:
+            times.append(png.stat().st_mtime)
+        except OSError:
+            pass
+    if times:
+        os.utime(folder / STYLE_FILE, (min(times), min(times)))
+
+
+def _style_words(key: str) -> str:
+    model, _, noise = key.partition(" ")
+    label = MODELS.get(model, (None, model))[1].split(" (")[0]
+    try:
+        level = NOISE_LEVELS.get(int(noise), noise)
+    except ValueError:
+        level = noise
+    return f"the {label} style and {str(level).lower()} noise reduction"
+
+
 def output_dir(data_dir: Path, log: Log) -> Path:
     """`data_dir`/textures_upscaled, after renaming a textures_2x folder from
     an earlier build to it (its copies are 2x, which is recorded). The old
@@ -290,18 +390,19 @@ def sources(src: Path, kinds: frozenset = DEFAULT_KINDS) -> List[Path]:
     return [p for p in sorted(src.glob("*.png")) if p.stem in wanted and p.stem not in replaced]
 
 
-def pending(src: Path, dst: Path, scale: Optional[int] = None, kinds: frozenset = DEFAULT_KINDS
-            ) -> List[Path]:
+def pending(src: Path, dst: Path, scale: Optional[int] = None, kinds: frozenset = DEFAULT_KINDS,
+            since: float = 0.0) -> List[Path]:
     """The PNGs `sources` picks in `src` without an up-to-date copy in `dst`:
     a copy is up to date when it's newer than the original. With `scale`
     (after a change of scale), it must also be the original's size times
     `scale`, which is what waifu2x makes, so copies at the old scale are
-    done again."""
+    done again. [acct2-main] With `since` (style_since: after a change of
+    style or noise reduction), it must also be at least that new."""
     todo = []
     for png in sources(src, kinds):
         out = dst / png.name
         try:
-            if out.stat().st_mtime >= png.stat().st_mtime and out.stat().st_size > 0:
+            if out.stat().st_mtime >= max(png.stat().st_mtime, since) and out.stat().st_size > 0:
                 if scale is None:
                     continue
                 size, out_size = png_size(png), png_size(out)
@@ -341,9 +442,12 @@ def command(exe: Path, src: Path, dst: Path, model_dir: Path, noise: int, scale:
 
 def _copy_as_is(files: List[Path], dst: Path, log: Log, total: int, done_before: int) -> None:
     """1x without noise reduction: waifu2x would change nothing, so the
-    originals are copied (with their times, so they count as up to date)."""
+    originals are copied. [acct2-main] A copy gets the time it's made (as
+    waifu2x's own do), so it counts as up to date after a change of style
+    too (style_since)."""
     for i, f in enumerate(files, 1):
         shutil.copy2(f, dst / f.name)
+        os.utime(dst / f.name)
         log.progress((done_before + i) / max(total, 1), f"upscaled {done_before + i}/{total} textures")
 
 
@@ -389,6 +493,7 @@ def _upscale_atlases(atlases: List[Path], tool_dir: Path, exe: Path, dst: Path, 
     if s.scale == 1 and s.noise == -1:
         for f in atlases:   # waifu2x would change nothing
             shutil.copy2(f, dst / f.name)
+            os.utime(dst / f.name)   # [acct2-main] see _copy_as_is
         return
     model = ONE_X_MODEL if s.scale == 1 else ATLAS_MODEL
     model_dir = tool_dir / MODELS[model][0]
@@ -430,15 +535,19 @@ def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings
     old_scale = recorded_scale(dst)
     rescale = old_scale != s.scale and any(dst.glob("*.png"))
     check_scale = s.scale if rescale else None
-    todo = pending(src, dst, check_scale, s.kinds)
-    total = len(sources(src, s.kinds))
     if wanted_pictures(src, s.kinds) is None:
         raise SetupError(f"{src / KEYS_FILE} is missing or from an older ripper: rip the game again "
                          "(a build does that) before upscaling.")
+    # [acct2-main] After a change of style or noise reduction, copies made
+    # before it are done again too.
+    since = choose_style(dst, s, log)
+    todo = pending(src, dst, check_scale, s.kinds, since)
+    total = len(sources(src, s.kinds))
     if not todo:
         log.info(f"All {total} textures already have a {s.scale}x copy in {dst}.")
         if total:
             record_scale(dst, s.scale)
+            settle_style(dst, s)
         return 0, 0
     dst.mkdir(parents=True, exist_ok=True)
     if rescale:
@@ -490,7 +599,154 @@ def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings
     finally:
         if staging.exists():
             safe_rmtree(staging, staging.parent, [src, dst], log)
-    missing = pending(src, dst, check_scale, s.kinds)
+    missing = pending(src, dst, check_scale, s.kinds, since)
     if not missing:
         record_scale(dst, s.scale)
+        settle_style(dst, s)
     return len(todo) - len(missing), len(missing)
+
+
+# ---------------------------------------------------------------------------
+# [acct2-main] Rebuilding the HD textures alone, and deleting them
+# ---------------------------------------------------------------------------
+# The build steps (pipeline Step.key) a rebuild runs: the upscaling and the
+# pack (the ripper, which packs, comes with them; see pipeline.STEP_NEEDS).
+REBUILD_STEPS = ("upscale", "hd_pack")
+# What delete_generated() can delete (generated()'s `what`).
+PICTURES = "pictures"   # OUTPUT_NAME, and an old LEGACY_OUTPUT_NAME
+PACK = "pack"           # PACK_NAME, the pack the game reads
+
+
+def data_dir(out_dir: Path) -> Path:
+    """Where a build keeps Call of Duty 3's files: <output>/data/cod3."""
+    return Path(out_dir) / "data" / "cod3"
+
+
+def rebuild_blocker(out_dir: Path) -> str:
+    """Why the HD textures can't be made again by themselves in the build in
+    `out_dir`, or "" when they can: they're made from the ripped textures and
+    the ripper's list of them, so those must be there (a full build or a
+    repair rips the game)."""
+    out = Path(out_dir)
+    textures = data_dir(out) / "textures"
+    if not out.is_dir():
+        return f"There is no build in {out}: build the game first."
+    if not textures.is_dir() or not any(textures.glob("*.png")):
+        return (f"There are no ripped textures in {textures}: build the game first (or repair it under "
+                "Tools > Repair).")
+    if wanted_pictures(textures) is None:
+        return (f"The ripped textures in {textures} are from an older ripper ({KEYS_FILE} is missing or old): "
+                "build the game again, which rips them again.")
+    return ""
+
+
+def rebuild_overrides(out_dir: Path, from_scratch: bool = False) -> dict:
+    """BuildOptions field overrides that make a build make the HD textures
+    again and nothing else (no rip, no game build), with the style, noise
+    reduction and scale of the options they're applied to:
+    dataclasses.replace(options, **rebuild_overrides(out)). Textures with an
+    up-to-date copy made with those are kept, unless `from_scratch` (every
+    copy is deleted first and made again)."""
+    return {
+        "only_steps": list(REBUILD_STEPS),
+        "output_dir": str(out_dir),
+        "upscale_textures": True,
+        "upscale_from_scratch": bool(from_scratch),
+        "build_recomp": False,
+        "build_linux": False,
+        "build_windows": False,
+    }
+
+
+@dataclass
+class Generated:
+    what: str      # PICTURES or PACK
+    path: Path
+    size: int      # bytes
+
+
+def _tree_size(path: Path) -> int:
+    total = 0
+    for root, _, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def generated(out_dir: Path) -> List[Generated]:
+    """What the upscaling and the HD pack left in the build in `out_dir`
+    (folders that exist only): the upscaled copies (and a textures_2x from
+    an older build), then the pack."""
+    data = data_dir(out_dir)
+    found = []
+    for what, name in ((PICTURES, OUTPUT_NAME), (PICTURES, LEGACY_OUTPUT_NAME), (PACK, PACK_NAME)):
+        path = data / name
+        if path.is_symlink() or path.is_dir():
+            found.append(Generated(what, path, 0 if path.is_symlink() else _tree_size(path)))
+    return found
+
+
+def delete_generated(out_dir: Path, what: frozenset, log: Log) -> Tuple[int, List[Path]]:
+    """Deletes the folders generated() lists whose `what` is in `what`, never
+    the ripped originals (data/cod3/textures) or anything outside data/cod3
+    (a link is removed, not what it points to). Then the build's record
+    (cod3_waw.json) stops naming them, so Repair doesn't report them missing.
+    Returns (bytes freed, folders that couldn't be deleted completely: the
+    game may be running)."""
+    out = Path(out_dir)
+    data = data_dir(out)
+    originals = data / "textures"
+    freed, left = 0, []
+    for g in generated(out):
+        if g.what not in what:
+            continue
+        try:
+            if g.path.is_symlink():
+                log.info(f"Removing the link {g.path}")
+                g.path.unlink()
+            else:
+                safe_rmtree(g.path, data, [originals], log)
+        except (OSError, SetupError) as e:
+            log.warn(f"Couldn't delete {g.path}: {e}")
+        gone = not (g.path.exists() or g.path.is_symlink())
+        if not gone:
+            left.append(g.path)
+        freed += g.size - (0 if gone or g.path.is_symlink() else _tree_size(g.path))
+    _forget_in_record(out, log)
+    return freed, left
+
+
+# The build's record (pipeline.Pipeline.finish) and its entries for these.
+RECORD = "cod3_waw.json"
+_RECORD_KEYS = {"cod3_textures_upscaled": (OUTPUT_NAME, LEGACY_OUTPUT_NAME), "cod3_hd_textures": (PACK_NAME,)}
+
+
+def _forget_in_record(out: Path, log: Log) -> None:
+    """Sets the record's entries for folders that are gone to null, as a
+    build that didn't make them writes them."""
+    path = out / RECORD
+    if not path.is_file():
+        return
+    record = read_json(path)
+    if not record:
+        return
+    changed = False
+    for key, names in _RECORD_KEYS.items():
+        value = record.get(key)
+        if not value:
+            continue
+        still = next((n for n in names if (data_dir(out) / n).is_dir()), None)
+        if key == "cod3_hd_textures":
+            still = PACK_NAME if pack_ready(data_dir(out) / PACK_NAME) else None
+        new = (Path("data") / "cod3" / still).as_posix() if still else None
+        if new != value:
+            record[key] = new
+            changed = True
+    if changed:
+        try:
+            write_json(path, record)
+        except OSError as e:
+            log.warn(f"Couldn't update {path} ({e}); Tools > Repair may report the deleted folders as missing.")

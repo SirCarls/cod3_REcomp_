@@ -105,11 +105,24 @@ bool Draw() {
     }
   }
   const pd::Match match = pd::CurrentMatch();
+#if defined(COD3_MP)  // [acct2-ocr] 2026-11-07
+  ImGui::TextUnformatted(match.running ? "This PC alone plays this match: these rules apply to every player in it."
+                                       : "The rules of the matches this PC plays alone (split screen).");
+  HelpLine("In a system link match they stay at their defaults for now: the other consoles can't be told yet, "
+           "so this tab is hidden there.");
+#else
   ImGui::TextUnformatted(match.running ? "You host this match: these rules apply to every player in it."
                                        : "The rules of a match you host. In the campaign you are always the host.");
   HelpLine("Players can't change them during your match; each player's own settings come back when they leave. "
            "Players who join a match don't see this tab.");
+#endif
 
+#if defined(COD3_MP)  // [acct2-ocr] 2026-11-07: no CoD4 movement in multiplayer yet (movement/hooks_mp.cpp)
+  Section("Movement");
+  HelpLine("Multiplayer moves as Call of Duty 3 for everyone for now, so there is no movement rule here.");
+  static const char* kOnOff[] = {"0: Off", "1: On"};
+  changed |= ChoiceRow(pd::Id::kLevitationFix, "Levitation fix", kOnOff, 2);
+#else
   Section("Movement");
   static const char* kModes[] = {"0: Call of Duty 3 for everyone", "1: Call of Duty 4 for everyone",
                                  "2: Each player's own style"};
@@ -122,6 +135,8 @@ bool Draw() {
   changed |= ChoiceRow(pd::Id::kAlternateMovementSpeeds, "CoD4 speeds", kOnOff, 2);
   changed |= ChoiceRow(pd::Id::kAlternateMovementJumps, "CoD4 jump tricks", kOnOff, 2);
   ImGui::Unindent();
+  changed |= ChoiceRow(pd::Id::kLevitationFix, "Levitation fix", kOnOff, 2);  // [acct2-ocr] game/movement/stuck_fix.h
+#endif
 
   Section("Aim assist");
   static const char* kRule[] = {"0: Off for everyone", "1: Each player's own choice"};

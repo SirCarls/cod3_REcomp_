@@ -29,6 +29,11 @@ layout(push_constant) uniform Tint {
     vec4 film_gray;     // its c1: the gray's color
     vec4 film_move;     // x its c2's scale on the color before the gray (0: no post effect 7); y, z the second pass's
                         // move of the picture; w the moved picture's share
+    vec4 after;         // [rexglue-native] 2026-11-11 rn47g: x above 0: this draw is the first pass of post effect 4
+                        // as the game draws it (ngl_vk_set_afterimage), x how far in from every edge it reads
+    vec4 tweak;         // [waw-decomp] 2026-11-11: w above 0.5: the film tweak (ngl_vk_set_film_tweak) in place of
+                        // the tint, the brightness and the color look-up, rgb its delta; then weights is its bias
+                        // and tone.rgb its base
 } tint;
 
 // The picture after post effects 1 to 4 at a pixel; front: it is a scene drawn in front of the world (left alone)
@@ -39,6 +44,12 @@ vec3 toned_at(ivec2 at, out bool front)
     front = depth < tint.tone.a;
     if (front)
         return picture;
+    // [waw-decomp] 2026-11-11: Call of Duty 4's and World at War's film (their PC copies' postfx_color.hlsl, compiled
+    // ps_3_0_2acda88e: c7 colorBias, c5 colorTintBase, c6 colorTintDelta), alone in its frame's draw
+    if (tint.tweak.w > 0.5) {
+        float lum = dot(picture, vec3(0.299, 0.587, 0.114));
+        return tint.weights.rgb + (tint.tone.rgb + tint.tweak.rgb * lum) * (picture * tint.weights.a + lum);
+    }
     vec3 toned = mix(picture, dot(picture, tint.weights.rgb) * tint.tone.rgb, tint.weights.a);
     toned = pow(max(toned * tint.curve.x, vec3(0.0)), vec3(tint.curve.y));
     if (tint.curve.w > 0.5) {
@@ -112,6 +123,17 @@ vec3 film_at(vec2 uv, vec3 beside)
 void main()
 {
     ivec2 at = ivec2(gl_FragCoord.xy);
+    // [rexglue-native] 2026-11-11 rn47g: post effect 4's first pass, the one the game draws into its kept picture
+    // (its pixel shader: fac1 x Diffuse_Map + fac2 x Diffuse2_Map; its corners' coordinates drawn in by `after.x` on
+    // every side, decomp 0x821472C8): the picture so far and the kept picture (set 2 here), both read that far in and
+    // filtered, mixed by curve.z. ngl_vk copies the result into the kept picture and then draws the second pass, which
+    // is this shader's plain mix with the last frame (toned_at) with the kept picture on set 2.
+    if (tint.after.x > 0.0) {
+        vec2 uv = (vec2(at) + 0.5) / vec2(textureSize(scene, 0));
+        vec2 inside = tint.after.x + uv * (1.0 - 2.0 * tint.after.x);
+        color = vec4(mix(texture(scene, inside).rgb, texture(last_frame, inside).rgb, tint.curve.z), 1.0);
+        return;
+    }
     bool front;
     vec3 toned = toned_at(at, front);
     // post effect 7's second pass (D7B45AAE96CFCD55): its first pass here and at a place moved by film_move.yz

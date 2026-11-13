@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import binaries, cross, deps
+from . import binaries, cross, deps, game_settings
 from .common import (IS_LINUX, IS_WINDOWS, Log, SetupError, copy_tree, dir_size, exe_name, free_space,
                      host_triple, human, is_within, overlaps, read_json, resolved, safe_rmtree, sha1_file,
                      write_json)
@@ -67,7 +67,13 @@ class Port:
     settings_prefix: str          # the port's own settings (cod2_..., waw_..., cod4_...)
     skip_films: str = ""          # its "skip the start-up films" setting, if it has one
     fov: str = ""                 # its field of view setting, if it has one
+    fov_whole: bool = False       # [f2-menus] that setting takes whole degrees (cod2_fov is an integer)
     max_fps: str = ""             # its frame limit setting, if it has one
+    # [f2-menus] 2026-11-10 That setting's own range and what its 0 means, as each port defines it (cod2_max_fps:
+    # 0 = none, up to 1000; waw_max_fps: 0 = the game's own limit, up to 1000; cod4_max_fps: the same, up to 250).
+    max_fps_top: int = 1000
+    max_fps_zero: str = "none"
+    max_fps_default: int = 0      # what the port starts with when its file has no line for it
     # Projects that build another folder's sources from ../recomp/src (Call of Duty 3's test pad).
     uses_cod3_src: bool = False
 
@@ -99,11 +105,14 @@ COD2 = Port("cod2", "Call of Duty 2", "recomp_cod2", (
     Program("cod2", "default.xex", "16da73ad198bea9f8203063ddb51172508064fb0", "Campaign"),
     # cod2mp is built from mp/ as a subfolder of the port's own project (its manifest reads ../assets).
     Program("cod2mp", "default_mp.xex", "5c9672b2f3a9178192a6fab533ecd0d513ec3280", "Multiplayer"),
-), disc_size=5_600_000_000, settings_prefix="cod2", skip_films="cod2_skip_intro_movies", max_fps="cod2_max_fps")
+), disc_size=5_600_000_000, settings_prefix="cod2", skip_films="cod2_skip_intro_movies", max_fps="cod2_max_fps",
+    fov="cod2_fov", fov_whole=True,   # [f2-menus] 2026-11-10 the port has cod2_fov; the Play page had no row for it
+    max_fps_default=60)
 
 WAW = Port("waw", "Call of Duty: World at War", "recomp_waw", (
     Program("waw", "default.xex", "9972cdb7c1bf2f54c6ef7d58c9eb3b6d4a724708", "Campaign"),
-), disc_size=7_300_000_000, settings_prefix="waw", fov="waw_fov", max_fps="waw_max_fps", uses_cod3_src=True)
+), disc_size=7_300_000_000, settings_prefix="waw", fov="waw_fov", max_fps="waw_max_fps",
+    max_fps_zero="the game's own limit", uses_cod3_src=True)
 
 COD4 = Port("cod4", "Call of Duty 4: Modern Warfare", "recomp_cod4", (
     Program("cod4", "default.xex", "2f3148ca7e4c17140e0d44714e204f570197af51", "Campaign"),
@@ -111,6 +120,8 @@ COD4 = Port("cod4", "Call of Duty 4: Modern Warfare", "recomp_cod4", (
     Program("cod4mp", "default_mp.xex", "9d2f0236a318f36e31930d01cbe15df641af2f54", "Multiplayer", project="mp",
             asset_dir="mp/assets"),
 ), disc_size=7_000_000_000, settings_prefix="cod4", skip_films="cod4_skip_intro_movies", fov="cod4_fov",
+    max_fps="cod4_max_fps",   # [f2-menus] 2026-11-10 the port has cod4_max_fps; the Play page had no row for it
+    max_fps_top=250, max_fps_zero="the game's own limit",
     uses_cod3_src=True)
 
 PORTS: Dict[str, Port] = {p.id: p for p in (COD2, WAW, COD4)}
@@ -540,20 +551,23 @@ class PlayOptions:
             out.append(f"no program {self.program!r} in {p.name}")
         if self.fov and not (40.0 <= self.fov <= 140.0):
             out.append("the field of view goes from 40 to 140")
-        if self.max_fps not in (-1,) and not (0 <= self.max_fps <= 1000):
-            out.append("the frame limit goes from 0 (none) to 1000")
+        if self.max_fps not in (-1,) and not (0 <= self.max_fps <= p.max_fps_top):
+            out.append(f"the frame limit goes from 0 ({p.max_fps_zero}) to {p.max_fps_top}")
         if self.graphics_api not in GRAPHICS_APIS:
             out.append(f"the graphics API is one of {', '.join(GRAPHICS_APIS)}")
         return out
 
     def arguments(self, p: Port) -> List[str]:
-        args = [f"--fullscreen={'true' if self.fullscreen else 'false'}"]
+        # [f2-menus] 2026-11-10 (owner: "check the cod3 tab for references. Also check for redundancy"): nothing is
+        # passed for an unticked box. "--fullscreen=false" at every start undid the display mode chosen in the
+        # game's F2 window, the fault Call of Duty 3's Play page had with its old "Start in a window" box.
+        args = ["--fullscreen=true"] if self.fullscreen else []
         if self.mute:
             args.append("--audio_mute=true")
         if self.skip_films and p.skip_films:
             args.append(f"--{p.skip_films}=true")
         if self.fov and p.fov:
-            args.append(f"--{p.fov}={self.fov:g}")
+            args.append(f"--{p.fov}={round(self.fov)}" if p.fov_whole else f"--{p.fov}={self.fov:g}")
         if self.max_fps >= 0 and p.max_fps:
             args.append(f"--{p.max_fps}={self.max_fps}")
         if IS_WINDOWS and self.graphics_api != "auto":
@@ -582,6 +596,50 @@ class PlayOptions:
         if s.get(k + "graphics_api") in GRAPHICS_APIS:
             o.graphics_api = s[k + "graphics_api"]
         return o
+
+
+# ---------------------------------------------------------------------- the game's own settings file
+# [f2-menus] 2026-11-10 (owner 18:01: "check the cod3 tab for references. Also check for redundancy"; 18:13: "Your
+# suggestions seem good."). The Play page's Settings rows are the game's own settings, in <program>.toml in the
+# game's folder (cod2.toml, cod2mp.toml ...): the file the game reads at start and its F2 window writes. One copy, as
+# Call of Duty 3's Game settings; nothing of them is passed on the command line from the Play page any more.
+def settings_file_name(p: Port, program: str = "") -> str:
+    return f"{program or p.programs[0].name}.toml"
+
+
+def game_settings_of(p: Port) -> List["game_settings.Setting"]:
+    """The settings the Play page has a row for, with each one's own name, range and default in that port."""
+    setting = game_settings.Setting
+    out = [setting("fullscreen", "Fullscreen", "Fill the screen instead of a window.", "bool", default=True),
+           setting("audio_mute", "Mute", "No sound.", "bool", default=False)]
+    if p.skip_films:
+        out.append(setting(p.skip_films, "Skip the start-up films", "Straight to Press START.", "bool", default=False))
+    if p.fov:
+        out.append(setting(p.fov, "Field of view", "Degrees; 0 = the game's own.", "int", min=0, max=160, default=0,
+                           decimal=not p.fov_whole))
+    if p.max_fps:
+        out.append(setting(p.max_fps, "Frame limit", f"Frames a second; 0 = {p.max_fps_zero}.", "int", min=0,
+                           max=p.max_fps_top, default=p.max_fps_default))
+    out.append(setting(f"{p.settings_prefix}_graphics_api", "Graphics API",
+                       "auto: Vulkan, or Direct3D 12 when Vulkan can't start.", "choice",
+                       tuple((a, a) for a in GRAPHICS_APIS), default="auto", platforms=("windows",)))
+    return out
+
+
+def load_game_settings(p: Port, output: Path, program: str = "") -> Tuple[dict, set]:
+    """(each setting's value in <output>/<game>/<program>.toml, or its default; the settings the file has a line
+    for)."""
+    folder, name, settings = Path(output) / p.subdir, settings_file_name(p, program), game_settings_of(p)
+    found = game_settings.read_values(folder, name)
+    return (game_settings.load(folder, settings=settings, file_name=name),
+            {s.key for s in settings if any(n in found for n in s.names)})
+
+
+def save_game_settings(p: Port, output: Path, values: dict, program: str = "") -> None:
+    """Change only `values` in that file, the rest of it kept byte for byte; SetupError while the game runs."""
+    game_settings.save(Path(output) / p.subdir, values, settings=game_settings_of(p),
+                       file_name=settings_file_name(p, program),
+                       exes=[n for q in p.programs for n in (q.name, q.name + ".exe")])
 
 
 def installed(p: Port, output: Path) -> Optional[dict]:
@@ -622,4 +680,5 @@ def last_build(p: Port, output: Path) -> str:
 
 __all__ = ["Program", "Port", "PORTS", "PORT_ORDER", "COD2", "WAW", "COD4", "port", "Disc", "read_disc",
            "check_disc", "buildable", "PortPipeline", "run_build", "PlayOptions", "play_command", "installed",
-           "last_build", "launcher_name", "GRAPHICS_APIS"]
+           "last_build", "launcher_name", "GRAPHICS_APIS", "settings_file_name", "game_settings_of",
+           "load_game_settings", "save_game_settings"]

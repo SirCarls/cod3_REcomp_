@@ -6,10 +6,13 @@ textures for the insignia, item for item the same as the USA/Europe disc's
 otherwise (the same items, sizes and layout; only their names in the
 archive's directory say no_* for of_*). The other campaign archives the
 German disc changes also carry its German text and voice lists (sp/global.cod,
-sp/frontend.cod and each level's own sp/<level>/<level>.cod), so they are
-left as they are: six of those level archives keep a few of their own
-insignia textures (oil barrels, crates), which this can't change yet.
-The game code and the multiplayer files are not touched.
+sp/frontend.cod and each level's own sp/<level>/<level>.cod), so they aren't
+swapped whole. Six of those level archives also hold insignia textures of their
+own (oil and fuel barrels, a crate top, the King Tiger:
+lists/censored_level_textures.tsv): for those, a copy of the game's own level
+archive is made with the other release's pixels at the same items (the same
+sizes; the language stays the game's own), and swapped like the others. The
+game code and the multiplayer files are not touched.
 
 This swaps those 84 files in a game's assets/ folder with the other
 release's, and back:
@@ -18,7 +21,10 @@ release's, and back:
           assets/censored/ (the German disc for a game built from the USA,
           Europe or Fr/Es/It disc; the USA/Europe or Fr/Es/It disc for a game
           built from the German one). Each file is checked by its MD5
-          (c3w/disc_md5/*.tsv) while it is copied.
+          (c3w/disc_md5/*.tsv) while it is copied. The six level archives'
+          copies are made from the game's own file and the disc's (both
+          checked by MD5) and listed with their MD5s in
+          assets/censored/levels.tsv.
   - on / off: swaps them (renames inside assets/, so it's instant); the
           version not in use waits in assets/censored/german/ or
           assets/censored/uncut/.
@@ -29,7 +35,7 @@ The Japanese release is a build of its own (its archives differ from both),
 so it isn't supported. Close the game first (Windows can't rename a file the
 game has open).
 
-Safety: only the 84 paths from the lists (relative, under sp/) are touched; a
+Safety: only the 84 + 6 paths from the lists (relative, under sp/) are touched; a
 file or folder that is a link is never moved, written or followed (it is
 reported and left alone), and assets/censored/ itself may not be a link.
 
@@ -52,7 +58,7 @@ if __package__ in (None, ""):   # run as a file: python3 c3w/censored.py
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = "c3w"
 
-from . import disc_files   # noqa: E402
+from . import cod_archive, disc_files   # noqa: E402
 from .common import Cancelled, Log, SetupError, console_sink, human, is_within, sha1_file   # noqa: E402
 
 STORE = "censored"                      # assets/censored/{german,uncut}/<path as on the disc>
@@ -62,6 +68,8 @@ GERMAN_DISC = "germany"
 UNCUT_DISCS = ("usa_europe", "europe_fr_es_it")   # the same 84 files, byte for byte
 CHUNK = 8 * 1024 * 1024
 EXPECTED = 84                           # the German disc's texture-only archives
+LEVEL_LIST = "censored_level_textures.tsv"   # lists/: the level archives' own insignia textures
+LEVELS_MANIFEST = "levels.tsv"          # assets/censored/: the level copies this made, with their MD5s
 
 
 @dataclass(frozen=True)
@@ -120,6 +128,168 @@ def pairs() -> List[Pair]:
                 out.append(Pair(u.path, u, g))
         _pairs = out
     return _pairs
+
+
+@dataclass(frozen=True)
+class Made:
+    """Size and MD5 of a level archive this made or started from (like disc_files.Known)."""
+    size: int
+    md5: str
+
+
+@dataclass(frozen=True)
+class LevelRow:
+    own: str                # the version of the game it was made for
+    orig: Made              # the game's own file (a disc's, by its MD5)
+    made: Made              # the copy with the other release's textures
+
+
+_levels: Optional[Dict[str, List[Tuple[str, str]]]] = None
+
+
+def level_list_path() -> Path:
+    return Path(__file__).resolve().parent.parent / "lists" / LEVEL_LIST
+
+
+def levels() -> Dict[str, List[Tuple[str, str]]]:
+    """The level archives (path as on the disc) with insignia textures of their own: (the name
+    in the uncut disc's directory, the name in the German disc's) for each texture. Only those
+    on both discs' lists."""
+    global _levels
+    if _levels is None:
+        de = disc_files.known_files(disc_files.disc_by_key(GERMAN_DISC))
+        us = disc_files.known_files(disc_files.disc_by_key(UNCUT_DISCS[0]))
+        try:
+            text = level_list_path().read_text(encoding="utf-8")
+        except OSError:
+            text = ""
+        out: Dict[str, List[Tuple[str, str]]] = {}
+        for line in text.splitlines():
+            c = line.rstrip("\r").split("\t")
+            if line.startswith("#") or len(c) < 3:
+                continue
+            low = c[0].strip().lower()
+            if low in de and low in us and has_language(low) and _safe_rel(us[low].path):
+                out.setdefault(us[low].path, []).append((c[1].strip(), c[2].strip()))
+        _levels = out
+    return _levels
+
+
+def _read_levels(store: Path) -> Dict[str, LevelRow]:
+    rows: Dict[str, LevelRow] = {}
+    try:
+        text = (store / LEVELS_MANIFEST).read_text(encoding="utf-8")
+    except OSError:
+        return rows
+    for line in text.splitlines():
+        c = line.split("\t")
+        if line.startswith("#") or len(c) != 6 or c[1] not in (GERMAN, UNCUT):
+            continue
+        try:
+            rows[c[0]] = LevelRow(c[1], Made(int(c[2]), c[3]), Made(int(c[4]), c[5]))
+        except ValueError:
+            continue
+    return rows
+
+
+def _write_levels(store: Path, rows: Dict[str, LevelRow]) -> None:
+    p = store / LEVELS_MANIFEST
+    if p.is_symlink():
+        raise SetupError(f"{p} is a link: not written.")
+    text = ("# [acct2-decomp] Level archives the censored campaign made (c3w/censored.py): path, the game's version,\n"
+            "# the game's own file (size, MD5), the copy with the other release's textures (size, MD5).\n"
+            + "".join(f"{rel}\t{r.own}\t{r.orig.size}\t{r.orig.md5}\t{r.made.size}\t{r.made.md5}\n"
+                      for rel, r in sorted(rows.items())))
+    tmp = p.with_name(p.name + ".part")
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    with open(tmp, "x", encoding="utf-8") as o:
+        o.write(text)
+    tmp.replace(p)
+
+
+def made_copies(assets: Path) -> Dict[str, Made]:
+    """The level copies this made for the game in assets/ (path: size and MD5), for
+    disc_files.check: such a file in use is the censored campaign's, not a damaged one."""
+    store = assets / STORE
+    if store.is_symlink():
+        return {}
+    return {rel: r.made for rel, r in _read_levels(store).items()}
+
+
+def entries(assets: Path, own: str) -> Tuple[List[Pair], List[str]]:
+    """(what the switch covers: the 84 and the level copies made for this game, the level
+    archives still without a copy)."""
+    store = assets / STORE
+    rows = {} if store.is_symlink() else _read_levels(store)
+    out, missing = list(pairs()), []
+    for rel in levels():
+        r = rows.get(rel)
+        if r is None or r.own != own:
+            missing.append(rel)
+            continue
+        out.append(Pair(rel, r.orig if own == UNCUT else r.made, r.made if own == UNCUT else r.orig))
+    return out, missing
+
+
+def copy_textures(own: bytes, donor: bytes, names: List[Tuple[str, str]]) -> Tuple[bytes, List[str], List[str]]:
+    """`own` (a level archive) with the GPU data of the named textures taken from `donor` (the
+    same level from the other release). names: (the name in own's directory, in donor's). Only
+    textures of the same shape and size are copied, so every item stays where it is; the
+    changed chunks are stored as they are, the others kept byte for byte. Returns (the new
+    archive, the textures copied, the problems)."""
+    oi, di = cod_archive.read_index(own), cod_archive.read_index(donor)
+    os_, ds = oi.streamed(), di.streamed()
+    if os_ is None or ds is None:
+        return own, [], ["no streamed section"]
+    si = oi.sections.index(os_)
+    o_ent = {e.name.lower(): e for e in os_.entries}
+    d_ent = {e.name.lower(): e for e in ds.entries}
+    mine: Dict[int, Tuple[bytearray, Dict[Tuple[int, int], cod_archive.Item]]] = {}
+    theirs: Dict[int, Tuple[bytes, Dict[Tuple[int, int], cod_archive.Item]]] = {}
+
+    def load(cache, idx, sec, data, b, writable):
+        if b not in cache:
+            if not 0 <= b < len(sec.chunks):
+                raise cod_archive.CodError(f"no chunk {b}")
+            ch = cod_archive.unpack(data, sec.chunks[b])
+            items = {(it.record, it.index): it for it in cod_archive.apkf_items(ch)}
+            cache[b] = (bytearray(ch) if writable else ch, items)
+        return cache[b]
+
+    copied, problems = [], []
+    for own_name, donor_name in names:
+        eo, ed = o_ent.get(own_name.lower()), d_ent.get(donor_name.lower())
+        if eo is None or ed is None:
+            problems.append(f"{own_name}: not in the archive's directory")
+            continue
+        try:
+            buf, items = load(mine, oi, os_, own, eo.b, True)
+            dch, ditems = load(theirs, di, ds, donor, ed.b, False)
+        except cod_archive.CodError as e:
+            problems.append(f"{own_name}: {e}")
+            continue
+        a, b = items.get((eo.c >> 16, eo.c & 0xFFFF)), ditems.get((ed.c >> 16, ed.c & 0xFFFF))
+        if a is None or b is None or a.type != cod_archive.TEX or b.type != cod_archive.TEX or len(a.parts) < 2:
+            problems.append(f"{own_name}: not a texture where the directory says")
+            continue
+        (ao, an), (ag, gn) = a.parts[0], a.parts[1]
+        (bo, bn), (bg, hn) = b.parts[0], b.parts[1]
+        if gn == 0 or gn != hn or cod_archive.texture_shape(bytes(buf[ao:ao + an])) != \
+                cod_archive.texture_shape(dch[bo:bo + bn]) or cod_archive.texture_shape(dch[bo:bo + bn]) is None:
+            problems.append(f"{own_name}: another size or format in the other release")
+            continue
+        buf[ag:ag + gn] = dch[bg:bg + hn]
+        copied.append(own_name)
+    if not copied:
+        return own, copied, problems
+    new = {(si, b): bytes(buf) for b, (buf, _) in mine.items()}
+    out = cod_archive.replace_chunks(own, oi, new)
+    check = cod_archive.read_index(out)               # read back: the new chunks as written, the rest as they were
+    for (s, b), data in new.items():
+        if cod_archive.unpack(out, check.sections[s].chunks[b]) != data:
+            raise SetupError("the level archive didn't read back as written")
+    return out, copied, problems
 
 
 def assets_folder(target: Path) -> Path:
@@ -198,9 +368,9 @@ class Status:
         g, u = self.in_use.get(GERMAN, 0), self.in_use.get(UNCUT, 0)
         how = "" if self.deep else " (by name and size; --verify checks the MD5s)"
         if g == n:
-            text = f"Censored campaign: on ({n} archives are the German disc's)"
+            text = f"Censored campaign: on ({n} archives with the German release's textures)"
         elif u == n:
-            text = f"Censored campaign: off ({n} archives are the uncut ones)"
+            text = f"Censored campaign: off ({n} archives with the uncut textures)"
         else:
             text = f"Censored campaign: mixed ({g} German, {u} uncut of {n})"
         bad = self.in_use.get("changed", 0), self.in_use.get("missing", 0)
@@ -221,7 +391,12 @@ def status(target: Path, deep: bool = False, cancel: Optional[threading.Event] =
     assets = assets_folder(target)
     st = Status(own_version(assets), deep=deep)
     store = assets / STORE
-    for p in pairs():
+    covered, waiting = entries(assets, st.own)
+    for rel in waiting:            # a level archive without its copy yet: the game's own, as built
+        st.total += 1
+        key = st.own if (assets / rel).is_file() else "missing"
+        st.in_use[key] = st.in_use.get(key, 0) + 1
+    for p in covered:
         st.total += 1
         live = assets / p.rel
         for v in (GERMAN, UNCUT):
@@ -234,13 +409,13 @@ def status(target: Path, deep: bool = False, cancel: Optional[threading.Event] =
         else:
             size = live.stat().st_size
             fits = [v for v in (GERMAN, UNCUT) if p.known(v).size == size]
-            waiting = [v for v in (GERMAN, UNCUT) if (store / v / p.rel).is_file()]
+            spare = [v for v in (GERMAN, UNCUT) if (store / v / p.rel).is_file()]
             if not fits:
                 key = "changed"
             elif len(fits) == 1:
                 key = fits[0]
-            elif len(waiting) == 1:
-                key = OTHER[waiting[0]]
+            elif len(spare) == 1:
+                key = OTHER[spare[0]]
             else:
                 key = st.own
         st.in_use[key] = st.in_use.get(key, 0) + 1
@@ -256,7 +431,7 @@ def add(source: Path, target: Path, log: Log, cancel: Optional[threading.Event] 
     Every copy is checked against the disc's MD5 list."""
     cancel = cancel or threading.Event()
     assets = assets_folder(target)
-    own_version(assets)                     # refuses the Japanese release
+    own = own_version(assets)               # refuses the Japanese release
     _store(assets)
     src = disc_files._open(Path(source))
     try:
@@ -283,7 +458,7 @@ def add(source: Path, target: Path, log: Log, cancel: Optional[threading.Event] 
             if p.rel.lower() not in on_disc:
                 raise SetupError(f"{p.rel} isn't on {disc.name}: is the image complete?")
             todo.append((p, has))
-        if same == len(pairs()):
+        if has == own:
             raise SetupError(f"The game already uses the files of {disc.name}: "
                              + ("add the German disc's to switch to the censored campaign." if has == UNCUT else
                                 "add the USA/Europe or Fr/Es/It disc's to switch to the uncut campaign."))
@@ -318,9 +493,84 @@ def add(source: Path, target: Path, log: Log, cancel: Optional[threading.Event] 
         size = sum(p.known(v).size for p, v in todo)
         log.info(f"Censored campaign: copied {len(todo)} files from {disc.name} ({human(size)}); "
                  f"{already} were already there.")
-        return {"disc": disc.name, "version": has, "copied": len(todo), "bytes": size, "already": already}
+        made, ready, skipped = _add_levels(src, disc, has, own, assets, on_disc, log, cancel)
+        return {"disc": disc.name, "version": has, "copied": len(todo), "bytes": size, "already": already,
+                "levels": made, "levels_ready": ready, "levels_skipped": skipped}
     finally:
         src.close()
+
+
+def _add_levels(src, disc, has: str, own: str, assets: Path, on_disc: Dict[str, Tuple[str, int]], log: Log,
+                cancel: threading.Event) -> Tuple[int, int, List[str]]:
+    """The level archives' copies: the game's own file with this disc's textures at the same
+    items, saved as assets/censored/<has>/<path> and listed in levels.tsv. Returns (made,
+    already there, skipped with why)."""
+    store = _store(assets)
+    rows = _read_levels(store)
+    own_lists = [disc_files.known_files(disc_files.disc_by_key(k))
+                 for k in (UNCUT_DISCS if own == UNCUT else (GERMAN_DISC,))]
+    donor_list = disc_files.known_files(disc_files.disc_by_key(disc.key))
+    made = ready = 0
+    skipped: List[str] = []
+    todo = list(levels().items())
+    for n, (rel, names) in enumerate(todo):
+        if cancel.is_set():
+            raise Cancelled()
+        log.progress(n / max(len(todo), 1), f"censored campaign: {rel}")
+        live, dest = assets / rel, store / has / rel
+        if live.is_symlink() or not live.is_file() or not is_within(live, assets):
+            skipped.append(f"{rel}: not in the game (or a link)")
+            continue
+        md5 = _md5(live, cancel)
+        r = rows.get(rel)
+        if r is not None and r.own == own and md5 in (r.orig.md5, r.made.md5):
+            other, want = (dest, r.made) if md5 == r.orig.md5 else (store / own / rel, r.orig)
+            if other.is_file() and not other.is_symlink() and other.stat().st_size == want.size:
+                ready += 1
+                continue
+            if md5 == r.made.md5:
+                skipped.append(f"{rel}: the copy is in use and the game's own file is gone from {STORE}/{own}/")
+                continue
+        if not any(L.get(rel.lower()) is not None and L[rel.lower()].md5 == md5 for L in own_lists):
+            skipped.append(f"{rel}: not the disc's file (changed by hand?), left as it is")
+            continue
+        dk = donor_list.get(rel.lower())
+        if dk is None or rel.lower() not in on_disc:
+            skipped.append(f"{rel}: not on {disc.name}")
+            continue
+        donor = b"".join(src.chunks(on_disc[rel.lower()][0]))
+        if hashlib.md5(donor).hexdigest() != dk.md5:
+            raise SetupError(f"{rel} on {disc.name} isn't the file it should be (another MD5): the image may be "
+                             "damaged.")
+        mine = live.read_bytes()
+        pick = [(u, g) if own == UNCUT else (g, u) for u, g in names]
+        try:
+            out, copied, problems = copy_textures(mine, donor, pick)
+        except cod_archive.CodError as e:
+            skipped.append(f"{rel}: {e}")
+            continue
+        for why in problems:
+            log.warn(f"Censored campaign: {rel}: {why}")
+        if not copied:
+            skipped.append(f"{rel}: none of its textures could be copied")
+            continue
+        if dest.is_symlink() or not is_within(dest.parent, store):
+            raise SetupError(f"Unsafe path (a link out of the game folder?): {rel}")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".part")
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        with open(tmp, "xb") as o:
+            o.write(out)
+        tmp.replace(dest)
+        rows[rel] = LevelRow(own, Made(len(mine), md5), Made(len(out), hashlib.md5(out).hexdigest()))
+        _write_levels(store, rows)
+        made += 1
+        log.info(f"Censored campaign: {rel}: {len(copied)} texture(s) from {disc.name} put into a copy of the "
+                 "game's own file (its language stays).")
+    for why in skipped:
+        log.warn(f"Censored campaign: {why}")
+    return made, ready, skipped
 
 
 # ---------------------------------------------------------------------------
@@ -331,14 +581,20 @@ def set_censored(target: Path, on: bool, log: Log, cancel: Optional[threading.Ev
     from the store; the one taken out goes into the store."""
     cancel = cancel or threading.Event()
     assets = assets_folder(target)
-    own_version(assets)
+    own = own_version(assets)
     want = GERMAN if on else UNCUT
     other = OTHER[want]
     store = _store(assets)
     moved = kept = 0
     lacking: List[str] = []
     changed: List[str] = []
-    total = sum(p.known(want).size for p in pairs()) or 1
+    covered, waiting = entries(assets, own)
+    for rel in waiting:            # a level archive without its copy yet: it is the game's own version
+        if want == own:
+            kept += 1
+        else:
+            lacking.append(rel)
+    total = sum(p.known(want).size for p in covered) or 1
     done = [0]
 
     def tick(n: int) -> None:
@@ -346,7 +602,7 @@ def set_censored(target: Path, on: bool, log: Log, cancel: Optional[threading.Ev
         log.progress(min(done[0] / total, 1.0), "censored campaign: checking")
 
     try:
-        for p in pairs():
+        for p in covered:
             live = assets / p.rel
             have = store / want / p.rel
             put = store / other / p.rel
@@ -404,7 +660,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.list:
             for p in pairs():
                 print(f"{p.uncut.md5}  {p.german.md5}  {p.rel}")
-            print(f"{len(pairs())} files")
+            for rel, names in levels().items():
+                print(f"{'level copy':>32}  {len(names):>2} texture(s){'':>18}  {rel}")
+            print(f"{len(pairs())} files, {len(levels())} level archives")
             return 0
         if args.add:
             add(Path(args.add), Path(args.game), log)

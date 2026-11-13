@@ -50,6 +50,29 @@ add_custom_command(                                                             
     DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.frag"                                 # [rexglue-native]
     COMMENT "Compiling mesh.frag without the fabric to SPIR-V")                             # [rexglue-native]
 list(APPEND NGL_VK_SHADERS "${NGL_VK_FOUR_SETS_SPIRV}")                                     # [rexglue-native]
+# [rexglue-native] 2026-11-10: the effect layer's two shaders (ngl_vk.h effect_layer; src/ngl_vk.c make_effect_layer)
+# and the sky glow's three (ngl_vk.h ngl_vk_set_glow; src/ngl_vk.c make_glow)
+foreach(shader effect_depth.frag effect_back.frag glow_first.frag glow_blur.frag glow_add.frag)  # [rexglue-native]
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [rexglue-native]
+    add_custom_command(                                                                     # [rexglue-native]
+        OUTPUT "${spirv}"                                                                   # [rexglue-native]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [rexglue-native]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [rexglue-native]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [rexglue-native]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [rexglue-native]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [rexglue-native]
+endforeach()                                                                                # [rexglue-native]
+# [rexglue-native-fx] 2026-11-11 fx1: the screen warp's two shaders (ngl_vk.h ngl_vk_set_screen_warp; src/ngl_vk.c make_heat)
+foreach(shader heat_warp.vert heat_warp.frag)                                               # [rexglue-native-fx]
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [rexglue-native-fx]
+    add_custom_command(                                                                     # [rexglue-native-fx]
+        OUTPUT "${spirv}"                                                                   # [rexglue-native-fx]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [rexglue-native-fx]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [rexglue-native-fx]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [rexglue-native-fx]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [rexglue-native-fx]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [rexglue-native-fx]
+endforeach()                                                                                # [rexglue-native-fx]
 
 add_library(ngl_vk STATIC src/ngl_vk.c ${NGL_VK_SHADERS})
 target_include_directories(ngl_vk PUBLIC include PRIVATE "${NGL_VK_SHADER_DIR}")

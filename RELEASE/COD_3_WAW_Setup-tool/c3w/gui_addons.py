@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Optional
 
-from . import addons, common, theme
+from . import addons, common, disc_needs, theme
 from .widgets import hint, px, tip
 
 PACK_TYPES = [("Map pack downloads", "*.zip *.ZIP"), ("Xbox 360 packages", "*")]
@@ -35,8 +35,9 @@ class Addons:
             b = ttk.Button(f, text=text, command=cmd)
             b.pack(side="left", padx=(px(4), 0))
             tip(b, help_text)
-        hint(parent, "Your Call of Duty 3 map pack downloads (Champs, Valor, Bravo). They're only read: copied "
-                     "into the game's userdata, never run. Only the known packs are added.").grid(
+        hint(parent, "Your Call of Duty 3 map pack downloads (Champs, Valor, Bravo), for multiplayer: only a game "
+                     "built from the USA/Europe disc has it. They're only read: copied into the game's userdata, "
+                     "never run. Only the known packs are added.").grid(
             row=r + 1, column=1, columnspan=2, sticky="w")
         self._refresh_addons()
 
@@ -69,6 +70,12 @@ class Addons:
             return
         scratch = Path(self.v_work.get().strip() or common.default_work_dir()) / "scratch" / "addons"
         cancel = threading.Event()          # its own: the build's Cancel doesn't stop it
+        # [acct2-decomp] map packs are multiplayer's: say so when the game has none (they're added all the same)
+        built = disc_needs.game_disc(out)
+        if built is not None and not disc_needs.RELEASES[built.key].multiplayer:
+            self._info("Map packs", f"Your game was built from {disc_needs.RELEASES[built.key].short}, which has no "
+                                    "multiplayer the recomp knows: map packs are used by multiplayer, in a game "
+                                    "built from the USA/Europe disc. They're added all the same, for such a build.")
 
         def work():
             added = addons.add(sources, out, scratch, cancel, self.log)

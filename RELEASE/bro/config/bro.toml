@@ -62,6 +62,96 @@ binds = true
 # "fire=MOUSE1;aim=MOUSE2;use=F;...". [binds] below wins over it. [BRO_BINDS_KBM]
 # binds_kbm = ""
 
+# [f2-menus] 2026-11-11 The mouse inside this game only: Raw Accel's acceleration curves (no driver, nothing outside
+# the game), a sensitivity randomizer, and the sensitivity as another game counts it. All off as shipped; F2's
+# CONTROLS page has every one as a row, with graphs. They work on each mouse event with the event's own timing, so
+# the frame rate has no part in them. With input.raw_mouse = true only. Each has a variable: BRO_MOUSE_ and its name
+# in capitals (BRO_MOUSE_ACCEL_MODE).
+[mouse]
+# Mouse acceleration inside this game only (Raw Accel's curves, no driver): the faster the mouse moves, the more each
+# count turns the view
+# accel = false
+# Acceleration curve: 0 linear, 1 classic, 2 power, 3 natural, 4 jump, 5 synchronous (Raw Accel's)
+# accel_mode = 0
+# The curve shapes the gain (Raw Accel's default, smoother); off: it shapes the sensitivity (legacy)
+# accel_gain = true
+# Linear and classic: the acceleration
+# accel_acceleration = 0.005
+# Classic: the exponent (2 is linear)
+# accel_exponent_classic = 2.0
+# Power: the exponent
+# accel_exponent_power = 0.05
+# Power: the scale
+# accel_scale = 1.0
+# Power: the sensitivity the curve starts from (0 = from nothing)
+# accel_output_offset = 0.0
+# Linear, classic and natural: the speed (counts a millisecond) below which nothing is added
+# accel_input_offset = 0.0
+# Linear, classic and power: what caps the curve: 0 the output cap, 1 the input cap, 2 both
+# accel_cap_mode = 0
+# The input cap, a speed in counts a millisecond; jump: the speed of the step
+# accel_cap_input = 15.0
+# The output cap, a sensitivity multiple (0 = no cap); jump: the multiple after the step
+# accel_cap_output = 1.5
+# Natural: how fast the curve nears its limit
+# accel_decay_rate = 0.1
+# Natural: the sensitivity multiple the curve nears
+# accel_limit = 1.5
+# Jump and synchronous: how soft the change is (0 = at once)
+# accel_smooth = 0.5
+# Synchronous: the speed (counts a millisecond) at which the sensitivity is unchanged
+# accel_sync_speed = 5.0
+# Synchronous: the sensitivity goes from 1 / this to this
+# accel_motivity = 1.5
+# Synchronous: how fast the change comes
+# accel_gamma = 1.0
+# Sensitivity multiplier after the curve
+# accel_sens = 1.0
+# Up / down sensitivity as a multiple of left / right
+# accel_yx_ratio = 1.0
+# The mouse's DPI, so speeds mean the same on any mouse (as Raw Accel: counts are scaled to 1000 DPI); 0 = not set,
+# counts as they come
+# accel_dpi = 0
+# The curve takes the whole motion's speed; off: side to side and up / down each by its own
+# accel_whole = true
+# Sensitivity randomizer inside this game only: the mouse sensitivity wanders around a baseline over time (aim
+# training)
+# sens_random = false
+# Sensitivity randomizer: 0 steps (a new value every timestep), 1 smooth (always moving)
+# sens_random_type = 1
+# Sensitivity randomizer: the multiple it wanders around (1 = your own sensitivity)
+# sens_random_baseline = 1.0
+# Sensitivity randomizer: the smallest multiple
+# sens_random_min = 0.5
+# Sensitivity randomizer: the largest multiple
+# sens_random_max = 2.0
+# Sensitivity randomizer: how far from the baseline it usually goes (0.1 = barely)
+# sens_random_spread = 0.6
+# Sensitivity randomizer: 0 no smoothing to 4 the slowest, smoothest changes
+# sens_random_smoothing = 2
+# Sensitivity randomizer, steps: seconds between two values
+# sens_random_timestep = 10.0
+# Sensitivity randomizer: minutes it runs after it is turned on, then the baseline (0 = no end)
+# sens_random_runtime = 30.0
+# Sensitivity randomizer: paused (the multiple and the time left stay where they are)
+# sens_random_paused = false
+# Sensitivity randomizer: show the live multiple and the time left in the top left corner
+# sens_random_show = true
+# Sensitivity randomizer: a number that makes the same sequence every time (tests); 0 = a new one each time
+# sens_random_seed = 0
+# Debug: log the randomizer's multiple every N seconds, with the smallest and largest so far (0 = never)
+# sens_random_log = 0
+# Type the mouse sensitivity as another game counts it: 0 this game's own, 1 Quake / Source / Counter-Strike 2 / Apex,
+# 2 Valorant, 3 Overwatch 2 / modern Call of Duty / Destiny 2, 4 Rainbow Six Siege, 5 Fortnite, 6 Battlefield V /
+# 2042, 7 Deadlock, 8 centimetres for a full turn (with f2_sens_dpi)
+# sens_scale = 0
+# The sensitivity on f2_sens_scale's scale, or the centimetres for a full turn
+# sens_value = 1.0
+# The mouse's DPI, for centimetres for a full turn
+# sens_dpi = 800
+# Debug: log once a second the speed the curve saw and the multiple it gave (tests)
+# accel_debug = false
+
 # The controller's button for each of the Xbox pad's: SDL's names, "a" "b" "x" "y" being the bottom, right, left and
 # top face buttons whatever they are labeled, then "leftshoulder" "rightshoulder" "lefttrigger" "righttrigger"
 # "start" "back" "dpup" "dpdown" "dpleft" "dpright" "leftstick" "rightstick" (the stick clicks), or "none".

@@ -1,0 +1,65 @@
+# [acct2-decomp] The built-in censor mode's regions (c3w/censor_builtin.py), measured once from
+# where the German release changed the textures (xfer/censor/censormask.py): coordinates only.
+# Columns: key (hd_keys.tsv's), name (the ripped picture's, for reading; the key decides),
+# width, height (the original's), role (flag: the whole picture; insignia: each rectangle;
+# data: a normal or specular map, only ever blended), rects (x0,y0,x1,y1;... in texels,
+# end exclusive), where (campaign: in the campaign's rip; mp: only in mp/<archive>).
+28772a0c1a951e2b	c_pnzcrew_body_s	512	512	data	37,295,53,313	campaign
+04aca89141fa9c11	c_pnzgren_body1_s	512	512	data	67,237,89,255	campaign
+75397864ba5e6644	c_wrmcht2_emb_s	128	128	data	55,71,75,89	campaign
+4520f1fd14026faa	c_wrmcht_m_body_s	512	512	data	39,275,53,291	campaign
+87c95b90af7d844a	cloth$germankriegsflag_dirt	256	512	flag		campaign
+8d1ca8959ce5b8a9	cloth_masked$of_flag_german	256	128	flag	83,17,183,113	mp/weapusge.cod
+c29b5537965c10a9	cloth_masked$of_flag_german	512	256	flag	169,37,363,223	mp/weapusge.cod
+e26a0a1331259fd8	cloth_masked$of_flag_german	512	256	flag	169,37,363,223	campaign
+3d71bea5f9c2267d	decal$of_germanflag_dirty_c	256	512	flag	49,177,211,343	campaign
+d616f2029e2f1500	decal$of_germanflag_dirty_c	256	512	flag	49,177,211,343	campaign
+e32487d8a43e5dcc	metal$of_brrl_fuel_ger_c	512	512	insignia	117,73,171,163;409,121,435,155;381,133,407,159	campaign
+6e3963a60677a2c6	metal$of_brrl_fuel_ger_n	256	256	data	57,35,87,83;189,59,219,81	campaign
+b125b900826752df	metal$of_brrl_fuel_ger_s	256	256	data	57,35,87,83;189,59,219,81	campaign
+5ad49bc6239df10a	metal$of_p_barrelbeige_50d_	256	256	insignia	157,49,227,91	campaign
+38ac6b04c92ea3a3	metal$of_p_barrelbeige_c	512	512	insignia	13,89,47,127;161,121,207,175	campaign
+cab70100f0157d22	metal$of_p_barrelbeige_n	256	256	data	5,43,25,65;79,59,105,89	campaign
+0cb256e899bb348c	metal$of_p_barrelbeige_s	256	256	data	5,43,25,65;79,59,105,89	campaign
+d32ee885582c414b	metal$of_p_red_oilbarrel_c	256	256	insignia	177,21,207,43;77,61,107,91;181,69,223,91	campaign
+3dcc2473f8cf10d6	metal$of_p_red_oilbarrel_d_	256	256	insignia	185,21,223,43;33,41,55,71;73,57,107,95	campaign
+f3bab4d5770cc0e1	metal$of_p_red_oilbarrel_d_	512	512	insignia	373,121,411,147	campaign
+cc05fcb9517dacb0	metal$of_v_fw190	512	256	insignia	437,153,487,207	campaign
+554ccfe209a09719	of_c_fallsh_head1_c	1024	512	insignia	869,369,899,395	campaign
+2f1d463984f00bdd	of_c_fallsh_head2_c	1024	512	insignia	873,369,899,395	campaign
+fa09f379f08616db	of_c_fallsh_head3_c	1024	512	insignia	869,369,899,395	campaign
+87b8945b389f99e2	of_c_pnzcrew_body_c	1024	1024	insignia	77,593,103,623	campaign
+21de7b985433e256	of_c_pnzcrew_head1_c	1024	512	insignia	709,93,739,123	campaign
+8eab83b7a3079dd0	of_c_pnzcrew_head2_c	1024	512	insignia	709,93,739,123	campaign
+9491be3c0b2c8ffb	of_c_pnzcrew_head3_c	1024	512	insignia	709,93,739,123	campaign
+b6a3260e9f47a7a8	of_c_pnzcrew_helm1_c	256	512	insignia	117,369,167,427	campaign
+2765fcd1b83fdc1b	of_c_pnzcrew_helm2_c	256	512	insignia	117,369,167,427	campaign
+7d8c6dbbfd2117ce	of_c_pnzgren_body1_c	1024	1024	insignia	137,477,175,507	campaign
+d7d10142dfca1784	of_c_pnzgren_helm1_c	256	512	insignia	125,97,163,147;129,373,171,411	campaign
+8d5ba713bcfd5f25	of_c_pnzgren_helm2_c	256	512	insignia	125,93,167,147;129,369,171,411	campaign
+bec9817db2754aff	of_c_pnzgren_helm3_c	256	512	insignia	125,93,167,147;129,373,163,411	campaign
+4e388a3591c52f3a	of_c_pnzgren_m_body1_c	1024	1024	insignia	137,477,175,507;253,485,279,511	campaign
+e475257d3c826451	of_c_pnzgren_m_helm3_c	256	512	insignia	125,93,167,147;129,365,171,411	campaign
+d3f42c269537bc8a	of_c_wrmcht2_body_c	1024	1024	insignia	721,161,747,187;81,553,107,579	campaign
+e962e352d4e48663	of_c_wrmcht2_emb_c	256	256	insignia	113,145,147,175	campaign
+9b7dccb60e954083	of_c_wrmcht2_head_c	1024	512	insignia	893,393,923,427	campaign
+2cc18271227be39a	of_c_wrmcht2_heado_c	1024	512	insignia	709,93,739,123	campaign
+9afcca82b4f39ccf	of_c_wrmcht2_helm2_c	256	512	insignia	125,393,151,427	campaign
+962d029613386d33	of_c_wrmcht_body_c	1024	1024	insignia	73,541,111,579	campaign
+119301cb11d0fae8	of_c_wrmcht_head2_c	1024	512	insignia	873,353,899,379;937,353,967,383;913,357,935,383	mp/ederdam/ederdam.cod
+d03917c20a043a88	of_c_wrmcht_head3mp_c	512	512	insignia	441,389,467,427	mp/ederdam/ederdam.cod
+16cc853f3766068a	of_c_wrmcht_head_c	1024	512	insignia	893,393,923,427	campaign
+c908eb617c9dbaa8	of_c_wrmcht_headmp_c	512	512	insignia	441,389,467,427	mp/ederdam/ederdam.cod
+c1ced8cb557f9ef9	of_c_wrmcht_helm1_c	256	512	insignia	125,393,155,423	campaign
+a1a4bbf2b6acbcf0	of_c_wrmcht_helm2_c	256	512	insignia	125,393,155,423	campaign
+c3a820f3d5680442	of_c_wrmcht_helm2mp_c	256	256	insignia	125,193,155,215	mp/ederdam/ederdam.cod
+633eaf1badbc25d7	of_c_wrmcht_m_body_c	1024	1024	insignia	81,553,103,579	campaign
+d57a5d491442ec74	of_king_tiger	512	256	insignia	297,137,327,167	campaign
+468999288dcdec50	of_king_tiger_c	1024	1024	insignia	17,461,63,511	campaign
+eaa591fb43245aa3	of_king_tiger_s	1024	1024	data	17,461,63,511	campaign
+f7b23274ceea0665	of_knife148_c	512	128	insignia	257,9,439,67;117,21,151,59	campaign
+048c966d3c34a954	of_knife148_n	512	128	data	257,9,439,67;117,21,151,59	campaign
+cd58ff9621a97954	of_knife148_s	512	128	data	257,9,439,67;117,21,151,59	campaign
+0a2b7714c6464a2e	of_tigeri_c	1024	1024	insignia	101,5,139,51;373,13,419,43	campaign
+78f187697b49bea1	wood$of_crate_top_axis_c	256	256	insignia	29,61,115,91;137,61,227,91;93,125,155,187;117,201,235,231	campaign
+c274904f7f8b0d99	wood$of_crate_top_axis_n	256	256	data	29,61,115,91;137,61,227,91;93,125,155,187;117,201,235,231	campaign

@@ -29,6 +29,34 @@ Safety (docs: dev/agents/acct2-decomp/PLAN-MAPS-DISCS-LANGUAGES.md, part 3):
 - Removing only deletes folders this file installed (listed in addons.json),
   inside userdata.
 
+Each pack also gets a content header (acct2-bro 2026-11-08), as a console
+download has:
+
+    <output>/userdata/0000000000000000/415607E1/Headers/00000002/<package name>.header
+
+Without it the SDK lists the pack from its folder name and cod3mp gets an
+entry it can't match, so the pack is never mounted (acct2-decomp NOTES
+2026-11-06 05:55). With it, mp_farm shows on the create page and loads
+(acct2-bro HANDOFF 2026-11-08 14:30). The header is the SDK's
+XCONTENT_AGGREGATE_DATA, written by content_header(), followed by the
+package's licence mask as the SDK's own installer writes it
+(ContentManager::InstallContent: the bits of every licence entry in the
+package's STFS header that has flags set). That is the package's own data,
+read as it is; nothing is unlocked or changed.
+
+Each pack's folder name ends in its pack number (acct2-bro 2026-11-08 15:50).
+cod3mp's MPPopulateContent (0x824150B8) mounts every pack it finds on the
+drive "dlc" + the last character of the pack's file name, and SV_SpawnServer
+looks for a pack's maps on the drive dlc<N> with N from the pack's own dlmaps.txt
+(the MapPack column: Champs 1, Valor 2, Bravo 3). The three packages' own
+names all end in "41", so under those names all three became dlc1, only the
+first mounted, and the ten Bravo and Valor maps were "unknown". So a pack is
+installed as its package name with the last character replaced by its pack
+number (install_name; Champs keeps its name), and ensure_names() renames packs
+added before that. The game's code and the package's files are unchanged; only
+the folder (and the same name in its header) differs. With Bravo renamed this
+way, longyard is listed, loads and hosts (acct2-bro HANDOFF 2026-11-08 15:50).
+
 The list of what's installed is userdata/addons.json. Its "kind" is
 "map_pack" for now; "mod" is kept for the mod support to come (mods will need
 their own checks before anything installs them).
@@ -38,6 +66,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import sys
 import threading
 import time
 import zipfile
@@ -52,6 +81,10 @@ from .stfs import HEADER_READ, MAGICS, StfsError, StfsPackage
 TITLE_ID = 0x415607E1
 CONTENT_MARKETPLACE = 0x00000002
 CONTENT_DIR = Path("0000000000000000") / f"{TITLE_ID:08X}" / f"{CONTENT_MARKETPLACE:08X}"
+HEADERS_DIR = Path("0000000000000000") / f"{TITLE_ID:08X}" / "Headers" / f"{CONTENT_MARKETPLACE:08X}"
+DEVICE_HDD = 1                    # the SDK's DummyDeviceId::HDD
+HEADER_SIZE = 0x148               # sizeof(XCONTENT_AGGREGATE_DATA)
+STFS_LICENSES = 0x22C             # the STFS header's 16 licence entries: be u64 id, be u32 bits, be u32 flags
 REGISTRY = "addons.json"
 KINDS = ("map_pack", "mod")       # "mod": reserved, nothing installs one yet
 ALLOWED_EXT = {".cod", ".wbk", ".txt"}
@@ -66,19 +99,32 @@ SPARE_SPACE = 64 << 20
 @dataclass(frozen=True)
 class KnownPack:
     name: str
-    package: str       # the package's file name, also its folder name in userdata
+    package: str       # the package's own file name
     size: int
+    number: int = 0    # [acct2-bro] its pack number (dlmaps.txt's MapPack); 0 = install under the package's name
 
 
 # The Xbox 360 releases of the map packs (SHA-1 of the whole package file).
 KNOWN_PACKS: Dict[str, KnownPack] = {
     "25d430492bb8c5ea6e323af9d4a460fe12f1cd5f": KnownPack("Champs map", "BE285241D408C51237C35315B633A7777E18071341",
-                                                          176078848),
+                                                          176078848, 1),
     "4b673c286073745d0afafdc0677028a8d8febabe": KnownPack("Valor map pack",
-                                                          "8DA6A35A055E7456B8F5B53786A55813CA508E1241", 895438848),
+                                                          "8DA6A35A055E7456B8F5B53786A55813CA508E1241", 895438848, 2),
     "b1c9f6a00734f5381d09a022856393a15a844841": KnownPack("Bravo map pack",
-                                                          "86767399401D3377CB1CDFA61991BEF72ADCE4FC41", 996433920),
+                                                          "86767399401D3377CB1CDFA61991BEF72ADCE4FC41", 996433920, 3),
 }
+
+
+def install_name(known: KnownPack) -> str:
+    """[acct2-bro] The folder a pack is installed in: its package name with the
+    last character replaced by its pack number, so cod3mp mounts it on
+    dlc<number>:, where it looks for that pack's maps (see the top of this
+    file). Champs (pack 1) keeps its own name."""
+    if not known.number:
+        return known.package
+    if not 1 <= known.number <= 9:
+        raise SetupError(f"{known.name}: pack number {known.number} doesn't fit in one character")
+    return known.package[:-1] + str(known.number)
 
 
 @dataclass
@@ -203,6 +249,10 @@ def check_package(path: Path, cancel: threading.Event, sha1: Optional[str] = Non
             if len(dl) != 1:
                 raise SetupError(f"{path.name}: no mp/dlmaps.txt")
             rows = parse_dlmaps(pkg.read_file(dl[0], 64 << 10))
+            numbers = sorted({r.pack for r in rows})
+            if known.number and numbers != [str(known.number)]:      # [acct2-bro] the drive it is mounted on
+                raise SetupError(f"{path.name}: its dlmaps.txt gives pack {', '.join(numbers)}, not "
+                                 f"{known.number} as the {known.name} should")
             folders = {e.path.lower() for e in entries if e.is_dir}
             maps = sorted({r.pak for r in rows}, key=str.lower)
             for m in maps:
@@ -294,6 +344,120 @@ def find_sources(paths: Iterable[Path], max_depth: int = 6) -> List[Path]:
     return found
 
 
+# ---------------------------------------------------------------- the content header
+def content_header(package_name: str, display_name: str) -> bytes:
+    """The 328-byte header the SDK reads for a package (XCONTENT_AGGREGATE_DATA,
+    big-endian, as the console wrote it):
+
+        0x000  device id (1, the hard drive)      0x004  content type (2, a download)
+        0x008  display name, UTF-16BE, 128 characters with the last one kept 0
+        0x108  file name: the package's folder name, 42 bytes, no end marker needed
+        0x132  2 bytes of padding, then 4 more to line up the next field
+        0x138  xuid (0: content every profile sees)
+        0x140  title id (415607E1), then 4 bytes of padding
+    """
+    if not PACKAGE_NAME.match(package_name):
+        raise SetupError(f"odd package name {package_name!r}")
+    header = bytearray(HEADER_SIZE)
+    header[0x000:0x004] = DEVICE_HDD.to_bytes(4, "big")
+    header[0x004:0x008] = CONTENT_MARKETPLACE.to_bytes(4, "big")
+    name = display_name.encode("utf-16-be")[:127 * 2]
+    header[0x008:0x008 + len(name)] = name
+    header[0x108:0x108 + len(package_name)] = package_name.encode("ascii")
+    header[0x138:0x140] = (0).to_bytes(8, "big")
+    header[0x140:0x144] = TITLE_ID.to_bytes(4, "big")
+    return bytes(header)
+
+
+def package_license_mask(package: Path) -> int:
+    """The licence mask the SDK's installer computes from a package's own STFS
+    header: the bits of each of its 16 licence entries whose flags are set."""
+    with open(package, "rb") as f:
+        f.seek(STFS_LICENSES)
+        table = f.read(16 * 16)
+    if len(table) != 16 * 16:
+        raise SetupError(f"{Path(package).name}: too short for an STFS header")
+    mask = 0
+    for i in range(16):
+        bits = int.from_bytes(table[i * 16 + 8:i * 16 + 12], "big")
+        flags = int.from_bytes(table[i * 16 + 12:i * 16 + 16], "big")
+        if flags:
+            mask |= bits
+    return mask
+
+
+def header_path(output: Path, package_name: str) -> Path:
+    return userdata(output) / HEADERS_DIR / f"{package_name}.header"
+
+
+def _write_header(output: Path, package_name: str, display_name: str, license_mask: int = 0) -> None:
+    """Write (or rewrite) a pack's header; a new file first, then a rename. The
+    licence mask follows the header as a 4-byte number in the PC's own byte
+    order, as the SDK writes it (fwrite of a uint32_t); 0 writes none."""
+    path = header_path(output, package_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    data = content_header(package_name, display_name)
+    if license_mask:
+        data += license_mask.to_bytes(4, sys.byteorder)
+    temp = path.with_name(path.name + ".c3w-new")
+    temp.write_bytes(data)
+    os.replace(temp, path)
+
+
+def ensure_headers(output: Path, log: Optional[Log] = None) -> int:
+    """Give every installed pack a header if it has none (packs added before
+    2026-11-08). Without the package file at hand there's no licence mask to
+    add; adding the pack again writes the full header. Returns how many were
+    written."""
+    written = 0
+    for a in read_registry(output):
+        if a.kind != "map_pack" or not PACKAGE_NAME.match(a.id):
+            continue
+        path = header_path(output, a.id)
+        if path.exists():
+            continue
+        _write_header(output, a.id, a.name)
+        written += 1
+        if log:
+            log.info(f"Wrote the content header for the {a.name}")
+    return written
+
+
+def ensure_names(output: Path, log: Optional[Log] = None) -> int:
+    """[acct2-bro] Move packs added before 2026-11-08 15:50, which sit under
+    their package's own name, to their install name (install_name): the folder,
+    the header file and the name inside the header, and the pack's line in
+    addons.json. Nothing in the pack changes. A pack whose new name is already
+    taken is left as it is. Returns how many were moved."""
+    root = userdata(output)
+    items = read_registry(output)
+    moved = 0
+    for a in items:
+        known = KNOWN_PACKS.get(a.sha1)
+        if a.kind != "map_pack" or known is None or a.id != known.package:
+            continue
+        new = install_name(known)
+        old_dir, new_dir = root / CONTENT_DIR / a.id, root / CONTENT_DIR / new
+        if new == a.id or not old_dir.is_dir() or new_dir.exists() or not PACKAGE_NAME.match(new):
+            continue
+        old_head, new_head = header_path(output, a.id), header_path(output, new)
+        os.rename(old_dir, new_dir)
+        if old_head.is_file():
+            data = bytearray(old_head.read_bytes())
+            if len(data) >= HEADER_SIZE:
+                data[0x108:0x108 + 42] = new.encode("ascii").ljust(42, b"\0")
+                temp = new_head.with_name(new_head.name + ".c3w-new")
+                temp.write_bytes(bytes(data))
+                os.replace(temp, new_head)
+                old_head.unlink()
+        a.id, a.folder = new, (CONTENT_DIR / new).as_posix()
+        _write_registry(output, items)
+        moved += 1
+        if log:
+            log.info(f"Moved the {a.name} to {new} (pack {known.number}), so the game mounts it")
+    return moved
+
+
 # ---------------------------------------------------------------- the registry
 def userdata(output: Path) -> Path:
     return Path(output) / "userdata"
@@ -326,7 +490,7 @@ def _install(c: Checked, output: Path, cancel: threading.Event, log: Log) -> Add
     root = userdata(output)
     content = root / CONTENT_DIR
     content.mkdir(parents=True, exist_ok=True)
-    name = c.known.package
+    name = install_name(c.known)               # [acct2-bro] ends in its pack number (top of this file)
     if not PACKAGE_NAME.match(name):          # never from the package itself, but check anyway
         raise SetupError(f"odd package name {name!r}")
     final, new, old = content / name, content / f".{name}.c3w-new", content / f".{name}.c3w-old"
@@ -360,6 +524,7 @@ def _install(c: Checked, output: Path, cancel: threading.Event, log: Log) -> Add
             final.rename(old)
         new.rename(final)
         common.safe_rmtree(old, root, [], log)
+        _write_header(output, name, c.known.name, package_license_mask(c.path))   # without it the game never mounts the pack
     except BaseException:
         common.safe_rmtree(new, root, [], log)
         if old.exists() and not final.exists():
@@ -375,6 +540,8 @@ def add(sources: Iterable[Path], output: Path, scratch: Path, cancel: threading.
     output = Path(output)
     if not output.is_dir():
         raise SetupError("Choose the output folder on Set up first (the packs go into its userdata folder).")
+    ensure_names(output, log)     # [acct2-bro] packs added before their folders ended in their pack number
+    ensure_headers(output, log)   # packs added before the headers existed
     files = find_sources(sources)
     if not files:
         raise SetupError("Nothing to add there.")
@@ -430,6 +597,7 @@ def remove(output: Path, addon_id: str, log: Log) -> None:
     if not PACKAGE_NAME.match(folder.name) or not common.is_within(folder, root / CONTENT_DIR):
         raise SetupError(f"Refusing to delete {folder}")
     common.safe_rmtree(folder, root / CONTENT_DIR, [], log)
+    header_path(output, folder.name).unlink(missing_ok=True)
     _write_registry(output, [x for x in items if x.id != addon_id])
 
 

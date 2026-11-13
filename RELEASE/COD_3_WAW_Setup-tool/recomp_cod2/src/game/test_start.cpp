@@ -55,6 +55,11 @@
 
 #include "game/test_start.h"
 
+#include "cod2_f2.h"  // [f2-menus] the F2 window's console commands
+#include "cod2_pc_input.h"  // [f2-menus] the PC copy's keys: their console commands
+#include "game/dvar_peek.h"  // [f2-menus] tests: the game's dvars in the log (cod2_debug_dvars)
+#include "game/pc_movement.h"  // [f2-menus] the PC copy's movement numbers (cod2_pc_movement; the campaign)
+
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -335,6 +340,29 @@ void OnMenuOpened(std::string_view name) {
 COD2_HOOK_RAW(COD2_XINPUT_GET_STATE) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
   COD2_IMP(COD2_XINPUT_GET_STATE)(ctx, base);
+
+  // [f2-menus] Commands from the F2 window (typed on its CONSOLE page, or a row that sets one of the game's dvars):
+  // added to the game's command buffer here, on the game's main thread, as the test commands below are.
+  if (user == 0 && cod2::f2ui::HasCommands()) {
+    static std::vector<std::string> f2_commands;
+    cod2::f2ui::TakeCommands(f2_commands);
+    for (const std::string& command : f2_commands) AddCommandText(ctx, base, command);
+    f2_commands.clear();
+  }
+  // [f2-menus] The PC copy's keys and mouse (cod2_pc_input.h): once a read of the first controller it looks at
+  // whether a level is playing, and the commands of the keys pressed since the last read go to the command buffer.
+  if (user == 0) {
+    cod2::dvar_peek::OnGameFrame(ctx, base);  // tests: cod2_debug_dvars
+#if !defined(COD2_MP)
+    cod2::pc_movement::OnGameFrame(ctx, base);  // cod2_pc_movement
+#endif
+    cod2::pc_input::OnGameFrame(base);
+    static std::vector<std::string> key_commands;
+    if (cod2::pc_input::TakeCommands(key_commands)) {
+      for (const std::string& command : key_commands) AddCommandText(ctx, base, command);
+      key_commands.clear();
+    }
+  }
 
   // What each controller answers, once (0 = connected, 0x48F = not connected).
   if (user < 4 && !(g_results_logged.fetch_or(1u << user) & (1u << user)))

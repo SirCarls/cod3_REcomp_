@@ -55,6 +55,7 @@ constexpr std::array<const char*, 6> kOverlayLocales{"ru-RU", "zh-Hans", "zh-Han
 // The game's FONT object (game/font_fill.cpp has the layout).
 constexpr uint32_t kLineHeight = 0x1C, kAscent = 0x20, kFirstCode = 0x24, kCount = 0x28;
 constexpr uint32_t kRecords = 0x38, kRecordSize = 28, kAdvance = 24, kGlyphs = 224;
+constexpr uint32_t kRecordsPtr = 0x08;   // [acct2-ocr] 2026-11-07 the loaded FONT's pointer to its records
 constexpr float kGameLineHeight = 40.0f;   // i_helvetica_bold: what the .overlay.txt sizes are for
 constexpr float kBakePixels = 48.0f;       // one bake, drawn smaller (scaling down stays sharp)
 constexpr auto kShowFor = std::chrono::milliseconds(50);   // as the key caps: a few frames
@@ -79,7 +80,11 @@ std::string g_baked;          // the locale whose font is in the atlas ("" none)
 Metrics g_metrics;            // g_baked's
 ImFont* g_font = nullptr;
 ImVector<ImWchar> g_ranges;   // must outlive the atlas build
-std::map<uint32_t, std::array<int32_t, 128>> g_saved;   // font -> its advances for 0x80-0xFF before ours
+// font -> its advances for 0x80-0xFF before ours, and ours ([acct2-ocr] 2026-11-07: to tell a font loaded again)
+struct Saved {
+  std::array<int32_t, 128> own{}, ours{};
+};
+std::map<uint32_t, Saved> g_saved;
 std::vector<Line> g_lines;
 int g_logged = 0;
 
@@ -115,13 +120,17 @@ bool ReadMetrics(std::string_view locale, Metrics* m) {
 int NextCodePoint(const std::string& s, size_t& at) {
   const uint8_t c = uint8_t(s[at++]);
   if (c < 0x80) return c;
-  const int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
+  const int extra = c >= 0xF8 ? -1 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
   if (extra < 0) return -1;
   int cp = c & (0x3F >> extra);
   for (int i = 0; i < extra; ++i) {
     if (at >= s.size() || (uint8_t(s[at]) & 0xC0) != 0x80) return -1;
     cp = (cp << 6) | (uint8_t(s[at++]) & 0x3F);
   }
+  // [acct2-ocr] 2026-11-07 only what UTF-8 allows (other players' names and chat come here too): no overlong forms,
+  // surrogates or code points past U+10FFFF
+  static constexpr int kLeast[4] = {0, 0x80, 0x800, 0x10000};
+  if (cp < kLeast[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) return -1;
   return cp;
 }
 
@@ -166,18 +175,32 @@ bool HasBreakSpaces(std::string_view locale) { return locale.starts_with("zh-") 
 // The font's advances for the bytes 0x80-0xFF: ours while a language of this
 // layer is on, its own otherwise (g_mutex held).
 void SetAdvances(uint8_t* base, uint32_t font, bool ours) {
-  auto saved = g_saved.find(font);
-  if (ours == (saved != g_saved.end())) return;
   if (ReadU32(base, font + kFirstCode) != 0x20 || ReadU32(base, font + kCount) != kGlyphs) return;
-  auto at = [&](int byte) { return font + kRecords + uint32_t(byte - 0x20) * kRecordSize + kAdvance; };
+  // [acct2-ocr] 2026-11-07 The records where the loaded FONT points (+8), as font_fill and text_native read them;
+  // right after the header only when it has no pointer.
+  const uint32_t p = ReadU32(base, font + kRecordsPtr);
+  const uint32_t recs = p >= 0x40000000u && p < 0xF0000000u ? p : font + kRecords;
+  auto at = [&](int byte) { return recs + uint32_t(byte - 0x20) * kRecordSize + kAdvance; };
+  auto saved = g_saved.find(font);
+  // [acct2-ocr] 2026-11-07 A font loaded again (a level load) has its own advances back: what was kept for it is
+  // stale, and putting it back would give the font another one's widths.
+  if (saved != g_saved.end()) {
+    bool still = true;
+    for (int b : {0x80, 0x81, 0xA0, 0xBF, 0xC3, 0xD0, 0xE3, 0xEF})
+      still = still && ReadS32(base, at(b)) == saved->second.ours[size_t(b - 0x80)];
+    if (!still) {
+      g_saved.erase(saved);
+      saved = g_saved.end();
+    }
+  }
+  if (ours == (saved != g_saved.end())) return;
   if (!ours) {
-    for (int b = 0x80; b <= 0xFF; ++b) WriteU32(base, at(b), uint32_t(saved->second[size_t(b - 0x80)]));
+    for (int b = 0x80; b <= 0xFF; ++b) WriteU32(base, at(b), uint32_t(saved->second.own[size_t(b - 0x80)]));
     g_saved.erase(saved);
     return;
   }
-  std::array<int32_t, 128> keep{};
-  for (int b = 0x80; b <= 0xFF; ++b) keep[size_t(b - 0x80)] = ReadS32(base, at(b));
-  g_saved[font] = keep;
+  Saved& keep = g_saved[font];
+  for (int b = 0x80; b <= 0xFF; ++b) keep.own[size_t(b - 0x80)] = ReadS32(base, at(b));
   const float scale = float(ReadS32(base, font + kLineHeight)) / kGameLineHeight;
   float fallback = g_metrics.em * 0.6f;
   if (!g_metrics.lead.empty()) {
@@ -198,6 +221,7 @@ void SetAdvances(uint8_t* base, uint32_t font, bool ours) {
     int32_t v = int32_t(std::lround(px * scale));
     if (space > 0 && ((b >= 0xE3 && b <= 0xE9) || b == 0xEF)) v = std::max<int32_t>(1, v - space);
     WriteU32(base, at(b), uint32_t(v));
+    keep.ours[size_t(b - 0x80)] = v;
   }
 }
 
@@ -306,7 +330,13 @@ void OnString(uint8_t* base, PPCContext& ctx) {
   const std::string chosen = cod3::text::Chosen();
   const bool native = cod3::text_native::Active(chosen);   // [acct2-ocr] before the lock: it reads FontFile()
   std::lock_guard lock(g_mutex);
-  const bool on = g_font != nullptr && g_baked == chosen;
+  // [acct2-ocr] 2026-11-07 (owner 09:49: "swapping languages mid game seems to break the characters shown"): the
+  // font's 0x80-0xFF advances are ours only while this layer draws the chosen language. With the language drawn in
+  // the game's own text (text_native, the default) our lines are measured and drawn from their own pages, and the
+  // rewritten advances only broke the game font's lines: a Latin line still held from a language chosen before
+  // ("Objectifs mis à jour.", a name tag) came back squeezed and overlapping after a change back to the language
+  // the game started in (its bytes 0x80-0xBF 0 wide, the others as wide as CJK).
+  const bool on = g_font != nullptr && g_baked == chosen && !native;
   SetAdvances(base, font, on);
   if (!on || text < 0x40000000u || text >= 0xF0000000u) return;
   if (native) return;   // [acct2-ocr] drawn in the game's own text (ui/text_native.h)

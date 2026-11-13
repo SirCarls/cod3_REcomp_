@@ -26,7 +26,9 @@
 // Its full-screen layout is the category pages of game/options_pages.h (owner
 // 2026-10-20 20:51: "maybe a menu re-design is needed. We have a lot of
 // settings.", category pages in both programs): a list, GAMEPLAY, CONTROLS,
-// AIM, VIDEO and RESTORE DEFAULTS; A on a category shows its page (title
+// AIM, VIDEO and RESTORE DEFAULTS ([acct2-ocr] 2026-11-07: GAMEPLAY, CONTROLLER,
+// AIM, VIDEO, AUDIO, INTERFACE and RESTORE DEFAULTS, the port's settings rows
+// game/menu_port_rows.h); A on a category shows its page (title
 // "OPTIONS / CONTROLS" ...), B goes back to the list, and B on the list is the
 // page's own (it asks to apply changed options, then closes). The panel
 // (MP_PM_controller, MP_AAR_PM_controller) has ten rows, slot_01 to slot_10:
@@ -86,8 +88,12 @@
 #include "game/engine.h"
 #include "game/fov.h"
 #include "game/guest.h"
+#include "game/menu_controller.h"  // [acct2-ocr] 2026-11-07 the CONTROLLER page's port rows
+#include "game/menu_port_rows.h"   // [acct2-ocr] 2026-11-07 the port's settings rows (GAMEPLAY, AIM, AUDIO, INTERFACE)
 #include "game/menu_video.h"     // [menus-categories] the VIDEO page's rows
 #include "game/options_pages.h"  // [menus-categories]
+#include "game/pad_settings.h"   // [acct2-ocr] 2026-11-07
+#include "game/protected_dvars.h"  // [acct2-ocr] SaveSettings (cod3mp_app sets its save)
 #include "game/pc_menu.h"
 
 namespace {
@@ -303,6 +309,29 @@ std::string StepValue(PPCContext& ctx, uint8_t* base, int row, bool right) {
     cod3::Engine::Get().ApplyFovFromGuest(ctx, base, v);
   }
   return ValueText(row);
+}
+
+// [acct2-ocr] 2026-11-07 Split screen: players 2 to 4's own FIELD OF VIEW and FOV SCALE (game/fov.h), from their
+// own Pause > OPTIONS; the first step starts from what their view uses now (player 1's until then).
+std::string SplitValueText(int player, int row) {
+  const cod3::fov::Settings s = cod3::fov::ViewSettings(player);
+  char buf[16];
+  if (row == 1)
+    std::snprintf(buf, sizeof(buf), "%.2f", s.scale);
+  else
+    std::snprintf(buf, sizeof(buf), "%d", static_cast<int>(std::lround(s.fov)));
+  return buf;
+}
+
+void StepSplitValue(int player, int row, bool right) {
+  const cod3::fov::Settings s = cod3::fov::ViewSettings(player);
+  if (row == 1)
+    cod3::fov::SetSplitScale(player, NextStep(s.scale, kScaleStep, right, cod3::fov::ScaleRange(s.fov)));
+  else
+    cod3::fov::SetSplitFov(player, NextStep(s.fov, kFovStep, right, cod3::fov::FovRange(s.scale)));
+  cod3::protected_dvars::SaveSettings();
+  REXLOG_INFO("cod3mp: Pause > OPTIONS: player {}'s {} {}", player + 1, row == 1 ? "FOV scale" : "field of view",
+              SplitValueText(player, row));
 }
 
 // --- our rows ------------------------------------------------------------------
@@ -537,6 +566,7 @@ struct RowCopy {
 
 struct MatchPage {
   uint32_t panel = 0;
+  uint32_t self = 0;                                   // [acct2-ocr] the page (its local client at +80)
   int categories = 0;                                  // items on the list
   std::array<uint32_t, kMaxCategories> item{};         // their entries
   std::array<uint32_t, kMaxCategories> item_label{};   // copies of RESTORE DEFAULTS' label
@@ -610,6 +640,56 @@ void LinkEntries(uint8_t* base, uint32_t full, const std::vector<int>& order) {
 
 // --- a row's label, value, step and note -----------------------------------
 
+// [acct2-ocr] 2026-11-07 Whose menu it is: the page's local client (+80, as its refresh 0x824EB138 reads that
+// client's controller profile), 0 to 3.
+constexpr uint32_t kMatchClient = 80;
+int PlayerOf(uint8_t* base, const MatchPage& m) {
+  const uint32_t c = Valid(m.self) ? ReadU32(base, m.self + kMatchClient) : 0;
+  return c < uint32_t(cod3::pad::kMaxPlayers) ? int(c) : 0;
+}
+
+// [acct2-ocr] 2026-11-07 A step on one of the game's own controller rows: the player's setting, when it is set
+// (game/pad_settings.h), takes the new value, so the setting doesn't put the old one back. Entries 2 and 3 are
+// the sensitivities (gauges: their step), 4 INVERT AIM and 8 VIBRATION (combo boxes: their choice, 0 off).
+void FollowNative(PPCContext& ctx, uint8_t* base, const MatchPage& m, int index) {
+  int setting = -1;
+  switch (index) {
+    case 2: setting = cod3::pad::kHorizontal; break;
+    case 3: setting = cod3::pad::kVertical; break;
+    case 4: setting = cod3::pad::kInvert; break;
+    case 8: setting = cod3::pad::kVibration; break;
+    default: return;
+  }
+  const uint32_t entry = m.own_entry[index];
+  if (!Valid(entry)) return;
+  cod3::pad::FollowPage(PlayerOf(base, m), setting, int32_t(VCall(ctx, base, entry, kEntryGetValue)));
+}
+
+// [acct2-ocr] 2026-11-07 HORIZONTAL and VERTICAL SENSITIVITY (entries 2 and 3, gauges): cod3mp's two pages with
+// them give them top steps 37 and 50 (li 37 / li 50 into +32: Pause > OPTIONS' Init 0x82500868, the main menu's
+// Options > Controls Init 0x823F15B0; nothing else in the program does); both go to cod3_pad_sensitivity_max (owner
+// 22:00 "vertical and horizontal don't have the same caps", 22:08 "same cap for both"). Only a pair the game made
+// (37 and 50) or one already ours (equal tops in 37-100), of the same kind and not combo boxes, is touched.
+void SetTopsOf(uint8_t* base, uint32_t list, int count) {
+  if (!Valid(list) || count < 4) return;
+  const uint32_t h = ReadU32(base, list + 8), v = ReadU32(base, list + 12);
+  if (!Valid(h) || !Valid(v) || ReadU32(base, h) != ReadU32(base, v) || ReadU32(base, h) == kComboVtable) return;
+  const int th = int32_t(ReadU32(base, h + kGaugeMax)), tv = int32_t(ReadU32(base, v + kGaugeMax));
+  const bool game = th == cod3::pad::kGameHorizontalMax && tv == cod3::pad::kGameVerticalMax;
+  const bool ours = th == tv && th >= cod3::pad::kGameHorizontalMax && th <= cod3::pad::kSensitivityCeiling;
+  if (!game && !ours) return;
+  const int cap = cod3::pad::SensitivityMax();
+  if (th != cap) WriteU32(base, h + kGaugeMax, uint32_t(cap));
+  if (tv != cap) WriteU32(base, v + kGaugeMax, uint32_t(cap));
+}
+
+// Pause > OPTIONS: both layouts' entries, after Init and before the refresh puts the profile's values in.
+void SetSensitivityTops(uint8_t* base, uint32_t page) {
+  if (!IsMatchPage(base, page)) return;
+  for (const uint32_t set : {kMatchFullSet, kMatchSplitSet})
+    SetTopsOf(base, ReadU32(base, page + set), ReadS16(base, page + set + kSetCount));
+}
+
 std::string RowLabel(uint8_t* base, const MatchPage& m, const op::Row& row) {
   switch (row.source) {
     case op::Source::kNative:
@@ -618,6 +698,10 @@ std::string RowLabel(uint8_t* base, const MatchPage& m, const op::Row& row) {
       return row.index ? "FOV SCALE" : "FIELD OF VIEW";
     case op::Source::kVideo:
       return vm::LabelText(row.index);
+    case op::Source::kController:  // [acct2-ocr]
+      return cod3::controllermenu::LabelText(row.index);
+    case op::Source::kPort:  // [acct2-ocr] 2026-11-07 the chosen language's label when its pack has one
+      return cod3::portrows::LabelShown(base, row.index);
     default:
       return {};  // the campaign's rows: not on this page
   }
@@ -635,10 +719,14 @@ std::string RowValue(PPCContext& ctx, uint8_t* base, const MatchPage& m, const o
       const int top = int32_t(ReadU32(base, entry + kGaugeMax));
       return top > 0 ? std::to_string(value) + " / " + std::to_string(top) : std::to_string(value);
     }
-    case op::Source::kFov:
-      return ValueText(row.index);
+    case op::Source::kFov:  // [acct2-ocr] the menu's player's own in split screen
+      return PlayerOf(base, m) > 0 ? SplitValueText(PlayerOf(base, m), row.index) : ValueText(row.index);
     case op::Source::kVideo:
       return vm::Value(row.index);
+    case op::Source::kController:  // [acct2-ocr]
+      return cod3::controllermenu::ValueFor(PlayerOf(base, m), row.index);
+    case op::Source::kPort:  // [acct2-ocr] 2026-11-07 the menu's player's (game/menu_port_rows.h)
+      return cod3::portrows::ValueFor(PlayerOf(base, m), row.index);
     default:
       return {};
   }
@@ -649,22 +737,42 @@ std::string RowValue(PPCContext& ctx, uint8_t* base, const MatchPage& m, const o
 void StepRow(PPCContext& ctx, uint8_t* base, const MatchPage& m, const op::Row& row, bool right) {
   switch (row.source) {
     case op::Source::kNative:
-      if (row.index >= 0 && row.index < kMatchOptions)
+      if (row.index >= 0 && row.index < kMatchOptions) {
         VCall(ctx, base, m.own_entry[row.index], right ? kEntryRight : kEntryLeft);
+        FollowNative(ctx, base, m, row.index);  // [acct2-ocr]
+      }
       break;
-    case op::Source::kFov:
-      StepValue(ctx, base, row.index, right);
+    case op::Source::kFov:  // [acct2-ocr] the menu's player's own in split screen
+      if (PlayerOf(base, m) > 0)
+        StepSplitValue(PlayerOf(base, m), row.index, right);
+      else
+        StepValue(ctx, base, row.index, right);
       break;
     case op::Source::kVideo:
       vm::Step(ctx, base, row.index, right);
+      break;
+    case op::Source::kController:  // [acct2-ocr]
+      cod3::controllermenu::StepFor(PlayerOf(base, m), row.index, right);
+      break;
+    case op::Source::kPort:  // [acct2-ocr] 2026-11-07 applied and saved at once
+      cod3::portrows::StepFor(PlayerOf(base, m), row.index, right);
       break;
     default:
       break;
   }
 }
 
-std::string RowNote(const op::Row& row) {
-  return row.source == op::Source::kVideo ? vm::Note(row.index) : std::string();
+std::string RowNote(uint8_t* base, const MatchPage& m, const op::Row& row) {
+  switch (row.source) {
+    case op::Source::kVideo:
+      return vm::Note(row.index);
+    case op::Source::kController:  // [acct2-ocr] 2026-11-07 (a full page has no room for it)
+      return cod3::controllermenu::NoteFor(PlayerOf(base, m), row.index);
+    case op::Source::kPort:  // [acct2-ocr] 2026-11-07
+      return cod3::portrows::NoteFor(PlayerOf(base, m), row.index);
+    default:
+      return {};
+  }
 }
 
 const op::Row* RowOfPage(const MatchPage& m, int k) {
@@ -705,7 +813,7 @@ void ShowRowValues(PPCContext& ctx, uint8_t* base, uint32_t page, MatchPage& m) 
   std::string note;
   if (m.page >= 0) {
     const int k = ReadS16(base, page + kSelected) - kRowFirst;
-    if (const op::Row* row = k >= 0 && k < m.rows_shown ? RowOfPage(m, k) : nullptr) note = RowNote(*row);
+    if (const op::Row* row = k >= 0 && k < m.rows_shown ? RowOfPage(m, k) : nullptr) note = RowNote(base, m, *row);
   }
   if (note.empty()) note = " ";
   if (Valid(m.note_label) && (note != m.note_text || TextOf(base, m.note_label) != note)) {
@@ -900,6 +1008,7 @@ void MakeMatchRows(PPCContext& ctx, uint8_t* base, uint32_t page) {
   };
   MatchPage m;
   m.panel = panel;
+  m.self = page;  // [acct2-ocr]
   m.title = find_text("text_title");
   m.label9 = find_text("slot_09_text_option");
   m.value9 = find_text("slot_09_text_spec");
@@ -1176,7 +1285,17 @@ REX_EXTERN(__imp__sub_82500868);
 REX_HOOK_RAW(sub_82500868) {
   const uint32_t page = ctx.r3.u32;
   __imp__sub_82500868(ctx, base);
+  SetSensitivityTops(base, page);  // [acct2-ocr]
   MakeMatchRows(ctx, base, page);
+}
+
+// [acct2-ocr] 2026-11-07 The main menu's Options > Controls (MPOptionsControlsMenu; its Init, this): the same two
+// gauges, in the page's item list (SetTopsOf above).
+REX_EXTERN(__imp__sub_823F15B0);
+REX_HOOK_RAW(sub_823F15B0) {
+  const uint32_t page = ctx.r3.u32;
+  __imp__sub_823F15B0(ctx, base);
+  if (Valid(page)) SetTopsOf(base, ReadU32(base, page + kItems), ReadS16(base, page + kItemCount));
 }
 
 // The page's draw (vtbl slot 20, both pages): ours placed and the page's own
@@ -1209,6 +1328,7 @@ REX_HOOK_RAW(InGameOptionsMenu__vfunc_20) {
 REX_EXTERN(__imp__sub_824EB138);
 REX_HOOK_RAW(sub_824EB138) {
   const uint32_t page = ctx.r3.u32;
+  SetSensitivityTops(base, page);  // [acct2-ocr] before the profile's values go in
   __imp__sub_824EB138(ctx, base);
   KeepSelection(ctx, base, page);
   MatchPage m;

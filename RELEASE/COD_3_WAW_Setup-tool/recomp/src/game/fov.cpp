@@ -41,6 +41,7 @@
 #include "game/engine.h"
 #include "game/game_api.h"
 #include "game/guest.h"
+#include "game/keybinds/binds.h"  // [acct2-ocr] KeyboardClient: whose view the mouse's zoom ratio comes from
 #include "game/mouse_look.h"
 #include "ui/game_console.h"
 
@@ -69,6 +70,31 @@ REXCVAR_DEFINE_DOUBLE(cod3_test_fov_script, 0.0, "cod3",
 REXCVAR_DEFINE_DOUBLE(cod3_test_fov_cgame, 0.0, "cod3",
                       "Test: once a level is drawn, cgame's copy of cg_fov set to this (as an "
                       "interaction's end does)");
+
+#if defined(COD3_MP)
+// [acct2-ocr] 2026-11-07 split screen's players 2 to 4 (fov.h ViewSettings).
+#define COD3_SPLIT_FOV(n)                                                                                     \
+  REXCVAR_DEFINE_DOUBLE(cod3_fov_p##n, -1.0, "cod3/View",                                                     \
+                        "Split screen: player " #n "'s own field of view (65-160); -1 = player 1's cg_fov")   \
+      .range(-1.0, 160.0);                                                                                    \
+  REXCVAR_DEFINE_DOUBLE(cod3_fov_scale_p##n, -1.0, "cod3/View",                                               \
+                        "Split screen: player " #n "'s own FOV scale (0.2-2); -1 = player 1's cg_fovScale")   \
+      .range(-1.0, 2.0)
+COD3_SPLIT_FOV(2);
+COD3_SPLIT_FOV(3);
+COD3_SPLIT_FOV(4);
+#undef COD3_SPLIT_FOV
+// [acct2-ocr] 2026-11-07 and their own vehicle field of view scale (fov.h VehicleScale).
+#define COD3_SPLIT_VEHICLE(n)                                                                                 \
+  REXCVAR_DEFINE_DOUBLE(cod3_vehicle_fov_scale_p##n, -1.0, "cod3/View",                                       \
+                        "Split screen: player " #n "'s own vehicle FOV scale (0.5-2); -1 = player 1's "       \
+                        "cod3_vehicle_fov_scale")                                                             \
+      .range(-1.0, 2.0)
+COD3_SPLIT_VEHICLE(2);
+COD3_SPLIT_VEHICLE(3);
+COD3_SPLIT_VEHICLE(4);
+#undef COD3_SPLIT_VEHICLE
+#endif
 
 namespace cod3::fov {
 namespace {
@@ -509,6 +535,92 @@ void AdoptFromGuest(PPCContext& ctx, uint8_t* base) {
 
 void Sync(PPCContext& ctx, uint8_t* base) { SyncNow(ctx, base, /*from_view=*/false); }
 
+// --- [acct2-ocr] 2026-11-07 split screen's players 2 to 4 (fov.h) --------------------------
+namespace {
+const char* SplitName(bool scale, int player) {
+  static constexpr const char* kFovNames[4] = {nullptr, "cod3_fov_p2", "cod3_fov_p3", "cod3_fov_p4"};
+  static constexpr const char* kScaleNames[4] = {nullptr, "cod3_fov_scale_p2", "cod3_fov_scale_p3",
+                                                 "cod3_fov_scale_p4"};
+  return player >= 1 && player < kViewPlayers ? (scale ? kScaleNames : kFovNames)[player] : nullptr;
+}
+float SplitValue(bool scale, int player) {
+#if defined(COD3_MP)
+  double v = -1.0;
+  switch (player) {
+    case 1: v = scale ? REXCVAR_GET(cod3_fov_scale_p2) : REXCVAR_GET(cod3_fov_p2); break;
+    case 2: v = scale ? REXCVAR_GET(cod3_fov_scale_p3) : REXCVAR_GET(cod3_fov_p3); break;
+    case 3: v = scale ? REXCVAR_GET(cod3_fov_scale_p4) : REXCVAR_GET(cod3_fov_p4); break;
+    default: return -1.0f;
+  }
+  const float f = static_cast<float>(v);
+  return Usable(f) && f >= 0.0f ? f : -1.0f;
+#else
+  (void)scale;
+  (void)player;
+  return -1.0f;
+#endif
+}
+void SetSplitValue(bool scale, int player, float v) {
+  const char* name = SplitName(scale, player);
+  if (!name) return;
+  if (!Usable(v) || v < 0.0f)
+    v = -1.0f;
+  else
+    v = scale ? std::clamp(v, kMinScale, kMaxScale) : std::clamp(v, kMinFov, kMaxFov);
+  rex::cvar::SetFlagByName(name, Format(v).text);
+}
+}  // namespace
+
+float SplitFov(int player) { return SplitValue(false, player); }
+float SplitScale(int player) { return SplitValue(true, player); }
+void SetSplitFov(int player, float fov) { SetSplitValue(false, player, fov); }
+void SetSplitScale(int player, float scale) { SetSplitValue(true, player, scale); }
+
+Settings ViewSettings(int player) {
+  Settings s{PlayerFov(), PlayerScale()};
+  if (player < 1 || player >= kViewPlayers) return s;
+  const float fov = SplitFov(player), scale = SplitScale(player);
+  if (fov >= 0.0f) s.fov = fov;
+  if (scale >= 0.0f) s.scale = scale;
+  // The player's own field of view is kept and the scale fitted to it, as for a settings file.
+  return fov >= 0.0f ? FitScale(s.fov, s.scale) : FitFov(s.fov, s.scale);
+}
+
+// [acct2-ocr] 2026-11-07 (fov.h) the vehicle field of view scale, per player in cod3mp.
+double OwnVehicleScale(int player) {
+#if defined(COD3_MP)
+  double v = -1.0;
+  switch (player) {
+    case 1: v = REXCVAR_GET(cod3_vehicle_fov_scale_p2); break;
+    case 2: v = REXCVAR_GET(cod3_vehicle_fov_scale_p3); break;
+    case 3: v = REXCVAR_GET(cod3_vehicle_fov_scale_p4); break;
+    default: return -1.0;
+  }
+  return std::isfinite(v) && v >= 0.5 && v <= 2.0 ? v : -1.0;
+#else
+  (void)player;
+  return -1.0;
+#endif
+}
+
+double VehicleScale(int player) {
+  const double own = OwnVehicleScale(player);
+  if (own > 0.0) return own;
+  const double v = REXCVAR_GET(cod3_vehicle_fov_scale);
+  return std::isfinite(v) ? std::clamp(v, 0.5, 2.0) : 1.0;
+}
+
+void SetVehicleScale(int player, double scale) {
+  static constexpr const char* kNames[4] = {"cod3_vehicle_fov_scale", "cod3_vehicle_fov_scale_p2",
+                                            "cod3_vehicle_fov_scale_p3", "cod3_vehicle_fov_scale_p4"};
+  if (player < 0 || player >= kViewPlayers) return;
+  const bool back = player > 0 && !(std::isfinite(scale) && scale >= 0.5);
+  const double v = back ? -1.0 : std::clamp(std::isfinite(scale) ? scale : 1.0, 0.5, 2.0);
+  char text[16];
+  std::snprintf(text, sizeof(text), "%.2f", v);
+  rex::cvar::SetFlagByName(kNames[player], text);
+}
+
 }  // namespace cod3::fov
 
 // ---------------------------------------------------------------------------
@@ -582,23 +694,50 @@ bool Active(uint8_t* base) {
 REX_EXTERN(__imp__CG_GetViewFov);
 REX_HOOK_RAW(CG_GetViewFov) {
   cod3::fov::SyncNow(ctx, base, /*from_view=*/true);
+  // [acct2-ocr] 2026-11-07 cod3mp split screen: this view's player's own field of view (fov.h ViewSettings).
+  // cgame's copy of cg_fov holds player 1's for every view; for player 2 to 4 with their own it holds theirs
+  // during this call only (cod3mp's CG_GetViewFov 0x82453810 reads the view's client from 0x82BCBE9C and
+  // cg_fov from the copy's +8), and not while a script or an interaction has the copy.
+  const uint32_t view_client =
+      cod3::kMultiplayer ? cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient) : 0u;
+  const bool other_player = view_client >= 1 && view_client < uint32_t(cod3::fov::kViewPlayers);
+  const bool own_view = other_player && (cod3::fov::SplitFov(int(view_client)) >= 0.0f ||
+                                         cod3::fov::SplitScale(int(view_client)) >= 0.0f);
+  const cod3::fov::Settings own = own_view ? cod3::fov::ViewSettings(int(view_client)) : cod3::fov::Settings{};
+  const uint32_t fov_copy = cod3::addr::kCgFovVmCvar + cod3::addr::kVmCvarValue;
+  const float copy_before = cod3::guest::ReadF32(base, fov_copy);
+  const bool swap_fov = own_view && !cod3::fov::ScriptedViewActive() &&
+                        std::fabs(copy_before - cod3::Engine::Get().fov()) < 0.01f && own.fov != copy_before;
+  if (swap_fov) cod3::guest::WriteF32(base, fov_copy, own.fov);
   __imp__CG_GetViewFov(ctx, base);
+  if (swap_fov) cod3::guest::WriteF32(base, fov_copy, copy_before);
 
   float scale = 1.0f;
   if (uint32_t scale_cvar = cod3::Engine::Get().fov_scale_cvar()) {
     float v = cod3::guest::ReadF32(base, scale_cvar + cod3::addr::cvar::kValue);
     if (v > 0.0f) scale = std::clamp(v, cod3::fov::kMinScale, cod3::fov::kMaxScale);  // also rejects NaN
   }
+  if (own_view) scale = own.scale;  // [acct2-ocr] the player's own FOV scale
   // [claude-9b] cod3_vehicle_fov_scale, in a vehicle's view only
-  const double vehicle = REXCVAR_GET(cod3_vehicle_fov_scale);
+  // [acct2-ocr] 2026-11-07 cod3mp split screen: the view's player's own (fov.h VehicleScale)
+  const double vehicle = cod3::fov::VehicleScale(other_player ? int(view_client) : 0);
   if (vehicle != 1.0 && std::isfinite(vehicle) && vehicle_view::Active(base))
     scale *= static_cast<float>(std::clamp(vehicle, 0.5, 2.0));
   if (scale != 1.0f) ctx.f1.f64 = std::clamp(ctx.f1.f64 * scale, 1.0, 170.0);
 
   // Zoom ratio for mouse sensitivity while aiming down sights (WaW style):
   // current FOV over the un-zoomed FOV.
+  // [acct2-ocr] 2026-11-07 The mouse is the keyboard and mouse player's (cod3mp: the local client on controller 0,
+  // binds::KeyboardClient; the campaign's player 1): from that player's view only (in split screen it came from
+  // whichever view was drawn last), against that player's own field of view when they have one.
+#if defined(COD3_MP)
+  if (view_client != cod3::binds::KeyboardClient(base)) return;
+#else
+  if (other_player) return;
+#endif
   cod3::fov::g_last_view_fov = static_cast<float>(ctx.f1.f64);
   float cg_fov = cod3::guest::ReadF32(base, cod3::addr::kCgFovVmCvar + cod3::addr::kVmCvarValue);
+  if (own_view) cg_fov = own.fov;  // [acct2-ocr]
   cod3::MouseLook::Get().SetViewFov(static_cast<float>(ctx.f1.f64), cg_fov * scale);
 }
 

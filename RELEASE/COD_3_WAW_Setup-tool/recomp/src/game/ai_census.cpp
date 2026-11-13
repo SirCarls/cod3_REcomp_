@@ -54,6 +54,11 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ai_census, false, "cod3",
                     "with an uncapped run); and the AI's aim at the player, its hits and damage, traces ending at "
                     "the player, actors with the player as enemy, and what runs per game update")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-ocr] 2026-11-05 (PaceUpdate below).
+REXCVAR_DEFINE_BOOL(cod3_debug_ai_pace, false, "cod3",
+                    "Log every 10 s how fast the actors moved in units per game second (while moving and over all "
+                    "their time), with the game updates and usercmds, to compare frame caps (campaign)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -183,6 +188,99 @@ void MaybeLog(uint8_t* base) {
   g_level_time_since = level_time;
 }
 
+// [acct2-ocr] 2026-11-05 cod3_debug_ai_pace (owner 18:18: "investigate how enemy pathing and speed is handled. It
+// cannot be frame dependent"). Once a game update (the scheduler hook below): how far each actor (a sentient in
+// use, not the player) moved since the last update, by its entity's server origin, against the game time between
+// the two. Every 10 s (from the usercmd hook): the updates and usercmds, the actors' speed in units per game second
+// while moving and over all their time, the fastest single update, and the moving speeds in four bands. The same
+// spot at different frame caps shows whether the actors move by the game's time or by the frame rate. Counts only.
+struct ActorPace {
+  bool have[kSentientCount] = {};
+  uint32_t ent[kSentientCount] = {};
+  V3 last[kSentientCount] = {};
+  bool have_time = false;
+  uint32_t last_level_time = 0;
+  double game_ms = 0, moving_units = 0, moving_ms = 0, all_units = 0, all_ms = 0, fastest = 0;
+  uint64_t updates = 0, usercmds = 0, actors = 0, actor_updates = 0, moving_updates = 0;
+  uint64_t band[4] = {};  // moving: < 60, 60-140, 140-220, > 220 units a second
+  Clock::time_point since = Clock::now();
+};
+ActorPace g_pace;  // the game thread only (SV_Frame's scheduler, ClientThink_real)
+
+bool PaceOn() { return REXCVAR_GET(cod3_debug_ai_pace); }
+
+void PaceUpdate(uint8_t* base) {
+  if (!PaceOn()) {
+    g_pace.have_time = false;
+    return;
+  }
+  const uint32_t level_time = g::ReadU32(base, kLevelTime);
+  const bool timed = g_pace.have_time && level_time > g_pace.last_level_time &&
+                     level_time - g_pace.last_level_time < 500;
+  const double dt_ms = timed ? double(level_time - g_pace.last_level_time) : 0.0;
+  g_pace.have_time = true;
+  g_pace.last_level_time = level_time;
+  ++g_pace.updates;
+  g_pace.game_ms += dt_ms;
+  const uint32_t first = g::ReadU32(base, kLevelSentients);
+  if (first < 0x10000) return;
+  const uint32_t player = PlayerEntity(base);
+  for (uint32_t i = 0; i < kSentientCount; ++i) {
+    const uint32_t s = first + i * kSentientSize;
+    const uint32_t entity = g::ReadU32(base, s);
+    if (g::ReadS32(base, s + kSentientInUse) < 0 || entity < 0x10000 || entity == player) {
+      g_pace.have[i] = false;
+      continue;
+    }
+    ++g_pace.actors;
+    const V3 now = ReadV3(base, entity + kEntOrigin);
+    if (timed && g_pace.have[i] && g_pace.ent[i] == entity) {
+      const V3 d = Sub(now, g_pace.last[i]);
+      const double step = std::sqrt(double(Dot(d, d)));
+      if (step < 300.0) {  // more is a script placing it
+        ++g_pace.actor_updates;
+        g_pace.all_units += step;
+        g_pace.all_ms += dt_ms;
+        if (step > 0.05) {
+          const double speed = step * 1000.0 / dt_ms;
+          ++g_pace.moving_updates;
+          g_pace.moving_units += step;
+          g_pace.moving_ms += dt_ms;
+          g_pace.fastest = std::max(g_pace.fastest, speed);
+          ++g_pace.band[speed < 60.0 ? 0 : speed < 140.0 ? 1 : speed < 220.0 ? 2 : 3];
+        }
+      }
+    }
+    g_pace.have[i] = true;
+    g_pace.ent[i] = entity;
+    g_pace.last[i] = now;
+  }
+}
+
+void PaceUsercmd() {
+  if (!PaceOn()) return;
+  ++g_pace.usercmds;
+  const auto now = Clock::now();
+  const double seconds = std::chrono::duration<double>(now - g_pace.since).count();
+  if (seconds < 10.0) return;
+  ActorPace& p = g_pace;
+  const double game_s = p.game_ms * 0.001;
+  const double moving = p.moving_ms > 0 ? p.moving_units * 1000.0 / p.moving_ms : 0.0;
+  const double all = p.all_ms > 0 ? p.all_units * 1000.0 / p.all_ms : 0.0;
+  REXLOG_INFO("cod3: ai pace over {:.1f} s: {} game updates over {:.2f} game s ({:.1f} a game second), {:.0f} "
+              "usercmds a second; {:.1f} actors an update; moving {:.1f} units a game second over {} actor-updates "
+              "({:.0f}% of their time), all their time {:.1f}; fastest update {:.0f}; moving <60 {} / 60-140 {} / "
+              "140-220 {} / >220 {}",
+              seconds, p.updates, game_s, game_s > 0 ? double(p.updates) / game_s : 0.0, double(p.usercmds) / seconds,
+              p.updates ? double(p.actors) / double(p.updates) : 0.0, moving, p.moving_updates,
+              p.all_ms > 0 ? 100.0 * p.moving_ms / p.all_ms : 0.0, all, p.fastest, p.band[0], p.band[1], p.band[2],
+              p.band[3]);
+  p.game_ms = p.moving_units = p.moving_ms = p.all_units = p.all_ms = p.fastest = 0;
+  p.updates = p.usercmds = p.actors = p.actor_updates = p.moving_updates = 0;
+  for (auto& b : p.band) b = 0;
+  p.since = now;
+}
+
 }  // namespace
 
 // ActorCmd_Shoot / ShootAt (both end in 0x823ED9B8).
@@ -285,6 +383,7 @@ REX_HOOK_RAW(CM_AreaEntities) {
 REX_EXTERN(__imp__sub_824BB6F8);
 REX_HOOK_RAW(sub_824BB6F8) {
   cod3::ai_shots::EachUpdate(base);  // [claude-9b-think] 2026-11-02 [r2] cod3_debug_ai_spawns: the sentients by team
+  PaceUpdate(base);                  // [acct2-ocr] cod3_debug_ai_pace
   if (On()) {
     g_census.updates.fetch_add(1, std::memory_order_relaxed);
     const uint32_t player = PlayerEntity(base);
@@ -327,6 +426,7 @@ REX_EXTERN(__imp__ClientThink_real);
 REX_HOOK_RAW(ClientThink_real) {
   // [claude-9b-think] 2026-11-02 cod3_debug_ai_shots: its 10 s line; [r1] and what runs inside a usercmd.
   const cod3::ai_shots::UsercmdScope usercmd_scope(base);
+  PaceUsercmd();  // [acct2-ocr] cod3_debug_ai_pace
   if (On()) {
     g_census.usercmds.fetch_add(1, std::memory_order_relaxed);
     MaybeLog(base);

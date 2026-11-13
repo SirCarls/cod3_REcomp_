@@ -21,6 +21,7 @@
 #include <system_error>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <imgui.h>
@@ -33,17 +34,18 @@
 REXCVAR_DEFINE_STRING(cod3_text_language, "disc", "cod3/Language",
                       "The game's text: disc (the game's own) or a language from assets/text/<locale>.txt "
                       "(en-US, en-GB, fr-FR, fr-CA, fr-BE, de-DE, it-IT, es-ES, es-419, pt-BR, pt-PT; ru-RU, "
-                      "zh-Hans, zh-Hant-TW, zh-Hant-HK, ja-JP, ko-KR are drawn by our text layer, ui/text_overlay.*, and "
-                      "change after a restart). Texts change as "
-                      "the game asks for them again: the next menu page, the next level load")
+                      "zh-Hans, zh-Hant-TW, zh-Hant-HK, ja-JP, ko-KR are drawn from our own fonts, ui/text_native.*). "
+                      "Texts change as the game asks for them again: the next menu page, the next level load")
     .allowed({"disc", "en-US", "en-GB", "fr-FR", "fr-CA", "fr-BE", "de-DE", "it-IT", "es-ES", "es-419", "pt-BR",
               "pt-PT", "ru-RU", "zh-Hans", "zh-Hant-TW", "zh-Hant-HK", "ja-JP", "ko-KR"})
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [acct2-ocr] 2026-11-05 For tests (devrun --set): "SECONDS:LOCALE" changes cod3_text_language that many seconds
 // after the first text, as F2 > Sound > Text does, to see the lines the game still holds from the language before.
+// 2026-11-07: several, "60:ja-JP,90:fr-FR,120:ja-JP" (each counted from the first text), to go back and forth.
 REXCVAR_DEFINE_STRING(cod3_test_text_language_at, "", "cod3/Language",
-                      "Testing: \"SECONDS:LOCALE\" changes the text language that many seconds after the start")
+                      "Testing: \"SECONDS:LOCALE\" changes the text language that many seconds after the start; "
+                      "several, comma-separated, change it more than once")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // [acct2-ocr] 2026-11-05 For tests: "ENGLISH|OURS" adds one raw row (RawTextFor) to the chosen language, so a known
 // line shows on a known screen ("Loading ...|«Test» ..." on the boot screen: the font fill checked by OCR on the PC).
@@ -174,6 +176,12 @@ struct Table {
   std::unordered_map<std::string, Raw> raw;
   std::unordered_map<std::string, std::pair<uint32_t, uint8_t>> raw_guest;
   size_t raw_longest = 0;
+  // [acct2-ocr] 2026-11-07 "@notices" rows (NoticeText): the port's English HUD notice -> ours, UTF-8 as written.
+  std::unordered_map<std::string, std::string> notice;
+  // [acct2-ocr] 2026-11-07 name tags left as drawn, each logged once (cod3_debug_text).
+  std::unordered_map<std::string, bool> name_missed;
+  // [acct2-ocr] 2026-11-07 notices asked for, each logged once with what it gave (cod3_debug_text).
+  std::unordered_map<std::string, bool> notice_seen;
 };
 
 // "  a  b " -> "a b".
@@ -254,6 +262,7 @@ void Load(int locale) {
   uint8_t kind = 0;
   bool port = false;   // [acct2-ocr] in the "@port" rows (kind: menus)
   bool raw = false;    // [acct2-ocr] in the "@raw[:<kind>]" rows (RawTextFor)
+  bool notice = false;   // [acct2-ocr] 2026-11-07 in the "@notices" rows (NoticeText)
   bool first = true;
   while (std::getline(in, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
@@ -266,6 +275,7 @@ void Load(int locale) {
       raw = tag == "raw" || tag.starts_with("raw:");   // [acct2-ocr] "@raw:loading": raw rows of that kind
       if (raw) tag = tag.size() > 4 ? tag.substr(4) : std::string_view("menus");
       port = !raw && tag == "port";
+      notice = !raw && tag == "notices";   // [acct2-ocr] 2026-11-07
       for (size_t k = 0; k < kKinds.size(); ++k)
         if (tag == kKinds[k].tag) kind = uint8_t(k);
       continue;
@@ -278,6 +288,11 @@ void Load(int locale) {
     std::string key = line.substr(0, tab);
     std::string text = line.substr(tab + 1);
     for (size_t at = text.find("\\n"); at != std::string::npos; at = text.find("\\n", at + 1)) text.replace(at, 2, "\n");
+    if (notice) {   // [acct2-ocr] 2026-11-07 the port's HUD notices: English -> ours, both UTF-8 (drawn by ImGui)
+      if (text != key) g_table.notice[key] = text;
+      ++read;
+      continue;
+    }
     if (raw) {   // [acct2-ocr] English as the game draws it (the fonts' bytes) -> ours
       for (size_t at = key.find("\\n"); at != std::string::npos; at = key.find("\\n", at + 1)) key.replace(at, 2, "\n");
       std::string english = ToGameFontBytes(key, false);
@@ -377,20 +392,30 @@ int ChosenIndex() {
       rex::cvar::RegisterChangeCallback(k.cvar, [](std::string_view, std::string_view) {
         g_generation.fetch_add(1, std::memory_order_relaxed);
       });
-    // [acct2-ocr] cod3_test_text_language_at
+    // [acct2-ocr] cod3_test_text_language_at ("S:L", or "S:L,S:L,..." since 2026-11-07)
     const std::string at = std::string(REXCVAR_GET(cod3_test_text_language_at));
-    if (const size_t colon = at.find(':'); colon != std::string::npos && colon > 0) {
-      const int seconds = std::atoi(at.substr(0, colon).c_str());
-      const std::string locale = at.substr(colon + 1);
-      if (seconds > 0 && (locale == "disc" || IndexOf(locale) >= 0))
-        std::thread([seconds, locale] {
-          std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    std::vector<std::pair<int, std::string>> steps;
+    for (size_t from = 0; from < at.size();) {
+      const size_t comma = std::min(at.find(',', from), at.size());
+      const std::string step = at.substr(from, comma - from);
+      from = comma + 1;
+      const size_t colon = step.find(':');
+      if (colon == std::string::npos || colon == 0) continue;
+      const int seconds = std::atoi(step.substr(0, colon).c_str());
+      const std::string locale = step.substr(colon + 1);
+      if (seconds > 0 && (locale == "disc" || IndexOf(locale) >= 0)) steps.emplace_back(seconds, locale);
+    }
+    if (!steps.empty())
+      std::thread([steps] {
+        const auto start = std::chrono::steady_clock::now();
+        for (const auto& [seconds, locale] : steps) {
+          std::this_thread::sleep_until(start + std::chrono::seconds(seconds));
           REXLOG_INFO("cod3: text: cod3_test_text_language_at: {} now", locale);
           rex::cvar::SetFlagByName("cod3_text_language", locale);
           g_chosen.store(IndexOf(locale), std::memory_order_relaxed);   // as the F2 row does
           g_generation.fetch_add(1, std::memory_order_relaxed);
-        }).detach();
-    }
+        }
+      }).detach();
   });
   v = ReadChosen();
   g_chosen.store(v, std::memory_order_relaxed);
@@ -410,13 +435,16 @@ void Help(const char* text) {
 char32_t NextCodePoint(std::string_view s, size_t& at) {
   const uint8_t c = uint8_t(s[at++]);
   if (c < 0x80) return c;
-  int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
+  const int extra = c >= 0xF8 ? -1 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
   if (extra < 0) return 0xFFFD;
   char32_t cp = c & (0x3F >> extra);
-  for (; extra > 0; --extra) {
+  for (int i = 0; i < extra; ++i) {
     if (at >= s.size() || (uint8_t(s[at]) & 0xC0) != 0x80) return 0xFFFD;
     cp = (cp << 6) | (uint8_t(s[at++]) & 0x3F);
   }
+  // [acct2-ocr] 2026-11-07 only what UTF-8 allows: no overlong forms, surrogates or code points past U+10FFFF
+  static constexpr char32_t kLeast[4] = {0, 0x80, 0x800, 0x10000};
+  if (cp < kLeast[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) return 0xFFFD;
   return cp;
 }
 
@@ -536,21 +564,91 @@ uint32_t RawTextFor(uint8_t* base, uint32_t text) {
     ours = row->second.text + (end != std::string::npos ? line.substr(end + 1) : std::string());
     kind = row->second.kind;
   } else {
+#if defined(COD3_MP)
+    return 0;   // [acct2-ocr] 2026-11-07 cod3mp: names there are the players' own (and each new one would be kept below)
+#endif
     // [acct2-ocr] A name tag no row has ("Pvt. Hale": the friendlies' names are many): a "Pvt. *" row gives the rank,
-    // the name stays as drawn. Only for a rank and one capitalized word ("O'Neil", "Smith-Jones").
+    // the name stays as drawn. Only for a rank and a capitalized name ("O'Neil", "Smith-Jones").
+    // [acct2-ocr] 2026-11-07 (owner 17:48 "soldier names included"): also a name of up to three words ("Van Dyke"),
+    // one with the fonts' accented letters ("Müller", in their single-byte order), a rank written without its period
+    // ("Pvt Hale" takes the "Pvt. *" row); in Russian, Chinese, Japanese and Korean the name is put in UTF-8 like the
+    // rest of the line (it was left in the fonts' bytes: half a line of mojibake). cod3_debug_text logs each name tag
+    // still left in English once.
     const size_t space = line.find(' ');
-    if (space == std::string::npos || space + 1 >= line.size() || line.size() - space > 21) return 0;
+    const auto missed = [&](const char* why) {
+      if (REXCVAR_GET(cod3_debug_text) && g_table.name_missed.size() < 256 && g_table.name_missed.emplace(drawn, true).second)
+        REXLOG_INFO("cod3: text: name tag left as drawn ({}): \"{}\"", why, drawn);
+      return 0u;
+    };
+    if (space == std::string::npos || space + 1 >= line.size()) return 0;
+    const std::string token = line.substr(0, space);
+    const bool rank_like = token.size() >= 2 && token.size() <= 6 && std::isupper(uint8_t(token[0])) &&
+                           std::all_of(token.begin() + 1, token.end(), [](char c) { return std::islower(uint8_t(c)) || c == '.'; });
+    if (!rank_like) return 0;
+    // [acct2-ocr] 2026-11-07 the rank's row first: a line of ours that starts like a rank (most German lines, a line
+    // typed out letter by letter) has none and is passed over without a word; only an English rank is logged.
+    auto rank = g_table.raw.find(token + " *");
+    if (rank == g_table.raw.end() && token.back() != '.') rank = g_table.raw.find(token + ". *");
+    if (rank == g_table.raw.end()) {
+      static constexpr std::string_view kRanks[] = {"Pvt", "Pfc", "Pte", "Cpl", "Sgt", "Lt", "Capt", "Maj"};
+      const std::string_view bare = token.back() == '.' ? std::string_view(token).substr(0, token.size() - 1)
+                                                        : std::string_view(token);
+      return std::find(std::begin(kRanks), std::end(kRanks), bare) != std::end(kRanks)
+                 ? missed("no row for the rank: the same in this language?")
+                 : 0u;
+    }
     const std::string name = line.substr(space + 1);
-    if (!std::isupper(uint8_t(name[0]))) return 0;
-    for (char c : name)
-      if (!std::isalpha(uint8_t(c)) && c != '\'' && c != '-') return 0;
-    const auto rank = g_table.raw.find(line.substr(0, space) + " *");
-    if (rank == g_table.raw.end()) return 0;
+    if (name.size() > 32) return missed("a long name");
+    const auto letter = [](uint8_t c) {   // ASCII or the fonts' Windows-1252 letters
+      return std::isalpha(c) || (c >= 0xC0 && c != 0xD7 && c != 0xF7) || c == 0x8A || c == 0x8C || c == 0x8E ||
+             c == 0x9A || c == 0x9C || c == 0x9E || c == 0x9F;
+    };
+    const auto upper = [](uint8_t c) { return std::isupper(c) || (c >= 0xC0 && c <= 0xDE && c != 0xD7) || c == 0x8A || c == 0x8C || c == 0x8E || c == 0x9F; };
+    int words = 0;
+    for (size_t i = 0; i < name.size(); ++i) {
+      const uint8_t c = uint8_t(name[i]);
+      if (i == 0 || name[i - 1] == ' ') {
+        if (!upper(c)) return missed("not a capitalized name");
+        if (++words > 3) return missed("more than three words");
+      } else if (c == ' ') {
+        if (i + 1 >= name.size()) return missed("a space at the end");
+      } else if (!letter(c) && c != '\'' && c != '-') {
+        return missed("not a name");
+      }
+    }
     const size_t star = rank->second.text.find('*');
     if (star == std::string::npos) return 0;
-    ours = rank->second.text.substr(0, star) + name + rank->second.text.substr(star + 1);
+    const bool utf8 = kLocales[size_t(locale)].overlay;   // the row is UTF-8 there: the name goes in UTF-8 too
+    std::string shown;
+    for (char ch : name) {
+      const uint8_t c = uint8_t(ch);
+      if (!utf8 || c < 0x80) {
+        shown += ch;
+      } else {
+        // Windows-1252 -> UTF-8 (0xA0-0xFF are U+00A0-U+00FF; the few letters at 0x8A-0x9F have their own code points)
+        uint32_t cp = c;
+        switch (c) {
+          case 0x8A: cp = 0x160; break;
+          case 0x8C: cp = 0x152; break;
+          case 0x8E: cp = 0x17D; break;
+          case 0x9A: cp = 0x161; break;
+          case 0x9C: cp = 0x153; break;
+          case 0x9E: cp = 0x17E; break;
+          case 0x9F: cp = 0x178; break;
+          default: break;
+        }
+        if (cp < 0x800) {
+          shown += char(0xC0 | (cp >> 6));
+          shown += char(0x80 | (cp & 0x3F));
+        }
+      }
+    }
+    ours = rank->second.text.substr(0, star) + shown + rank->second.text.substr(star + 1);
     kind = rank->second.kind;
   }
+  // [acct2-ocr] 2026-11-07 each copy stays in guest memory: at most so many (a level shows a few hundred; other players'
+  // names and chat reach here too)
+  if (g_table.raw_guest.size() >= 4096) return 0;
   const uint32_t at = GuestCopy(base, drawn.substr(0, skip) + ours);
   if (!at) return 0;
   g_table.raw_guest[drawn] = {at, kind};
@@ -566,6 +664,23 @@ std::string FilmText(std::string_view key) {
   if (g_loaded != locale || g_loaded_fill != cod3::font_fill::Generation()) Load(locale);
   const auto it = g_table.film.find(KeyHash(key));
   return it == g_table.film.end() ? std::string() : it->second;
+}
+
+// [acct2-ocr] 2026-11-07 see text_language.h.
+std::string NoticeText(std::string_view english) {
+  const int locale = ChosenIndex();
+  if (locale < 0 || english.empty() || !KindOn(0)) return "";
+  // Drawn with ImGui: Russian, Chinese, Japanese and Korean need the text layer's font, added at start.
+  if (kLocales[size_t(locale)].overlay && !cod3::text_overlay::Ready(kLocales[size_t(locale)].code)) return "";
+  std::lock_guard lock(g_mutex);
+  if (g_loaded != locale || g_loaded_fill != cod3::font_fill::Generation()) Load(locale);
+  const auto it = g_table.notice.find(std::string(english));
+  std::string ours = it == g_table.notice.end() ? std::string() : it->second;
+  // [acct2-ocr] cod3_debug_text: each notice once per language, with what it gave (the shots don't show the HUD layer)
+  if (REXCVAR_GET(cod3_debug_text) && g_table.notice_seen.size() < 64 &&
+      g_table.notice_seen.emplace(std::string(english), true).second)
+    REXLOG_INFO("cod3: text: notice \"{}\" -> \"{}\"", english, ours.empty() ? std::string("(as written)") : ours);
+  return ours;
 }
 
 std::filesystem::path GameDataRoot() {
@@ -711,6 +826,40 @@ bool DrawSettingsRow() {
   if (pick == -2 || pick == chosen) return kinds_changed;
   rex::cvar::SetFlagByName("cod3_text_language", pick < 0 ? "disc" : kLocales[size_t(pick)].code);
   g_chosen.store(pick, std::memory_order_relaxed);   // also when the change callback isn't there yet
+  g_generation.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+
+// [acct2-ocr] 2026-11-07 The in-game Options rows' (text_language.h): the same choice as the F2 row above.
+int LanguageCount() { return int(kLocales.size()); }
+
+const char* LanguageCode(int index) {
+  return index >= 0 && index < LanguageCount() ? kLocales[size_t(index)].code : "";
+}
+
+const char* LanguageName(int index) {
+  return index >= 0 && index < LanguageCount() ? kLocales[size_t(index)].name : "";
+}
+
+bool LanguageUsable(int index) {
+  if (index < 0) return true;  // the game's own
+  if (index >= LanguageCount()) return false;
+  const Locale& l = kLocales[size_t(index)];
+  return Available()[size_t(index)] && (!l.overlay || cod3::text_overlay::Available(l.code));
+}
+
+bool LanguageAfterRestart(int index) {
+  if (index < 0 || index >= LanguageCount()) return false;
+  const Locale& l = kLocales[size_t(index)];
+  return l.overlay && !ScriptReady(l.code);
+}
+
+int ChosenLanguage() { return ChosenIndex(); }
+
+bool ChooseLanguage(int index) {
+  if (index < -1 || index >= LanguageCount() || index == ChosenIndex() || !LanguageUsable(index)) return false;
+  rex::cvar::SetFlagByName("cod3_text_language", index < 0 ? "disc" : kLocales[size_t(index)].code);
+  g_chosen.store(index, std::memory_order_relaxed);   // also when the change callback isn't there yet
   g_generation.fetch_add(1, std::memory_order_relaxed);
   return true;
 }

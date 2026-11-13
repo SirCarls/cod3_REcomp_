@@ -63,6 +63,27 @@ REXCVAR_DEFINE_BOOL(cod3_debug_letterbox, false, "cod3",
                     "and anything like them): their corners, colors and the rest of the quad, each distinct one once")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 #endif
+// [acct2-ocr] 2026-11-07 owner 15:32 "there might be other effects that have this. Please check" (after bug 16, the
+// cinematic bars' last column and row, fixed in the bars' snap below). The chats' 8,885 run screenshots measured at
+// their edges (dev/agents/acct2-ocr/tools/seam_scan.py, numbers only): the game's full-screen fades and overlays leave
+// the picture's last column, and often its last row, uncovered as well, in native mode too. Hostage with today's build
+// (run acct2-ocr-swapF-cycle): the last column 18-27 brighter than the one next to it in 56-64% of the rows; during a
+// fade to black (tag2-fr-false, acct2-bro-side142-hostage) 63-69 brighter in 98-100% of the rows, the last row 47.
+// They are quads to x 639.5 / y 479.5 like the bars were (claude-9b-test's finding above), and with the game's own 2x
+// MSAA even 640 / 480 is short (bug 16). Both programs (split-screen views' outer edges too).
+REXCVAR_DEFINE_INT32(cod3_edge_fill, 1, "cod3/Display",
+                     "2D drawn across the whole picture (fades, flashes, overlays, menu backgrounds, the movie) reaches "
+                     "its last column and row: a quad that spans the screen's (or a split-screen view's) width or height "
+                     "and ends on an outer edge is drawn 2 units past it. 0: as the game draws them (the last column and "
+                     "row can show what is under them); 1: the screen's 2D; 2: only 2D drawn into the game's own "
+                     "off-screen pictures (in their pixels); 3: both")
+    .range(0, 3)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(cod3_debug_edge_fill, false, "cod3",
+                    "Log each kind of 2D quad that spans the screen's width or height and ends on an edge, once (at "
+                    "most 60): its space, corners, colors, texture corners and whether cod3_edge_fill moved it; and "
+                    "every 5 s how many were moved")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 #if defined(COD3_MP)
 // [claude-9b] 2026-10-27 owner 06:28 "4 player splitscreen ... FPS way consistently bad", 06:43 "the way it calculates
 // what the player can see/should render in seems flawed" (FINDINGS-SPLITSCREEN-PERF G1).
@@ -692,6 +713,137 @@ void NoteBarLeftOut(PPCContext& ctx, uint8_t* base) {
 }  // namespace
 #endif
 
+// [acct2-ocr] 2026-11-07 cod3_edge_fill (see the setting).
+namespace {
+// The space a quad is in: the 640x480 virtual screen (the back buffer) or a target's own pixels (as QuadSpace).
+bool EdgeSpace(uint8_t* base, float* w, float* h, bool* screen) {
+  const uint32_t list = ReadU32(base, uw::kCurrentList);
+  const uint32_t target = list ? ReadU32(base, list + uw::kListTarget) : 0;
+  if (!target) return false;
+  *screen = (ReadU32(base, target + uw::kTargetFlags) & uw::kTargetVirtual) != 0;
+  if (*screen) {
+    *w = 640.0f;
+    *h = 480.0f;
+  } else {
+    *w = float(ReadU32(base, target + 0));
+    *h = float(ReadU32(base, target + 4));
+  }
+  return *w >= 1.0f && *h >= 1.0f && *w <= 16384.0f && *h <= 16384.0f;
+}
+
+std::atomic<uint32_t> g_edge_moved_screen{0}, g_edge_moved_pixels{0};
+
+// A quad's corners before cod3_edge_fill moved them, put back after the list's copy (the game keeps some quads
+// between frames: the movie, menu panels).
+struct EdgeFill {
+  bool moved = false;
+  float x[4] = {}, y[4] = {};
+  void PutBack(uint8_t* base, uint32_t quad) const {
+    if (!moved) return;
+    for (int i = 0; i < 4; ++i) {
+      WriteF32(base, quad + uw::kQuadVertexStride * i, x[i]);
+      WriteF32(base, quad + uw::kQuadVertexStride * i + 4, y[i]);
+    }
+  }
+};
+
+void NoteEdgeFill() {
+  static int64_t last = 0;
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  if (now - last < 5000) return;
+  last = now;
+  REXLOG_INFO("cod3: edge fill: {} screen quads and {} off-screen quads drawn past the edges in the last 5 s",
+              g_edge_moved_screen.exchange(0, std::memory_order_relaxed),
+              g_edge_moved_pixels.exchange(0, std::memory_order_relaxed));
+}
+
+// mapped: the ultrawide HUD mapping moves this quad's x afterwards (HudScale > 0). Then only a quad drawn during play
+// keeps its sides on the screen's (AtEdge), so only those sides go past; a menu's or the movie's are inside the picture.
+// Corners only ever go outwards (a quad already past an edge, like the top cinematic bar's 644.5, stays).
+void EdgeFillApply(uint8_t* base, uint32_t quad, bool mapped, EdgeFill* fill) {
+  const int mode = REXCVAR_GET(cod3_edge_fill);
+  const bool debug = REXCVAR_GET(cod3_debug_edge_fill);
+  if (mode == 0 && !debug) return;
+  float w = 0.0f, h = 0.0f;
+  bool screen = false;
+  if (!EdgeSpace(base, &w, &h, &screen)) return;
+  float x[4], y[4];
+  for (int i = 0; i < 4; ++i) {
+    x[i] = ReadF32(base, quad + uw::kQuadVertexStride * i);
+    y[i] = ReadF32(base, quad + uw::kQuadVertexStride * i + 4);
+  }
+  const float x0 = std::min({x[0], x[1], x[2], x[3]}), x1 = std::max({x[0], x[1], x[2], x[3]});
+  const float y0 = std::min({y[0], y[1], y[2], y[3]}), y1 = std::max({y[0], y[1], y[2], y[3]});
+  if (!(std::isfinite(x0) && std::isfinite(x1) && std::isfinite(y0) && std::isfinite(y1))) return;
+  constexpr float kNear = 0.5f;  // as AtEdge: the game's own quads end at -0.5 and 639.5
+  constexpr float kPast = 2.0f;  // as the bars: 2 units (or pixels) past the edge; the target clips the rest
+  const float vx0 = screen ? g_view_x0.load(std::memory_order_relaxed) : 0.0f;
+  const float vx1 = screen ? g_view_x1.load(std::memory_order_relaxed) : w;
+  const bool across = (x0 <= kNear && x1 >= w - kNear) || (x0 <= vx0 + kNear && x1 >= vx1 - kNear);
+  const bool down = y0 <= kNear && y1 >= h - kNear;
+  const bool at_edge = x0 <= kNear || x1 >= w - kNear || y0 <= kNear || y1 >= h - kNear;
+  if (!(across || down) || !at_edge) return;
+  const bool movie = !cod3::kMultiplayer && quad == ReadU32(base, uw::kMovieQuadPtr);
+  const bool playing = !movie && g_scene_frames.load(std::memory_order_relaxed) > 0;
+  const bool sides = !(mapped && !playing);
+  const bool on = (mode & (screen ? 1 : 2)) != 0;
+  bool moved = false;
+  if (on) {
+    for (int i = 0; i < 4; ++i) {
+      float nx = x[i], ny = y[i];
+      if (sides) {
+        if (x[i] <= kNear) nx = std::min(x[i], -kPast);
+        else if (x[i] >= w - kNear) nx = std::max(x[i], w + kPast);
+      }
+      if (y[i] <= kNear) ny = std::min(y[i], -kPast);
+      else if (y[i] >= h - kNear) ny = std::max(y[i], h + kPast);
+      if (nx != x[i] || ny != y[i]) {
+        if (!moved) {
+          for (int k = 0; k < 4; ++k) {
+            fill->x[k] = x[k];
+            fill->y[k] = y[k];
+          }
+        }
+        moved = true;
+        WriteF32(base, quad + uw::kQuadVertexStride * i, nx);
+        WriteF32(base, quad + uw::kQuadVertexStride * i + 4, ny);
+      }
+    }
+    fill->moved = moved;
+    if (moved) (screen ? g_edge_moved_screen : g_edge_moved_pixels).fetch_add(1, std::memory_order_relaxed);
+  }
+  if (!debug) return;
+  NoteEdgeFill();
+  // Each distinct one once (rounded to a quarter unit), at most 60 lines.
+  uint32_t color[4];
+  float u0 = 1e9f, u1 = -1e9f, v0 = 1e9f, v1 = -1e9f;
+  for (int i = 0; i < 4; ++i) {
+    const uint32_t at = quad + uw::kQuadVertexStride * i;
+    color[i] = ReadU32(base, at + 16);
+    const float u = ReadF32(base, at + 8), v = ReadF32(base, at + 12);
+    u0 = std::min(u0, u), u1 = std::max(u1, u), v0 = std::min(v0, v), v1 = std::max(v1, v);
+  }
+  // The color's alpha left out of the key: a fade is one quad whose alpha changes every frame (run
+  // acct2-ocr-edge-host-off: Hostage's opening fade filled all 60 lines).
+  static std::mutex mutex;
+  static std::unordered_set<uint64_t> seen;
+  const auto q = [](float f) { return uint64_t(uint32_t(int32_t(f * 4.0f)) & 0xFFFF); };
+  const uint64_t rgb = ((color[0] >> 24) == 0xFF || (color[0] >> 24) == 0 ? color[0] : color[0] & 0x00FFFFFFu);
+  const uint64_t key = (q(x0) << 48) ^ (q(x1) << 32) ^ (q(y0) << 16) ^ q(y1) ^ (rgb << 20) ^ (uint64_t(q(w)) << 8) ^
+                       (playing ? 1u : 0u) ^ (movie ? 2u : 0u) ^ (g_scene_depth.load(std::memory_order_relaxed) > 0 ? 4u : 0u);
+  std::lock_guard<std::mutex> lock(mutex);
+  if (seen.size() >= 60 || !seen.insert(key).second) return;
+  REXLOG_INFO("cod3: edge fill: {} quad x {:.2f}..{:.2f} y {:.2f}..{:.2f} colors {:08X} {:08X} {:08X} {:08X} "
+              "u {:.3f}..{:.3f} v {:.3f}..{:.3f}; playing {} in the 3D view {} movie {} mapped {}: {}",
+              screen ? std::string("screen") : std::to_string(int(w)) + "x" + std::to_string(int(h)), x0, x1, y0,
+              y1, color[0], color[1], color[2], color[3], u0, u1, v0, v1, playing ? 1 : 0,
+              g_scene_depth.load(std::memory_order_relaxed) > 0 ? 1 : 0, movie ? 1 : 0, mapped ? 1 : 0,
+              moved ? "moved past the edges" : (on ? "already past" : "left (cod3_edge_fill)"));
+}
+}  // namespace
+
 // nglListAddQuad(quad): every 2D picture (RE_StretchPic, the menus' panels,
 // the movie) is a quad in virtual coordinates that the list copies. The quad
 // can be a struct the game keeps between frames (the movie, menu panels), so
@@ -718,10 +870,16 @@ REX_HOOK_RAW(nglListAddQuad) {
         const uint32_t at = quad + uw::kQuadVertexStride * i;
         bar_x[i] = ReadF32(base, at);
         bar_y[i] = ReadF32(base, at + 4);
-        if (bar_x[i] <= slack_x) WriteF32(base, at, 0.0f);
-        else if (bar_x[i] >= w - slack_x) WriteF32(base, at, w);
-        if (bar_y[i] <= slack_y) WriteF32(base, at + 4, 0.0f);
-        else if (bar_y[i] >= h - slack_y) WriteF32(base, at + 4, h);
+        // [acct2-ocr] 2026-11-07 past the edges by the slack, not onto them (bug 16, owner 15:09: "the cinematic
+        // letterboxing Needs a pass. It's missing a pixel on the bottom right and top right"). With the game's own 2x
+        // MSAA (cod3_render_method scaled, or a render size below the window's) a bar ending exactly on the space's
+        // right or bottom edge left the picture's last column and last row uncovered: runs acct2-ocr-lb6-scaled (and
+        // the owner's two screenshots of it) and -lb7, the top bar's last column 26-60 against 0, the last row 31-39.
+        // Native (no MSAA) at 1280x720, 1920x1013, 1600x900 and 150% had none (lb1-lb5). The target clips the rest.
+        if (bar_x[i] <= slack_x) WriteF32(base, at, -slack_x);
+        else if (bar_x[i] >= w - slack_x) WriteF32(base, at, w + slack_x);
+        if (bar_y[i] <= slack_y) WriteF32(base, at + 4, -slack_y);
+        else if (bar_y[i] >= h - slack_y) WriteF32(base, at + 4, h + slack_y);
       }
     }
   }
@@ -734,11 +892,15 @@ REX_HOOK_RAW(nglListAddQuad) {
   };
 #else
   auto put_bar_back = [] {};
+  const bool bar = false;  // [acct2-ocr] no cinematic bars in cod3mp
 #endif
   const float scale = quad ? HudScale(base) : 0.0f;
+  EdgeFill fill;  // [acct2-ocr] cod3_edge_fill
+  if (quad && !bar) EdgeFillApply(base, quad, scale > 0.0f, &fill);
   if (scale <= 0.0f) {
     __imp__nglListAddQuad(ctx, base);
     put_bar_back();
+    fill.PutBack(base, quad);  // [acct2-ocr]
     return;
   }
   // During play, an edge of the screen stays the picture's edge, so fades,
@@ -758,6 +920,7 @@ REX_HOOK_RAW(nglListAddQuad) {
   __imp__nglListAddQuad(ctx, base);
   for (int i = 0; i < 4; ++i) WriteF32(base, quad + uw::kQuadVertexStride * i, x[i]);
   put_bar_back();  // [claude-9b-think]
+  fill.PutBack(base, quad);  // [acct2-ocr]
 }
 
 // nglListAddString(font, text, f1 x, f2 y, f3 depth, f4 x scale, f5 y scale,

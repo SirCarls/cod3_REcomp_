@@ -54,6 +54,7 @@
 static uint32_t lock_buffer;
 static uint32_t last_width, last_height;   /* the size the last lock handed out */
 static uint32_t last_texture;              /* and the nglTexture it was for */
+static unsigned long lock_total;           /* [rexglue-native] 2026-11-11: locks so far (ngl_texture_lock_count) */
 
 /* Save what the last lock's caller wrote, if this is the lock BRO_DUMP_LOCK names. */
 static void dump_if_asked(unsigned long lock_number)
@@ -122,6 +123,7 @@ void ngl_texture_lock(uint32_t texture)
     last_width = width;
     last_height = height;
     last_texture = texture;
+    lock_total++;
 
     MEM32(texture + TEXTURE_LOCK_PITCH) = width * BYTES_PER_PIXEL;
     MEM32(texture + TEXTURE_LOCK_BITS) = lock_buffer;
@@ -130,6 +132,11 @@ void ngl_texture_lock(uint32_t texture)
 uint32_t ngl_texture_last_locked(void)
 {
     return last_texture;
+}
+
+unsigned long ngl_texture_lock_count(void)
+{
+    return lock_total;
 }
 
 int ngl_texture_last_lock(uint32_t *buffer, uint32_t *width, uint32_t *height, uint32_t *pitch)

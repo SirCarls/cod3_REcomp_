@@ -67,6 +67,7 @@
 #include "game/protected_dvars.h"
 #include "game/server_step.h"  // [acct2-main] the camera on a vehicle
 #include "game/movement/step_view.h"  // [claude-9b] EndDrawnStepValues
+#include "game/movement/stuck_fix.h"  // [acct2-ocr] the levitation fix (levitation_fix)
 
 // Pmove, the game's own (hooked below); RunCod4Steps calls it too.
 REX_EXTERN(__imp__sub_82496978);
@@ -139,6 +140,7 @@ thread_local MoveContext g_move;
 thread_local bool g_no_step = false;
 int g_no_step_skips = 0;  // calls left out (the debug log)
 uint64_t g_steps_run = 0;  // [claude-9b-think] 2026-11-02 RunHzSteps' and RunCod4Steps' steps so far (StepsRun)
+thread_local int g_cmd_steps = -1;  // [acct2-ocr] 2026-11-05 steps this usercmd's Pmove ran (-1: not in steps); see below
 
 // CoD4 sprint's "let go of the button after running out", per client (the
 // campaign moves client 0 only).
@@ -372,6 +374,7 @@ void RunCod4Steps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int 
   __imp__sub_82496978(ctx, base);  // no steps: its loop runs none
   g_move.snap = false;
   if (plan.steps == 0) g_no_step = true;  // [claude-9b]
+  g_cmd_steps = plan.steps;  // [acct2-ocr] 2026-11-05 the touches after the move (TouchesPerStep)
   KeepBox(base, pm, ps, client, plan.steps > 0, final_time);  // [claude-9b-think] 2026-11-02 UNTESTED
   g::WriteU32(base, pm + P.pmove.pmove_fixed, fixed);
   g::WriteU32(base, pm + P.pmove.pmove_msec, step_msec);
@@ -522,6 +525,7 @@ void RunHzSteps(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int cl
     UpdateViewAngles(ctx, base, pm, ps, final_time - command_time);
     g_no_step = true;  // [claude-9b]
   }
+  g_cmd_steps = steps;  // [acct2-ocr] 2026-11-05 the touches after the move (TouchesPerStep)
   KeepBox(base, pm, ps, client, steps > 0, final_time);  // [claude-9b-think] 2026-11-02 UNTESTED
   g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
   g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
@@ -640,6 +644,219 @@ void WatchJump(uint8_t* base, uint32_t ps, int client, bool cod4_steps) {
 }  // namespace
 
 // ===========================================================================
+// [acct2-ocr] 2026-11-05 The touches after the move, once per movement step
+// ===========================================================================
+// Owner 18:24: "Another thing that frame dependent is detecting if the player is on an edge or something similar";
+// 18:33: "A way to test this is to have a player rub against the AI. I believe it's the same code." ClientThink_real
+// (0x8256C260) runs once per usercmd, that is once per drawn frame. After Pmove and the entity link it calls
+// 0x823D0FE8 (returns to 0x8256C8C8; r3 the player's entity, r4 its client, r5 = r1+112): the player's box against
+// the area's triggers and entities, calling their touch functions (through 0x8254E318 and 0x8254E618); then
+// 0x825459B8 (returns to 0x8256C9A4; r4 how many, r5 the list, pm+132 / pm+136 with Pmove's pm at r1+144): the
+// touch functions of the entities Pmove ran into.
+// With cod3_move_hz the move itself runs in fixed steps (RunHzSteps, RunCod4Steps); these two did not: at 120 fps
+// 0x823D0FE8 ran twice per step (every other usercmd runs no step), at 30 fps both ran once per two steps.
+// cod3_move_touch_per_step runs each once per step of the usercmd: not after one that ran no step (the player did
+// not move; 0x825459B8's list is empty then anyway), N times after one that ran N (at most 6, as server_step.cpp
+// runs at most 6 updates a frame), with the same arguments each time. At 60 fps (one step a usercmd) nothing
+// changes; cod3_move_hz 0 (one move a frame, as the game) is left as the game does it. The held-in-place fix
+// 0x82483C20 (claude-9b, below) stays once per usercmd that ran a step: it frees the player at once.
+REXCVAR_DEFINE_BOOL(cod3_move_touch_per_step, true, "cod3",
+                    "The player's touches after a move (triggers, the entities he runs into or rubs against) run once "
+                    "per movement step (cod3_move_hz), as at 60 fps; off: once per drawn frame (twice as often at "
+                    "120 fps, half as often at 30)");
+REXCVAR_DEFINE_BOOL(cod3_debug_move_touch, false, "cod3",
+                    "Log the touches after the move every 2 game seconds: usercmds, steps, the calls asked and run, "
+                    "the nearest actor and how far it and the player moved while touching");
+REXCVAR_DEFINE_BOOL(cod3_debug_move_touch_steer, false, "cod3",
+                    "Test only: the player walks into the nearest actor (the usercmd's move keys are replaced; the "
+                    "view is not turned)");
+namespace {
+constexpr uint32_t kAreaTouchReturn = 0x8256C8C8;  // ClientThink_real, after its 0x823D0FE8 call
+constexpr uint32_t kTouchListReturn = 0x8256C9A4;  // ClientThink_real, after its 0x825459B8 call
+constexpr int kMaxTouchRuns = 6;
+// The sentients (as game/ai_census.cpp reads them): level +8 points at 33 of 336 bytes, +0 the entity, +156 >= 0
+// while in use; level.time at level +156; an entity's server origin at +336.
+constexpr uint32_t kTouchLevel = 0x82A4E790;
+constexpr uint32_t kTouchLevelTime = kTouchLevel + 156;
+constexpr uint32_t kTouchSentients = kTouchLevel + 8;
+constexpr uint32_t kTouchSentientCount = 33, kTouchSentientSize = 336, kTouchSentientInUse = 156;
+constexpr uint32_t kTouchEntOrigin = 336;
+
+uint32_t g_touch_player = 0;  // the player's entity, as the last 0x823D0FE8 call had it
+
+// How many times a touch call of this usercmd runs.
+int TouchRuns() {
+  if (!REXCVAR_GET(cod3_move_touch_per_step) || g_cmd_steps < 0) return 1;
+  return std::min(g_cmd_steps, kMaxTouchRuns);
+}
+
+// Runs `call` n times, with the caller's argument registers each time (a call leaves them changed).
+template <typename F>
+void RunTimes(PPCContext& ctx, int n, F&& call) {
+  const PPCRegister args[8] = {ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10};
+  for (int i = 0; i < n; ++i) {
+    if (i > 0) {
+      ctx.r3 = args[0]; ctx.r4 = args[1]; ctx.r5 = args[2]; ctx.r6 = args[3];
+      ctx.r7 = args[4]; ctx.r8 = args[5]; ctx.r9 = args[6]; ctx.r10 = args[7];
+    }
+    call();
+  }
+}
+
+// The actor (a sentient in use, not `player`, not where `from` is) nearest to `from` across the ground: its entity
+// (0: none), its horizontal distance, height difference and origin.
+uint32_t NearestActor(uint8_t* base, uint32_t player, const float from[3], float* dist_xy, float* dz, float at[3]) {
+  const uint32_t first = g::ReadU32(base, kTouchSentients);
+  if (!ValidGuest(first)) return 0;
+  uint32_t best = 0;
+  float best_d2 = 0.0f;
+  for (uint32_t i = 0; i < kTouchSentientCount; ++i) {
+    const uint32_t s = first + i * kTouchSentientSize;
+    const uint32_t entity = g::ReadU32(base, s);
+    if (g::ReadS32(base, s + kTouchSentientInUse) < 0 || !ValidGuest(entity) || entity == player) continue;
+    float o[3];
+    for (int k = 0; k < 3; ++k) o[k] = g::ReadF32(base, entity + kTouchEntOrigin + 4 * k);
+    const float dx = o[0] - from[0], dy = o[1] - from[1];
+    const float d2 = dx * dx + dy * dy;
+    if (d2 < 1.0f || !(d2 < 1e12f)) continue;  // the player's own sentient (before the first call), or garbage
+    if (best == 0 || d2 < best_d2) {
+      best = entity;
+      best_d2 = d2;
+      *dz = o[2] - from[2];
+      for (int k = 0; k < 3; ++k) at[k] = o[k];
+    }
+  }
+  if (best != 0) *dist_xy = std::sqrt(best_d2);
+  return best;
+}
+
+float Dist3(const float a[3], const float b[3]) {
+  const float dx = a[0] - b[0], dy = a[1] - b[1], dz = a[2] - b[2];
+  return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+// cod3_debug_move_touch: counts since the last line, and the nearest actor at the last usercmd.
+struct TouchLog {
+  bool have = false;
+  uint32_t start = 0;
+  uint64_t cmds = 0, steps = 0, area_asked = 0, area_run = 0;
+  uint64_t list_asked = 0, list_run = 0, list_full = 0, list_ents = 0, touching = 0;
+  double actor_moved = 0.0, player_moved = 0.0;
+  bool last_touching = false;
+  uint32_t last_actor = 0;
+  float last_actor_at[3] = {}, last_player_at[3] = {};
+  float nearest = -1.0f;
+};
+TouchLog g_touch_log;
+
+void NoteAreaTouch(uint8_t* base, uint32_t player, int runs) {
+  g_touch_player = player;
+  TouchLog& l = g_touch_log;
+  if (!REXCVAR_GET(cod3_debug_move_touch) || !ValidGuest(player)) {
+    l.have = false;
+    return;
+  }
+  const uint32_t now = g::ReadU32(base, kTouchLevelTime);
+  if (!l.have || now < l.start) {
+    l = TouchLog{};
+    l.have = true;
+    l.start = now;
+  }
+  ++l.cmds;
+  l.steps += static_cast<uint64_t>(std::max(g_cmd_steps, 0));
+  ++l.area_asked;
+  l.area_run += static_cast<uint64_t>(runs);
+  float p[3], at[3] = {}, d = -1.0f, dz = 0.0f;
+  for (int k = 0; k < 3; ++k) p[k] = g::ReadF32(base, player + kTouchEntOrigin + 4 * k);
+  const uint32_t actor = NearestActor(base, player, p, &d, &dz, at);
+  const bool touching = actor != 0 && d < 40.0f && std::fabs(dz) < 72.0f;  // two 15-unit boxes side by side, +10
+  if (touching && l.last_touching && actor == l.last_actor) {
+    const float actor_step = Dist3(at, l.last_actor_at), player_step = Dist3(p, l.last_player_at);
+    if (actor_step < 50.0f) l.actor_moved += actor_step;  // more is a script placing it
+    if (player_step < 50.0f) l.player_moved += player_step;
+  }
+  if (touching) ++l.touching;
+  l.last_touching = touching;
+  l.last_actor = actor;
+  for (int k = 0; k < 3; ++k) {
+    l.last_actor_at[k] = at[k];
+    l.last_player_at[k] = p[k];
+  }
+  l.nearest = actor != 0 ? d : -1.0f;
+  if (now - l.start < 2000) return;
+  REXLOG_INFO("cod3: touches after the move over {} game ms (cod3_move_touch_per_step {}): {} usercmds, {} steps; "
+              "area touches (0x823D0FE8) {} asked, {} run; touch lists (0x825459B8) {} asked, {} run, {} with "
+              "entities ({} in all); nearest actor {:.0f} units away, touching it in {} usercmds: it moved {:.1f} "
+              "units, the player {:.1f}",
+              now - l.start, REXCVAR_GET(cod3_move_touch_per_step) ? "on" : "off", l.cmds, l.steps, l.area_asked,
+              l.area_run, l.list_asked, l.list_run, l.list_full, l.list_ents, l.nearest, l.touching, l.actor_moved,
+              l.player_moved);
+  TouchLog next;
+  next.have = true;
+  next.start = now;
+  next.last_touching = l.last_touching;
+  next.last_actor = l.last_actor;
+  for (int k = 0; k < 3; ++k) {
+    next.last_actor_at[k] = l.last_actor_at[k];
+    next.last_player_at[k] = l.last_player_at[k];
+  }
+  l = next;
+}
+
+void NoteTouchList(int32_t count, int runs) {
+  TouchLog& l = g_touch_log;
+  if (!l.have) return;
+  ++l.list_asked;
+  l.list_run += static_cast<uint64_t>(runs);
+  if (count > 0) {
+    ++l.list_full;
+    l.list_ents += static_cast<uint64_t>(count);
+  }
+}
+
+// cod3_debug_move_touch_steer: the usercmd's move keys point at the nearest actor (the view stays where it is).
+void SteerIntoActor(uint8_t* base, uint32_t pm) {
+  if (!REXCVAR_GET(cod3_debug_move_touch_steer) || !ValidGuest(pm)) return;
+  const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
+  if (!ValidGuest(ps)) return;
+  float from[3], at[3] = {}, d = -1.0f, dz = 0.0f;
+  for (int k = 0; k < 3; ++k) from[k] = g::ReadF32(base, ps + P.ps.origin + 4 * k);
+  if (NearestActor(base, g_touch_player, from, &d, &dz, at) == 0 || d > 2000.0f) return;
+  const float yaw = g::ReadF32(base, ps + P.ps.view_angles + 4) * (3.14159265f / 180.0f);
+  const float rel = std::atan2(at[1] - from[1], at[0] - from[0]) - yaw;
+  const auto key = [](float v) {
+    return static_cast<uint8_t>(static_cast<int8_t>(std::lround(std::clamp(v, -127.0f, 127.0f))));
+  };
+  g::WriteU8(base, Cmd(pm) + P.cmd.forwardmove, key(127.0f * std::cos(rel)));
+  g::WriteU8(base, Cmd(pm) + P.cmd.rightmove, key(-127.0f * std::sin(rel)));
+}
+}  // namespace
+
+REX_EXTERN(__imp__sub_823D0FE8);
+REX_HOOK_RAW(sub_823D0FE8) {
+  if (static_cast<uint32_t>(ctx.lr) != kAreaTouchReturn) {
+    __imp__sub_823D0FE8(ctx, base);
+    return;
+  }
+  const int runs = TouchRuns();
+  NoteAreaTouch(base, ctx.r3.u32, runs);
+  RunTimes(ctx, runs, [&] { __imp__sub_823D0FE8(ctx, base); });
+}
+
+REX_EXTERN(__imp__sub_825459B8);
+REX_HOOK_RAW(sub_825459B8) {
+  if (static_cast<uint32_t>(ctx.lr) != kTouchListReturn) {
+    __imp__sub_825459B8(ctx, base);
+    return;
+  }
+  const int runs = TouchRuns();
+  g_cmd_steps = -1;  // used up (the next usercmd's Pmove sets it again)
+  NoteTouchList(static_cast<int32_t>(ctx.r4.u32), runs);
+  RunTimes(ctx, runs, [&] { __imp__sub_825459B8(ctx, base); });
+}
+// [acct2-ocr] end of the touches after the move
+
+// ===========================================================================
 // Server side
 // ===========================================================================
 
@@ -647,8 +864,10 @@ void WatchJump(uint8_t* base, uint32_t ps, int client, bool cod4_steps) {
 REX_EXTERN(__imp__sub_82496978);
 REX_HOOK_RAW(sub_82496978) {
   g_no_step = false;  // [claude-9b] set again below for a usercmd that runs no step
+  g_cmd_steps = -1;  // [acct2-ocr] 2026-11-05 set by RunHzSteps / RunCod4Steps
   cod3::protected_dvars::Tick();  // the test's pretend match (game/protected_dvars.h)
   const uint32_t pm = ctx.r3.u32;
+  SteerIntoActor(base, pm);  // [acct2-ocr] 2026-11-05 test only (cod3_debug_move_touch_steer)
   const uint32_t ps = ValidGuest(pm) ? g::ReadU32(base, pm + P.pmove.ps) : 0;
   if (!ValidGuest(ps)) {
     __imp__sub_82496978(ctx, base);
@@ -889,6 +1108,12 @@ REX_HOOK_RAW(sub_82483C20) {
     ++g_no_step_skips;
     return;
   }
+  // [acct2-ocr] 2026-11-05 the levitation fix (game/movement/stuck_fix.h): while levitation_fix is 1 (the
+  // match's, server_sided_protected) the characters, players and AI, are left out of its traces, so it frees the
+  // player from walls only and never lifts them out of another character. Every caller (r3 = the pmove_t).
+  const cod3::movement::stuck_fix::CharactersLeftOut characters_out(
+      base, ctx.r3.u32, cod3::movement::stuck_fix::kSpCharacters,
+      cod3::protected_dvars::Get(cod3::protected_dvars::Id::kLevitationFix) != 0);
   __imp__sub_82483C20(ctx, base);
 }
 
@@ -923,7 +1148,10 @@ bool StepViewOffset(uint8_t* base, uint32_t client, uint32_t cam, float out[3]) 
   // and landing offsets.
   const float ex = c[0] - h.to[0], ey = c[1] - h.to[1], ez = c[2] - h.to[2];
   if (ex * ex + ey * ey > 40.0f * 40.0f || ez < -24.0f || ez > 96.0f) return false;
-  const float into = static_cast<float>(h.now - h.step_end) / static_cast<float>(h.step_len);
+  // [acct2-cod3-motion] 2026-11-07 plus the part of a millisecond the game's clock hasn't counted yet
+  // (cod3_server_draw_subms, game/server_step.h): the camera moves by the real time between frames.
+  const float into = (static_cast<float>(h.now - h.step_end) + cod3::server_step::DrawTimeFraction()) /
+                     static_cast<float>(h.step_len);
   const float back = 1.0f - std::clamp(into, 0.0f, 1.0f);  // the part of the last step not due yet
   if (back <= 0.0f) return false;
   for (int i = 0; i < 3; ++i) out[i] = (h.from[i] - h.to[i]) * back;
@@ -936,9 +1164,10 @@ bool StepViewOffset(uint8_t* base, uint32_t client, uint32_t cam, float out[3]) 
   return true;
 }
 
-void SmoothView(uint8_t* base) {
+// [acct2-ocr] 2026-11-07 true when it moved the camera (cod3_server_smooth_linked runs after it, server_step.h).
+bool SmoothView(uint8_t* base) {
   const uint32_t client = g::ReadU32(base, kActiveLocalClient);
-  if (client >= static_cast<uint32_t>(mv::PlayerPreferences::kMaxClients)) return;
+  if (client >= static_cast<uint32_t>(mv::PlayerPreferences::kMaxClients)) return false;
   const uint32_t cam = kCgBase + client * kCgSize + kCgRefdefOrigin;
   float off[3];
   // [claude-9b-think] 2026-10-27 UNTESTED On a ridden vehicle in first person: on the vehicle as it is drawn
@@ -948,13 +1177,14 @@ void SmoothView(uint8_t* base) {
   for (int i = 0; i < 3; ++i) c[i] = g::ReadF32(base, cam + 4 * i);
   const int ride = cod3::server_step::RideViewOffset(base, c, off);
   if (ride < 0) {
-    if (!cod3::server_step::PlayerViewOffset(base, off)) return;
+    if (!cod3::server_step::PlayerViewOffset(base, off)) return false;
   } else if (ride == 0) {
     // Walking: the movement steps. Carried by a vehicle (moved in the game's updates, not by the
     // movement): the same smoothing as the vehicle is drawn with (game/server_step.h).
-    if (!StepViewOffset(base, client, cam, off) && !cod3::server_step::PlayerViewOffset(base, off)) return;
+    if (!StepViewOffset(base, client, cam, off) && !cod3::server_step::PlayerViewOffset(base, off)) return false;
   }
   for (int i = 0; i < 3; ++i) g::WriteF32(base, cam + 4 * i, c[i] + off[i]);
+  return off[0] != 0.0f || off[1] != 0.0f || off[2] != 0.0f;  // [acct2-ocr]
 }
 
 // [claude-9b] 2026-10-27 The rest of what the drawn frame reads from the playerState in steps (owner 10:13: "the ADS
@@ -990,7 +1220,9 @@ float StepBack(uint8_t* base, uint32_t client, const HzSteps** out) {
   float now[3];
   ReadOrigin(base, h.ps, now);
   if (now[0] != h.to[0] || now[1] != h.to[1] || now[2] != h.to[2]) return 0.0f;  // moved since the step
-  const float into = static_cast<float>(h.now - h.step_end) / static_cast<float>(h.step_len);
+  // [acct2-cod3-motion] 2026-11-07 the same part of a millisecond as StepViewOffset (cod3_server_draw_subms)
+  const float into = (static_cast<float>(h.now - h.step_end) + cod3::server_step::DrawTimeFraction()) /
+                     static_cast<float>(h.step_len);
   *out = &h;
   return 1.0f - std::clamp(into, 0.0f, 1.0f);
 }
@@ -1049,7 +1281,8 @@ REX_EXTERN(__imp__CG_CalcViewValues);
 REX_HOOK_RAW(CG_CalcViewValues) {
   BeginDrawnStepValues(base);  // [claude-9b]
   __imp__CG_CalcViewValues(ctx, base);
-  SmoothView(base);
+  const bool moved = SmoothView(base);  // [acct2-ocr] whether it moved the camera
+  cod3::server_step::SmoothLinkedCamera(base, moved);  // [acct2-ocr] cod3_server_smooth_linked
 }
 
 // [claude-9b] 2026-10-27 0x824345D8: the bob's phase (cg +5804, from the bob cycle byte) and speed (cg +5808, from the

@@ -38,6 +38,7 @@ bool MultiplayerAvailable() {
 // machine counts as the host and an announcement is shown here only.
 bool IsMatchRunning() { return false; }
 bool IsHost() { return true; }
+bool IsLocalOnlyMatch() { return false; }  // [acct2-ocr] 2026-11-07: no match in the campaign
 void Announce(const std::string& text) {
   REXLOG_INFO("cod3: announcement: {}", text);
   hud::AnnouncementFeed::Push(text);

@@ -58,6 +58,7 @@
     F(vkDestroyInstance) \
     F(vkEnumeratePhysicalDevices) \
     F(vkGetPhysicalDeviceProperties) \
+    F(vkGetPhysicalDeviceFeatures)  /* [acct2-bro] 2026-11-12: has the GPU samplerAnisotropy (make_device) */ \
     F(vkGetPhysicalDeviceQueueFamilyProperties) \
     F(vkGetPhysicalDeviceMemoryProperties) \
     F(vkGetPhysicalDeviceFormatProperties) \

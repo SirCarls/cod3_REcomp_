@@ -15,10 +15,12 @@
 #include "cod3_render.h"
 #endif
 
+// [f2-menus] 2026-11-11 08:32 the description only (the owner, 08:15 and 08:31: no Rust renderer named in F2; the
+// native renderer is the Vulkan one, cod3_native_vulkan, F2 > EMULATION > GPU). Name, values and default unchanged.
 REXCVAR_DEFINE_STRING(cod3_renderer, "xenos", "cod3/Display",
-                      "Who draws: \"xenos\", the emulated Xbox 360 GPU, or \"rust\", the Rust "
-                      "renderer (in development): the GPU emulation is off and every draw goes to "
-                      "it. It doesn't draw yet, so the picture stays black")
+                      "Retired setting: leave it at \"xenos\", the emulated Xbox 360 GPU. The native renderer is "
+                      "the Vulkan one: F2 > Emulation > GPU > Native renderer (Vulkan), the setting "
+                      "cod3_native_vulkan")
     .allowed({"xenos", "rust"})
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -54,8 +56,10 @@ RrHostApi MakeHostApi() {
 bool LibraryMatches() {
   const uint32_t library_abi = rr_abi_version();
   if (library_abi == RR_ABI_VERSION) return true;
-  REXLOG_ERROR("cod3: Rust renderer library {} speaks ABI {}, this game ABI {}; not used", rr_version(),
-               library_abi, RR_ABI_VERSION);
+  // [f2-menus] 2026-11-11 08:40 the log lines name no Rust renderer (the owner, 08:36: "mentionings of the graphical
+  // rust engine shouldn't be there. It is now vulkan and then dx12."); only their words changed.
+  REXLOG_ERROR("cod3: retired renderer library (cod3_render) {} speaks ABI {}, this game ABI {}; not used",
+               rr_version(), library_abi, RR_ABI_VERSION);
   return false;
 }
 
@@ -78,15 +82,15 @@ bool StartHostBackend(rex::RuntimeConfig& config) {
 #endif
   config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin, "host", table);
   if (!config.graphics) {
-    REXLOG_ERROR("cod3: renderer rust: the GPU plugin's host backend didn't load; the emulated GPU draws");
+    REXLOG_ERROR("cod3: cod3_renderer (retired): the GPU plugin's host backend didn't load; the emulated GPU draws");
     return false;
   }
   if (table)
-    REXLOG_INFO("cod3: renderer rust: the GPU emulation is off and the Rust renderer gets every draw "
-                "(it doesn't draw yet: the picture stays black)");
+    REXLOG_INFO("cod3: cod3_renderer (retired): the GPU emulation is off and the retired renderer library gets "
+                "every draw (it doesn't draw: the picture stays black; the native renderer is cod3_native_vulkan)");
   else
-    REXLOG_WARN("cod3: renderer rust: the GPU emulation is off, but this build has no Rust renderer, so "
-                "nothing draws (the picture stays black)");
+    REXLOG_WARN("cod3: cod3_renderer (retired): the GPU emulation is off, but this build has no renderer library "
+                "for it, so nothing draws (set cod3_renderer to xenos; the native renderer is cod3_native_vulkan)");
   return true;
 }
 
@@ -94,7 +98,8 @@ void ReportRustRenderer() {
 #if defined(COD3_HAS_RUST_RENDERER)
   if (!LibraryMatches()) return;
   if (g_host_renderer) {
-    REXLOG_INFO("cod3: Rust renderer library {} linked (ABI {}); the host backend hands it the game's "
+    REXLOG_INFO("cod3: retired renderer library (cod3_render) {} linked (ABI {}); the host backend hands it the "
+                "game's "
                 "GPU work",
                 rr_version(), RR_ABI_VERSION);
     return;
@@ -102,11 +107,11 @@ void ReportRustRenderer() {
   // Not in use: started and stopped once, to know it works.
   const RrHostApi host = MakeHostApi();
   RrRenderer* renderer = rr_create(&host);
-  REXLOG_INFO("cod3: Rust renderer library {} linked (ABI {}){}", rr_version(), RR_ABI_VERSION,
+  REXLOG_INFO("cod3: retired renderer library (cod3_render) {} linked (ABI {}){}", rr_version(), RR_ABI_VERSION,
               renderer ? "; not in use (cod3_renderer xenos)" : ", but it didn't start");
   rr_destroy(renderer);
 #else
-  REXLOG_INFO("cod3: Rust renderer library not in this build (the build found no Rust for its target)");
+  REXLOG_INFO("cod3: retired renderer library (cod3_render) not in this build");
 #endif
 }
 

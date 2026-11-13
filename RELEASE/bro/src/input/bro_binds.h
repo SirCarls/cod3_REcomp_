@@ -18,3 +18,6 @@ void bro_binds_poll(const void *keys, uint32_t mouse, int focused);
 
 /* Whether the aim action's keys are held now (the mouse's zoom sensitivity). */
 int bro_binds_aim_held(void);
+
+/* [f2-menus] 2026-11-11 Read the binds' settings again at the next poll (bro_pad.c, on the game's thread). */
+void bro_binds_reload(void);

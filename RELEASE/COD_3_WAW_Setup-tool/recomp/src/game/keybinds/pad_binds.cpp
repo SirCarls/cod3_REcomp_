@@ -6,6 +6,7 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#include <mutex>  // [f2-menus] 2026-11-11 SeatLayout
 #include <string>
 #include <string_view>
 #include <vector>
@@ -112,6 +113,12 @@ struct Player {
 std::array<Player, kPlayers> g_players;
 uint32_t g_poll = 0;
 
+// [f2-menus] 2026-11-11 a copy of each seat's layout for F2 (SeatLayout), taken at Sync.
+std::mutex g_seat_mutex;
+std::array<pad::Layout, kPlayers> g_seat_layout;
+std::array<std::array<std::string, pad::kButtonCount>, kPlayers> g_seat_text;
+std::array<bool, kPlayers> g_seat_have{};
+
 std::string SettingText(int player) {
   switch (player) {
     case 0: return REXCVAR_GET(cod3_binds_pad_p1);
@@ -175,6 +182,13 @@ void Sync(PPCContext& ctx, uint8_t* base, uint32_t cl, bool log) {
   }
   p.have_layout = true;
   const pad::Layout layout = LayoutActions(p);
+  {  // [f2-menus] 2026-11-11 the copy for F2 (SeatLayout)
+    std::lock_guard<std::mutex> lock(g_seat_mutex);
+    const int seat = PlayerOf(cl);
+    g_seat_layout[seat] = layout;
+    g_seat_text[seat] = p.layout;
+    g_seat_have[seat] = true;
+  }
   for (int b = 0; b < pad::kButtonCount; ++b) {
     const auto button = static_cast<pad::Button>(b);
     if (!pad::Changeable(button)) continue;
@@ -444,6 +458,17 @@ void AfterPoll(PPCContext& ctx, uint8_t* base) {
       }
     });
   }
+}
+
+// [f2-menus] 2026-11-11 (pad_binds.h)
+bool SeatLayout(int seat, pad::Layout* layout, std::string* layout_text) {
+  if (seat < 0 || seat >= kPlayers) return false;
+  std::lock_guard<std::mutex> lock(g_seat_mutex);
+  if (!g_seat_have[seat]) return false;
+  if (layout) *layout = g_seat_layout[seat];
+  if (layout_text)
+    for (int b = 0; b < pad::kButtonCount; ++b) layout_text[b] = g_seat_text[seat][b];
+  return true;
 }
 
 }  // namespace cod3::binds::padbinds

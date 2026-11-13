@@ -62,6 +62,16 @@ struct HudArea {
 };
 HudArea CurrentHudArea(const ImGuiIO& io);
 
+#if defined(COD3_MP)
+// [f2-menus] 2026-11-11 cod3mp: the language settings (Text, Voices, Console language, Text by kind) are the
+// campaign's too. cod3mp_app.cpp calls this once, after the campaign's cod3.toml was read (OnPostSetup). From then
+// on a change made in this program (F2, the game's Options) is written into cod3.toml as well, as the SDK writes
+// its lines, and cod3mp.toml is saved after it. When cod3.toml is the newer file, a language setting it has no line
+// for (the campaign's is back at the game's own) is put back here too. Nothing when cod3.toml isn't there.
+void ShareLanguageSettings(const std::filesystem::path& campaign_config, const std::filesystem::path& own_config,
+                           bool campaign_newer);
+#endif
+
 class HudOverlay : public rex::ui::ImGuiDialog {
  public:
   explicit HudOverlay(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
@@ -102,6 +112,7 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   void DrawGame();
   void DrawGamePrompts();  // [claude-9b-think] Game > Prompts
   void DrawSoundOutput();
+  void DrawSpeakerLayout();  // [acct2-decomp] what the sound is mixed for (SDK patch 0180)
   void DrawCrosshair();
   void DrawControls();
   // [claude-9b-think] CONTROLS' subtabs.

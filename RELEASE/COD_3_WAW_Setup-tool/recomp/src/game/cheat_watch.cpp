@@ -156,6 +156,29 @@ std::string CheatWatch::Reasons() {
   return out;
 }
 
+// [acct2-ocr] The watermark's list (cheat_watch.h): a cheat is on while it is
+// still in the set that keeps the mark up.
+std::vector<CheatWatch::Entry> CheatWatch::Entries() {
+  std::lock_guard lock(mutex_);
+  std::vector<Entry> out;
+  out.reserve(history_.size());
+  for (const auto& name : history_) {
+    if (name == kSvCheatsOneShot) continue;
+    out.push_back({name, toggles_.count(name) > 0 || one_shots_.count(name) > 0 || dvars_.count(name) > 0});
+  }
+  // cod3_debug_cheats: what the mark shows, logged when it changes (the
+  // screenshots are the game's own picture, without the mark).
+  if (REXCVAR_GET(cod3_debug_cheats)) {
+    std::string shown = cheats::Enabled() ? "Cheats enabled (green)" : "Cheats disabled (red)";
+    for (const auto& e : out) shown += "; " + e.name + (e.on ? " (green)" : " (red)");
+    if (shown != shown_) {
+      shown_ = shown;
+      REXLOG_INFO("cod3: watermark under CHEATS USED: {}", shown);
+    }
+  }
+  return out;
+}
+
 }  // namespace cod3
 
 // ---------------------------------------------------------------------------

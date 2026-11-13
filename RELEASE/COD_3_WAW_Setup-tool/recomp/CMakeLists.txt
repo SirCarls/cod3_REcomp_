@@ -36,6 +36,7 @@ set(COD3_SOURCES
     src/cod3_app.cpp
     src/game/aim_assist.cpp
     src/game/cutscene_skip.cpp
+    src/game/use_hold.cpp  # [acct2-decomp] how long Use is held, and the hints' words (cod3_use_hold_ms)
     src/game/diagnostics.cpp
     src/game/cheat_guard.cpp
     src/game/cheat_watch.cpp
@@ -54,6 +55,9 @@ set(COD3_SOURCES
     src/game/coronas.cpp  # [claude-9b] light coronas fade at the same speed at any frame rate (cod3_fix_corona_fade)
     src/game/muzzle_light.cpp  # [claude-9b-think] muzzle-flash lights held for a time, not one drawn frame (cod3_muzzle_light_ms)
     src/game/effects_debug.cpp  # [claude-9b] effects not loaded or not created (cod3_debug_effects; barrels)
+    src/game/missing_effects.cpp  # [acct2-main] debug only: effect events a level lacks, and how it defines some (cod3_debug_effects)
+    src/game/title_update_fixes.cpp  # [rexglue-native] title update 3's campaign fixes, redone on the disc code (cod3_tu_*; campaign only)
+    src/game/fx_timing.cpp  # [acct2-cod3-fx] the effects frame by frame (cod3_debug_fx_frames), smoke flicker
     src/game/fov.cpp
     src/game/frame_rate.cpp
     src/game/function_profiler.cpp  # [hw-scaling]
@@ -77,6 +81,7 @@ set(COD3_SOURCES
     src/game/menu_video_rows.cpp  # [menus-categories] the video rows, shared with cod3mp
     src/game/options_pages.cpp  # [menus-categories] which rows each Options category page has, both programs
     src/game/mouse_look.cpp
+    src/f2/f2_accel.cpp  # [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (the ports' shared file)
     src/game/movement/hooks_sp.cpp  # [movement] sprint and the CoD4 movement style (campaign only)
     src/game/movement/menu_movement.cpp  # [movement]
     src/game/movement/rules.cpp  # [movement]
@@ -104,6 +109,8 @@ set(COD3_SOURCES
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
     src/game/list_memory.cpp  # [claude-9b-think] the render lists' frame memory: room past its end, measured; scene nodes and the effects pool checked (both programs; cod3mp: mp/CMakeLists.txt, without the physical pages and the effects pool)
+    src/game/native_memory.cpp  # [memory-360] 2026-11-11 the game's memory past the Xbox 360's limits: a report (cod3_native_memory_report) and more streaming banks (cod3_native_stream_banks_extra), both off; both programs
+    src/game/native_memory_shadow.cpp  # [memory-360] 2026-11-11 stage 3's test: which arena-0 allocations reach the graphics side (cod3_native_memory_shadow, off; moves nothing); both programs
     src/game/script_fiber.cpp
     src/game/script_threads.cpp
     src/game/settings_sync.cpp
@@ -117,6 +124,9 @@ set(COD3_SOURCES
     src/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands (campaign only for now)
     src/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip)
     src/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, hip and aiming, per player
+    src/game/pad_settings.cpp  # [acct2-ocr] 2026-11-07 the controller settings as console settings
+    src/game/menu_controller.cpp  # [acct2-ocr] 2026-11-07 the pause menu's CONTROLLER page rows
+    src/game/menu_port_rows.cpp  # [acct2-ocr] 2026-11-07 the port's settings as the pause menu's Options rows
     src/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz, the match's aim assist rules
     src/game/voice_language.cpp  # [voice]
     src/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (campaign only)
@@ -134,6 +144,7 @@ set(COD3_SOURCES
     src/ui/dvar_domain.cpp
     src/ui/dvar_help.cpp
     src/ui/game_console.cpp
+    src/ui/f2_tour.cpp  # [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
     src/ui/hud_overlay.cpp
     src/ui/problem_log.cpp
     src/ui/qte_spinner.cpp
@@ -185,10 +196,12 @@ endif()
 # [rexglue-native] 2026-11-09: Windows too. ngl_vk opens the Vulkan loader when it starts, so it needs only the Vulkan
 # headers and glslc (which runs on the build PC). The Windows build made on Linux takes the headers from its
 # CMAKE_PREFIX_PATH, the SDK's install (rexglue-sdk/out/install/mingw/include/vulkan), never the build PC's own.
-# [rexglue-native] 2026-11-10 (2.40.0): Windows builds stay without ngl_vk for now (COD3_NGL_VK_WINDOWS=ON to try it):
-# the release candidate's Windows game drew the forest's world white under Wine (owner 13:20: "forest within wine
-# looks bad now"), so on Windows cod3_native_vulkan is still ignored, and said so in the log, until that is found.
-option(COD3_NGL_VK_WINDOWS "Build the native renderer (ngl_vk) into the Windows game too (not ready)" OFF)  # [rexglue-native]
+# [rexglue-native] 2026-11-10 (2.40.0): Windows builds were without ngl_vk: the release candidate's Windows game drew
+# the forest's world white under Wine (owner 13:20: "forest within wine looks bad now"; the guest's 0xE0000000 view
+# is 4 KB further on in the host on Windows, WIN-PORT.md). [rexglue-native] 2026-11-11 (2.41.0): found and fixed, so
+# Windows builds take ngl_vk again (the Windows probes w13/w14 drew the native picture under Wine on four levels).
+# cod3_native_vulkan stays off by default; COD3_NGL_VK_WINDOWS=OFF builds the Windows game without ngl_vk.
+option(COD3_NGL_VK_WINDOWS "Build the native renderer (ngl_vk) into the Windows game too" ON)  # [rexglue-native]
 if(_cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt" AND (NOT WIN32 OR COD3_NGL_VK_WINDOWS))  # [rexglue-native]
     if(CMAKE_CROSSCOMPILING)  # [rexglue-native]
         find_path(NGL_VK_VULKAN_INCLUDE_DIR vulkan/vulkan.h NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH  # [rexglue-native]

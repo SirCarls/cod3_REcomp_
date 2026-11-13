@@ -58,12 +58,14 @@
 #include "game/mp/menus_mp.h"
 #include "game/mp/session.h"
 #include "game/pc_menu.h"  // [mp-menus]
+#include "game/protected_dvars.h"  // [acct2-ocr] SetSaveHandler
 #include "game/button_prompts.h"  // [mp-menus]
 #include "game/relaunch.h"
 #include "game/render_resolution.h"
 #include "game/ngl_side.h"  // [acct2-bro] cod3_native_vulkan
 #include "game/screenshot.h"
 #include "game/text_language.h"  // [acct2-ocr]
+#include "game/voice_language.h"  // [acct2-ocr] Voices (the campaign's file, compiled in)
 #include "ui/text_overlay.h"  // [acct2-ocr]
 #include "game/ultrawide.h"
 #include "game/watchdog.h"
@@ -72,6 +74,7 @@
 #include "ui/problem_log.h"
 #include "ui/start_problem.h"  // [acct2-decomp] Windows: a start that fails says why
 #include "ui/theme.h"
+#include "ui/f2_tour.h"  // [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
 #include "util.h"
 #include "generated/codmp/cod3mp_init.h"
 
@@ -255,6 +258,7 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::text::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
+  cod3::voice::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);  // [acct2-ocr]
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
     paths.user_data_root = root / "userdata";
     paths.cache_root = root / "userdata" / "cache";
@@ -503,6 +507,10 @@ void Cod3MpApp::OnPostSetup() {
         campaign_userdata = cod3::Utf8ToPath(*chosen);
     cod3::mpcontrols::TakeCampaignCrosshair(campaign_userdata / "cod3_config.cfg");
   }
+  // [f2-menus] 2026-11-11 The language settings (Text, Voices, Console language, Text by kind) follow between the
+  // programs: a change made here goes into the campaign's cod3.toml too, and one put back to the game's own there
+  // is the game's own here (ui/hud_overlay.h ShareLanguageSettings; owner 14:00).
+  cod3::ui::ShareLanguageSettings(root_dir_ / "cod3.toml", config_path_, g_shared_settings_newer);
   cod3::ui::GameConsole::Get().SetUserDir(user_data_root());
   // While the console is open, or one of the windows wants the keyboard or
   // the mouse, the game gets no input.
@@ -532,6 +540,19 @@ void Cod3MpApp::OnPostSetup() {
   // (game/menu_video_rows.cpp, on the game thread): cod3mp.toml saved on the
   // UI thread like F2's Save, as the campaign does for its own pages.
   cod3::videomenu::SetSaveHandler([this]() {
+    app_context().CallInUIThreadDeferred([this]() {
+      try {
+        rex::cvar::SaveConfig(config_path_);
+      } catch (const std::exception& e) {
+        REXLOG_WARN("cod3mp: couldn't save {}: {}", cod3::PathToUtf8(config_path_), e.what());
+      }
+    });
+  });
+  // [acct2-ocr] 2026-11-07 The pause menu's CONTROLLER rows, a controller setting that follows the Options page and
+  // a split-screen player's own field of view (game/menu_controller.cpp, pad_settings.cpp, mp/options_mp.cpp) save
+  // through protected_dvars::SaveSettings, as in the campaign; cod3mp never set its handler, so they waited for
+  // the exit.
+  cod3::protected_dvars::SetSaveHandler([this]() {
     app_context().CallInUIThreadDeferred([this]() {
       try {
         rex::cvar::SaveConfig(config_path_);
@@ -617,6 +638,10 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     }
     // [keybinds] Keys held when an overlay or a game menu opens, or the window loses focus, are let go.
     cod3::binds::OnUiFrame();
+    // [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (ui/f2_tour.h): nothing unless
+    // cod3_debug_f2_tour is set; the window opens and closes outside the drawing (deferred), as its own [x] does.
+    cod3::ui::f2tour::Tick([this]() { app_context().CallInUIThreadDeferred([this]() { ToggleSettings(); }); },
+                           settings_ != nullptr);
   };
   // Above the ImGui drawer (z 64) so the toggle key never reaches a text box.
   window()->AddInputListener(&key_listener_, 200);

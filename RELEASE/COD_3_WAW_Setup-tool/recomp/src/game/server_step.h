@@ -20,6 +20,17 @@ bool PlayerViewOffset(uint8_t* base, float out[3]);
 // Game thread only, after 0x824505E8.
 int RideViewOffset(uint8_t* base, const float cam[3], float out[3]);
 
+// [acct2-ocr] 2026-11-07 (cod3_server_smooth_linked) After SmoothView (movement/hooks_sp.cpp), `moved`: whether it
+// moved the camera. In the setting's camera modes, while the player rides no vehicle and SmoothView moved nothing,
+// the camera's place is drawn between its places at the last two updates (a player linked to something the game moves
+// in its updates, which the movement steps don't move). Game thread only, after CG_CalcViewValues.
+void SmoothLinkedCamera(uint8_t* base, bool moved);
+
+// [acct2-cod3-motion] 2026-11-07 (cod3_server_draw_subms) The part of a millisecond (-1 to 1) the game's clock hasn't
+// counted this frame: the real time since the clock started, less the game's whole milliseconds; 0 when the setting is
+// off. For drawing between fixed steps only (add it to a time on the game's clock); never for game time.
+float DrawTimeFraction();
+
 // [claude-9b-think] 2026-10-27 UNTESTED True while the player rides a vehicle and cod3_server_smooth_ride is on.
 bool PlayerRides(uint8_t* base);
 

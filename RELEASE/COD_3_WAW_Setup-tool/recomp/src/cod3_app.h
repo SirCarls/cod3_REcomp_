@@ -31,10 +31,12 @@ class ConsoleKeyListener : public rex::ui::WindowInputListener {
       cod3::CutsceneSkip::Get().SkipKeyDown(key);
     cod3::CutsceneSkip::Get().AnyInput();
     if (e.virtual_key() == rex::ui::VirtualKey::kOem3) {  // ` and ~ on US layouts
-      if (on_toggle) on_toggle(e.is_shift_pressed());
+      // [rexglue-native-f2] 2026-11-11 f2k1 a held key repeats (prev_state): toggle once, on the first press, as
+      // cod3mp and the other ports do (a held F2 or ~ opened and closed its window on every repeat).
+      if (on_toggle && !e.prev_state()) on_toggle(e.is_shift_pressed());
       e.set_handled(true);
     } else if (e.virtual_key() == rex::ui::VirtualKey::kF2) {
-      if (on_settings) on_settings();
+      if (on_settings && !e.prev_state()) on_settings();  // [rexglue-native-f2] 2026-11-11 f2k1 once a press
       e.set_handled(true);
     } else if (e.virtual_key() == rex::ui::VirtualKey::kEscape &&
                cod3::ui::GameConsole::IsOpen()) {

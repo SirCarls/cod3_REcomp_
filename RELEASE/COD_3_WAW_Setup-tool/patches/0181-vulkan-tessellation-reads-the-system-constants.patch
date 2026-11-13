@@ -1,0 +1,18 @@
+diff --git a/src/graphics/vulkan/pipeline_cache.cpp b/src/graphics/vulkan/pipeline_cache.cpp
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -134,7 +134,13 @@
+ 
+ std::string GetTessellationSystemConstantsBlockGlsl() {
+   std::string source;
+-  source += "layout(set = 0, binding = 0, std140) uniform XeSystemConstants {\n";
++  // The system constants: binding kConstantBufferSystem of the constants set, as the translated
++  // shaders have them. Set 0 binding 0 is the shared memory buffer; read from there, the index
++  // range and the tessellation factor were guest memory, not the draw's, and no tessellated draw
++  // drew anything (CoD3's camouflage nets).
++  source += fmt::format("layout(set = {}, binding = {}, std140) uniform XeSystemConstants {{\n",
++                        uint32_t(SpirvShaderTranslator::kDescriptorSetConstants),
++                        uint32_t(SpirvShaderTranslator::kConstantBufferSystem));
+   source += fmt::format("  layout(offset = {}) uint xe_vertex_index_endian;\n",
+                         offsetof(SpirvShaderTranslator::SystemConstants, vertex_index_endian));
+   source += fmt::format("  layout(offset = {}) int xe_vertex_base_index;\n",

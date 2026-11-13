@@ -6,7 +6,7 @@
 //
 // One record a draw (at the draw 0x82368310, arguments r3, before the game's own code runs):
 //   - the draw's arguments: from the tess buffers when their first word is 0 (an "UP" draw: the tess
-//     buffers' vertex and index counts 0x83CF88B4 / 0x83CF88C4), else indexed (+0xC the triangle count,
+//     buffers' vertex and index counts 0x83CF88B8 / 0x83CF88B4), else indexed (+0xC the triangle count,
 //     +0x10 and +0x14 the index and vertex ranges);
 //   - the tess state: technique type 0x83CF88A4, material 0x83CF88A0, and the pass "RB_SetupPass"
 //     0x82368C40 last set up (the census keeps it);
@@ -24,6 +24,12 @@
 // N1 is done when Moscow gives 355-413 records a frame (the census's passes), each with shaders, a
 // declaration, a stream, indices and a target. The hooks are the census's (one hook a guest function);
 // they call CaptureDraw and CaptureFrameEnd. Addresses from the decompile (dev/waw-decomp/cod2_360/sp).
+//
+// [waw-decomp] 2026-11-09, step N2 (the struct map) for the draws from the tess buffers: N1 found they have no index
+// buffer and stream 0 is unset or stale for them, because they don't use either. The draw hands them to 0x820A6F30,
+// an "UP" draw that copies vertices and indices into the ring itself: the vertices from the tess buffers' start
+// 0x83CE8880 (first vertex args + 4, count args + 8, stride args + 0x10), the 16-bit indices from the pointer at
+// 0x83CF8894 (the tess state's +0x10014), 3 x the triangle count of them. Each such record keeps those now.
 
 #include "game/native_capture.h"
 
@@ -55,8 +61,15 @@ namespace {
 
 constexpr uint32_t kTessMaterial = 0x83CF88A0u;       // the tess state's material
 constexpr uint32_t kTessTechniqueType = 0x83CF88A4u;  // and technique type
-constexpr uint32_t kTessVertexCount = 0x83CF88B4u;    // the tess buffers' vertices
-constexpr uint32_t kTessIndexCount = 0x83CF88C4u;     // and indices
+// [waw-decomp] 2026-11-10: the stretch pic 0x82371C00 writes its vertices at 0x83CE8880 + 0x40 x the word at 0x83CF88B8
+// and its indices (that word + 0, 1, 2, 3) at the index pointer + 2 x the word at 0x83CF88B4, flushing past 0x400 and
+// 0x800 of them: so 0x83CF88B8 is the vertex count and 0x83CF88B4 the index count (this file had 0x83CF88B4 and
+// 0x83CF88C4; N1's "1,488 tess vertices" for 496 triangles were the indices). 0x83CF88C4 is another word the render
+// commands test before they flush (0x8236DFB8), not known yet.
+constexpr uint32_t kTessVertexCount = 0x83CF88B8u;    // the tess buffers' vertices
+constexpr uint32_t kTessIndexCount = 0x83CF88B4u;     // and indices
+constexpr uint32_t kTessVertices = 0x83CE8880u;       // the tess buffers' vertices (the tess state is 0x10000 on)
+constexpr uint32_t kTessIndexPointer = 0x83CF8894u;   // the indices an "UP" draw copies (the state's +0x10014)
 constexpr uint32_t kIndexCache = 0x83D314C8u;         // the index buffer bound (0x82364E88)
 constexpr uint32_t kStreamCache = 0x83D314CCu;        // + 12 x stream: buffer, offset, stride (0x82364DC8)
 constexpr uint32_t kTextureCache = 0x83D314FCu;       // + 4 x slot: the texture bound (0x82364F68)
@@ -94,6 +107,13 @@ struct DrawRecord {
   uint32_t vertex_range = 0;        // args + 0x14 (indexed draws)
   uint32_t tess_vertices = 0;       // the tess buffers' counts (draws from them)
   uint32_t tess_indices = 0;
+  // N2, draws from the tess buffers: what the draw hands to the "UP" draw 0x820A6F30.
+  uint32_t up_vertices = 0;         // kTessVertices + first vertex x stride
+  uint32_t up_first_vertex = 0;     // args + 4
+  uint32_t up_vertex_count = 0;     // args + 8
+  uint32_t up_stride = 0;           // args + 0x10
+  uint32_t up_indices = 0;          // the pointer at kTessIndexPointer: 16-bit indices
+  uint32_t up_index_count = 0;      // 3 x the triangle count
   uint32_t technique_type = 0;
   uint32_t material = 0;
   uint32_t pass = 0;
@@ -202,16 +222,23 @@ std::string RecordText(const Frame& frame, size_t i) {
     std::snprintf(one, sizeof one, " %zu:%08X", t, d.textures[t]);
     textures += one;
   }
-  char text[512];
+  char vertices[192];
+  if (d.from_tess) {
+    std::snprintf(vertices, sizeof vertices, "UP vertices %08X (first %u, %u of stride %u), indices %08X (%u)",
+                  d.up_vertices, d.up_first_vertex, d.up_vertex_count, d.up_stride, d.up_indices, d.up_index_count);
+  } else {
+    std::snprintf(vertices, sizeof vertices, "stream 0 %08X +%u stride %u, stream 1 %08X; index buffer %08X",
+                  d.streams[0].buffer, d.streams[0].offset, d.streams[0].stride, d.streams[1].buffer, d.index_buffer);
+  }
+  char text[768];
   std::snprintf(text, sizeof text,
                 "draw %zu: %s, %u triangles, %s %u/%u; technique type %u, material %08X, pass %08X; vertex shader "
-                "%08X, pixel shader %08X, declaration %08X; stream 0 %08X +%u stride %u, stream 1 %08X; index buffer "
-                "%08X; state %08X %08X %08X; target %u; %u constants; textures%s",
+                "%08X, pixel shader %08X, declaration %08X; %s; state %08X %08X %08X; target %u; %u constants; "
+                "textures%s",
                 i, d.from_tess ? "from the tess buffers" : "indexed", d.triangles,
                 d.from_tess ? "tess vertices/indices" : "index/vertex ranges",
                 d.from_tess ? d.tess_vertices : d.index_range, d.from_tess ? d.tess_indices : d.vertex_range,
-                d.technique_type, d.material, d.pass, d.vertex_shader, d.pixel_shader, d.declaration,
-                d.streams[0].buffer, d.streams[0].offset, d.streams[0].stride, d.streams[1].buffer, d.index_buffer,
+                d.technique_type, d.material, d.pass, d.vertex_shader, d.pixel_shader, d.declaration, vertices,
                 d.state[0], d.state[1], d.state[2], d.target, d.constant_count,
                 textures.empty() ? " none" : textures.c_str());
   return text;
@@ -219,9 +246,11 @@ std::string RecordText(const Frame& frame, size_t i) {
 
 void LogSummary(const Frame& frame) {
   size_t from_tess = 0, shaders = 0, declarations = 0, stream0 = 0, indices = 0, targets = 0, textures = 0;
+  size_t up_complete = 0;  // tess draws with UP vertices (a count and a stride) and an index pointer
   std::vector<uint32_t> vs, ps, decls, materials, target_ids;
   for (const DrawRecord& d : frame.draws) {
     from_tess += d.from_tess;
+    up_complete += d.from_tess && d.up_vertex_count != 0 && d.up_stride != 0 && IsGuestData(d.up_indices);
     shaders += d.vertex_shader != 0 && d.pixel_shader != 0;
     declarations += d.declaration != 0;
     stream0 += d.streams[0].buffer != 0;
@@ -240,10 +269,11 @@ void LogSummary(const Frame& frame) {
       "cod2: native capture: frame {}: {} draws ({} from the tess buffers, {} indexed), {} dropped; with both shaders "
       "{}, a declaration {}, stream 0 {}, indices {} (the index buffer when indexed, tess indices otherwise), a "
       "target {}; {:.1f} textures and {:.1f} constants a draw; distinct: {} vertex shaders, {} pixel shaders, {} "
-      "declarations, {} materials, {} targets; calls from another thread so far: {}",
+      "declarations, {} materials, {} targets; calls from another thread so far: {}; tess draws with UP vertices, "
+      "stride and indices: {}",
       frame.number, n, from_tess, n - from_tess, frame.dropped, shaders, declarations, stream0, indices, targets,
       double(textures) * per, double(frame.constants.size()) * per, Distinct(vs), Distinct(ps), Distinct(decls),
-      Distinct(materials), Distinct(target_ids), g_other_thread.load(std::memory_order_relaxed));
+      Distinct(materials), Distinct(target_ids), g_other_thread.load(std::memory_order_relaxed), up_complete);
   if (n > 0) {
     REXLOG_INFO("cod2: native capture: {}", RecordText(frame, 0));
     REXLOG_INFO("cod2: native capture: {}", RecordText(frame, n / 2));
@@ -272,6 +302,12 @@ void CaptureDraw(const uint8_t* base, uint32_t args, uint32_t pass) {
   if (d.from_tess) {
     d.tess_vertices = LoadU32(base, kTessVertexCount);
     d.tess_indices = LoadU32(base, kTessIndexCount);
+    d.up_first_vertex = LoadU32(base, args + 0x4u);
+    d.up_vertex_count = LoadU32(base, args + 0x8u);
+    d.up_stride = LoadU32(base, args + 0x10u);
+    d.up_vertices = kTessVertices + d.up_first_vertex * d.up_stride;
+    d.up_indices = LoadU32(base, kTessIndexPointer);
+    d.up_index_count = 3u * d.triangles;
   } else {
     d.index_range = LoadU32(base, args + 0x10u);
     d.vertex_range = LoadU32(base, args + 0x14u);

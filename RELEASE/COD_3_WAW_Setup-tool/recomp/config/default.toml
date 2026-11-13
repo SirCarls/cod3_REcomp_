@@ -224,3 +224,15 @@ registers = ["r3", "r29", "base"]
 address = 0x8211ABF4
 name = "Cod3SoundStallCheck"
 registers = ["r31", "base"]
+
+# ---------------------------------------------------------------------------
+# [acct2-decomp] How long Use is held (src/game/use_hold.cpp). The server's
+# hold check 0x8254A460 (picking up a weapon or ammo, manning a gun, getting
+# into a vehicle) loads g_useholdtime's integer (its vmCvar 0x829B7AB0 + 12)
+# into r11 at 0x8254A4F4 and compares it with level.time - useHoldTime here;
+# the hook puts cod3_use_hold_ms in r11 when that is 0 or more (0: a press).
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x8254A4F8
+name = "Cod3UseHoldTime"
+registers = ["r11"]

@@ -9,8 +9,10 @@ docs/TEXTURE_REPLACEMENT.md has the rules for the pictures.
 How it works:
 - The player saves PNGs named like the ripped pictures they replace
   (data/cod3/textures/<file>.png) in <output>/data/cod3/user_textures_png/.
-- "Build user texture pack" (Textures page), or the build's step after the HD
-  texture pack, runs `rip cod3-user-pack`: it checks every PNG (8-bit RGBA,
+- "Build texture pack" (Textures page), or the build's step after the HD
+  texture pack, runs `rip cod3-user-pack` (first making or taking back the
+  built-in censor's pictures for its saved choice, c3w/censor_builtin.py
+  [acct2-decomp]): it checks every PNG (8-bit RGBA,
   RGB or gray, the original's aspect ratio, sides multiples of 4 for the
   compressed formats, at most 8192, never more see-through than the
   original) and writes <output>/data/cod3/user_textures/ (DDS files and
@@ -27,6 +29,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time  # [rexglue-native-settings] 2026-11-11 the built stamp (mark_built)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -38,6 +41,12 @@ PNG_DIR_NAME = "user_textures_png"
 PACK_NAME = "user_textures"
 PACK_INDEX = "index.tsv"
 LIST_NAME = "insignia_textures.txt"
+# [rexglue-native-settings] 2026-11-11 (owner 07:33 "insignia censoring doesn't work"): the built-in censor's choice
+# and the player's own pictures reach the game only through this pack, and only "Build texture pack" or a full build
+# made it, so ticking the censor box and pressing Play changed nothing in the game. Play now asks pack_out_of_date()
+# and builds the pack first. build() writes this stamp in <output>/data/cod3/ each time it has run, so a build that
+# leaves index.tsv as it was (the ripper rewrites it only when it changes) still counts as up to date.
+BUILT_STAMP = ".user_textures_built"
 
 
 def list_path(tool_root: Path) -> Path:
@@ -107,7 +116,8 @@ def user_pictures(data_dir: Path) -> List[Path]:
 def replaced_names(data_dir: Path) -> set:
     """The picture names the player replaces: the HD pack's upscaler leaves
     those alone (the user pack wins in the game anyway)."""
-    return {p.stem for p in user_pictures(data_dir)}
+    from . import censor_builtin  # [acct2-decomp] the built-in censor's pictures are painted from the HD copies
+    return {p.stem for p in user_pictures(data_dir)} - censor_builtin.made_names(data_dir)
 
 
 def prepare_folder(data_dir: Path, tool_root: Path) -> Path:
@@ -134,6 +144,48 @@ def pack_keys(data_dir: Path) -> int:
     return sum(1 for line in text.splitlines() if line and not line.startswith("#"))
 
 
+def mark_built(data_dir: Path) -> None:
+    """[rexglue-native-settings] 2026-11-11 Notes that the pack was just built (BUILT_STAMP, the time in it is only for
+    people reading the folder), so pack_out_of_date() knows the choices made before now are in it."""
+    try:
+        (Path(data_dir) / BUILT_STAMP).write_text(time.strftime("%Y-%m-%d %H:%M:%S\n"), encoding="utf-8")
+    except OSError:
+        pass   # then Play builds the pack again next time: slower, never wrong
+
+
+def pack_out_of_date(data_dir: Path) -> Optional[str]:
+    """[rexglue-native-settings] 2026-11-11 Why the user texture pack should be built before the game starts, in a few
+    words for the log, or None when it is up to date or there is nothing to build: the built-in censor's saved choice
+    (censor_builtin.json) or the player's pictures (user_textures_png) changed after the last build, or nothing was
+    built yet while one of them asks for a pack."""
+    data_dir = Path(data_dir)
+    from . import censor_builtin  # here: censor_builtin imports this module
+    pictures = user_pictures(data_dir)
+    try:
+        stamp = (data_dir / BUILT_STAMP).stat().st_mtime
+    except OSError:
+        stamp = None
+    if stamp is None:   # never built by this version of the tool
+        if censor_builtin.load_settings(data_dir).on:
+            return "the insignia censor is on and the texture pack hasn't been built for it yet"
+        if pictures:
+            return f"{len(pictures)} picture(s) of your own and no texture pack built for them yet"
+        return None
+    changed = []
+    try:
+        if censor_builtin.settings_path(data_dir).stat().st_mtime > stamp:
+            changed.append("the insignia censor's choice")
+    except OSError:
+        pass   # no saved choice: nothing of the censor to apply
+    try:
+        # the folder's own time changes when a picture is added, renamed or removed
+        if png_dir(data_dir).stat().st_mtime > stamp or any(p.stat().st_mtime > stamp for p in pictures):
+            changed.append("your own pictures")
+    except OSError:
+        pass
+    return (" and ".join(changed) + " changed since the texture pack was built") if changed else None
+
+
 def _progress(log: Log) -> Callable[[str], None]:
     """`rip cod3-user-pack` output: "n/total" lines become progress, the rest
     (skips with their reasons, what was packed, the summary) goes to the log."""
@@ -158,6 +210,11 @@ def build(rip: Path, data_dir: Path, tool_root: Path, jobs: int, runner: Runner,
     if not (textures / "hd_keys.tsv").is_file():
         raise SetupError(f"No ripped textures with hd_keys.tsv in {textures}: build (rip the game) first.")
     folder = prepare_folder(data_dir, tool_root)
+    from . import censor_builtin  # [acct2-decomp] the built-in censor's pictures, made or taken back first
+    try:
+        censor_builtin.refresh(data_dir, tool_root, log, getattr(runner, "cancel", None))
+    except (SetupError, OSError) as e:
+        log.warn(f"The built-in censor's pictures weren't updated: {e}")
     pictures = user_pictures(data_dir)
     pack = pack_dir(data_dir)
     cmd = [rip, "cod3-user-pack", textures, folder, pack, "--jobs", str(max(1, jobs))]
@@ -166,6 +223,7 @@ def build(rip: Path, data_dir: Path, tool_root: Path, jobs: int, runner: Runner,
     if not pictures and not (pack / PACK_INDEX).exists():
         log.info(f"No pictures in {folder}, so there is no user texture pack. Save PNGs named like the "
                  f"ripped textures there ({LIST_NAME} lists the insignia), then build it.")
+        mark_built(data_dir)   # [rexglue-native-settings] 2026-11-11 nothing to pack is up to date too
         return 0
     log.info(f"Building the user texture pack from {len(pictures)} picture(s) in {folder} into {pack}...")
     rc = runner.run(cmd, quiet=True, check=False, line_filter=_progress(log))
@@ -174,6 +232,7 @@ def build(rip: Path, data_dir: Path, tool_root: Path, jobs: int, runner: Runner,
                          "are above). If it says the command is unknown, the ripper in tools/ is older: "
                          "build again.")
     keys = pack_keys(data_dir)
+    mark_built(data_dir)   # [rexglue-native-settings] 2026-11-11 for pack_out_of_date (Play)
     if keys:
         log.info(f"User texture pack ready: {keys} texture(s) in {pack}. The game uses it from its next start "
                  "(it wins over the HD textures); in a multiplayer match only the world insignia are used.")

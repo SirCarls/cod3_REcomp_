@@ -38,6 +38,7 @@ from .gui_log import LogPage
 from .gui_pages import Pages, clean_path_text  # [acct2-decomp] clean_path_text
 from .gui_updates import Updates  # [updater] the setup tool's own update checks
 from .gui_addons import Addons  # [acct2-decomp] map packs (and later mods) on Set up
+from . import disc_needs  # [acct2-decomp] what each disc gives
 from . import build_needs  # [acct2-decomp] what the build needs on this PC, kept up to date on Set up
 from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline
 from .widgets import ScrollFrame, px, section, hint, tip  # noqa: F401 - ScrollFrame/px kept importable from gui
@@ -141,6 +142,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
         # Discs and downloads put in the input folder are found by themselves.
         self.input_dir = common.default_input_dir()
         in_input = inputs.scan(self.input_dir, KNOWN_XEX)
+        self._input_cod3 = dict(in_input.cod3_discs)   # [acct2-decomp] every Call of Duty 3 disc there
 
         self.v_iso = tk.StringVar(value=s.get("cod3_source") or (str(in_input.cod3_iso) if in_input.cod3_iso else ""))
         if "waw_steam" not in s and s.get("waw_source"):
@@ -824,7 +826,9 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
             ("Folder...", lambda: self._pick_dir(self.v_iso, "Folder extracted from the CoD3 disc"),
              "Pick a folder you already extracted the disc to.")],
             tooltip="Your Call of Duty 3 Xbox 360 disc image: USA/Europe, Germany, or Europe "
-                    "(French, Spanish, Italian).")  # [acct2-decomp] KNOWN_XEX has all three
+                    "(French, Spanish, Italian). All three build the campaign; only the USA/Europe disc has the "
+                    "multiplayer program the recomp knows. The Japanese disc can't be built. Other discs add "
+                    "voices and the censored campaign on the Play page.")  # [acct2-decomp] KNOWN_XEX has all three
         self.lbl_iso_status = hint(d, var=self.v_iso_status)
         self.lbl_iso_status.grid(row=1, column=1, columnspan=2, sticky="w")
         hint(d, "Tip: put your disc images and downloads in the input folder and they're found by "
@@ -995,6 +999,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
         def work():
             path = Path(p)
             ok = False
+            sha = None
             try:
                 if path.is_dir():
                     xex = path / "default.xex"
@@ -1003,15 +1008,19 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
                     else:
                         sha = common.sha1_file(xex)   # [acct2-decomp] read once
                         ok = sha in KNOWN_XEX
-                        msg = KNOWN_XEX.get(sha, "Unknown CoD3 version (default.xex differs)")
+                        msg = KNOWN_XEX.get(sha, disc_needs.unknown_name(sha, "Unknown CoD3 version (default.xex "
+                                                                               "differs)"))
                 elif path.is_file():
                     with XisoImage(path) as img:
                         sha = hashlib.sha1(img.read("default.xex")).hexdigest()
                         ok = sha in KNOWN_XEX
-                        msg = KNOWN_XEX.get(sha, "Unknown game / version") + \
+                        msg = KNOWN_XEX.get(sha, disc_needs.unknown_name(sha, "Unknown game / version")) + \
                             f" - {len(img.files)} files, {common.human(img.total_size)}"
                 else:
                     msg = "Not found."
+                # [acct2-decomp] what this disc gives (multiplayer only from the USA/Europe one), and what
+                # the other discs in the input folder are for
+                msg += disc_needs.setup_note(sha, getattr(self, "_input_cod3", {}))
             except (SetupError, OSError) as e:
                 msg = str(e)
             except Exception as e:  # noqa: BLE001 [acct2-decomp] a damaged image: say so, never keep an old status

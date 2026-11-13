@@ -122,4 +122,22 @@ inline std::vector<Registration> PlanBank(const std::string& path, uint32_t slot
   return same;
 }
 
+// [acct2-ocr] 2026-11-07 The files with `voice`'s speech for a bank the game registered as `path`, best first: the
+// speech of the voice's split pair (<dir>\sound\<name>.wfr ...: speech only, small), then the voice's whole bank
+// (<dir>\<name>.wde ...). voice_language.cpp loads one next to a bank that keeps playing (its sounds stay).
+inline std::vector<std::string> SpeechFilesFor(const std::string& path, int voice) {
+  using detail::Lower;
+  if (voice < 0 || voice >= kLanguages) return {};
+  const size_t cut = path.find_last_of('\\');
+  const std::string dir = cut == std::string::npos ? std::string() : path.substr(0, cut + 1);
+  const std::string file = cut == std::string::npos ? path : path.substr(cut + 1);
+  const size_t dot = file.find_last_of('.');
+  if (dot == std::string::npos) return {};
+  const std::string name = file.substr(0, dot);
+  const std::string ldir = Lower(dir);
+  const bool in_sound = ldir.size() >= 6 && ldir.compare(ldir.size() - 6, 6, "sound\\") == 0;
+  const std::string base_dir = in_sound ? dir.substr(0, dir.size() - 6) : dir;
+  return {base_dir + "sound\\" + name + kTagExt[voice], base_dir + name + kWholeExt[voice]};
+}
+
 }  // namespace cod3::voice

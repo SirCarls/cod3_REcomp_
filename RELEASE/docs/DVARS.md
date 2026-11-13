@@ -172,6 +172,53 @@ transport), so multiplayer keeps the game's own rule, each player's choice
 at the full pull, at the same fixed 60 a second. `cod3_debug_sticky_aim`
 logs once a second how many inputs the game made and how many pulls ran.
 
+## Controller
+
+[acct2-ocr] 2026-11-07 (owner: "make sure we get controller related DVARS in the game", "same cap for both",
+"a controller tab in every settings menu", "account for split-screen ... for everything"). The controller's
+settings in one place; all of them work in the ~ console by name, F2 > Controls > Controller has them for each
+player, and the pause menu has a CONTROLLER page (the campaign: Pause > Options' page buttons, last; cod3mp:
+Pause > OPTIONS > CONTROLLER, the game's own rows and two of these).
+
+The game's own pages stopped Horizontal Sensitivity at 37 and Vertical Sensitivity at 50 (the campaign's Options
+> Controls in its left / right, cod3mp's Pause > OPTIONS in its gauges). Both rows now go up to
+`cod3_pad_sensitivity_max` in both programs. The stick turns the view by the row x 0.04 (0 counts as 0.1) x the
+game's own `m_yaw` (sideways) or `m_pitch` (up and down), 0.7 each, x how far the stick is pushed, within the
+game's own turning limits (sideways it also speeds up while the stick is held fully over, as the game always
+did). So 100 turns twice as fast as 50. The game's `m_yaw` / `m_pitch` are the stick's; in the ~ console those
+names are World at War's mouse settings (the port's `cod3_m_yaw` / `cod3_m_pitch`), so the stick's speed is set
+with the two rows. `cl_yawspeed` / `cl_pitchspeed` (140) only turn with the +left / +right / +lookup / +lookdown
+keys. Settings saved before keep their values.
+
+Per player: player 1's settings have no suffix; cod3mp's split-screen players 2 to 4 have their own, ending in
+`_p2` .. `_p4` (`cod3_pad_invert_p2` ...). In cod3mp a player's are written into the controller profile that
+player's client uses. The field of view is per player the same way: `cod3_fov_p2` .. `_p4` and
+`cod3_fov_scale_p2` .. `_p4` (-1 = player 1's `cg_fov` / `cg_fovScale`), on that player's view only (F2 > Game >
+View, or the player's own Pause > OPTIONS > GAMEPLAY). So is the vehicle FOV scale: `cod3_vehicle_fov_scale_p2` ..
+`_p4` (-1 = player 1's `cod3_vehicle_fov_scale`), and the Use hold: `cod3_use_hold_ms_p2` .. `_p4` (-1 = player 1's
+`cod3_use_hold_ms`, -2 = the game's own hold, else milliseconds; each console runs its own players' Use). Every F2
+row and its setting: docs/F2_MENU.md. The port's settings
+that are rows of the game's own Options pages too (GAMEPLAY, CONTROLLER, AIM, AUDIO, INTERFACE):
+docs/GAMEPLAY_PATCHES.md 7.11.
+
+| setting | values (default) | what it does |
+|---|---|---|
+| `cod3_pad_sensitivity_max` | 37 to 100 (50) | The highest Horizontal and Vertical Sensitivity on the game's rows, both rows, every player. |
+| `cod3_pad_horizontal_sensitivity` (`_p2` .. `_p4`) | -1, 0 to the cap (-1) | The player's Horizontal Sensitivity. -1 leaves it to the Options page; set, it is the row's value (a change on the page becomes the setting's). |
+| `cod3_pad_vertical_sensitivity` (`_p2` .. `_p4`) | -1, 0 to the cap (-1) | The player's Vertical Sensitivity, the same way. |
+| `cod3_pad_invert` (`_p2` .. `_p4`) | -1, 0 / 1 (-1) | The player's Invert Aim with the controller, the same way (the mouse has its own, `input_invertPitch`). |
+| `cod3_pad_vibration` (`_p2` .. `_p4`) | -1, 0 / 1 (-1) | The player's Vibration, the same way. |
+| `cod3_deadzone_p1` .. `_p4` | -1, 0 to 100 (-1) | Each player's stick dead zone, in the game's units of 128 per axis (the game's own is 25); -1 = `joy_threshold`. |
+| `cod3_rumble_with_keys` | 0 / 1 (0) | Let the first controller vibrate while the keyboard and mouse are in use. |
+| `cod3_weapon_sensitivity` (`_p2` .. `_p4`) | text | Sensitivity per weapon group, from the hip and aiming (see "Aim" above). |
+| `sticky_aim`, `aim_slowdown` | see "Aim" above | The game's aim assist; the host's in a match. |
+| `joy_threshold` | (25) | The game's stick dead zone, every controller. |
+| `in_stickSouthPaw`, `in_stickLegacy`, `cg_controllerconfig` | game values | The game's stick and button layouts. |
+| `cl_yawspeed`, `cl_pitchspeed`, `cl_anglespeedkey` | (140, 140, 1.5) | The turn keys' speeds (degrees a second) and how much faster they turn with the speed key held; not the stick's. |
+
+World at War's `aim_turnrate_yaw` / `aim_turnrate_pitch` (degrees a second) have no match in Call of Duty 3,
+whose stick has no such speed: the console says so.
+
 ## Hidden switches
 
 Some dvars aren't made by the game at start:
@@ -224,8 +271,8 @@ SP the campaign, MP multiplayer.
 |---|---|---|---|---|
 | `cg_blood` | `0` | A | SP MP | Show blood. |
 | `cg_camerashake` | `1` | C | SP MP | Camera shake from explosions and artillery. |
-| `cg_fov` | `65` | T | SP MP | Field of view (degrees). The port allows 65-165 with cg_fovScale; F2 > Video. |
-| `cg_fovScale` | `1` | A | SP MP | Multiplies cg_fov (the port's FOV scale; the effective value is 65-165). |
+| `cg_fov` | `65` | T | SP MP | Field of view (degrees). The port allows 65-165 with cg_fovScale; F2 > Game > View. Split-screen players 2-4: `cod3_fov_p2`..`_p4`. |
+| `cg_fovScale` | `1` | A | SP MP | Multiplies cg_fov (the port's FOV scale; the effective value is 65-165). Split-screen players 2-4: `cod3_fov_scale_p2`..`_p4`. |
 | `cg_letterbox` | `0` | T | SP MP | Set by the game: the cinematic black bars. |
 | `cg_night` | `0` | R | SP MP | Set by the game: night vision tint for night missions. |
 | `cg_viewKickDeflectTime` | `10` |  | SP MP | Time (ms) the view takes to kick when you are hit. |

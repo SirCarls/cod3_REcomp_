@@ -1,0 +1,30 @@
+# [acct2-decomp] The censored campaign (c3w/censored.py): the insignia textures inside the campaign's
+# level archives (sp/<level>/<level>.cod), which can't be swapped whole because they also carry the
+# language. For each: the level archive, the texture's name in the USA/Europe disc's directory, its
+# name in the German disc's. The German release has other pixels at the same item, the same size and
+# format; a copy of the game's own level archive gets the other release's pixels there.
+# Names only (from the discs' directories, acct2-decomp 2026-11-05); no game data.
+# level archive	uncut name	German name
+sp/falaise/falaise.cod	metal$of_p_red_oilbarrel_c.xetex	metal$no_p_red_oilbarrel_c.xetex
+sp/falaise/falaise.cod	metal$of_p_red_oilbarrel_n.xetex	metal$no_p_red_oilbarrel_n.xetex
+sp/falaise/falaise.cod	metal$of_p_red_oilbarrel_s.xetex	metal$no_p_red_oilbarrel_s.xetex
+sp/forest/forest.cod	metal$of_brrl_fuel_ger_c.xetex	metal$no_brrl_fuel_ger_c.xetex
+sp/forest/forest.cod	metal$of_brrl_fuel_ger_n.xetex	metal$no_brrl_fuel_ger_n.xetex
+sp/forest/forest.cod	metal$of_brrl_fuel_ger_s.xetex	metal$no_brrl_fuel_ger_s.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_brrl_fuel_ger_c.xetex	metal$no_brrl_fuel_ger_c.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_brrl_fuel_ger_n.xetex	metal$no_brrl_fuel_ger_n.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_brrl_fuel_ger_s.xetex	metal$no_brrl_fuel_ger_s.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_p_red_oilbarrel_c.xetex	metal$no_p_red_oilbarrel_c.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_p_red_oilbarrel_n.xetex	metal$no_p_red_oilbarrel_n.xetex
+sp/fuelplnt/fuelplnt.cod	metal$of_p_red_oilbarrel_s.xetex	metal$no_p_red_oilbarrel_s.xetex
+sp/island/island.cod	metal$of_p_red_oilbarrel_c.xetex	metal$no_p_red_oilbarrel_c.xetex
+sp/island/island.cod	metal$of_p_red_oilbarrel_n.xetex	metal$no_p_red_oilbarrel_n.xetex
+sp/island/island.cod	metal$of_p_red_oilbarrel_s.xetex	metal$no_p_red_oilbarrel_s.xetex
+sp/mace2/mace2.cod	metal$of_brrl_fuel_ger_c.xetex	metal$no_brrl_fuel_ger_c.xetex
+sp/mace2/mace2.cod	metal$of_brrl_fuel_ger_n.xetex	metal$no_brrl_fuel_ger_n.xetex
+sp/mace2/mace2.cod	metal$of_brrl_fuel_ger_s.xetex	metal$no_brrl_fuel_ger_s.xetex
+sp/mace2/mace2.cod	wood$of_crate_top_axis_c.xetex	wood$no_crate_top_axis_c.xetex
+sp/mace2/mace2.cod	wood$of_crate_top_axis_n.xetex	wood$no_crate_top_axis_n.xetex
+sp/mace2/mace2.cod	wood$of_crate_top_axis_s.xetex	wood$no_crate_top_axis_s.xetex
+sp/stbert/stbert.cod	OF_King_Tiger_c.xetex	no_King_Tiger_c.xetex
+sp/stbert/stbert.cod	OF_King_Tiger_s.xetex	no_King_Tiger_s.xetex

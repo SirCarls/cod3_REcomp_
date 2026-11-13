@@ -110,6 +110,8 @@ PORTABLE: Dict[str, Tuple[str, str, str]] = {
 LINUX_PKGCONFIG = ["gtk+-3.0", "x11", "x11-xcb", "xcb", "xext", "xcursor", "xi", "xrandr", "xfixes",
                    "wayland-client", "xkbcommon", "alsa", "libpulse"]
 
+# [rexglue-native-settings] 2026-11-11 (coordinator 08:54, P1): "libs" also brings glslc, which compiles the native
+# renderer's shaders (glslc on Debian/Ubuntu/Mint and Fedora, part of shaderc on Arch, openSUSE and Void).
 LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
     "apt": {
         "base": ["git", "cmake", "ninja-build", "build-essential", "pkg-config", "curl", "python3-tk",
@@ -118,7 +120,8 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "libs": ["libgtk-3-dev", "libx11-dev", "libx11-xcb-dev", "libxext-dev", "libxcursor-dev",
                  "libxi-dev", "libxrandr-dev", "libxfixes-dev", "libxss-dev", "libvulkan-dev", "libwayland-dev",
                  "libwayland-bin", "wayland-protocols", "libxkbcommon-dev", "libdecor-0-dev",
-                 "libasound2-dev", "libpulse-dev", "libpipewire-0.3-dev"],
+                 "libasound2-dev", "libpulse-dev", "libpipewire-0.3-dev",  # [rexglue-native-settings]
+                 "glslc"],  # [rexglue-native-settings] 2026-11-11
         "extras": ["p7zip-full", "innoextract", "unshield", "unar", "file"],
         "mingw": ["gcc-mingw-w64-x86-64"],
     },
@@ -129,7 +132,8 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "libs": ["gtk3-devel", "libX11-devel", "libxcb-devel", "libXext-devel", "libXcursor-devel",
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXScrnSaver-devel", "vulkan-loader-devel",
                  "vulkan-headers", "wayland-devel", "wayland-protocols-devel", "libxkbcommon-devel",
-                 "libdecor-devel", "alsa-lib-devel", "pulseaudio-libs-devel", "pipewire-devel"],
+                 "libdecor-devel", "alsa-lib-devel", "pulseaudio-libs-devel", "pipewire-devel",  # [rexglue-native-settings]
+                 "glslc"],  # [rexglue-native-settings] 2026-11-11
         "extras": ["p7zip", "p7zip-plugins", "innoextract", "unshield", "unar", "file"],
         "mingw": ["mingw64-gcc"],
     },
@@ -138,7 +142,8 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "clang": ["clang", "lld"],
         "libs": ["gtk3", "libx11", "libxcb", "libxext", "libxcursor", "libxi", "libxrandr",
                  "libxfixes", "libxss", "vulkan-icd-loader", "vulkan-headers", "wayland",
-                 "wayland-protocols", "libxkbcommon", "libdecor", "alsa-lib", "libpulse", "pipewire"],
+                 "wayland-protocols", "libxkbcommon", "libdecor", "alsa-lib", "libpulse", "pipewire",  # [rexglue-native-settings]
+                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unarchiver", "file"],
         "mingw": ["mingw-w64-gcc"],
     },
@@ -148,7 +153,8 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "libs": ["gtk3-devel", "libX11-devel", "libxcb-devel", "libXext-devel", "libXcursor-devel",
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXss-devel", "vulkan-devel",
                  "wayland-devel", "wayland-protocols-devel", "libxkbcommon-devel", "libdecor-devel",
-                 "alsa-devel", "libpulse-devel", "pipewire-devel"],
+                 "alsa-devel", "libpulse-devel", "pipewire-devel",  # [rexglue-native-settings]
+                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unar", "file"],
         "mingw": ["mingw64-cross-gcc"],
     },
@@ -158,11 +164,27 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "libs": ["gtk+3-devel", "libX11-devel", "libxcb-devel", "libXext-devel", "libXcursor-devel",
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXScrnSaver-devel", "vulkan-loader-devel",
                  "Vulkan-Headers", "wayland-devel", "wayland-protocols", "libxkbcommon-devel", "libdecor-devel",
-                 "alsa-lib-devel", "pulseaudio-devel", "pipewire-devel"],
+                 "alsa-lib-devel", "pulseaudio-devel", "pipewire-devel",  # [rexglue-native-settings]
+                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unar", "file"],
         "mingw": ["cross-x86_64-w64-mingw32"],
     },
 }
+
+# [rexglue-native-settings] 2026-11-11 (coordinator 08:54, P5): where CMake's FindVulkan looks for vulkan/vulkan.h on
+# Linux (recomp/CMakeLists.txt find_package(Vulkan) for ngl_vk): $VULKAN_SDK/include first, then the system's folders.
+VULKAN_INCLUDE_DIRS = ["/usr/local/include", "/usr/include"]  # [rexglue-native-settings]
+
+
+def vulkan_headers(env: Dict[str, str]) -> Optional[Path]:  # [rexglue-native-settings]
+    """[rexglue-native-settings] 2026-11-11: the folder holding vulkan/vulkan.h, the native renderer's Vulkan
+    headers, searched like CMake's FindVulkan does; None when there is none."""
+    sdk = env.get("VULKAN_SDK")  # [rexglue-native-settings]
+    for d in ([Path(sdk) / "include"] if sdk else []) + [Path(x) for x in VULKAN_INCLUDE_DIRS]:  # [rexglue-native-settings]
+        if (d / "vulkan" / "vulkan.h").is_file():  # [rexglue-native-settings]
+            return d  # [rexglue-native-settings]
+    return None  # [rexglue-native-settings]
+
 
 # Linux systems whose package manager can't add packages to the running
 # system (image-based / immutable) or that have none of the above. The build
@@ -279,6 +301,11 @@ class Toolchain:
     unshield: Optional[Path] = None
     unar: Optional[Path] = None      # RAR archives, when 7-Zip has no RAR support
     mingw: Optional[Path] = None     # Linux: links the Windows build of the ripper
+    # [rexglue-native-settings] 2026-11-11 (coordinator 08:30, dependency audit): Linux: glslc compiles the native
+    # renderer's shaders (ngl_vk/shaders; recomp/CMakeLists.txt finds it with find_program). Optional: without it the
+    # build leaves the native renderer out ("cod3: no ngl_vk" in its log), so it is a row and a note, not a problem.
+    glslc: Optional[Path] = None     # [rexglue-native-settings]
+    vulkan_headers: Optional[Path] = None   # [rexglue-native-settings] P5: the folder with vulkan/vulkan.h
     vs_path: Optional[Path] = None
     windows_sdk: Optional[Path] = None   # Windows: the SDK's Include/<version> folder, when complete
     missing_libs: List[str] = field(default_factory=list)
@@ -369,6 +396,12 @@ class Toolchain:
         if IS_LINUX:
             rows.append(("Development libraries", not self.missing_libs,
                          "all there" if not self.missing_libs else "missing " + ", ".join(self.missing_libs)))
+            rows.append(("glslc (optional)", bool(self.glslc),  # [rexglue-native-settings] 2026-11-11
+                         str(self.glslc) if self.glslc else "the native renderer's shader compiler; without it "  # [rexglue-native-settings]
+                         "the build leaves the native renderer out"))  # [rexglue-native-settings]
+            rows.append(("Vulkan headers (optional)", bool(self.vulkan_headers),  # [rexglue-native-settings] P5
+                         str(self.vulkan_headers) if self.vulkan_headers else "vulkan/vulkan.h, for the native "  # [rexglue-native-settings]
+                         "renderer; without them the build leaves it out"))  # [rexglue-native-settings]
         return rows
 
     def summary(self) -> str:
@@ -707,6 +740,10 @@ def detect(tools_dir: Path, runner: Runner) -> Toolchain:
     tc.unshield = _which(["unshield"], [], path)
     tc.unar = _which(["unar"], [], path)
     tc.mingw = _which(["x86_64-w64-mingw32-gcc"], [], path) if IS_LINUX else None
+    # [rexglue-native-settings] 2026-11-11: on PATH, or in a Vulkan SDK's bin/ (where CMake's FindVulkan looks too).
+    sdk_bin = [Path(os.environ["VULKAN_SDK"]) / "bin"] if os.environ.get("VULKAN_SDK") else []  # [rexglue-native-settings]
+    tc.glslc = _which(["glslc"], sdk_bin, path) if IS_LINUX else None  # [rexglue-native-settings]
+    tc.vulkan_headers = vulkan_headers(tc.env) if IS_LINUX else None  # [rexglue-native-settings] P5
 
     if IS_WINDOWS:
         tc.vs_path = find_vs(runner)

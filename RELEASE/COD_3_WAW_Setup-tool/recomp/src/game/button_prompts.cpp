@@ -26,6 +26,9 @@
 // [CROSS] ..., a Nintendo one [B] for the bottom button. So two players on
 // one screen with a DualSense and an Xbox pad each see their own.
 //
+// [acct2-decomp] 2026-11-05 (owner 08:56-08:57): a plain FEText's own "~" + character buttons (cod3mp's spawn screen
+// "Press ~\" to spawn", the button bars) are named the same way, in brackets, per player (RawButtonsNamed).
+//
 // [acct2-decomp] 2026-10-25, owner 23:42-23:43: keys are drawn as key caps
 // like "SPACE Skip" (cod3_key_caps: the game draws each name invisibly, the
 // overlay draws the cap over its room, KeyCap); our own key names (stick
@@ -49,6 +52,7 @@
 #include "game/button_prompts.h"
 
 #include <algorithm>  // [claude-9b] std::min, the key caps' fade
+#include <array>      // [rexglue-native qte] the keyboard layout's key names
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -75,12 +79,15 @@
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
 
+#include <SDL3/SDL_keyboard.h>  // [rexglue-native qte] the keyboard layout's key names (LayoutName)
+
 #include "game/addresses.h"
 #include "game/guest.h"
 #include "game/keybinds/binds.h"  // [keybinds]
 #include "game/qte_actions.h"
 #include "game/rumble.h"  // [rumble]
 #include "game/text_language.h"  // [acct2-ocr]
+#include "game/use_hold.h"  // [acct2-decomp] cod3_use_hold_ms: the Use hold's words in the hints
 #include "game/pc_menu.h"
 
 #if !defined(COD3_MP)
@@ -192,10 +199,101 @@ void KeyboardUsed(const char* why) {
   SetDevice(Device::kKeyboard, why);
 }
 
+// ---------------------------------------------------------------------------
+// [rexglue-native qte] 2026-11-09 (owner 13:19: "check for missing glyphs for keyboard"; main 13:4x: show the key
+// printed on the player's keyboard). Keys are bound by their place on the keyboard (SDL scancodes, named as on a
+// US keyboard: the SDK's sdl_virtual_key.cpp), so on a French AZERTY keyboard the key bound as "W" is the one
+// labeled Z, on a German one "Y" is the key labeled Z, and the prompts said [W] / [Y]. The prompts now name a
+// letter or punctuation key by the character the player's own layout gives that place (SDL's keymap, no
+// modifiers) when that is one printable ASCII character, which the key caps' font has; otherwise (a Cyrillic or
+// Greek layout, a dead key) the US name stays.
+// [rexglue-native qte] 2026-11-09 (Wine test, French layout): the number row keeps its digits. Every Latin layout
+// prints the digit on those keys, but without Shift AZERTY gives symbols and accented letters there, so naming
+// them by the layout showed [&] ["] [(] beside [2] [7] [9] [0] (the accented letters are not ASCII and kept the
+// US name): a mixed, confusing row.
+// Only what the prompts show changes: the binds and the settings file stay on the keyboard places.
+// SDL's keymap functions are not thread safe, so the table is made on the UI thread (when the prompts attach and
+// at most once a second while keys are pressed, which catches a layout switch) and read by the game thread.
+// ---------------------------------------------------------------------------
+std::array<std::atomic<char>, 256> g_layout_char{};  // Windows virtual-key code -> the layout's character, 0 = US
+
+struct LayoutKey {
+  uint8_t vk;  // the Windows virtual-key code the SDK gives this place
+  SDL_Scancode scancode;
+};
+constexpr LayoutKey kLayoutPunctuation[] = {
+    {0xBA, SDL_SCANCODE_SEMICOLON}, {0xBB, SDL_SCANCODE_EQUALS},       {0xBC, SDL_SCANCODE_COMMA},
+    {0xBD, SDL_SCANCODE_MINUS},     {0xBE, SDL_SCANCODE_PERIOD},       {0xBF, SDL_SCANCODE_SLASH},
+    {0xC0, SDL_SCANCODE_GRAVE},     {0xDB, SDL_SCANCODE_LEFTBRACKET},  {0xDC, SDL_SCANCODE_BACKSLASH},
+    {0xDD, SDL_SCANCODE_RIGHTBRACKET}, {0xDE, SDL_SCANCODE_APOSTROPHE},
+};
+
+// The character the player's layout gives `scancode`, as the prompts write it (letters in capitals), or 0 when it
+// isn't one printable ASCII character. UI thread.
+char LayoutCharOf(SDL_Scancode scancode) {
+  const SDL_Keycode key = SDL_GetKeyFromScancode(scancode, SDL_KMOD_NONE, true);
+  // '~' starts a button token in the game's texts: such a key keeps its US name.
+  if (key < 0x21 || key > 0x7E || key == '~') return 0;
+  return char(std::toupper(int(key)));
+}
+
+// UI thread: the table again; when a name changed, the prompts' texts are laid out again (g_bind_gen).
+void RefreshLayout() {
+  bool changed = false;
+  std::string differs;
+  auto set = [&](uint8_t vk, char us, SDL_Scancode scancode) {
+    char c = LayoutCharOf(scancode);
+    if (c == us) c = 0;  // the same as the US name: nothing to change
+    if (g_layout_char[vk].exchange(c, std::memory_order_relaxed) != c) changed = true;
+    if (c && differs.size() < 160) differs += std::string(differs.empty() ? "" : ", ") + us + "->" + c;
+  };
+  for (int i = 0; i < 26; ++i) set(uint8_t('A' + i), char('A' + i), SDL_Scancode(SDL_SCANCODE_A + i));
+  // The number row (1-9, 0) is left out on purpose and keeps its digits: see the note above g_layout_char.
+  static constexpr char kUsPunctuation[] = ";=,-./`[\\]'";
+  for (size_t i = 0; i < std::size(kLayoutPunctuation); ++i)
+    set(kLayoutPunctuation[i].vk, kUsPunctuation[i], kLayoutPunctuation[i].scancode);
+  if (!changed) return;
+  g_bind_gen.fetch_add(1, std::memory_order_relaxed);
+  REXLOG_INFO("cod3: button prompts: the keyboard layout names {} keys", differs.empty() ? "no" : differs);
+}
+void MaybeRefreshLayout() {
+  static int64_t next = 0;
+  const int64_t now = NowMs();
+  if (now < next) return;
+  next = now + 1000;
+  RefreshLayout();
+}
+
+// One key's name as the prompts show it, as the player's layout labels that key (any thread): a single letter or
+// punctuation character, or the keys.cpp names SEMICOLON and COMMA. Every other name (the digits 0-9, SPACE,
+// MOUSE1, F5, NUM4, SHIFT ...) is the same on every layout and stays. Called once per key where a name comes from
+// a bind (BindKey, and the port's own actions' names, PortKeyName), never on a name already shown, so nothing is
+// mapped twice.
+std::string LayoutName(const std::string& name) {
+  int vk = -1;
+  if (name == "SEMICOLON") {
+    vk = 0xBA;
+  } else if (name == "COMMA") {
+    vk = 0xBC;
+  } else if (name.size() == 1) {
+    const char c = name[0];
+    if (c >= 'A' && c <= 'Z') vk = uint8_t(c);  // [rexglue-native qte] not the digits: they keep their names
+    static constexpr char kUsPunctuation[] = ";=,-./`[\\]'";
+    for (size_t i = 0; vk < 0 && i < std::size(kLayoutPunctuation); ++i)
+      if (kUsPunctuation[i] == c) vk = kLayoutPunctuation[i].vk;
+  }
+  if (vk < 0) return name;
+  const char mapped = g_layout_char[size_t(vk)].load(std::memory_order_relaxed);
+  return mapped ? std::string(1, mapped) : name;
+}
+// The port's own actions' key names (game/keybinds/binds.h) as the layout labels them.
+std::string PortKeyName(const std::string& name) { return LayoutName(name); }
+
 class KeyboardWatch final : public rex::ui::WindowInputListener {
  public:
   void OnKeyDown(rex::ui::KeyEvent& e) override {
     if (!e.prev_state()) KeyboardUsed("a key");
+    MaybeRefreshLayout();  // [rexglue-native qte] a layout switch shows at the next key press
   }
   void OnMouseDown(rex::ui::MouseEvent&) override { KeyboardUsed("a mouse button"); }
   void OnMouseWheel(rex::ui::MouseEvent&) override { KeyboardUsed("the mouse wheel"); }
@@ -270,6 +368,7 @@ void RefreshSettings() {
   now += g_mouse_aim.load(std::memory_order_relaxed) ? "mouse" : "keys";
   now += REXCVAR_GET(cod3_key_caps) ? "\ncaps" : "\nnames";  // [claude-9b-think] pictures or names: laid out again
   now += "\n" + rex::cvar::GetFlagByName("cod3_key_cap_scale");  // [claude-9b-think] the caps' room: laid out again
+  now += "\nuse " + cod3::use_hold::SettingsKey();  // [acct2-decomp] "Press" or "Press and hold"; [acct2-ocr] every player's
   std::lock_guard lock(mutex);
   if (now != last) {
     last = std::move(now);
@@ -536,7 +635,8 @@ std::string BindKey(int bind) {
     std::string part = v.substr(start, end - start);
     while (!part.empty() && part.front() == ' ') part.erase(part.begin());
     while (!part.empty() && part.back() == ' ') part.pop_back();
-    if (!part.empty()) out += (out.empty() ? "" : "+") + KeyName(part);
+    // [rexglue-native qte] 2026-11-09 each key as the player's keyboard layout labels it (LayoutName).
+    if (!part.empty()) out += (out.empty() ? "" : "+") + LayoutName(KeyName(part));
     start = end + 1;
   }
   return out;
@@ -774,7 +874,7 @@ uint32_t NameText(uint8_t* base, char glyph, Mode mode) {
     // keyboard actions shows that action's key (the left stick click is
     // +binoculars in layout A: [B]; game/keybinds/binds.h).
     std::string name;
-    if (mode == Mode::kPlayKeys) name = cod3::binds::KeyNameForPadKey(base, PadKeyFor(glyph));
+    if (mode == Mode::kPlayKeys) name = PortKeyName(cod3::binds::KeyNameForPadKey(base, PadKeyFor(glyph)));
     if (name.empty()) name = NameFor(kButtons[i], mode);
     // [claude-9b-think] a controller style's picture, or a mouse button's (RoomText).
     text = PadPictures(mode) ? "{" + PictureCode(kButtons[i], mode) + "}" : RoomText(name, IsKeys(mode));
@@ -858,6 +958,28 @@ std::string GameText(PPCContext& ctx, uint8_t* base, const std::string& key) {
   std::lock_guard lock(mutex);
   cache[key] = out;
   return out;
+}
+
+// [acct2-decomp] 2026-11-05 (owner 08:50: "Please make the hints reflect this change"): with a Use hold of 0
+// (cod3_use_hold_ms, game/use_hold.h) a text's "Press and hold [USE]" says "Press [USE]" and the campaign's
+// "[HOLD_USE]" word "[VERB_USE]", in the game's own words; done before the game's "[ACTION]" pass, so each
+// player's own button or key goes in as before. The text itself when the hold isn't 0.
+std::string UseHoldWording(PPCContext& ctx, uint8_t* base, const std::string& text) {
+  if (text.find("USE]") == std::string::npos || cod3::use_hold::CurrentMs(base) != 0) return text;
+  return cod3::use_hold::Pressed(text, GameText(ctx, base, "INGAME_PRESS_AND_HOLD"),
+                                 GameText(ctx, base, "INGAME_PRESS"));
+}
+
+// [acct2-decomp] A guest copy of a text for one call of the game (a few in turn, so a call made inside another
+// keeps the outer one's); 0 when it doesn't fit.
+uint32_t CallText(uint8_t* base, const std::string& text) {
+  constexpr uint32_t kSize = 2048, kCount = 4;
+  static const uint32_t ring = rex::system::kernel_state()->memory()->SystemHeapAlloc(kSize * kCount);
+  static std::atomic<uint32_t> next{0};
+  if (!ring || text.size() >= kSize) return 0;
+  const uint32_t slot = ring + kSize * (next.fetch_add(1, std::memory_order_relaxed) % kCount);
+  std::memcpy(base + slot, text.c_str(), text.size() + 1);
+  return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1246,16 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t slot, bool string_arg, F&&
   } else if (Valid(ctx.r4.u32)) {
     call.text = ReadString(base, ctx.r4.u32, 2048);
   }
+#if defined(COD3_MP)
+  // [acct2-decomp] The Use hold's words (UseHoldWording): cod3mp's "[ACTION]" pass is inside the call (the
+  // campaign's is hooked, 0x824DE290). A text call (not a String) takes our copy; call.text stays the game's, so a
+  // text laid out again (Refresh comes back through here) follows the setting.
+  if (!string_arg && !call.text.empty() && call.text.size() < 2047) {  // a whole text, not one cut at 2048
+    const std::string pressed = UseHoldWording(ctx, base, call.text);
+    if (pressed != call.text)
+      if (const uint32_t at = CallText(base, pressed)) ctx.r4.u64 = at;
+  }
+#endif
   const Mode outer_mode = t_set_mode;
   call.player = PromptPlayer(base);
   call.mode = t_set_mode = Wanted(base, call.player);
@@ -1229,7 +1361,7 @@ int ActionWordForm(std::string_view text, std::string_view* word) {
 // "[HOLD_BINOCS]" (the game writes "Click and hold the left stick"); "" when
 // the action has no key (the game's text stays).
 std::string KeyActionText(PPCContext& ctx, uint8_t* base, std::string_view word, int form) {
-  const std::string key = cod3::binds::KeyNameForActionWord(word);
+  const std::string key = PortKeyName(cod3::binds::KeyNameForActionWord(word));
   if (key.empty()) return "";
   if (form == 0) return KeyToken(key);  // [acct2-decomp] key tokens (KeyToken)
   std::string verb = GameText(ctx, base, form == 3 ? "INGAME_PRESS_AND_HOLD" : "INGAME_PRESS");
@@ -1264,7 +1396,7 @@ std::string ViewSwitchKeys(PPCContext& ctx, uint8_t* base, std::string text) {
   size_t words = 0;
   const size_t at = FindViewSwitch(text, &words);
   if (at == std::string::npos) return text;
-  const std::string key = cod3::binds::KeyNameForAction("veh_view");
+  const std::string key = PortKeyName(cod3::binds::KeyNameForAction("veh_view"));
   if (key.empty()) return text;
   std::string press = GameText(ctx, base, "INGAME_PRESS");
   if (press.empty()) press = "Press";
@@ -1338,7 +1470,7 @@ std::string StickPhraseKeys(PPCContext& ctx, uint8_t* base, std::string text) {
       std::string with;
       if (p.click) {
         // The stick's button: the port's own action on it first (the left click is +binoculars: [B]), else its keybind.
-        std::string key = cod3::binds::KeyNameForPadKey(base, p.stick == 1 ? 220 : 219);
+        std::string key = PortKeyName(cod3::binds::KeyNameForPadKey(base, p.stick == 1 ? 220 : 219));
         if (key.empty()) key = BindKey(p.stick == 1 ? 10 : 11);
         if (key.empty()) continue;
         std::string verb = GameText(ctx, base, p.click == 2 ? "INGAME_PRESS_AND_HOLD" : "INGAME_PRESS");
@@ -1482,14 +1614,14 @@ std::string ExpandPlaceholders(uint8_t* base, std::string text) {
     } else if (tag == "LCLICK" || tag == "RCLICK") {
       // [acct2-ocr] a stick's click: the port's own action on it first (the left one is +binoculars), else its keybind.
       const bool left = tag[0] == 'L';
-      std::string key = cod3::binds::KeyNameForPadKey(base, left ? 220 : 219);
+      std::string key = PortKeyName(cod3::binds::KeyNameForPadKey(base, left ? 220 : 219));
       if (key.empty()) key = BindKey(left ? 10 : 11);
       with = key.empty() ? "" : KeyToken(key);
     } else if (tag.rfind("BIND:", 0) == 0) {
       const std::string key = BindKeyNamed(tag.substr(5));
       with = key.empty() ? "" : KeyToken(key);
     } else if (tag.rfind("ACTION:", 0) == 0) {
-      const std::string key = cod3::binds::KeyNameForAction(tag.substr(7).c_str());
+      const std::string key = PortKeyName(cod3::binds::KeyNameForAction(tag.substr(7).c_str()));
       with = key.empty() ? "" : KeyToken(key);
     } else if (tag.rfind("KEY:", 0) == 0 && tag.size() > 4) {
       with = KeyToken(tag.substr(4));
@@ -1602,6 +1734,104 @@ void AfterActionText(PPCContext& ctx, uint8_t* base, const std::string& action) 
 // in the text's font keep the text's width.
 constexpr uint32_t kWidescreenInt = 0x82B9F0DC;  // cg_widescreen (vmCvar 0x82B9F0D0) .integer
 #endif
+
+// ---------------------------------------------------------------------------
+// [acct2-decomp] 2026-11-05 A plain FEText's buttons (owner 08:56: multiplayer's "Press A to respawn" kept the A
+// whatever the button style; 08:57: each player's own).
+//
+// A plain FEText (not an FEMultiLineText) draws "~" and the one character after it as that character of the button
+// font, and knows no "~name" tokens: its draw (FEText__vfunc_19: campaign 0x824CFD58, cod3mp 0x824ECCA0) and its
+// measure (FEText__vfunc_60: 0x824CFBE8 / 0x824EC9F0) read the text themselves. The texts written that way are
+// cod3mp's spawn screen (MPSCRIPT_PRESS_X_TO_SPAWN "Press ~\" to spawn", set on its text_line_04 by SetTextKey in
+// 0x8239CC68, and "Press  ~\" to spawn. Spawn time left: ") and the frontend's button bars ("~\" Ready", "~$ Back",
+// "~# Sorting by: %s"; both programs' tables). The FEMultiLineText hooks below never see them, so they kept the
+// game's Xbox picture. Their set-text (FEText__vfunc_36, where SetTextKey ends too) now takes our copy with each
+// such button as its name in brackets, the way the text's player wants it ("[SPACE]", "[CROSS]"; no key caps or
+// pictures of our own here, those need the line layout), or the game's own picture while that player wants it.
+// A plain FEText's draw sets its text again when that changes (a device switch, another style, a rebind).
+// ---------------------------------------------------------------------------
+#if defined(COD3_MP)
+constexpr uint32_t kPlainSetText = 0x820BBB90;  // FEText__vfunc_36, slot 36 (bp::kSetText) of a plain FEText
+#else
+constexpr uint32_t kPlainSetText = 0x820ACDD0;
+#endif
+
+const Button* RawButton(char c) {
+  for (const Button& b : kButtons)
+    if (b.glyph == c) return &b;
+  return nullptr;
+}
+
+bool HasRawButtons(std::string_view text) {
+  for (size_t i = 0; i + 1 < text.size(); ++i)
+    if (text[i] == '~' && RawButton(text[i + 1])) return true;
+  return false;
+}
+
+// The text with each "~" + button character as "[NAME]" for `mode`; the text itself for the game's pictures.
+std::string RawButtonsNamed(uint8_t* base, const std::string& text, Mode mode) {
+  if (!IsText(mode)) return text;
+  std::string out;
+  out.reserve(text.size() + 16);
+  for (size_t i = 0; i < text.size(); ++i) {
+    const Button* b = text[i] == '~' && i + 1 < text.size() ? RawButton(text[i + 1]) : nullptr;
+    if (!b) {
+      out += text[i];
+      continue;
+    }
+    std::string name;
+    if (mode == Mode::kPlayKeys) name = PortKeyName(cod3::binds::KeyNameForPadKey(base, PadKeyFor(b->glyph)));
+    if (name.empty()) name = NameFor(*b, mode);
+    out += "[" + name + "]";
+    ++i;
+  }
+  return out;
+}
+
+// The last text with buttons of each plain FEText, to set it again (under g_mutex).
+struct PlainCall {
+  std::string text;  // the game's own text
+  uint32_t player = 0;
+  Mode mode = Mode::kXbox;
+  uint32_t gen = 0;
+};
+std::unordered_map<uint32_t, PlainCall> g_plain;
+
+void ForgetPlain(uint32_t obj) {
+  std::lock_guard lock(g_mutex);
+  g_plain.erase(obj);
+}
+
+// Before a plain FEText is drawn: its text is set again when its buttons are out of date.
+void RefreshPlain(PPCContext& ctx, uint8_t* base, uint32_t obj) {
+  PlainCall call;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_plain.empty()) return;
+    auto it = g_plain.find(obj);
+    if (it == g_plain.end()) return;
+    const Mode want = Wanted(base, it->second.player);
+    if (it->second.mode == want &&
+        (!IsText(want) || it->second.gen == g_bind_gen.load(std::memory_order_relaxed)))
+      return;
+    call = it->second;
+  }
+  if (call.text.size() > 1000 || VirtualSlot(base, obj, bp::kSetText) != kPlainSetText) {
+    ForgetPlain(obj);
+    return;
+  }
+  Call c(ctx, base);
+  const uint32_t text = c.PushString(call.text);
+#if defined(COD3_MP)
+  // As its own player's (Wanted() reads the current local client's).
+  const uint32_t current = ReadU32(base, bp::kClientActiveIndex);
+  WriteU32(base, bp::kClientActiveIndex, call.player);
+  c.Invoke(VirtualSlot(base, obj, bp::kSetText), {obj, text});
+  WriteU32(base, bp::kClientActiveIndex, current);
+#else
+  c.Invoke(VirtualSlot(base, obj, bp::kSetText), {obj, text});
+#endif
+}
 }  // namespace
 
 namespace cod3::prompts {
@@ -1614,6 +1844,7 @@ void Attach(rex::ui::Window* window, size_t z_order) {
   });
   g_window = window;
   window->AddInputListener(&g_watch, z_order);
+  RefreshLayout();  // [rexglue-native qte] 2026-11-09 the keyboard layout's key names (UI thread)
 }
 
 void Detach(rex::ui::Window* window) {
@@ -1950,6 +2181,13 @@ REX_HOOK_RAW(sub_824DE290) {
       }
     }
   }
+  // [acct2-decomp] The Use hold's words (UseHoldWording), on whichever text goes in (ours or the game's).
+  if (Valid(ctx.r3.u32)) {
+    const std::string in = ReadString(base, ctx.r3.u32, 512);
+    const std::string pressed = in.size() < 511 ? UseHoldWording(ctx, base, in) : in;  // a whole text only
+    if (pressed != in)
+      if (const uint32_t at = CallText(base, pressed)) ctx.r3.u64 = at;
+  }
   __imp__sub_824DE290(ctx, base);
   const uint32_t buf = ctx.r3.u32;
   if (!Valid(buf)) return;
@@ -2069,6 +2307,69 @@ REX_EXTERN(__imp__FEMultiLineText__vfunc_0);
 REX_HOOK_RAW(FEMultiLineText__vfunc_0) {
   Forget(ctx.r3.u32);
   __imp__FEMultiLineText__vfunc_0(ctx, base);
+}
+
+// [acct2-decomp] A plain FEText's set-text (SetTextKey ends here too): its "~" + character buttons named for its
+// player (RawButtonsNamed), and remembered so its draw can set it again.
+REX_EXTERN(__imp__FEText__vfunc_36);
+REX_HOOK_RAW(FEText__vfunc_36) {
+  const uint32_t obj = ctx.r3.u32;
+  std::string text = Valid(ctx.r4.u32) ? ReadString(base, ctx.r4.u32, 1024) : std::string();
+  if (text.size() >= 1023 || !HasRawButtons(text)) {  // none, or a text cut at 1024
+    ForgetPlain(obj);
+    __imp__FEText__vfunc_36(ctx, base);
+    return;
+  }
+  PlainCall call;
+  call.player = PromptPlayer(base);
+  call.mode = Wanted(base, call.player);
+  call.gen = g_bind_gen.load(std::memory_order_relaxed);
+  const std::string shown = RawButtonsNamed(base, text, call.mode);
+  if (shown != text) {
+    if (const uint32_t at = CallText(base, shown)) ctx.r4.u64 = at;
+    if (REXCVAR_GET(cod3_debug_key_caps)) {
+      static std::unordered_map<std::string, int> logged;  // the game thread's
+      if (logged.size() < 200 && logged[text + shown]++ == 0)
+        REXLOG_INFO("cod3: prompts: plain text \"{}\" of player {} shown as \"{}\"", text, call.player + 1, shown);
+    }
+  }
+  // Only a plain FEText's own set-text is called again (RefreshPlain); a kind of text that ends here from its own
+  // set-text just takes the names.
+  const bool plain = VirtualSlot(base, obj, bp::kSetText) == kPlainSetText;
+  call.text = std::move(text);
+  __imp__FEText__vfunc_36(ctx, base);
+  std::lock_guard lock(g_mutex);
+  if (plain)
+    g_plain[obj] = std::move(call);
+  else
+    g_plain.erase(obj);
+}
+
+// [acct2-decomp] FEText::Draw: a plain text whose buttons are out of date is set again first.
+REX_EXTERN(__imp__FEText__vfunc_19);
+REX_HOOK_RAW(FEText__vfunc_19) {
+  RefreshPlain(ctx, base, ctx.r3.u32);
+  __imp__FEText__vfunc_19(ctx, base);
+}
+
+// [acct2-decomp] A new or deleted text at an address (every kind of text starts and ends as an FEText): its old
+// plain set-text call goes.
+REX_EXTERN(__imp__FEText__ctor);
+REX_HOOK_RAW(FEText__ctor) {
+  ForgetPlain(ctx.r3.u32);
+  __imp__FEText__ctor(ctx, base);
+}
+
+REX_EXTERN(__imp__FEText__ctor_2);
+REX_HOOK_RAW(FEText__ctor_2) {
+  ForgetPlain(ctx.r3.u32);
+  __imp__FEText__ctor_2(ctx, base);
+}
+
+REX_EXTERN(__imp__FEText__dtor);
+REX_HOOK_RAW(FEText__dtor) {
+  ForgetPlain(ctx.r3.u32);
+  __imp__FEText__dtor(ctx, base);
 }
 
 #if !defined(COD3_MP)

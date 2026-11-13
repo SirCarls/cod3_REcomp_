@@ -209,3 +209,46 @@ registers = ["ctx", "base"]
 address = 0x82150AA0
 name = "cod4_census_flush"
 registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# [waw-decomp] 2026-11-09: cod4_move_snap_hz (cod4_hooks.cpp), the jump height at any frame rate. Pmove 0x82332CA0
+# records each step at 0x82332D0C (after `add r11,r10,r11`: r10 the step's start, r11 its end); Sys_SnapVector
+# 0x821A34D8, called only from PmoveSingle's end (0x82332C8C), returns at once (the cut skipped) when the hook says so.
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x82332D0C
+name = "cod4_move_step"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x821A34D8
+name = "cod4_move_snap"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [f2-menus] game_draw_size (../recomp/src/f2/f2_render_size.cpp, "console" by default): the size the game draws its 3D
+# scene at. The video setup 0x8216CCD0 (the campaign's 0x82135318)
+# picks 1024x600 (896x680 on 4:3) and stores it into its record (r31) at +8 / +0xC. Here, at the height's store
+# (`stw r10,12(r31)`, the width's store just before it is the branch target), the hook can make it the screen's size
+# (+0x10 / +0x14, 1280x720) and drop the 2x MSAA (+0x18) when that doesn't fit the emulated EDRAM. Not a branch target.
+[[midasm_hook]]
+address = 0x8216CDB8
+name = "iw3_game_draw_size_hook"
+registers = ["ctx", "base"]
+
+# [waw-decomp-cod4] 2026-11-11: the native renderer's side check in multiplayer (../src/cod4_native_side.cpp, off
+# unless cod4_debug_native_side; record only with cod4_debug_native_capture): the campaign's two hooks
+# (../config/default.toml) at the same code here: Direct3D's indexed draw 0x820AB660 (the campaign's 0x8209BD80; r3
+# the device, r5 to r7 the base vertex, first index and index count) and the back end's frame 0x82159AC8 (the
+# campaign's 0x82128488). Each is the one place in this program's code equal to the campaign function's first
+# instructions (24 and 16) with branch targets and 16-bit fields left out, both images read flat (file offset =
+# address - 0x82000000). Midasm hooks, as the campaign has them.
+[[midasm_hook]]
+address = 0x820AB660
+name = "cod4_capture_draw"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82159AC8
+name = "cod4_native_frame"
+registers = ["ctx", "base"]

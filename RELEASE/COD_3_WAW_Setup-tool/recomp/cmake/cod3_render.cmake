@@ -1,3 +1,6 @@
+# [f2-menus] 2026-11-11 RETIRED and OFF by default (owner 2026-11-11 08:36: "It is now vulkan and then dx12."): the native renderer is
+# [f2-menus] the Vulkan one (ngl_vk, F2 > Emulation > GPU > Native renderer). This library is built only with
+# [f2-menus] -DCOD3_RUST_RENDERER=AUTO or ON; the setup tool passes OFF (c3w/pipeline.py _rust_renderer_args).
 # [rust-renderer] cod3_render: the Rust renderer's static library (engine/crates/cod3_render;
 # the plan is in dev/agents/rust-renderer/). M0: the skeleton. It is linked into cod3 and cod3mp
 # so the build and the C ABI are proven on Linux and Windows; the game only checks the library's
@@ -7,10 +10,10 @@
 # folder, offline and from the crate's own Cargo.lock (it is its own workspace, so engine/'s
 # crates.io packages aren't needed): the library has no outside crates.
 #
-#   COD3_RUST_RENDERER  AUTO (default): linked when cargo, Rust 1.80+ and the Rust standard
+#   COD3_RUST_RENDERER  OFF (default since 2026-11-11, [f2-menus]): never. AUTO: linked when cargo, Rust 1.80+ and the Rust standard
 #                       library for this build's target are there; otherwise the game builds
 #                       without it and its log says so. ON: the same, but a missing piece stops
-#                       the configure. OFF: never.
+#                       the configure.
 #   COD3_ENGINE_DIR     the project's engine/ folder. The setup tool passes it: its build folder
 #                       is a copy of recomp/, so recomp/../../engine isn't there.
 #   COD3_CARGO          the cargo to use. The setup tool passes the one it found (its own in
@@ -18,10 +21,10 @@
 #
 # cod3_render_link(<target>) links it into a program and defines COD3_HAS_RUST_RENDERER there.
 
-set(COD3_RUST_RENDERER "AUTO" CACHE STRING "Link the Rust renderer library: AUTO, ON or OFF")
-set_property(CACHE COD3_RUST_RENDERER PROPERTY STRINGS AUTO ON OFF)
+set(COD3_RUST_RENDERER "OFF" CACHE STRING "Link the retired renderer library (cod3_render): OFF, AUTO or ON")  # [f2-menus] 2026-11-11 was AUTO
+set_property(CACHE COD3_RUST_RENDERER PROPERTY STRINGS OFF AUTO ON)  # [f2-menus] 2026-11-11
 set(COD3_ENGINE_DIR "" CACHE PATH "The project's engine/ folder (the Rust workspace)")
-set(COD3_CARGO "" CACHE FILEPATH "cargo for the Rust renderer library")
+set(COD3_CARGO "" CACHE FILEPATH "cargo for the retired renderer library (cod3_render)")  # [f2-menus] 2026-11-11
 
 # Where this file is: the default engine/ is three folders up (recomp/cmake -> the project).
 set(_COD3_RENDER_MODULE_DIR "${CMAKE_CURRENT_LIST_DIR}")
@@ -46,9 +49,9 @@ endfunction()
 # Says why the library is left out: a status line with AUTO, an error with ON.
 macro(_cod3_render_without why)
   if(COD3_RUST_RENDERER STREQUAL "ON")
-    message(FATAL_ERROR "cod3_render: ${why} (COD3_RUST_RENDERER=ON)")
+    message(FATAL_ERROR "cod3_render (retired renderer library): ${why} (COD3_RUST_RENDERER=ON)")  # [f2-menus] 2026-11-11
   endif()
-  message(STATUS "cod3_render: not linked: ${why}")
+  message(STATUS "cod3_render (retired renderer library): not linked: ${why}")  # [f2-menus] 2026-11-11
   set(COD3_RUST_RENDERER_LINKED OFF CACHE INTERNAL "")
   return()
 endmacro()
@@ -56,7 +59,7 @@ endmacro()
 function(_cod3_render_setup)
   set(COD3_RUST_RENDERER_LINKED OFF CACHE INTERNAL "")
   if(COD3_RUST_RENDERER STREQUAL "OFF")
-    message(STATUS "cod3_render: off (COD3_RUST_RENDERER=OFF)")
+    message(STATUS "cod3_render: the retired renderer library is not built (COD3_RUST_RENDERER=OFF, the default); the native renderer is Vulkan (ngl_vk)")  # [f2-menus] 2026-11-11
     return()
   endif()
 
@@ -145,7 +148,7 @@ function(_cod3_render_setup)
             --manifest-path "${crate}/Cargo.toml"
     DEPENDS ${sources} "${crate}/Cargo.toml" "${crate}/Cargo.lock"
     WORKING_DIRECTORY "${crate}"
-    COMMENT "Building the Rust renderer library (cod3_render, ${triple})"
+    COMMENT "Building the retired renderer library (cod3_render, ${triple})"  # [f2-menus] 2026-11-11
     VERBATIM)
   add_custom_target(cod3_render_cargo DEPENDS "${lib}")
   add_library(cod3_render STATIC IMPORTED GLOBAL)
@@ -155,7 +158,7 @@ function(_cod3_render_setup)
     INTERFACE_LINK_LIBRARIES "${native}")
   add_dependencies(cod3_render cod3_render_cargo)
   set(COD3_RUST_RENDERER_LINKED ON CACHE INTERNAL "")
-  message(STATUS "cod3_render: linked (${rustc_version}, ${triple}; system libraries: ${native})")
+  message(STATUS "cod3_render (retired renderer library): linked (${rustc_version}, ${triple}; system libraries: ${native})")  # [f2-menus] 2026-11-11
 endfunction()
 
 function(cod3_render_link target)

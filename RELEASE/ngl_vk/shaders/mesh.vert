@@ -50,6 +50,8 @@ void main()
 
     object_position = position;
     flags = draw.flags;
+    // [rexglue-native-world] 2026-11-11 w1: the billboard bit (ngl_vk.c's PUSH_BILLBOARD) is read here only
+    flags &= 0x7FFFFFFFu;
     light_toward = draw.toward;
     light_colors = draw.light_colors;
     vertex_normal = normal;
@@ -72,12 +74,33 @@ void main()
         eye_y = vec4(dot(y, y) > 0.0 ? normalize(y) : vec3(0.0), eye.y);
         eye_w = vec4(dot(w, w) > 0.0 ? normalize(w) : vec3(0.0), eye.z);
     }
+    // [rexglue-native-world] 2026-11-11 w1: a card turned to face the view (ngl_vk.h billboard; Call of Duty 3's
+    // SpeedTree leaves): its lightmap coordinates are the corner's offset across and up the view, in the mesh's own
+    // units. The view's right in the mesh's space is the way that leaves clip y and w alone (the cross product of the
+    // matrix's y and w rows), its up the way that leaves clip x and w alone; each turned to make clip x (y) grow. A
+    // projection without perspective (the sun's shadow map) has no w row: its depth row (z) stands in for it.
+    vec3 placed = position;
+    if ((draw.flags & 0x80000000u) != 0u) {
+        mat4 m = draw.world_view_projection;
+        vec3 x = vec3(m[0][0], m[1][0], m[2][0]), y = vec3(m[0][1], m[1][1], m[2][1]);
+        vec3 z = vec3(m[0][2], m[1][2], m[2][2]), w = vec3(m[0][3], m[1][3], m[2][3]);
+        vec3 ahead = dot(w, w) > 1e-6 * dot(x, x) ? w : z;
+        vec3 right = cross(y, ahead), up = cross(ahead, x);
+        right = dot(right, right) > 0.0 ? normalize(right) * (dot(right, x) < 0.0 ? -1.0 : 1.0) : vec3(0.0);
+        up = dot(up, up) > 0.0 ? normalize(up) * (dot(up, y) < 0.0 ? -1.0 : 1.0) : vec3(0.0);
+        placed += right * lightmap_uv.x + up * lightmap_uv.y;
+    }
     ambient = draw.ambient;
     tint = uint(gl_InstanceIndex);          // the draw's tint, shading and flags, passed as its first instance
     texture_uv = uv;
     lightmap_texture_uv = lightmap_uv;
     vertex_color = color;
     gl_Position = draw.world_view_projection * vec4(position, 1.0);
+    if ((draw.flags & 0x80000000u) != 0u) {     // [rexglue-native-world] 2026-11-11 w1: the turned card's corner
+        gl_Position = draw.world_view_projection * vec4(placed, 1.0);
+        object_position = placed;
+        lightmap_texture_uv = vec2(0.0);
+    }
     shadow_position = shadow.lookup * gl_Position;      // only meaningful for draws placed with the camera given
     // linear fog by the distance from the eye (clip w is the view's depth)
     fog_amount = draw.fog.y > draw.fog.x

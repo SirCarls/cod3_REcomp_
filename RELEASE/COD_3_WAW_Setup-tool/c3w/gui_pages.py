@@ -24,6 +24,8 @@ from . import (common, deps, game_settings, pc_check, profiles, repair, rippers,
 from . import voices  # [voice] another disc's voices
 from . import games  # [waw-decomp] the tabs built on Call of Duty 3's SDK (X360_PORTS)
 from . import censored  # [acct2-decomp] the censored campaign
+from . import censor_builtin  # [acct2-decomp] the built-in censor mode
+from . import disc_needs  # [acct2-decomp] which options need which disc
 from . import build_needs  # [acct2-decomp] what the build with these options needs on this PC
 from .common import IS_LINUX, IS_WINDOWS, SetupError
 from .pipeline import TOOL_VERSION, upscaled_size
@@ -51,7 +53,12 @@ GS_GROUPS = [
                   "cod3_depth_of_field", "cod3_motion_blur",  # [post-effects]
                   "cod3_hd_textures", "cod3_user_textures", "cod3_graphics_api"]),
     ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
-                            "cod3_glyph_color_mode"]),  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
+                            "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
+                            "cod3_use_hold_ms"]),  # [acct2-decomp] 2026-11-05 the Use hold (game/use_hold.h)
+    # [acct2-ocr] 2026-11-07 the text's language and its kinds (F2 > Sound > Text), after the voices' rows
+    ("Text and subtitles", ["cod3_text_language", "cod3_text_subtitles", "cod3_text_menus", "cod3_text_prompts",
+                            "cod3_text_objectives", "cod3_text_loading", "cod3_text_credits",
+                            "cod3_text_film_cards", "cod3_font_fill"]),
     # [acct2-decomp] the cutscene rows had been under "Sound and controls"
     ("Cutscenes", ["cod3_skip_movies", "cod3_letterbox", "cod3_skip_prompt_position",
                    "cod3_skip_hold_ms"]),  # [claude-9b-think]
@@ -176,35 +183,36 @@ class Pages:
         hint(g, "In game: ~ console (Shift+~ full), F2 settings (resolution up to 8K, FPS, AA/FSR, FOV, crosshair, "
                 "mouse). FOV is also in Options > Gameplay.").grid(row=2, column=0, columnspan=3, sticky="w",
                                                                    pady=(px(4), 0))
-        # [acct2-decomp] Extra arguments (for testing) after the player's own rows: row 5.
-        ttk.Label(g, text="Extra arguments").grid(row=5, column=0, sticky="w", pady=(px(10), px(3)))
+        # [acct2-decomp] Extra arguments (for testing) after the player's own rows and the discs note: row 7.
+        ttk.Label(g, text="Extra arguments").grid(row=7, column=0, sticky="w", pady=(px(10), px(3)))
         e = ttk.Entry(g, textvariable=self.v_cod3_args)
-        e.grid(row=5, column=1, columnspan=2, sticky="ew", pady=(px(10), px(3)))
+        e.grid(row=7, column=1, columnspan=2, sticky="ew", pady=(px(10), px(3)))
         tip(e, "For testing: passed to the game as they are, for each start from here. They win over the game "
                "settings for that start and are never saved in them. Quote a value with spaces "
                "(--name=\"My Name\"). Leave empty normally.")
         # [voice] Another disc's voices (c3w/voices.py); Voices under Game settings picks the language.
         vb = ttk.Button(g, text="Add voices from another disc...", command=self._add_voices)
         vb.grid(row=3, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
-        tip(vb, "Copies the voices of another Call of Duty 3 disc (Germany, or Europe with French, Spanish and "
-                "Italian) from its .iso into the game, next to its own. Then choose them with Voices under Game "
-                "settings, or in F2 > Game > Sound.")
-        # [acct2-decomp] The censored campaign (c3w/censored.py): the German release's textures, on or off.
-        self.v_censored = tk.BooleanVar(value=False)
-        cz = ttk.Checkbutton(g, text="Censored campaign (the German release's textures)", variable=self.v_censored,
-                             command=self._toggle_censored)
-        cz.grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
-        self.cb_censored = cz
-        tip(cz, "The campaign with the German release's textures (insignia taken off; a few props in six levels "
-                "keep theirs). The first time it asks for the German disc's .iso and copies about 1 GB from it; "
-                "after that it switches at once. Text, voices and multiplayer don't change. Close the game first.")
+        tip(vb, "Needs another disc: German voices come from the German disc; French, Spanish and Italian from the "
+                "Europe (Fr, Es, It) disc; English from the USA/Europe disc. Copies them from its .iso into the "
+                "game, next to its own; then choose them with Voices under Game settings, or in F2 > Game > "
+                "Sound.")  # [acct2-decomp] which disc gives which language
+        # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): the censored campaign's
+        # box moved, unchanged, to the Textures & censoring page (_page_textures), with the built-in censor.
+        # [acct2-decomp] Which options need which disc, and where this game stands (c3w/disc_needs.py;
+        # owner 2026-11-05 08:41: tell the user which options are disc dependent). Filled by _refresh_disc_needs.
+        ttk.Label(g, text="Discs", style="Accent.TLabel").grid(row=5, column=0, sticky="w", pady=(px(12), px(2)))
+        self.v_disc_needs = tk.StringVar(value="")
+        self._disc_found: Dict[str, Path] = {}
+        self._voices_have: Optional[Dict[str, int]] = None
+        hint(g, var=self.v_disc_needs).grid(row=6, column=0, columnspan=3, sticky="w")
 
         s = section(t, "Game settings", 3, columns=1)
         self._grid_cols(s)
         self._game_settings_section(s)
 
         d = section(t, "Ripped game files", 5, columns=1)
-        hint(d, "Textures (DDS + PNG), meshes (glTF) and materials (JSON), for the new engine.").pack(anchor="w")
+        hint(d, "Textures (DDS + PNG), meshes (glTF) and materials (JSON), in open formats.").pack(anchor="w")  # [f2-menus]
         b = ttk.Button(d, text="Open ripped files",  # [acct2-decomp] nothing chosen: not the current folder
                        command=lambda: self._open(str(self._out_path() / "data") if self._out_path() else ""))
         b.pack(anchor="w", pady=(px(8), px(18)))
@@ -222,12 +230,25 @@ class Pages:
             self._info("Build the game first", "Voices go into a built game: build Call of Duty 3 on Set up "
                                                "first.", kind="warning")
             return
-        disc = filedialog.askopenfilename(title="Another Call of Duty 3 disc", parent=self.root,
-                                          filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")])  # [acct2-decomp]
+        if self._job_running():   # [acct2-decomp] before the file dialog, not after it
+            self.v_status.set("Busy: wait for the job running now, or cancel it.")
+            return
+        own = disc_needs.game_disc(out)
+        disc = filedialog.askopenfilename(
+            title="Another Call of Duty 3 disc (German, or Europe (Fr, Es, It), or USA/Europe)", parent=self.root,
+            filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")],
+            **self._disc_dialog_place([k for k in (disc_needs.GERMANY, disc_needs.FR_ES_IT, disc_needs.USA)
+                                       if own is None or k != own.key]))  # [acct2-decomp]
         if not disc:
             return
 
         def work(runner: common.Runner) -> str:
+            # [acct2-decomp] what the disc is, before anything is copied
+            picked = disc_needs.identify(Path(disc))
+            if own is not None and picked.key == own.key:
+                raise SetupError(f"{Path(disc).name} is {disc_needs.RELEASES[own.key].short}, the one your game was "
+                                 "built from: its voices are in the game already. German voices come from the "
+                                 "German disc; French, Spanish and Italian from the Europe (Fr, Es, It) disc.")
             r = voices.add_voices(Path(disc), out, runner.log, runner.cancel)
             have = ", ".join(voices.LANGUAGES[c] for c, n in r["languages"].items() if n)
             first = (f"Copied {r['copied']} voice files from {r['disc']} ({common.human(r['bytes'])})."
@@ -237,13 +258,128 @@ class Pages:
 
     def _refresh_censored(self) -> None:  # [acct2-decomp]
         """The Censored campaign box as the game's files are (by size and
-        what waits in assets/censored/: instant)."""
+        what waits in assets/censored/: instant), and the built-in censor's
+        choice as saved."""
         out = self._out_path()
+        own = None
         try:
-            on = out is not None and censored.status(out).censored
+            st = censored.status(out) if out is not None else None
+            on, own = (st.censored, st.own) if st is not None else (False, None)
         except (SetupError, OSError):
             on = False
-        self.v_censored.set(on)
+        if hasattr(self, "v_censored"):   # [rexglue-native-settings] 2026-11-11 the box is on the Textures page now
+            self.v_censored.set(on)
+        if hasattr(self, "cb_censored"):   # [acct2-decomp] say which disc it needs, for this game
+            self.cb_censored.configure(text="Censored campaign (the German release's textures; " + (
+                "your game's own: off needs the USA/Europe or Fr/Es/It disc once)" if own == censored.GERMAN else
+                "needs the German disc once)"))
+        self._censor_builtin_load()
+        self._refresh_disc_needs()
+
+    # [acct2-decomp] The built-in censor (c3w/censor_builtin.py), joined with your own pictures in the
+    # Textures page's section (owner 2026-11-05 07:24): the choice is saved as it is made, and every
+    # build of the texture pack (the button there, or a full build) makes or takes back its pictures.
+    def _censor_builtin_box(self, parent) -> None:
+        """A tick box; the two designs show only while it is ticked."""
+        labels = [label for _, label in censor_builtin.DESIGNS]
+        self.v_cb_on = tk.BooleanVar(value=False)
+        self._cb_shown = {"flags": "rainbow", "insignia": "blend"}
+        self._cb_colors = {"flags": "#808080", "insignia": "#808080"}
+        self.v_cb_flags = tk.StringVar(value=censor_builtin.LABELS["rainbow"])
+        self.v_cb_insignia = tk.StringVar(value=censor_builtin.LABELS["blend"])
+        self._cb_dirty = False
+        box = ttk.Frame(parent)
+        box.pack(anchor="w", fill="x")
+        cb = ttk.Checkbutton(box, text="Cover the Nazi flags and insignia", variable=self.v_cb_on,
+                             command=self._censor_builtin_toggle)
+        cb.pack(anchor="w")
+        tip(cb, "No disc needed. Campaign and multiplayer.")
+        self.cb_designs = ttk.Frame(box)
+        for col, (key, title, var) in enumerate((("flags", "Flags", self.v_cb_flags),
+                                                  ("insignia", "Insignia", self.v_cb_insignia))):
+            ttk.Label(self.cb_designs, text=title).grid(row=0, column=2 * col, sticky="w",
+                                                        padx=(px(16) if col else 0, px(6)))
+            c = ttk.Combobox(self.cb_designs, textvariable=var, values=labels, state="readonly", width=26)
+            c.grid(row=0, column=2 * col + 1, sticky="w")
+            c.bind("<<ComboboxSelected>>", lambda _e, k=key, v=var: self._censor_builtin_pick(k, v))
+            tip(c, lambda k=key: self._censor_builtin_tip(k))
+        self.v_cb_state = tk.StringVar()
+        self.lbl_cb_state = hint(box, var=self.v_cb_state, style="Accent.TLabel")
+
+    def _censor_builtin_tip(self, key: str) -> str:
+        text = ("The whole flag or banner." if key == "flags" else
+                "Only where the symbol is. Blend in paints it out.")
+        if self._cb_shown.get(key) == "custom":
+            text += f" Colour {self._cb_colors.get(key, '')}."
+        return text
+
+    def _censor_builtin_show(self) -> None:
+        """The designs while the box is ticked; the note while a change isn't packed yet."""
+        if not hasattr(self, "cb_designs"):
+            return
+        self.cb_designs.pack_forget()
+        self.lbl_cb_state.pack_forget()
+        if self.v_cb_on.get():
+            self.cb_designs.pack(anchor="w", padx=(px(26), 0), pady=(px(4), 0))
+        if self.v_cb_state.get():
+            self.lbl_cb_state.pack(anchor="w", padx=(px(26), 0), pady=(px(4), 0))
+
+    def _censor_builtin_toggle(self) -> None:
+        if self.v_cb_on.get() and self._cb_shown == {"flags": "off", "insignia": "off"}:
+            self._cb_shown = {"flags": "rainbow", "insignia": "blend"}
+            self.v_cb_flags.set(censor_builtin.LABELS["rainbow"])
+            self.v_cb_insignia.set(censor_builtin.LABELS["blend"])
+        self._censor_builtin_save()
+
+    def _censor_builtin_pick(self, key: str, var: tk.StringVar) -> None:
+        """A design chosen; "A colour of your choice" asks for the colour."""
+        design = {label: k for k, label in censor_builtin.DESIGNS}.get(var.get(), "off")
+        if design == "custom":
+            from tkinter import colorchooser
+            picked = colorchooser.askcolor(color=self._cb_colors.get(key, "#808080"), parent=self.root,
+                                           title="The colour for the " + key)
+            if not picked or not picked[1]:
+                var.set(censor_builtin.LABELS[self._cb_shown.get(key, "off")])
+                return
+            self._cb_colors[key] = picked[1]
+        self._cb_shown[key] = design
+        self._censor_builtin_save()
+
+    def _censor_builtin_save(self) -> None:
+        """Saves the choice for the next texture pack build."""
+        on = self.v_cb_on.get()
+        s = censor_builtin.Settings(flags=self._cb_shown["flags"] if on else "off",
+                                    insignia=self._cb_shown["insignia"] if on else "off",
+                                    flags_color=self._cb_colors.get("flags", "#808080"),
+                                    insignia_color=self._cb_colors.get("insignia", "#808080"))
+        out = self._out_path()
+        if out is None or not out.is_dir():
+            self.v_cb_state.set("Build the game first (Set up), then the texture pack.")
+        else:
+            try:
+                censor_builtin.save_settings(out / "data" / "cod3", s)
+                self._cb_dirty = True
+                # [rexglue-native-settings] 2026-11-11 Play builds the pack first now (_play_builds_pack_first)
+                self.v_cb_state.set("Saved. Play builds the texture pack first (or press Build texture pack now).")
+            except (OSError, SetupError) as e:
+                self.v_cb_state.set(f"Not saved: {e}")
+        self._censor_builtin_show()
+
+    def _censor_builtin_load(self) -> None:
+        """The choice as saved in the output folder."""
+        if not hasattr(self, "v_cb_on"):
+            return
+        out = self._out_path()
+        s = censor_builtin.load_settings(out / "data" / "cod3") if out is not None else censor_builtin.Settings()
+        self.v_cb_on.set(s.on)
+        if s.on:
+            self._cb_shown = {"flags": s.flags, "insignia": s.insignia}
+            self._cb_colors = {"flags": s.flags_color, "insignia": s.insignia_color}
+            self.v_cb_flags.set(censor_builtin.LABELS[s.flags])
+            self.v_cb_insignia.set(censor_builtin.LABELS[s.insignia])
+        if not self._cb_dirty:
+            self.v_cb_state.set("")
+        self._censor_builtin_show()
 
     def _toggle_censored(self) -> None:  # [acct2-decomp]
         """Swaps the campaign's censored files in or out (c3w/censored.py),
@@ -271,17 +407,21 @@ class Pages:
             self._info("Censored campaign", str(e), kind="warning")
             return
         disc = ""
+        wanted = (disc_needs.GERMANY,) if on else (disc_needs.USA, disc_needs.FR_ES_IT)   # [acct2-decomp]
         if not st.ready(censored.GERMAN if on else censored.UNCUT):
             which = "the German disc" if on else "the USA/Europe or Europe (Fr, Es, It) disc"
             disc = filedialog.askopenfilename(title=f"Call of Duty 3: {which} (for the censored campaign)",
                                               parent=self.root,
-                                              filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")])
+                                              filetypes=[("Disc images", "*.iso *.ISO"), ("All files", "*")],
+                                              **self._disc_dialog_place(list(wanted)))  # [acct2-decomp]
             if not disc:
                 self.v_censored.set(not on)
                 return
 
         def work(runner: common.Runner) -> str:
-            if disc:
+            if disc:   # [acct2-decomp] the right disc, before anything is copied
+                disc_needs.check_choice(Path(disc), wanted, "The censored campaign" if on else
+                                        "Switching the censored campaign off")
                 censored.add(Path(disc), out, runner.log, runner.cancel)
             r = censored.set_censored(out, on, runner.log, runner.cancel)
             if r["lacking"] or r["changed"]:
@@ -290,6 +430,93 @@ class Pages:
                      "The campaign now has the uncut textures.")
             return f"{first} Text, voices and multiplayer are as before. From the next level you load."
         self._start_task("Censored campaign", work, actions=[])
+
+    # [acct2-decomp] Which options need which disc (c3w/disc_needs.py), on the Play page.
+    def _disc_dialog_place(self, keys: List[str]) -> dict:
+        """Where a disc picker opens: the input folder, with the first disc of `keys` (release keys) found
+        there picked (from the last check of the input folder)."""
+        place: dict = {}
+        folder = getattr(self, "input_dir", None)
+        if folder is not None and Path(folder).is_dir():
+            place["initialdir"] = str(folder)
+        found = getattr(self, "_disc_found", {}) or {}
+        hit = next((found[k] for k in keys if k in found), None)
+        if hit is not None:
+            place["initialdir"], place["initialfile"] = str(Path(hit).parent), Path(hit).name
+        return place
+
+    def _refresh_disc_needs(self) -> None:
+        """The Play page's Discs note and the note under Voices, worked out off the window's thread (it reads
+        the game's files and the input folder's discs)."""
+        if not hasattr(self, "v_disc_needs"):
+            return
+        out, folder = self._out_path(), getattr(self, "input_dir", None)
+        self._disc_gen = getattr(self, "_disc_gen", 0) + 1
+        gen = self._disc_gen
+
+        def work() -> None:
+            try:
+                found = disc_needs.found_discs(folder)
+            except OSError:
+                found = {}
+            try:
+                text = disc_needs.text(out, folder, found)
+            except Exception as e:  # noqa: BLE001 - a note, never a reason for the page to fail
+                text = f"Couldn't check the discs: {type(e).__name__}: {e}"
+            have = None
+            try:
+                if out is not None and disc_needs.game_disc(out) is not None:
+                    have = voices.languages_in(out / "assets" if (out / "assets").is_dir() else out)
+            except OSError:
+                have = None
+            texts = None   # [f2-menus] 2026-11-11 the text languages the game's folder has (assets/text/<code>.txt)
+            try:
+                if out is not None and disc_needs.game_disc(out) is not None:
+                    tdir = (out / "assets" if (out / "assets").is_dir() else out) / "text"
+                    texts = {p.stem for p in tdir.glob("*.txt")} if tdir.is_dir() else set()
+            except OSError:
+                texts = None
+
+            def show() -> None:
+                if gen != getattr(self, "_disc_gen", 0):
+                    return   # a newer check is on its way
+                self._disc_found, self._voices_have = found, have
+                self.v_disc_needs.set(text)
+                self._update_voice_note()
+                self._text_have = texts   # [f2-menus] 2026-11-11
+                self._update_text_note()
+            self.q.put(("call", show))
+        threading.Thread(target=work, daemon=True).start()
+
+    def _update_voice_note(self) -> None:
+        """Under Voices: the chosen language when the game doesn't have it, and which disc gives it."""
+        if not hasattr(self, "v_voice_note") or "cod3_voice_language" not in getattr(self, "_gs_vars", {}):
+            return
+        st, var, _ = self._gs_vars["cod3_voice_language"]
+        code = self._gs_value(st, var)
+        have = self._voices_have
+        if have is None or code in (None, "disc") or have.get(code):
+            self.v_voice_note.set("")
+            return
+        name = disc_needs.LANGUAGE_NAMES.get(code, code)
+        needs = disc_needs.RELEASES[disc_needs.VOICE_DISC.get(code, disc_needs.USA)].short
+        self.v_voice_note.set(f"{name} isn't in this game yet: it needs {needs} (Add voices from another disc, "
+                              "above). Until then the game's own voices play.")
+
+    def _update_text_note(self) -> None:
+        """[f2-menus] 2026-11-11 Under Text, as under Voices: the chosen language when the game's folder has no text
+        file for it (they are made on this PC and come with the next build; not every language is there)."""
+        if not hasattr(self, "v_text_note") or "cod3_text_language" not in getattr(self, "_gs_vars", {}):
+            return
+        st, var, _ = self._gs_vars["cod3_text_language"]
+        code = self._gs_value(st, var)
+        have = getattr(self, "_text_have", None)
+        if have is None or code in (None, "disc") or code in have:
+            self.v_text_note.set("")
+            return
+        name = next((label for value, label in st.choices if value == code), code)
+        self.v_text_note.set(f"{name} has no text file in this game yet (assets/text/{code}.txt), so the game's "
+                             "own text shows until it is there.")
 
     def _on_show_play(self) -> None:
         # The game may have changed its settings (F2) or been started or
@@ -332,7 +559,9 @@ class Pages:
         self.v_cod3_windowed.set(False)
         self._gs_loaded_for = None   # read the file again, with the new line
 
-    def _play_cod3(self) -> None:
+    def _play_cod3(self, pack_ready: bool = False) -> None:
+        # [rexglue-native-settings] 2026-11-11 pack_ready: the texture pack was just built for this start
+        # (_play_builds_pack_first calls this again when it is done); both Play buttons call this with nothing.
         exe, why = self._play_exe()
         if exe is None:
             self._info("Not built yet", f"No {'Windows' if IS_WINDOWS else 'Linux'} build of Call of Duty 3 "
@@ -347,6 +576,11 @@ class Pages:
             self._info("Already running", "Call of Duty 3 is already running. Close it first to start it again "
                                           "(its settings are saved when you change them in the game).",
                        kind="warning")
+            return
+        # [rexglue-native-settings] 2026-11-11 (owner 07:33 "insignia censoring doesn't work"): the insignia censor's
+        # choice and the player's own pictures reach the game only through the user texture pack; build it first
+        # when it is out of date, then this starts the game.
+        if not pack_ready and self._play_builds_pack_first(out):
             return
         self._migrate_windowed(out)
         args = [str(exe)]
@@ -466,6 +700,18 @@ class Pages:
                                                                   padx=(px(24), 0) if st.kind == "bool" else 0)
         self._gs_vars[st.key] = (st, var, w)
         var.trace_add("write", lambda *a: self._update_game_settings_state())
+        if st.key == "cod3_voice_language":   # [acct2-decomp] a language the game doesn't have: which disc gives it
+            self.v_voice_note = tk.StringVar(value="")
+            hint(s, var=self.v_voice_note, style="Warn.TLabel", wrap=560).grid(row=r + 2, column=1, columnspan=2,
+                                                                              sticky="w")
+            var.trace_add("write", lambda *a: self._update_voice_note())
+            return r + 3
+        if st.key == "cod3_text_language":   # [f2-menus] 2026-11-11 a text language the game's folder has no file for
+            self.v_text_note = tk.StringVar(value="")
+            hint(s, var=self.v_text_note, style="Warn.TLabel", wrap=560).grid(row=r + 2, column=1, columnspan=2,
+                                                                             sticky="w")
+            var.trace_add("write", lambda *a: self._update_text_note())
+            return r + 3
         return r + 2
 
     @staticmethod
@@ -694,8 +940,10 @@ class Pages:
     # ------------------------------------------------------------------ Textures page
     def _page_textures(self, t) -> None:
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "Textures", "Sharper copies of the game's textures, and your own pictures in "
-                                           "place of any texture.", columns=1)
+        # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): the page's name, and the
+        # censored campaign's box from the Play page below the insignia section.
+        widgets.page_header(t, "Textures & censoring", "Sharper copies of the game's textures, your own pictures in "
+                                                       "place of any texture, and the insignia covered.", columns=1)
         self.pages["textures"]["on_show"] = self._update_texture_state
 
         u = section(t, "HD textures (waifu2x)", 1, columns=1)
@@ -741,25 +989,45 @@ class Pages:
         self._update_upscale()
 
         # The user texture pack (c3w/user_textures.py): local work only.
-        m = section(t, "Your own textures (insignia and others)", 6, columns=1)
-        hint(m, "Replace the swastikas and other insignia, or any texture, with your own pictures: save PNGs "
-                "named like the ripped ones in data/cod3/user_textures_png (insignia_textures.txt there lists the "
-                "insignia and their sizes), then build the pack. In a multiplayer match only the flags, banners "
-                "and other world insignia are replaced.").pack(anchor="w")
+        # [acct2-decomp] Joined with the built-in censor (owner 2026-11-05 07:24); short texts (07:25).
+        m = section(t, "Insignia and your own textures", 6, columns=1)
+        self._censor_builtin_box(m)   # [acct2-decomp]
+        hint(m, "Your own pictures: PNGs named like the ripped textures, in data/cod3/user_textures_png. "
+                "They win over the designs.").pack(anchor="w", pady=(px(8), 0))
         bf = ttk.Frame(m)
         bf.pack(anchor="w", pady=(px(8), 0))
         b = ttk.Button(bf, text="Open picture folder", command=self._open_user_textures)
         b.pack(side="left")
-        tip(b, "Makes the folder (with the insignia list) if needed and opens it.")
-        self.btn_user_pack = ttk.Button(bf, text="Build user texture pack", command=self._build_user_textures)
+        tip(b, "insignia_textures.txt there lists the insignia and their sizes.")
+        self.btn_user_pack = ttk.Button(bf, text="Build texture pack", command=self._build_user_textures)
         self.btn_user_pack.pack(side="left", padx=(px(6), 0))
         tip(self.btn_user_pack, lambda: self.v_user_pack_reason.get() or
-            "Pack your pictures for the game; it uses them from its next start.")
+            "The designs and your pictures, for the game's next start.")
         doc = self._doc_path("docs/TEXTURE_REPLACEMENT.md")
         if doc is not None:
             widgets.link(bf, "How it works", lambda: self._open_file(doc)).pack(side="left", padx=(px(12), 0))
         self.v_user_pack_reason = tk.StringVar()
-        hint(m, var=self.v_user_pack_reason, style="Warn.TLabel").pack(anchor="w", pady=(px(4), px(18)))
+        hint(m, var=self.v_user_pack_reason, style="Warn.TLabel").pack(anchor="w", pady=(px(4), 0))
+        # [rexglue-native-settings] 2026-11-11 where the pack stands (filled by _update_texture_state)
+        self.v_user_pack_state = tk.StringVar()
+        hint(m, var=self.v_user_pack_state, style="Accent.TLabel").pack(anchor="w", pady=(px(2), px(18)))
+
+        # [acct2-decomp] The censored campaign (c3w/censored.py): the German release's textures, on or off.
+        # [rexglue-native-settings] 2026-11-11 moved here from the Play page as it was (owner 08:28).
+        cs = section(t, "Censored campaign (German disc)", 7, columns=1)
+        cf = ttk.Frame(cs)
+        cf.pack(anchor="w", pady=(0, px(18)))
+        self.v_censored = tk.BooleanVar(value=False)
+        cz = ttk.Checkbutton(cf, text="Censored campaign (the German release's textures; needs the German disc once)",
+                             variable=self.v_censored, command=self._toggle_censored)
+        cz.grid(row=0, column=0, columnspan=6, sticky="w")
+        self.cb_censored = cz
+        tip(cz, "The campaign with the German release's textures (insignia taken off). Needs the German disc once: "
+                "the first time it asks for its .iso and copies about 1.2 GB from it; after that it switches at "
+                "once. A game built from the German disc is censored already: switching it off needs the "
+                "USA/Europe or Europe (Fr, Es, It) disc once. Text, voices and multiplayer don't change. Close the "
+                "game first.")
+        self._refresh_censored()   # [rexglue-native-settings] the box as the game's files are, now that it exists
 
     def _update_upscale(self) -> None:
         state = "readonly" if self.v_upscale.get() else "disabled"
@@ -770,6 +1038,7 @@ class Pages:
     def _update_texture_state(self) -> None:
         if not hasattr(self, "v_hd_state"):
             return
+        self._censor_builtin_load()   # [acct2-decomp]
         out = self._out_path()
         packed = out is not None and (out / "data" / "cod3" / "hd_textures").is_dir()
         if self.v_upscale.get():
@@ -783,7 +1052,27 @@ class Pages:
             self.lbl_hd_state.grid()
         else:
             self.lbl_hd_state.grid_remove()
+        if hasattr(self, "v_user_pack_state"):   # [rexglue-native-settings] 2026-11-11 the user pack's state
+            self.v_user_pack_state.set(self._user_pack_status(out))
         self._update_page_states()
+
+    def _user_pack_status(self, out: Optional[Path]) -> str:
+        """[rexglue-native-settings] 2026-11-11 One line on the user texture pack (the insignia censor's pictures and
+        your own): how many textures it has, and whether Play will build it first."""
+        if out is None:
+            return ""
+        data = out / "data" / "cod3"
+        try:
+            keys = user_textures.pack_keys(data)
+            why = user_textures.pack_out_of_date(data)
+            censor = censor_builtin.status(data)
+        except Exception as e:  # noqa: BLE001 - a status line only
+            return f"Texture pack: can't be read ({e})."
+        text = (f"Texture pack: {keys} texture(s), used from the game's next start." if keys else
+                "Texture pack: none built.")
+        if why:
+            text += f" {why[0].upper()}{why[1:]}: Play builds it first."
+        return f"{text} {censor}"
 
     def _user_data(self) -> Optional[Path]:
         """<output>/data/cod3, or None (with a message) without an output folder."""
@@ -813,6 +1102,49 @@ class Pages:
             return
         self._open(str(folder))
 
+    def _play_builds_pack_first(self, out: Path) -> bool:
+        """[rexglue-native-settings] 2026-11-11 When the user texture pack is older than the insignia censor's choice
+        or the player's own pictures (user_textures.pack_out_of_date), builds it the way "Build texture pack" does
+        (same progress and log lines, in the background) and starts the game when that is done: True. False when
+        there is nothing to build or no ripper to build it with (said in the log): the game starts as it is."""
+        data = out / "data" / "cod3"
+        try:
+            why = user_textures.pack_out_of_date(data)
+        except Exception as e:  # noqa: BLE001 - a check must never keep the game from starting
+            self.log.warn(f"Couldn't check the texture pack: {e}")
+            return False
+        if not why:
+            return False
+        if getattr(self, "_pack_for_play", False):   # Play pressed again while it builds
+            self.v_status.set("Building the texture pack: the game starts when it is done.")
+            return True
+        rip = user_textures.installed_rip(out, common.exe_name("rip"))
+        if rip is None:
+            self.log.warn(f"Texture pack: {why}, but there is no ripper in {out / 'tools'} to build it (build the "
+                          "game first). The game starts with the texture pack as it is.")
+            return False
+        self.log.info(f"Texture pack: {why}. Building it before the game starts...")
+        self._pack_for_play = True
+        self._cb_dirty = False   # this build applies the saved choice, as _build_user_textures
+        tool_root = Path(__file__).resolve().parent.parent
+
+        def work():
+            try:
+                runner = common.Runner(self.log, threading.Event())
+                keys = user_textures.build(rip, data, tool_root, self._jobs(), runner, self.log)
+                self.log.info(f"Texture pack built before the game starts: {keys} texture(s). "
+                              f"{censor_builtin.status(data)}")
+            except Exception as e:  # noqa: BLE001 - the game still starts, with the pack as it was
+                self.log.warn(f"The texture pack wasn't built ({e}); the game starts with the pack as it was.")
+            finally:
+                def start():   # on the UI thread
+                    self._pack_for_play = False
+                    self._censor_builtin_load()
+                    self._play_cod3(pack_ready=True)
+                self.q.put(("call", start))
+        self._bg(work, "Building the texture pack before the game starts...")
+        return True
+
     def _build_user_textures(self) -> None:
         """`rip cod3-user-pack` with the ripper the build left in tools/."""
         if self._job_running():   # [acct2-decomp] a build writes the same pack (pipeline: user_textures.build)
@@ -826,18 +1158,27 @@ class Pages:
         if rip is None:
             self._info("Not built yet", f"No ripper in {output / 'tools'}.\nBuild first (Set up).", kind="warning")
             return
+        try:   # [acct2-decomp] the game reads the pack it would replace
+            if game_settings.game_running(output):
+                self._info("Close the game first", "Call of Duty 3 is running: close it, then build the texture "
+                                                   "pack.", kind="warning")
+                return
+        except Exception:  # noqa: BLE001 - best effort, as _play_cod3
+            pass
+        self._cb_dirty = False   # [acct2-decomp] this build applies the saved choice
+        self._censor_builtin_load()
         tool_root = Path(__file__).resolve().parent.parent
 
         def work():
             runner = common.Runner(self.log, threading.Event())
             keys = user_textures.build(rip, data, tool_root, self._jobs(), runner, self.log)
             pack = user_textures.pack_dir(data)
-            self.q.put(("info", "User texture pack",
-                        f"{keys} texture(s) in the pack.\n{pack}\nThe game uses them from its next start; the Log "
-                        "page lists any picture that was skipped and why." if keys else
-                        "No usable pictures, so there is no user texture pack.\nThe Log page says why each "
-                        f"picture in {user_textures.png_dir(data)} was skipped."))
-        self._bg(work, "Building the user texture pack...")
+            censor = censor_builtin.status(data)   # [acct2-decomp]
+            self.q.put(("info", "Texture pack",
+                        f"{keys} texture(s) in the pack, used from the game's next start.\n{censor}\nSkipped "
+                        "pictures and why: Log page." if keys else
+                        f"No usable pictures, so there is no texture pack.\n{censor}\nWhy: Log page."))
+        self._bg(work, "Building the texture pack...")
 
     # ------------------------------------------------------------------ Mods & maps page
     def _page_maps(self, t) -> None:
@@ -1563,9 +1904,12 @@ class Pages:
 
     def _page_about(self, t) -> None:
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3 and Big Red One for PC "
-                                                "from your own discs, World at War's content, and the Rust tools for "
-                                                "Call of Duty 2 and United Offensive.", columns=1)   # [acct2-bro]
+        # [f2-menus] 2026-11-10 the three Xbox 360 ports named; "the Rust tools" said what they are instead
+        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3, Big Red One, World at "
+                                                "War, Call of Duty 2 and Call of Duty 4 for PC from your own discs, "
+                                                "World at War's content for Call of Duty 3, and the copy and LAN "
+                                                "server tools for the PC Call of Duty 2 and United Offensive.",
+                            columns=1)   # [acct2-bro]
         d = section(t, "Documents", 1, columns=1)
         d.columnconfigure(1, weight=1)
         docs = [("README.md", "Read me", "How to set up and play; the project folder."),

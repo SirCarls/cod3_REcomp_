@@ -117,6 +117,17 @@ std::mutex g_mutex;
 std::map<std::string, std::unique_ptr<Face>> g_faces;   // [acct2-ocr] by locale; null: no font file for it
 uint32_t g_scratch = 0;   // guest bytes for one run
 int g_logged = 0;
+// [acct2-ocr] 2026-11-07 (owner 16:57 "review these for potential exploits"): other players' names and chat are drawn
+// here too, and each character not seen before takes a slot, 223 to a 128 KB page that is never freed: names or chat
+// with many different characters could fill the guest's memory. So at most kMaxSetPages pages for a game font in a
+// locale (a pack's whole charset takes 16 at most: zh, 1,994 characters, run acct2-ocr-lang1-all; 8 were the most
+// made in any run) and kMaxPages in all; past that, new characters aren't drawn. Characters the face has no glyph
+// for share one slot (kNoGlyph).
+constexpr size_t kMaxSetPages = 32;
+constexpr int kMaxPages = 256;              // 33.5 MB of pages at most
+constexpr uint32_t kNoGlyph = 0x110000;     // past Unicode: stb draws the face's "missing" glyph for it
+int g_pages = 0;                            // pages made (the ones of a font made again stay in guest memory)
+bool g_full_told = false;
 
 uint8_t* Host(uint32_t guest) {
   return rex::system::kernel_state()->memory()->TranslateVirtual<uint8_t*>(guest);
@@ -169,13 +180,17 @@ std::array<uint8_t, 16> Dxt5WhiteBlock(const std::array<uint8_t, 16>& a) {
 int NextCodePoint(std::string_view s, size_t& at) {
   const uint8_t c = uint8_t(s[at++]);
   if (c < 0x80) return c;
-  const int extra = c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
+  const int extra = c >= 0xF8 ? -1 : c >= 0xF0 ? 3 : c >= 0xE0 ? 2 : c >= 0xC0 ? 1 : -1;
   if (extra < 0) return -1;
   int cp = c & (0x3F >> extra);
   for (int i = 0; i < extra; ++i) {
     if (at >= s.size() || (uint8_t(s[at]) & 0xC0) != 0x80) return -1;
     cp = (cp << 6) | (uint8_t(s[at++]) & 0x3F);
   }
+  // [acct2-ocr] 2026-11-07 only what UTF-8 allows (other players' names and chat come here too): no overlong forms,
+  // surrogates or code points past U+10FFFF
+  static constexpr int kLeast[4] = {0, 0x80, 0x800, 0x10000};
+  if (cp < kLeast[extra] || cp > 0x10FFFF || (cp >= 0xD800 && cp < 0xE000)) return -1;
   return cp;
 }
 
@@ -217,7 +232,16 @@ Face* FaceFor(const std::string& locale) {   // g_mutex held
 }
 
 FontSet* SetFor(uint8_t* base, Face* face, uint32_t game) {   // g_mutex held
-  if (auto it = face->sets.find(game); it != face->sets.end()) return it->second.get();
+  if (auto it = face->sets.find(game); it != face->sets.end()) {
+    // [acct2-ocr] 2026-11-07 Still the same game font at this address? A level load can put another one there (another
+    // size): its lines would be drawn at the old font's size and on its baseline. Then the set is made again (the old
+    // pages stay in guest memory, unused).
+    FontSet* set = it->second.get();
+    if (ReadS32(base, game + kFontLine) == set->line && ReadS32(base, game + kFontAscent) == set->ascent) return set;
+    REXLOG_INFO("cod3: native text: font {:08X} is another font now (line {} -> {}): {} pages made again", game,
+                set->line, ReadS32(base, game + kFontLine), face->locale);
+    face->sets.erase(it);
+  }
   if (ReadU32(base, game + kFontFirst) != 0x20 || ReadU32(base, game + kFontCount) != kSlots) return nullptr;
   const uint32_t tex = ReadU32(base, game + kFontTex);
   if (tex < 0x40000000u || tex >= 0xF0000000u) return nullptr;
@@ -274,15 +298,26 @@ FontSet* SetFor(uint8_t* base, Face* face, uint32_t game) {   // g_mutex held
 // A new page for `set`: our FONT (the game font's header, our records and UVs) and texture object (the game
 // font's, pointing at our atlas, mips off). g_mutex held.
 bool NewPage(uint8_t* base, FontSet* set) {
+  if (set->pages.size() >= kMaxSetPages || g_pages >= kMaxPages) {   // [acct2-ocr] 2026-11-07
+    if (!g_full_told) {
+      g_full_told = true;
+      REXLOG_WARN("cod3: native text: no more glyph pages ({} for font {:08X}, {} in all): characters not drawn yet "
+                  "are left out", set->pages.size(), set->game, g_pages);
+    }
+    return false;
+  }
   auto* mem = rex::system::kernel_state()->memory();
   const uint32_t game_tex = ReadU32(base, set->game + kFontTex);
   const uint32_t font = mem->SystemHeapAlloc(kFontHeader + kSlots * (kRecSize + kUvSize));
   const uint32_t tex = mem->SystemHeapAlloc(kTexSize, 0x40);
   const uint32_t texels = mem->SystemHeapAlloc(kPageBytes, 0x1000, rex::memory::kSystemHeapPhysical);
   if (!font || !tex || !texels) {
+    for (const uint32_t a : {font, tex, texels})   // [acct2-ocr] 2026-11-07 the parts that were had back (asked again)
+      if (a) mem->SystemHeapFree(a);
     REXLOG_WARN("cod3: native text: no guest memory for a page; these lines stay as they are");
     return false;
   }
+  ++g_pages;   // [acct2-ocr]
   std::memcpy(base + font, base + set->game, kFontHeader);
   const uint32_t recs = font + kFontHeader, uvs = recs + kSlots * kRecSize;
   std::memset(base + recs, 0, kSlots * (kRecSize + kUvSize));
@@ -309,12 +344,17 @@ bool NewPage(uint8_t* base, FontSet* set) {
 
 // Puts `cp` on `page` (the last of `set`, not yet drawn). False when it has no room left. g_mutex held.
 bool Place(uint8_t* base, FontSet* set, Page* page, uint32_t cp) {
+  // [acct2-ocr] 2026-11-07 The slot whose byte is '^' stays empty: a run starting with it, then a digit's slot, would
+  // be taken by the game for a color code (its own "^N" at a line's start) and two of our characters would vanish.
+  if (page->used == int('^' - 0x20)) ++page->used;
   if (page->used >= int(kSlots)) return false;
   int adv = 0, lsb = 0, x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   const stbtt_fontinfo* info = &set->face->info;
   stbtt_GetCodepointHMetrics(info, int(cp), &adv, &lsb);
   stbtt_GetCodepointBitmapBox(info, int(cp), set->scale_x, set->scale, &x0, &y0, &x1, &y1);
-  const int gw = std::max(0, x1 - x0), gh = std::max(0, y1 - y0);
+  int gw = std::max(0, x1 - x0), gh = std::max(0, y1 - y0);
+  // [acct2-ocr] 2026-11-07 a glyph larger than a page (with its texel of air) would be written past the page: blank
+  if (gw + 2 > kPageW || gh + 2 > kPageH) gw = gh = 0;
   // Whole 4x4 blocks with a texel of air round the glyph: no two glyphs share a block.
   const int cw = (gw + 2 + 3) & ~3, ch = (gh + 2 + 3) & ~3;
   int px = page->shelf_x, py = page->shelf_y;
@@ -366,6 +406,8 @@ bool Place(uint8_t* base, FontSet* set, Page* page, uint32_t cp) {
 // else on a new page, which is then filled up with the locale's next characters. g_mutex held.
 const Glyph* GlyphFor(uint8_t* base, FontSet* set, uint32_t cp) {
   if (auto it = set->glyphs.find(cp); it != set->glyphs.end()) return &it->second;
+  // [acct2-ocr] 2026-11-07 a character the face has no glyph for: its one "missing" glyph, in one slot for them all
+  if (cp != kNoGlyph && stbtt_FindGlyphIndex(&set->face->info, int(cp)) == 0) return GlyphFor(base, set, kNoGlyph);
   if (set->pages.empty() || set->pages.back().sealed || !Place(base, set, &set->pages.back(), cp)) {
     if (!NewPage(base, set) || !Place(base, set, &set->pages.back(), cp)) return nullptr;
     Page* page = &set->pages.back();
@@ -497,17 +539,21 @@ bool Ready(uint8_t* base, uint32_t font, std::string_view line, FontSet** set) {
 
 bool Active(std::string_view locale) {
   if (!REXCVAR_GET(cod3_text_native) || locale.empty()) return false;
+  // [acct2-ocr] 2026-11-07 Each locale's answer kept (the files are looked at once per locale). It was the last
+  // locale's only: with F2's Text list open (it asks for all six) the text layer's ask for the chosen one read the
+  // font files again for every line drawn.
   static std::mutex mutex;
-  static std::string last;
-  static bool last_ok = false;
-  std::lock_guard lock(mutex);
-  if (locale != last) {   // the files are looked at once per locale
-    last = std::string(locale);
-    std::filesystem::path file;
-    float em = 0, ascent = 0;
-    last_ok = cod3::text_overlay::FontFile(locale, &file, &em, &ascent);
+  static std::map<std::string, bool, std::less<>> known;
+  {
+    std::lock_guard lock(mutex);
+    if (const auto it = known.find(locale); it != known.end()) return it->second;
   }
-  return last_ok;
+  std::filesystem::path file;
+  float em = 0, ascent = 0;
+  const bool ok = cod3::text_overlay::FontFile(locale, &file, &em, &ascent);
+  std::lock_guard lock(mutex);
+  known[std::string(locale)] = ok;
+  return ok;
 }
 
 // [acct2-ocr] cod3_debug_text_english: a line the game font draws with a word of three Latin letters or more, while

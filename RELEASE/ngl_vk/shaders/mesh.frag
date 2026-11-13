@@ -142,6 +142,13 @@ const uint TINT_MAP_ALPHA = 0x02000000u;
 // [rexglue-native] 2026-11-10 rn41x: a textured lit draw's tint (ngl_vk.h NGL_VK_TINT_LIGHT_DIMMED; the SpeedTree
 // leaves, 51732ACF1B6A87C5 / 6189945E43D7FBC8): the directional lights times the corners' red, no sun shadow
 const uint TINT_LIGHT_DIMMED = 0x01000000u;
+// [rexglue-native] 2026-11-10 rn46c: a textured lit draw's tint (ngl_vk.h NGL_VK_TINT_LIGHT_MAPPED; SpeedTree's
+// branches and fronds, EA6B670C8ACDCED1 and F38DD169E44123DB): the directional lights times the texture in set 1
+// (the tree's self-shadow map) at the lightmap's coordinates, no sun shadow; the ambient is not dimmed by it
+// [rexglue-native] 2026-11-10 21:40: was 0x00800000u, the top bit of the tint color's red (a bright tint on a textured
+// lit draw was taken for a tree: waw-decomp's 21:10 report); now TINT_MAP_ALPHA's number, which is read in the unlit
+// branch only, as this one is in the scene-light branch only
+const uint TINT_LIGHT_MAPPED = 0x02000000u;
 const uint MODE_MIX = 1u;                   // the base texture and the second (set 1) mixed
 const uint MODE_THIRD = 2u;                 // times the third (set 2) at the coordinates in the normal's place
 const uint MODE_SHINY = 4u;                 // plus the environment map (set 1)
@@ -279,6 +286,18 @@ vec3 irradiance(uint slot, vec3 n)
            draw_lights[at + 6u].rgb * n.x + draw_lights[at + 7u].rgb * n.y + draw_lights[at + 8u].rgb * n.z;
 }
 
+// [waw-decomp] 2026-11-10: the rows' third-degree term (ngl_vk.h irradiance_cubic), there when row 1's w is 1: its
+// color x (a . n)(b . n)(c . n); the three axes are at METAL_AT, each with one part of the color as its w
+vec3 irradiance_cubic(uint slot, vec3 n)
+{
+    uint at = DRAW_LIGHT_VEC4S * (slot - 1u);
+    vec4 a = draw_lights[at + METAL_AT], b = draw_lights[at + METAL_AT + 1u], c = draw_lights[at + METAL_AT + 2u];
+
+    if (draw_lights[at + IRRADIANCE_AT + 1u].w <= 0.0)
+        return vec3(0.0);
+    return vec3(a.w, b.w, c.w) * (dot(a.xyz, n) * dot(b.xyz, n) * dot(c.xyz, n));
+}
+
 // the game's textures repeat; the samplers clamp (for the quads), so the coordinates are wrapped here, with the
 // unwrapped ones' derivatives so the wrap leaves no seam
 vec4 wrapped(sampler2D s, vec2 uv)
@@ -294,6 +313,80 @@ vec4 strip_frame(sampler2D s, vec2 uv, uint frames, uint shown)
     return textureGrad(s, vec2((fract(uv.x) + float(shown)) * scale.x, fract(uv.y)), dFdx(uv) * scale,
                        dFdy(uv) * scale);
 }
+
+#ifndef NGL_VK_FOUR_SETS
+// [waw-decomp] 2026-11-10: Call of Duty 2's water (ngl_vk.h water_cube; the game's water.hlsl, on the Xbox 360 its
+// pixel shader DD12484223A211FC). The base texture is the water's height map (its red).
+// The height at a place of the map, the map repeating, blended between its four nearest texels (the samplers here
+// clamp, and blending across the map's edge by hand leaves no seam in the ripples)
+float water_height(vec2 uv)
+{
+    ivec2 size = textureSize(base_texture, 0);
+    vec2 at = uv * vec2(size) - 0.5;
+    vec2 low = floor(at);
+    vec2 part = at - low;
+    ivec2 a = ivec2(low - vec2(size) * floor(low / vec2(size)));               // the lower texel, wrapped
+    ivec2 b = ivec2(a.x + 1 < size.x ? a.x + 1 : 0, a.y + 1 < size.y ? a.y + 1 : 0);   // and the next one
+
+    return mix(mix(texelFetch(base_texture, a, 0).r, texelFetch(base_texture, ivec2(b.x, a.y), 0).r, part.x),
+               mix(texelFetch(base_texture, ivec2(a.x, b.y), 0).r, texelFetch(base_texture, b, 0).r, part.x), part.y);
+}
+
+// The ripples' height: three octaves of the map, each 3.7 times finer and 0.6 times as strong as the last (the
+// game's "turbulance")
+float water_ripples(vec2 uv)
+{
+    float sum = 0.0, strength = 1.0;
+
+    for (int octave = 0; octave < 3; octave++) {
+        sum += water_height(uv) * strength;
+        uv *= 3.7;
+        strength *= 0.6;
+    }
+    return sum;
+}
+
+// The water's color at this pixel. The slot holds (the water's color, 0), (the sun's color, 0), (0, 1, 0, 0) from
+// FABRIC_AT and the way toward the sun at METAL_AT; the mesh's own space is taken for the world's, z up.
+vec3 water_color(uint slot)
+{
+    uint at = DRAW_LIGHT_VEC4S * (slot - 1u);
+    vec3 eye = normalize(object_position - vec3(eye_x.w, eye_y.w, eye_w.w));   // the way from the eye to the pixel
+    // the coordinates moved along the eye's way by how far the height at half the coordinates is from 0.5
+    vec2 uv = texture_uv + (0.5 - water_height(texture_uv * 0.5)) * eye.xy * (1.5 / 64.0);
+    float here = water_ripples(uv);
+    float across = water_ripples(uv + vec2(0.5 / 128.0, 0.0));
+    float along = water_ripples(uv + vec2(0.0, 0.5 / 128.0));
+    vec3 ripple_normal = normalize(vec3(across - here, along - here, 1.0));
+    vec3 mirrored = reflect(eye, ripple_normal);
+    float glint = max(dot(mirrored, draw_lights[at + METAL_AT].xyz), 0.0);
+    vec4 sky = texture(metal_cube, vec3(mirrored.xy, abs(mirrored.z)));
+
+    return mix(draw_lights[at + FABRIC_AT].rgb * ripple_normal.z, sky.rgb, sky.a) +
+           pow(glint, 64.0) * draw_lights[at + FABRIC_AT + 1u].rgb;
+}
+
+// [waw-decomp] 2026-11-10: Call of Duty 2's light grid (ngl_vk.h grid_cube; the game's lprobe pixel shaders, the PC
+// copy's lightprobe.hlsl), there when the slot's irradiance row 2 has w 1: the normal turned to the world by rows 0
+// to 2, the cube of weights (set 6) read there and at the opposite direction, each against its four numbers of
+// every color (rows 3 to 8: red's two, green's, blue's)
+bool has_grid(uint slot)
+{
+    return slot != 0u && draw_lights[DRAW_LIGHT_VEC4S * (slot - 1u) + IRRADIANCE_AT + 2u].w > 0.0;
+}
+
+vec3 grid_light(uint slot, vec3 n)
+{
+    uint at = DRAW_LIGHT_VEC4S * (slot - 1u) + IRRADIANCE_AT;
+    vec3 way = vec3(dot(n, draw_lights[at].xyz), dot(n, draw_lights[at + 1u].xyz), dot(n, draw_lights[at + 2u].xyz));
+    vec4 here = textureLod(metal_cube, way, 0.0);
+    vec4 opposite = textureLod(metal_cube, -way, 0.0);
+
+    return vec3(dot(here, draw_lights[at + 3u]) + dot(opposite, draw_lights[at + 4u]),
+                dot(here, draw_lights[at + 5u]) + dot(opposite, draw_lights[at + 6u]),
+                dot(here, draw_lights[at + 7u]) + dot(opposite, draw_lights[at + 8u]));
+}
+#endif
 
 void main()
 {
@@ -326,6 +419,8 @@ void main()
     bool skin = fabric && draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT + 2u].y > 0.0;
     // rn40y: the skin's terminator (2340DF59702A9AD4's bias and scale; 0 0: none), METAL_AT's x and y
     vec2 skin_terminator = skin ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT].xy : vec2(0.0);
+    // [acct2-bro] 2026-11-12 rn60a: the skin's own tint on its base (ngl_vk.h skin_tint; 0 0 0: none), METAL_AT + 1
+    vec3 skin_tint = skin ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 1u].xyz : vec3(0.0);
     // rn34: the gun metal (CFC45995D1294CCE): not fabric, its third vec4's z 1
     bool metal = fabric_slot != 0u && !fabric &&
                  draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT + 2u].z > 0.0;
@@ -334,10 +429,33 @@ void main()
     // rn39: the bumped vehicle parts (B2E0DA00, 9A3D3175, 7D4E7CAD): fabric, not skin or detail, METAL_AT's w 1
     bool vehicle = fabric && !skin && !detail &&
                    draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT].w > 0.0;
+    // [waw-decomp] 2026-11-10: Call of Duty 2's models with a highlights' lookup (ngl_vk.h specular_lookup; the game's
+    // 98A77B2DFA1049B4): bumped and specular, not fabric or metal, the slot's third fabric vec4's y 1
+    bool lookup = fabric_slot != 0u && !fabric && !metal &&
+                  draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT + 2u].y > 0.0;
     // rn40: the glass (FC767C09DBD34C2A with a cube): not bumped, mixed or shiny, its slot's third vec4's z 1 (only the
     // fabric's kinds write there otherwise, and they are bumped)
     uint lens_slot = (mode & (MODE_BUMPED | MODE_MIX | MODE_SHINY)) == 0u ? flags >> 16 : 0u;
     bool lens = lens_slot != 0u && draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].z > 0.0;
+    // [waw-decomp] 2026-11-10: Call of Duty 2's water (ngl_vk.h water_cube): in a slot of the glass's kind, its third
+    // vec4's y 1 (the glass leaves it 0); its color is made here, before the alpha test, like every lookup
+    bool water = lens_slot != 0u && !lens &&
+                 draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].y > 0.0;
+    vec3 water_rgb = water ? water_color(lens_slot) : vec3(0.0);
+    // [waw-decomp] 2026-11-10: Call of Duty 2's detail map (ngl_vk.h detail_add_map; its "_dtl" pixel shaders): any
+    // slot that is not the fabric's, the metal's, the glass's or the water's, its third fabric vec4's w 2
+    uint detail_slot = flags >> 16;
+    bool detail_add = detail_slot != 0u && !fabric && !metal && !lens && !water &&
+                      draw_lights[DRAW_LIGHT_VEC4S * (detail_slot - 1u) + FABRIC_AT + 2u].w > 1.5;
+    // [waw-decomp] 2026-11-10: Call of Duty 2's world surfaces with a highlights' lookup (ngl_vk.h specular_lookup,
+    // its second half; the game's lmap_s shaders): a lightmapped draw's slot whose third fabric vec4's x is 1
+    bool world_lookup = shading == SHADE_LIGHTMAP && detail_slot != 0u && !lens && !water &&
+                        draw_lights[DRAW_LIGHT_VEC4S * (detail_slot - 1u) + FABRIC_AT + 2u].x > 0.0;
+    // [waw-decomp] 2026-11-11: Call of Duty 2's world by its normal map (ngl_vk.h world_normal_map): that x is 2
+    // (with a highlight: its lookup is on the cube's +z face, set 6) or -1 (without one); the map is in set 4
+    float world_mark = shading == SHADE_LIGHTMAP && detail_slot != 0u && !lens && !water
+                       ? draw_lights[DRAW_LIGHT_VEC4S * (detail_slot - 1u) + FABRIC_AT + 2u].x : 0.0;
+    bool world_bumped = world_mark > 1.5 || world_mark < -0.5;
 #else
     const bool fabric = false;
     const vec4 fabric_numbers = vec4(0.0);
@@ -346,15 +464,23 @@ void main()
     const float fabric_fade = 0.0;
     const bool skin = false;
     const vec2 skin_terminator = vec2(0.0);
+    const vec3 skin_tint = vec3(0.0);       // [acct2-bro] 2026-11-12 rn60a
     const bool metal = false;
     const bool detail = false;
     const bool vehicle = false;
+    const bool lookup = false;              // [waw-decomp]
     const uint lens_slot = 0u;
     const bool lens = false;
+    const bool water = false;               // [waw-decomp]
+    const bool detail_add = false;          // [waw-decomp]
+    const bool world_lookup = false;        // [waw-decomp]
+    const bool world_bumped = false;        // [waw-decomp] 2026-11-11
+    const vec3 water_rgb = vec3(0.0);
 #endif
     vec3 noise = vec3(0.0);     // rn32: the skin's noise swatch, read before the alpha test like every lookup
     vec3 scratch = vec3(0.0);   // rn34: the gun metal's scratch map and its cube's color, the same
     vec3 reflection = vec3(0.0);
+    float lookup_sharpness = 0.0;   // [waw-decomp] the specular map's alpha, a lookup draw's highlight's sharpness
 
     if ((mode & MODE_BUMPED) != 0u) {   // the game's per-pixel lit models (pixel shader CDBAC6026B525050)
         vec4 bump = wrapped(lightmap_texture, texture_uv);
@@ -398,6 +524,22 @@ void main()
                                 // x and y times the material's scale, z from the unscaled ones, sqrt(|1 - x^2 - y^2|)
             bent.z = sqrt(abs(1.0 - dot(bent.xy, bent.xy)));
             bent.xy *= draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT].x;
+            // [rexglue-native] 2026-11-10 rn46m: the props' overlay (ngl_vk.h overlay_map; the game's
+            // 9960D40B0F3CECA1, its instructions 13-28, 36, 37, 43-66 and 96): METAL_AT's y its scale (0: none), z
+            // its angle, the next vec4 its key color; the map in set 4. The color map x a smoothstep of the overlay
+            // from the key (0) down to 0.059 (1), each of red, green and blue by itself.
+            vec4 overlay_numbers = draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT];
+            if (overlay_numbers.y > 0.0) {
+                vec3 overlay_key = draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 1u].xyz;
+                vec2 from_middle = (texture_uv - 0.5) * overlay_numbers.y + vec2(-0.44, 0.0);
+                float overlay_sin = sin(overlay_numbers.z), overlay_cos = cos(overlay_numbers.z);
+                vec2 overlay_uv = vec2(from_middle.x * overlay_cos + from_middle.y * overlay_sin + 0.94,
+                                       from_middle.y * overlay_cos - from_middle.x * overlay_sin + 0.5);
+                vec3 overlay_span = vec3(0.059) - overlay_key;
+                overlay_span = mix(overlay_span, vec3(-1e-4), lessThan(abs(overlay_span), vec3(1e-4)));
+                vec3 overlay_t = clamp((wrapped(fabric_mask, overlay_uv).rgb - overlay_key) / overlay_span, 0.0, 1.0);
+                base.rgb *= overlay_t * overlay_t * (3.0 - 2.0 * overlay_t);
+            }
         } else if (fabric) {  // the uniforms (3BA30872B3955C23): the woven swatch folded in, channel by channel by the mask
             vec4 woven = wrapped(normal_swatch, (texture_uv - 0.5) * fabric_numbers.x + 0.5);
             vec3 swatch = vec3(2.0 * woven.a - 1.0, 2.0 * woven.g - 1.0, 0.0);
@@ -410,7 +552,27 @@ void main()
                                  bent.z * swatch.z) - bent);
         }
 #endif
-        if (frame > 0.0)
+#ifndef NGL_VK_FOUR_SETS
+        // [acct2-bro] 2026-11-12: the gun metal's Normal_Map_Depth (ngl_vk.h metal_normal_depth, the w beside the world
+        // matrix's second column; 0: none): the map's x and y times it, its z from the unscaled ones (687855C9's
+        // instructions 21-26, CC31EB0C's 26-48)
+        if (metal) {
+            float metal_depth = draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 2u].w;
+
+            if (metal_depth > 0.0)
+                bent.xy *= metal_depth;
+        }
+#endif
+        if (lookup) {   // [waw-decomp] 98A77B2DFA1049B4's instructions 8-12: the normal plus the map's x and y along
+                        // the frame's two ways, each of unit length; no z from the map
+            // [waw-decomp] 2026-11-11: the frame's two ways run against rising u and v where the slopes' cross
+            // product looks away from the normal (Call of Duty 2's view: runs cod2side195 / 196), so the bends turn
+            float side = dot(normal, cross(along_x, along_y)) < 0.0 ? -1.0 : 1.0;
+
+            if (dot(tangent, tangent) > 0.0 && dot(bitangent, bitangent) > 0.0)
+                normal = normalize(normal + side * (bent.x * normalize(tangent) + bent.y * normalize(bitangent)));
+            lookup_sharpness = wrapped(third_texture, texture_uv).a;
+        } else if (frame > 0.0)
             normal = normalize(mat3(tangent * inversesqrt(frame), bitangent * inversesqrt(frame), normal) * bent);
         if ((mode & MODE_SPECULAR) != 0u)
             gloss = wrapped(third_texture, texture_uv).rgb;
@@ -431,6 +593,15 @@ void main()
                 scratch = wrapped(fabric_mask, texture_uv).rgb;
             // the game's cube instruction takes the direction as (x, z, y) (its operands r14.yyxz and r14.zxyy)
             reflection = texture(metal_cube, vec3(r.x, r.z, r.y)).rgb;
+            // [rexglue-native-guns] 2026-11-11: the game's own blur of it (ngl_vk.h metal_cube_blur; CFC45995D1294CCE's
+            // instructions 59-90): the cube read with the two gradient vectors the game's shader sets, across R
+            float cube_blur = draw_lights[at + FABRIC_AT + 2u].y;
+            if (cube_blur > 0.0) {
+                float across = max(abs(r.z), 1e-4);
+                reflection = textureGrad(metal_cube, vec3(r.x, r.z, r.y),
+                                         cube_blur * vec3(0.0, -r.y / across, r.z < 0.0 ? -1.0 : 1.0),
+                                         cube_blur / across * vec3(r.y * r.y + r.z * r.z, -r.x * r.z, -r.x * r.y)).rgb;
+            }
         }
 #endif
     }
@@ -446,6 +617,50 @@ void main()
                          dot(n, n) > 0.0 ? normalize(n) : vec3(0.0, 0.0, 1.0)) + draw_lights[at + METAL_AT].w;
 
         reflection = texture(metal_cube, vec3(r.x, r.z, r.y)).rgb;  // read at x, z, y, as the gun metal's
+    }
+    if (world_bumped) {     // [waw-decomp] 2026-11-11: 6C7F0E21C61DF68F's instructions 4 and 9 to 13 (ngl_vk.h
+                            // world_normal_map): the normal plus the map's two bends along the frame's two ways,
+                            // each of unit length, as a lookup model's above
+        vec4 bump = wrapped(fabric_mask, texture_uv);
+        vec3 along_x = dFdx(object_position), along_y = dFdy(object_position);
+        vec2 uv_x = dFdx(texture_uv), uv_y = dFdy(texture_uv);
+        vec3 across_y = cross(along_y, normal), across_x = cross(normal, along_x);
+        vec3 tangent = across_y * uv_x.x + across_x * uv_y.x;
+        vec3 bitangent = across_y * uv_x.y + across_x * uv_y.y;
+        // the frame's two ways run along rising u and v only where the slopes' cross product looks the normal's way;
+        // where it looks the other way (Call of Duty 2's view of its world: runs cod2side176 to 189) they run
+        // against them, so the bends are turned about
+        float side = dot(normal, cross(along_x, along_y)) < 0.0 ? -1.0 : 1.0;
+
+        if (dot(tangent, tangent) > 0.0 && dot(bitangent, bitangent) > 0.0) {
+            if (world_mark < -1.5) {    // [acct2-bro] 2026-11-12: Call of Duty 3's way (ngl_vk.h world_bump_scale;
+                                        // 141294CDC7C97127's instructions 17-41): z from x and y, the map's scale,
+                                        // the detail normal map (set 5) mixed in, the corner's normal's share z
+                vec4 numbers = draw_lights[DRAW_LIGHT_VEC4S * (detail_slot - 1u) + FABRIC_AT];
+                vec2 xy = 2.0 * bump.ag - 1.0;
+                float z = sqrt(max(1.0 - dot(xy, xy), 0.0));
+
+                xy *= numbers.x;
+                if (numbers.z > 0.0) {
+                    vec2 detail_xy = 2.0 * wrapped(normal_swatch, texture_uv * numbers.z).ag - 1.0;
+                    float detail_z = sqrt(max(1.0 - dot(detail_xy, detail_xy), 0.0));
+
+                    xy = xy * detail_z + numbers.y * detail_xy * z;
+                    z *= detail_z;
+                }
+                uint turned = uint(numbers.w + 0.5);    // the frame's test bits (ngl_vk.h world_bump_frame)
+                if ((turned & 4u) != 0u)
+                    xy = xy.yx;
+                if ((turned & 1u) != 0u)
+                    xy.x = -xy.x;
+                if ((turned & 2u) != 0u)
+                    xy.y = -xy.y;
+                normal = normalize(side * (xy.x * normalize(tangent) + xy.y * normalize(bitangent)) + z * normal);
+            } else {
+                normal = normalize(normal + side * ((2.0 * bump.a - 1.0) * normalize(tangent) +
+                                                    (2.0 * bump.g - 1.0) * normalize(bitangent)));
+            }
+        }
     }
 #endif
 
@@ -477,6 +692,29 @@ void main()
 
             light = ambient.r * (second.rgb * (1.0 + ambient.g * facing_up) +
                                  unpacked_color(light_colors[0]) * second.a * facing_sun * sun_reaching() + nearby);
+#ifndef NGL_VK_FOUR_SETS
+            if (world_lookup) {     // [waw-decomp] 6C7F0E21C61DF68F's instructions 14, 17, 29 to 31 and 39: the
+                                    // specular map's color x the highlights' color x the lookup at (the map's alpha,
+                                    // N.H) x mix(the shadowed share, 1, the sun's share x the sun's reach)
+                uint at = DRAW_LIGHT_VEC4S * ((flags >> 16) - 1u);
+                vec3 to_eye = vec3(eye_x.w, eye_y.w, eye_w.w) - object_position;
+
+                if (dot(toward, toward) > 0.0 && dot(to_eye, to_eye) > 0.0) {
+                    vec4 specular = wrapped(third_texture, texture_uv);
+                    float facing = clamp(dot(normal, normalize(normalize(toward) + normalize(to_eye))), 0.0, 1.0);
+
+                    // [waw-decomp] 2026-11-11: with a normal map in set 4 the lookup is the cube's +z face
+                    // (ngl_vk.h world_tables), read inside the face: half a texel of 256 from its edges
+                    vec2 in_face = clamp(vec2(specular.a, facing), 0.5 / 256.0, 1.0 - 0.5 / 256.0);
+                    vec3 table = world_bumped
+                        ? textureLod(metal_cube, vec3(2.0 * in_face.x - 1.0, 1.0 - 2.0 * in_face.y, 1.0), 0.0).rgb
+                        : textureLod(fabric_mask, vec2(specular.a, facing), 0.0).rgb;
+
+                    shine += specular.rgb * draw_lights[at + FABRIC_AT].rgb * table *
+                             mix(draw_lights[at + FABRIC_AT + 1u].x, 1.0, second.a * sun_reaching());
+                }
+            }
+#endif
         } else {
             light = doubled * second.rgb;
         }
@@ -491,7 +729,10 @@ void main()
         // rn41x: the SpeedTree leaves (51732ACF1B6A87C5's light, 6189945E43D7FBC8 reads no shadow): the lights x the
         // corners' red (the leaf's dimming), the sun not shadowed
         bool dimmed = (tint & TEXTURED) != 0u && (tint & TINT_LIGHT_DIMMED) != 0u;
-        float sun = dimmed ? 1.0 : sun_reaching();  // the first light is the sun
+        // rn46c: SpeedTree's branches and fronds: the lights x the self-shadow map, the sun not shadowed
+        bool self_shadowed = (tint & TEXTURED) != 0u && (tint & TINT_LIGHT_MAPPED) != 0u;
+        vec3 self_shadow = self_shadowed ? texture(lightmap_texture, lightmap_texture_uv).rgb : vec3(1.0);
+        float sun = dimmed || self_shadowed ? 1.0 : sun_reaching();  // the first light is the sun
         uint slot = flags >> 16;
         vec3 first_light = unpacked_color(light_colors[0]) * sun;
 
@@ -501,11 +742,17 @@ void main()
             first_light = max(mix(first_light, vec3(1.0), clamp(fabric_fade / gl_FragCoord.w, 0.0, 1.0)),
                               vec3(fabric_floor));
         light = has_irradiance(slot) ? irradiance(slot, normal) : ambient;
+        if (has_irradiance(slot) && !fabric && !lens && !water)     // [waw-decomp] the rows' third-degree term
+            light = max(light + irradiance_cubic(slot, normal), vec3(0.0));
+#ifndef NGL_VK_FOUR_SETS
+        if (!fabric && !lens && !water && has_grid(slot))   // [waw-decomp] Call of Duty 2's light grid instead
+            light = grid_light(slot, normal);
+#endif
         for (uint i = 0u; i < count; i++) {
             vec3 toward = unpacked_toward(light_toward[i]);
 
             if (dot(toward, toward) > 0.0)    // rn40y: the sun also by the skin's terminator (1 for others)
-                light += max(dot(normal, normalize(toward)), 0.0) * (dimmed ? vertex_color.r : 1.0) *
+                light += max(dot(normal, normalize(toward)), 0.0) * (dimmed ? vertex_color.r : 1.0) * self_shadow *
                          (i == 0u ? first_light * terminator(surface_normal, toward, skin_terminator)
                                   : unpacked_color(light_colors[i]));
         }
@@ -570,6 +817,11 @@ void main()
             // the rim: t = saturate(3.546 x (0.337 - N.V)), s = t^2 (3 - 2t), the base toward a blue-grey
             float t = clamp(rim_scale * (hue_edge.w - dot(normal, eye)), 0.0, 1.0);
             vec3 mask = gloss + scratch + mix(base.rgb, rim, t * t * (3.0 - 2.0 * t));
+            // [acct2-bro] 2026-11-11: 687855C9BA600FC3's mask (the Thompson; ngl_vk.h metal_mask_floor, the w beside
+            // the world matrix's first column): a grey floor and the rim added to it, not the base turned to the rim
+            float mask_floor = draw_lights[at + METAL_AT + 1u].w;
+            if (mask_floor > 0.0)
+                mask = gloss + scratch + vec3(mask_floor) + rim * (t * t * (3.0 - 2.0 * t));
             // the highlights: the sun's (its color x the shadow) and the point lights' (x their falloff), no N.L
             vec3 highlights = nearby_highlight(slot, normal, eye, numbers.z);
 
@@ -578,6 +830,22 @@ void main()
             shine += (numbers.x * highlights + numbers.y * reflection) * mask;
             base.rgb *= hue_edge.rgb;
             light *= numbers.x;
+#ifndef NGL_VK_FOUR_SETS
+        } else if ((mode & MODE_SPECULAR) != 0u && lookup) {
+            // [waw-decomp] 98A77B2DFA1049B4's instructions 13-17, 29-33 and 39: the specular map's color x the
+            // highlights' color x the lookup at (the map's alpha, N.H) x mix(the shadowed share, 1, the sun's reach)
+            uint at = DRAW_LIGHT_VEC4S * (slot - 1u);
+            vec3 toward = unpacked_toward(light_toward[0]);
+            vec3 to_eye = vec3(eye_x.w, eye_y.w, eye_w.w) - object_position;
+
+            if (dot(toward, toward) > 0.0 && dot(to_eye, to_eye) > 0.0) {
+                float facing = clamp(dot(normal, normalize(normalize(toward) + normalize(to_eye))), 0.0, 1.0);
+
+                shine += gloss * draw_lights[at + FABRIC_AT].rgb *
+                         textureLod(fabric_mask, vec2(lookup_sharpness, facing), 0.0).rgb *
+                         mix(draw_lights[at + FABRIC_AT + 1u].x, 1.0, sun);
+            }
+#endif
         } else if ((mode & MODE_SPECULAR) != 0u) {     // the first light's highlight (power 30), toward the eye
             vec3 toward = unpacked_toward(light_toward[0]);
             vec3 eye = normalize(eye_w.xyz) * (dot(eye_w.xyz, face_normal) < 0.0 ? -1.0 : 1.0);
@@ -594,6 +862,10 @@ void main()
 
                     // 1.215 x the base where the surface is seen edge-on, the base itself where it faces the eye
                     base.rgb *= mix(fabric_sheen.x, 1.0, facing * facing * (3.0 - 2.0 * facing));
+                    // [acct2-bro] 2026-11-12 rn60a: and times the draw's own tint, when it has one (the soldiers'
+                    // simpler bodies: D2B5785887F9C326's c255.xyz on its color map, its instructions 86-101)
+                    if (dot(skin_tint, skin_tint) > 0.0)
+                        base.rgb *= skin_tint;
                     // the highlights' mask: 0.4 x the specular map, 0.38 of the way to the noise swatch
                     gloss = mix(fabric_sheen.y * gloss, noise, fabric_sheen.z);
                 } else if (!detail && !vehicle) {   // (rn36, rn39: the vehicles' metal keeps its base as it is)
@@ -634,6 +906,22 @@ void main()
             own = lightmap_texture_uv.y;
         }
         alpha *= clamp((behind - own) * scale, 0.0, 1.0);
+    }
+#ifndef NGL_VK_FOUR_SETS
+    if (detail_add) {   // [waw-decomp] 6C7F0E21C61DF68F's instructions 19, 27 and 33: the color map + the detail map
+                        // at the coordinates x its repeat + its offset (-0.5), before the light multiplies it
+        vec4 numbers = draw_lights[DRAW_LIGHT_VEC4S * ((flags >> 16) - 1u) + FABRIC_AT + 1u];
+
+        base.rgb = max(base.rgb + wrapped(normal_swatch, texture_uv * numbers.yz).rgb + numbers.w, vec3(0.0));
+    }
+#endif
+    if (lookup)     // [waw-decomp] 2026-11-10: 98A77B2DFA1049B4's instruction 38, the color map x the corners' color
+        base.rgb *= vertex_color.rgb;
+    if (water) {    // [waw-decomp] the water's own color (water_color), its alpha its corners' alone
+        base.rgb = vec3(1.0);
+        light = water_rgb;
+        shine = vec3(0.0);
+        alpha = vertex_color.a;
     }
     color = vec4(min(base.rgb * light + shine, vec3(1.0)), alpha);
     if (shading != SHADE_UNLIT)             // the sky and the background aren't fogged

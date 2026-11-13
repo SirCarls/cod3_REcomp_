@@ -7,6 +7,11 @@ pictures go into a **user texture pack**, which the setup tool builds and the
 game reads after the HD texture pack, so your picture wins over the upscaled
 one. Nothing is downloaded and nothing of the game's own files is changed.
 
+No pictures of your own? On the **Textures** page, tick **Cover the Nazi flags
+and insignia** and pick a design for the flags and one for the insignia (pride
+flags, plain colours, or "blend in"), then press **Build texture pack**. A
+picture of your own with the same name wins over the design.
+
 ## Quick start
 
 1. Build once with the setup tool, so the game's textures are ripped to
@@ -17,7 +22,7 @@ one. Nothing is downloaded and nothing of the game's own files is changed.
 3. Copy the ripped original you want to replace from `data/cod3/textures/`,
    for example `cloth_masked$of_flag_german.png`, edit it, and save it in
    `user_textures_png/` under **the same name**.
-4. Press **Build user texture pack**. The Log page says what was packed and,
+4. Press **Build texture pack**. The Log page says what was packed and,
    for each picture that broke a rule, why it was skipped. The pack is
    `<game folder>/data/cod3/user_textures/`.
 5. Start the game. Your pictures are used from that start on.

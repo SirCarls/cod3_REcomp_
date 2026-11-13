@@ -12,6 +12,7 @@
 
 #include "game/addresses.h"
 #include "game/aim_sensitivity.h"  // [claude-9b] sensitivity per weapon
+#include "f2/f2_accel.h"  // [f2-menus] 2026-11-11 mouse acceleration and the sensitivity randomizer, inside the game only
 #include "game/guest.h"
 
 REXCVAR_DEFINE_BOOL(cod3_raw_mouse, true, "cod3/Mouse",
@@ -95,6 +96,20 @@ void MouseLook::SetMouseInverted(bool inverted) {
 
 void MouseLook::AddDelta(float dx, float dy) {
   qte::AddMouse(dx, dy);  // the cursor of stick battle actions (game/qte_actions.h)
+  // [f2-menus] 2026-11-11 (owner 03:05: "This will be needed within cod3 as well. Same goes for raw accel") mouse
+  // acceleration and the sensitivity randomizer inside the game (f2_accel, f2_sens_random; both off by default, and
+  // then this changes nothing): this event's counts with the time since the event before it, as a driver would see
+  // them, so the game's frame rate has no part in it (owner 03:24: "FPS cannot affect mouse input."). Before the
+  // game's own sensitivity; the stick battle cursor above keeps the mouse's own counts.
+  {
+    thread_local Clock::time_point accel_last{};
+    const Clock::time_point accel_now = Clock::now();
+    const double ms = accel_last == Clock::time_point{}
+                          ? 0.0
+                          : std::chrono::duration<double, std::milli>(accel_now - accel_last).count();
+    accel_last = accel_now;
+    f2::accel::Apply(&dx, &dy, ms);
+  }
   std::lock_guard lock(mutex_);
   if (!REXCVAR_GET(cod3_mouse_resample)) {
     dx_ += dx;

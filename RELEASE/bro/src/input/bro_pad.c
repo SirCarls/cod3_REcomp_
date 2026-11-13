@@ -37,6 +37,7 @@
  *
  * Also here, for test runs: BRO_DEVMAP=<map> starts the game in a level (bro_launch_info, at the end). */
 #include <math.h>
+#include <stdatomic.h>              /* [f2-menus] 2026-11-11 bro_pad_reload */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -457,6 +458,10 @@ static float zoom_ratio(int aiming)
     return (ratio < 0.05f ? 0.05f : ratio) * binds.zoom_sensitivity;
 }
 
+#if defined(BRO_HAVE_F2)
+void bro_f2_mouse(float *dx, float *dy);    /* [f2-menus] bro_f2.h */
+#endif
+
 static void raw_mouse(float dx, float dy, int aiming)
 {
     static int test = -1;
@@ -493,6 +498,16 @@ static void raw_mouse(float dx, float dy, int aiming)
     set_mem_float(CL_VIEW_PITCH, mem_float(CL_VIEW_PITCH) + dy * binds.scale_y * degrees);
 }
 
+/* [f2-menus] 2026-11-11 A control setting changed in the F2 window (bro/src/f2/bro_f2_store.cpp calls this; weak
+ * there, so without it those rows say "takes effect at the next start"): any thread may ask; the game's next poll
+ * (real_pad, on its own thread) reads input.*, [pad], [keys] and the binds (bro_binds.c) again. */
+static atomic_int reload_wanted;
+
+void bro_pad_reload(void)
+{
+    atomic_store(&reload_wanted, 1);
+}
+
 /* What the real controller and the keyboard hold now, added to the script's buttons. Stick y is up-positive, as XInput
  * has it (SDL's is down-positive). */
 static void real_pad(uint16_t *digital, uint8_t *analog, uint8_t analog_values[8], int16_t thumbs[4])
@@ -502,6 +517,10 @@ static void real_pad(uint16_t *digital, uint8_t *analog, uint8_t analog_values[8
     SDL_MouseButtonFlags mouse = 0;
     int i, in_play;
 
+    if (atomic_exchange(&reload_wanted, 0)) {  /* [f2-menus] 2026-11-11 a change in F2 (bro_pad_reload) */
+        binds.ready = 0;
+        bro_binds_reload();
+    }
     if (!binds.ready)
         read_binds();
     in_play = bro_binds_in_play();
@@ -586,6 +605,9 @@ static void real_pad(uint16_t *digital, uint8_t *analog, uint8_t analog_values[8
         if (focus && SDL_GetWindowRelativeMouseMode(focus))  /* captured (ngl_present.c): its motion since the last poll */
             SDL_GetRelativeMouseState(&dx, &dy);
         if (binds.raw_mouse) {
+#if defined(BRO_HAVE_F2)
+            bro_f2_mouse(&dx, &dy);     /* [f2-menus] 2026-11-11 the in-game acceleration and sensitivity randomizer */
+#endif
             raw_mouse(dx, dy, analog_values[6] >= 0x20 || bro_binds_aim_held());  /* aiming: LT or the aim keys */
         } else {
             thumbs[2] = clamp_thumb(thumbs[2] + (int)(dx * binds.scale_x * (float)binds.stick_speed));
@@ -653,6 +675,10 @@ uint32_t bro_pad_get_capabilities(uint32_t handle, uint32_t capabilities)
     return ERROR_SUCCESS;
 }
 
+#if defined(BRO_HAVE_F2)
+int bro_f2_game_gets_input(void);    /* [f2-menus] bro_f2.h */
+#endif
+
 uint32_t bro_pad_get_state(uint32_t handle, uint32_t state)
 {
     static int16_t last_thumbs[4];
@@ -667,6 +693,17 @@ uint32_t bro_pad_get_state(uint32_t handle, uint32_t state)
     for (i = 0; i < 8; i++)
         analog_values[i] = (analog >> i) & 1 ? 0xFF : 0x00;
 #if defined(BRO_HAVE_SDL3)
+#if defined(BRO_HAVE_F2)
+    if (!bro_f2_game_gets_input()) {    /* [f2-menus] the F2 window has the keys, mouse and pads: a pad at rest */
+        static const bool none[SDL_SCANCODE_COUNT];
+
+        bro_binds_poll(none, 0, 0);     /* every held action let go */
+        digital = 0;
+        analog = 0;
+        memset(analog_values, 0, sizeof analog_values);
+        memset(thumbs, 0, sizeof thumbs);
+    } else
+#endif
     real_pad(&digital, &analog, analog_values, thumbs);
 #endif
     if (digital != last_digital || analog != last_analog || memcmp(thumbs, last_thumbs, sizeof thumbs)) {

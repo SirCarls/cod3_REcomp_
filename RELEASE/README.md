@@ -87,9 +87,23 @@ python3 COD_3_WAW_Setup-tool/cod3_waw_setup.py map-pack --list   # where to get 
 | **Games** | *Call of Duty 3* for Xbox 360 (USA, Europe; Germany; or France, Spain, Italy), as a disc image. Optionally *World at War*: Steam, Xbox 360 disc image, or PC disc. |
 | **System** | 64-bit Windows 10/11, or 64-bit Linux (Ubuntu/Mint 22+, Debian 13+, Fedora 40+, Arch, openSUSE Tumbleweed). |
 | **Graphics** | A Vulkan GPU driver (on Windows, Direct3D 12 also works). NVIDIA's proprietary driver, AMD and Intel (Mesa) all include Vulkan. |
+| **Linux: the native renderer** | glslc (the shader compiler) and the Vulkan headers. The setup tool installs them with the other build packages, after your approval; without them the game is built without the native renderer, and Tools > Check this PC names the packages. <!-- [rexglue-native-settings] 2026-11-11 (owner 08:28: every dependency met) --> |
 | **Disk** | About 7 GB temporary, plus about 7 GB for the game files and 4 GB for the ripped files. |
 | **Memory** | 8 GB works; about 2 GB per build thread is used. |
 | **Internet** | For the first build (tools and the ReXGlue SDK are downloaded). |
+
+### Which disc does what
+
+Any of the three discs builds the campaign; a few options need a particular disc. The setup tool's Play page says where your game stands with each (**Discs**), and `python3 COD_3_WAW_Setup-tool/cod3_waw_setup.py discs` prints the same.
+
+| Option | Needs |
+|---|---|
+| **Build** (Set up) | Your *Call of Duty 3* disc: USA/Europe, German or Europe (French, Spanish, Italian). The Japanese disc is a build of its own and can't be built. With several in `input/`, the USA/Europe one is built. |
+| **Multiplayer** and its **map packs** | A game built from the USA/Europe disc: the other discs carry another multiplayer program, which the recompiled game's hooks don't fit. |
+| **Voices** (Play > Add voices from another disc) | German: the German disc. French, Spanish, Italian: the Europe (Fr, Es, It) disc. English: the USA/Europe disc. A language your game doesn't have plays its own voices. |
+| **Censored campaign** (Play) | The German disc, once (about 1.2 GB is copied). A game built from the German disc is censored already; switching it off needs the USA/Europe or Fr/Es/It disc once. |
+| **Console language** (Play > Game settings) | Changes the soldiers' language and the text only on the Fr/Es/It disc; the films' sound on every disc. |
+| Everything else | No other disc: the built-in censor and your own textures (Textures page), the HD textures, the game settings. |
 
 ## What ends up in the output folder
 

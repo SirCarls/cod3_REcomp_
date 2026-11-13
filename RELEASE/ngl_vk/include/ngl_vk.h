@@ -80,6 +80,11 @@ struct ngl_vk_vertex {
     uint32_t texture;   /* the texture (from ngl_vk_texture), or 0 for the picture given to ngl_vk_draw_quads */
 };
 
+/* [rexglue-native-render] 2026-11-11 rn48l: added to a corner's textured (0, 1 or 2 + this, the same on all six
+ * corners of a quad): the same picture and color, blended additively (source x source alpha + what is there, the
+ * target's alpha kept: Direct3D's SRCALPHA / ONE, as Call of Duty 3 draws its quads with +0x5C 01C00000). */
+#define NGL_VK_QUAD_ADD 4.0f
+
 /* A texture for quads to use: width x height pixels of 4 bytes, blue, green, red, alpha, rows packed. Returns its
  * number (1 and up), or 0 when it can't be made. */
 uint32_t ngl_vk_texture(const void *pixels, uint32_t width, uint32_t height);
@@ -88,6 +93,12 @@ uint32_t ngl_vk_texture(const void *pixels, uint32_t width, uint32_t height);
  * pixels laid out the same way; level_count of them (stopping early at a NULL one), sampled with linear blending
  * between levels as the GPU does. ngl_vk_texture is this with one level. */
 uint32_t ngl_vk_texture_levels(const void *const *levels, uint32_t level_count, uint32_t width, uint32_t height);
+
+/* [waw-decomp] 2026-11-10: new pixels for a texture made by ngl_vk_texture (one level: not one made with smaller
+ * levels, and not a cube). width x height must be the size it was made with, the pixels laid out the same way. For a
+ * picture the game writes anew as it runs (Call of Duty 2 writes its water's height map each frame). Draws from the
+ * next ngl_vk_draw_quads on see the new pixels. On the thread that draws. 0 when done, -1 when it can't be. */
+int ngl_vk_texture_rewrite(uint32_t texture, const void *pixels, uint32_t width, uint32_t height);
 
 /* [rexglue-native] 2026-11-09 rn34: a cube texture (for ngl_vk_mesh_draw's metal_cube only): six square faces of
  * size x size pixels laid out as ngl_vk_texture's, in Direct3D's order (+x, -x, +y, -y, +z, -z), each with its smaller
@@ -143,6 +154,17 @@ enum {
      * leaves, vertex shader 51732ACF1B6A87C5): its directional lights are times its corners' red (0 to 1, the leaf's
      * dimming) and not dimmed by the sun's shadow (the leaf pixel shader 6189945E43D7FBC8 reads none). */
     NGL_VK_TINT_LIGHT_DIMMED = 0x01000000,
+    /* [rexglue-native] 2026-11-10 rn46c: a textured NGL_VK_SHADE_LIGHT draw with lit 1 and a lightmap texture set
+     * (Call of Duty 3's SpeedTree branches and fronds, pixel shaders EA6B670C8ACDCED1 and F38DD169E44123DB): its
+     * directional lights are times that texture's color at the corners' lightmap coordinates (the tree's
+     * self-shadow map) and not dimmed by the sun's shadow; the ambient is not dimmed by it. Not with a normal map,
+     * an environment map or two textures mixed (the lightmap's place is taken then).
+     * [rexglue-native] 2026-11-10 21:40: moved from 0x00800000 to 0x02000000. Bit 23 is the top bit of the tint
+     * color's red, so a textured lit draw that left a bright color in its tint was taken for a self-shadowed tree
+     * (waw-decomp's 21:10 report: Call of Duty 2 handed 0x808080 with every draw). Now outside the color's 24 bits,
+     * as the other flags are. The same number as NGL_VK_TINT_MAP_ALPHA: that one is read on textured
+     * NGL_VK_SHADE_UNLIT draws with NGL_VK_TINT_EFFECT only, this one on NGL_VK_SHADE_LIGHT draws only. */
+    NGL_VK_TINT_LIGHT_MAPPED = 0x02000000,
 };
 
 /* How a mesh's pixels use its texture's alpha. */
@@ -407,6 +429,187 @@ struct ngl_vk_mesh_draw {
      * 0 (memset draws) the whole as above; 1 only their light (the color map as white, no highlights or cube); 2 only
      * the color map (lit by 1, no highlights or cube); 3 magenta. */
     uint32_t lens_show;
+    /* [waw-decomp] 2026-11-10: Call of Duty 2's water (the game's water.hlsl; on the Xbox 360 its pixel shader
+     * DD12484223A211FC). With water_cube a cube texture (from ngl_vk_texture_cube), texture the water's height map (its
+     * red, read repeating and blended between its four nearest texels), no second texture, environment map, normal
+     * map, metal_cube or lens_cube, on a device that binds six descriptor sets, the draw is water. The mesh's own
+     * space is taken for the world's, z up. Per pixel, with e the unit way from the eye to the pixel and uv its
+     * texture coordinates:
+     *   - uv moves by (0.5 - the height at uv / 2) x e.xy x 1.5 / 64;
+     *   - the ripples' height there is three octaves of the map (the height at uv, + 0.6 x that at 3.7 uv, + 0.36 x
+     *     that at 13.69 uv); from it at uv, at uv + (0.5 / 128, 0) and at uv + (0, 0.5 / 128) the normal
+     *     n = normalize(across - here, along - here, 1);
+     *   - m = e mirrored about n; the cube is read at (m.x, m.y, |m.z|);
+     *   - color = mix(water_color x n.z, the cube's color, the cube's alpha)
+     *             + max(m . water_sun_toward, 0)^64 x water_sun_color;
+     *   - its alpha is its corners' alone; it is fogged as other draws (not with NGL_VK_SHADE_UNLIT).
+     * water_sun_toward is the unit way toward the sun in the mesh's own space. water_cube 0 (memset draws): not
+     * water, everything as before. */
+    uint32_t water_cube;
+    float water_color[3];
+    float water_sun_toward[3];
+    float water_sun_color[3];
+    /* [rexglue-native] 2026-11-10: Call of Duty 3's effect layer. The game draws its smoke, dust and fire into a
+     * target of half the picture's width and height, tested against the picture's depth at every second pixel, and
+     * blends that target back over the picture with a filter of its own (its pixel shader 8E6F505DEE7CDF9E: an even
+     * pixel takes its own layer pixel, an odd one the mean of those it lies between, or one of them whole at a depth
+     * edge). effect_layer 1 on an NGL_VK_ALPHA_BLEND draw: drawn into that layer, in the order given among the
+     * layer's draws, with the blending its `blend` asks for (NGL_VK_BLEND_ALPHA or NGL_VK_BLEND_ADD); the layer goes
+     * over the picture after the other blended draws and before the depth of field and the tint. A soft draw
+     * (soft_depth) fades by the layer's own depth. 0 (memset draws), or a device where the layer couldn't be made:
+     * drawn straight into the picture, as before. */
+    uint32_t effect_layer;
+    /* [waw-decomp] 2026-11-10: Call of Duty 2's models with a specular map (its "_s" model shaders: the soldiers'
+     * lprobe_s_pfog, on the Xbox 360 pixel shader 98A77B2DFA1049B4; the PC copy's lightprobe.hlsl). With normal_map
+     * and specular_map set and lit 1 (the bumped path), specular_lookup a texture, and none of fabric_mask,
+     * noise_swatch, metal_cube, detail_map, vehicle_bumped, blend_light, on a device that binds six descriptor sets:
+     *   - the normal map's x and y (read as the bumped path reads them: alpha and green, each 2t - 1) bend the
+     *     normal as N + x T + y B, made unit length, T and B the frame's unit ways along rising u and rising v (from
+     *     the screen's slopes); the map gives no z;
+     *   - the light is the bumped path's (the irradiance rows or the ambient, and the lights) at that normal;
+     *   - the highlight, added to the lit color: the specular map's color x specular_lookup_color x the lookup
+     *     texture read at (the specular map's alpha, N . H) x mix(specular_lookup_shadowed, 1, how much of the sun
+     *     reaches the pixel), H halfway between the ways to the first light and to the eye's own place;
+     *   - the color map is multiplied by the corners' color (18:23; the game's instruction 38).
+     * The lookup texture is the game's own picture of a highlight's strength (sharpness across, N . H down); it is
+     * read clamped, its top level only. specular_lookup 0 (memset draws): everything as before.
+     * [waw-decomp] 2026-11-10 21:40, its second half: the same three fields and specular_map on a lightmapped draw
+     * with a sun (NGL_VK_SHADE_LIGHTMAP, lit 1, lightmap_scale above 0; Call of Duty 2's world, its lmap_s shaders,
+     * 6C7F0E21C61DF68F's instructions 14, 17, 29 to 31 and 39), no second texture or blend_light: added to the lit
+     * color, the specular map's color x specular_lookup_color x the lookup read at (the specular map's alpha, N . H) x
+     * mix(specular_lookup_shadowed, 1, the lightmap's alpha (the sun's share) x how much of the sun reaches the
+     * pixel); N the corners' normal (the lightmap sits where a normal map would), H halfway between the ways to the
+     * first light and to the eye. The specular map is read at the color map's coordinates. Before this such a draw
+     * ignored the four fields. */
+    uint32_t specular_lookup;
+    float specular_lookup_color[3];
+    float specular_lookup_shadowed;
+    /* [waw-decomp] 2026-11-10: one third-degree term more for the irradiance rows (irradiance_rows 9), added to
+     * their light: irradiance_cubic x (a . n)(b . n)(c . n), n the normal and a, b, c the three rows of
+     * irradiance_cubic_axes, all in the mesh's own space. Call of Duty 2's light grid needs it: its eight weights
+     * are (1 +- a)(1 +- b)(1 +- c) / 8 along three axes of its own, and the nine rows hold all of that but the
+     * product of the three. Not for fabric, glass or water draws (their own numbers lie where it goes in the
+     * draw's slot). The axes' first row all 0 (memset draws): none, everything as before. */
+    float irradiance_cubic[3];
+    float irradiance_cubic_axes[3][3];
+    /* [waw-decomp] 2026-11-10: Call of Duty 2's light grid for a lit model (lit 1; not a fabric, glass or water
+     * draw, no other cube), read as the game's lprobe pixel shaders read it. grid_cube is a cube texture
+     * (ngl_vk_texture_cube) of four weights by direction. The light at a normal n of the mesh's own space, turned to
+     * the world by grid_turn's three rows (the world's part k is n . grid_turn[k]), is for each color c (0 red,
+     * 1 green, 2 blue)
+     *     the cube at that direction . grid_colors[2c] + the cube at the opposite direction . grid_colors[2c + 1],
+     * the cube's red, green, blue and alpha against the four numbers. It takes the place of the ambient and of the
+     * irradiance rows, which stay the light where the device binds four descriptor sets only; the lights are added
+     * as before. grid_cube 0 (memset draws): everything as before. */
+    uint32_t grid_cube;
+    float grid_colors[6][4];
+    float grid_turn[3][3];
+    /* [waw-decomp] 2026-11-10: Call of Duty 2's detail map (its pixel shaders with "_dtl" in their names; the PC
+     * copy's shade.hlsl: sample.rgb += tex2D(detailMapSampler, texCoords * detailScale.xy).rgb - 0.5; on the Xbox
+     * 360 lmap_s_dtl_pfog 6C7F0E21C61DF68F, instructions 19, 27 and 33). With detail_add_map a 2D texture, on a draw
+     * that is not a fabric, glass or water draw and on a device that binds six descriptor sets, the color map's
+     * color becomes itself + the detail map's at the texture coordinates x detail_add_repeat (wrapped) +
+     * detail_add_offset (the game's: -0.5), not below 0, before the corners' color and the light multiply it.
+     * detail_add_map 0 (memset draws): everything as before. */
+    uint32_t detail_add_map;
+    float detail_add_repeat[2];
+    float detail_add_offset;
+    /* [waw-decomp] 2026-11-11: Call of Duty 2's world by its normal map (its lmap shaders, such as 6C7F0E21C61DF68F:
+     * instructions 4 and 9 to 13 make the normal N + (2x - 1) V + (2y - 1) W, of unit length, x and y the normal
+     * map's, V and W the corners' two vectors; 35 to 37 and 14 use it for the sun and for the highlight). On a
+     * lightmapped draw with a sun (NGL_VK_SHADE_LIGHTMAP, lit 1, lightmap_scale above 0) that is not of the fabric's,
+     * the glass's or the water's kinds, on a device that binds the fabric's sets, with world_normal_map a 2D texture
+     * laid out as the bumped path's normal_map (the bend along rising u in alpha, along rising v in green, each
+     * 2t - 1; read at the texture coordinates, wrapped):
+     *   - the normal the sun's part of the light and the highlight (specular_lookup's second half) see is the
+     *     corners' normal + the two bends along the screen slopes' frame (each way of unit length), made unit
+     *     length; the lightmap's own color is as before;
+     *   - the map rides in set 4, where a world surface's highlights' lookup rode, so on such a draw the lookup is
+     *     read from world_tables instead: a cube from ngl_vk_texture_cube whose +z face holds it (across: the
+     *     specular map's alpha; down: N . H), read inside the face, its top level only. A draw with a
+     *     specular_lookup and a world_normal_map but no world_tables is drawn as before, without the normal map; a
+     *     draw without a highlight needs no world_tables.
+     * world_normal_map 0 (memset draws): everything as before. NGL_VK_WORLD_NORMAL_MAP tells a caller that this
+     * header has the two fields. */
+#define NGL_VK_WORLD_NORMAL_MAP 1
+    uint32_t world_normal_map;
+    uint32_t world_tables;
+    /* [rexglue-native] 2026-11-10 rn46m: Call of Duty 3's props with an overlay map (crates and boxes: effect
+     * "standard_18", the game's pixel shader 9960D40B0F3CECA1, lit as the bumped vehicle parts are). On a
+     * vehicle_bumped draw (see there) with overlay_map set (from ngl_vk_texture, not a cube) and overlay_scale above 0,
+     * the base texture's color is darkened by the overlay before the light:
+     *   - the overlay is read at (0.94 + a cos(angle) + b sin(angle), 0.5 - a sin(angle) + b cos(angle)), with
+     *     a = (u - 0.5) x overlay_scale - 0.44 and b = (v - 0.5) x overlay_scale (angle 0: about the map's middle);
+     *   - t = clamp((overlay - overlay_key) / (0.059 - overlay_key), 0, 1) for each of red, green and blue, and the
+     *     color x t x t x (3 - 2 t): as it is where the overlay is dark, black where the overlay reaches the key.
+     * overlay_angle is in radians (the game's constant is in turns: 2 pi x fract(turns + 0.5) - pi). Needs a device
+     * that binds six descriptor sets (the map rides in set 4, which a vehicle_bumped draw leaves empty); with fewer,
+     * no overlay. overlay_map 0 (memset draws): everything as before. */
+    uint32_t overlay_map;
+    float overlay_scale;
+    float overlay_angle;
+    float overlay_key[3];
+    /* [rexglue-native-world] 2026-11-11 w1: Call of Duty 3's SpeedTree leaves (the game's leaf vertex shader
+     * 51732ACF1B6A87C5 turns each leaf card to face the camera). billboard 1: each corner's lightmap u and v (such a
+     * draw has no lightmap) are its offset from its position across and up the view, in the mesh's own units; the
+     * corner is drawn at its position + u x the view's right + v x the view's up, both unit ways in the mesh's own
+     * space (from the view-projection: in the sun's shadow map, the light's). 0 (memset draws): as before.
+     * NGL_VK_BILLBOARD tells a caller that this header has the field. */
+#define NGL_VK_BILLBOARD 1
+    uint32_t billboard;
+    /* [rexglue-native-guns] 2026-11-11: the gun metal's reflection blurred as Call of Duty 3's metal shaders blur
+     * it (CFC45995D1294CCE's instructions 59-90 and its kin's: the cube read with register gradients,
+     * setGradientH/V). On a metal_cube draw with metal_cube_blur above 0, the cube is read at the reflection R
+     * (world space, z up; read at R.x, R.z, R.y as before) with the gradients metal_cube_blur x (0, -R.y / |R.z|,
+     * sign R.z) and metal_cube_blur / |R.z| x (R.y^2 + R.z^2, -R.x R.z, -R.x R.y), in the cube's own axes.
+     * metal_cube_blur 0 (memset draws): the cube read at the level the screen gives, as before.
+     * NGL_VK_METAL_CUBE_BLUR tells a caller that this header has it. */
+#define NGL_VK_METAL_CUBE_BLUR 1
+    float metal_cube_blur;
+    /* [acct2-bro] 2026-11-11: the gun metal's mask with a grey floor, as Call of Duty 3's 687855C9BA600FC3 (the
+     * Thompson) has it (its instructions 76-90 and 132). On a metal_cube draw with metal_mask_floor above 0 the mask
+     * is the specular map + metal_scratch's color + metal_mask_floor + s x metal_rim (the rim added to a grey), in
+     * place of the specular map + the scratch + mix(the base texture, metal_rim, s); s as above.
+     * metal_mask_floor 0 (memset draws): as before. NGL_VK_METAL_MASK_FLOOR tells a caller that this header has it. */
+#define NGL_VK_METAL_MASK_FLOOR 1
+    float metal_mask_floor;
+    /* [acct2-bro] 2026-11-12: the gun metal's Normal_Map_Depth, as Call of Duty 3's 687855C9BA600FC3 (the Thompson,
+     * instructions 21-26: c36.x) and CC31EB0C3D04DBEF / 35841B3D12A90CA4 (the M1 Garand: c29.x) have it. On a
+     * metal_cube draw with metal_normal_depth above 0 the normal map's x and y are multiplied by it; its z stays the
+     * one from the unscaled x and y. metal_normal_depth 0 (memset draws): the map as it is, as before.
+     * NGL_VK_METAL_NORMAL_DEPTH tells a caller that this header has it. */
+#define NGL_VK_METAL_NORMAL_DEPTH 1
+    float metal_normal_depth;
+    /* [acct2-bro] 2026-11-12: Call of Duty 3's bumped world, step 1: its normal (the game's pixel shaders
+     * 141294CDC7C97127, 3CC8661DDBB318D9, 6D703BD4597C9D00 and kin, read whole: the first one's instructions 17-41;
+     * dev/agents/rexglue-native/RENDER-NOTES.md has the formulas). On a draw world_normal_map applies to (above)
+     * that has no specular_lookup, world_bump_scale not 0 says the map is read that game's way, not Call of Duty 2's:
+     *   - x and y are the map's alpha and green, each 2t - 1, and z = sqrt(1 - x^2 - y^2);
+     *   - with world_detail_normal_map a 2D texture packed the same way and world_detail_repeat above 0, the detail
+     *     map is read at the texture coordinates x world_detail_repeat (wrapped) and the two are mixed as the
+     *     shader mixes them: (x, y) = world_bump_scale x the map's (x, y) x the detail's z + world_detail_scale x
+     *     the detail's (x, y) x the map's z, and z = the two z's multiplied; without one, (x, y) =
+     *     world_bump_scale x the map's (x, y) and z stays the map's;
+     *   - the normal is x along the frame's first way + y along its second + z along the corner's normal, made
+     *     unit length; the frame is world_normal_map's (from the screen slopes of the position and the texture
+     *     coordinates, each way of unit length). world_bump_frame turns it about, for tests: bit 0 x the other
+     *     way, bit 1 y the other way, bit 2 x and y changed over.
+     * The lightmap's up term, the sun's part and the nearby lights see that normal. world_bump_scale 0 (memset
+     * draws): as before. NGL_VK_WORLD_BUMP tells a caller that this header has the fields. */
+#define NGL_VK_WORLD_BUMP 1
+    float world_bump_scale;
+    uint32_t world_detail_normal_map;
+    float world_detail_scale;
+    float world_detail_repeat;
+    uint32_t world_bump_frame;
+    /* [acct2-bro] 2026-11-12 rn60a: a skin draw's own tint. With skin_tint not all 0, a draw taken as the soldiers'
+     * skin (noise_swatch, above) has its base texture also multiplied by it (red, green, blue). The game's pixel
+     * shader D2B5785887F9C326 (a soldier's simpler body: the model of three surfaces the game draws from some way
+     * off) multiplies its color map by a color compiled into it (c255: 1.11383 1.115 1.04475) and has no sheen and
+     * no highlights; it is drawn as the skin with every extra off and this. 0 0 0 (memset draws): as before.
+     * NGL_VK_SKIN_TINT tells a caller that this header has the field. */
+#define NGL_VK_SKIN_TINT 1
+    float skin_tint[3];
 };
 
 /* How a blended mesh draw goes onto what's behind it. */
@@ -455,6 +658,14 @@ void ngl_vk_set_color_lookup(uint32_t table, float keep_depth);
  * the opaque depth is under keep_depth (as ngl_vk_set_tint). Only in a frame with meshes. */
 void ngl_vk_set_brightness(float brightness, float power, float keep_depth);
 
+/* [waw-decomp] 2026-11-11: a film tweak for the next ngl_vk_draw_quads (one frame; Call of Duty 4's and World at War's
+ * film, their PC copies' postfx_color.hlsl): in the tint's pass, in place of the tint, the brightness and the color
+ * look-up, each pixel's brightness lum (its red, green and blue times 0.299, 0.587 and 0.114, summed) gives
+ * bias + (base + delta x lum) x (color x bias[3] + lum) for red, green and blue, alpha kept; not where the opaque
+ * depth is under keep_depth (as ngl_vk_set_tint). bias, base and delta are the game's colorBias, colorTintBase and
+ * colorTintDelta as they are. Only in a frame with meshes. */
+void ngl_vk_set_film_tweak(const float bias[4], const float base[3], const float delta[3], float keep_depth);
+
 /* The color the 3D picture starts from, red, green and blue from 0 to 1 (a scene's clear color), for the frames drawn
  * after this; black until set. */
 void ngl_vk_set_clear_color(const float rgb[3]);
@@ -466,6 +677,54 @@ void ngl_vk_set_clear_color(const float rgb[3]);
  * last frame's picture is the whole one, quads included, kept after them (the game's compass trails in a concussion),
  * and only in frames with a motion blur, so the first frame of one blends nothing. Only in a frame with meshes. */
 void ngl_vk_set_motion_blur(float amount, float keep_depth);
+
+/* [rexglue-native] 2026-11-11 rn47g: Call of Duty 3's post effect 4 as the game draws it, for the next
+ * ngl_vk_draw_quads (one frame; in place of ngl_vk_set_motion_blur, which blends the last finished frame instead): an
+ * afterimage that streams outward. ngl_vk keeps a picture of its own for it, from one call's frame to the next's,
+ * however many frames lie between (the game's kept picture is as old; the very first time it starts as this frame's).
+ * Two draws with the tint's pipeline after the tint's and the sky glow, before post effect 7 and the quads, over the
+ * whole 3D, the scenes in front included, as the game's pixel shader does it (ps_3_0, out = fac1 x Diffuse_Map + fac2
+ * x Diffuse2_Map with fac1 = (1 - share) and fac2 = share):
+ *   kept  = (1 - share) x the picture so far + share x kept, both read `inset` of the picture's width and height in
+ *           from every edge (so the kept picture grows outward a little each frame);
+ *   shown = (1 - share) x the picture so far + share x kept.
+ * keep_depth: the tint pass's (as ngl_vk_set_tint's; the afterimage itself keeps nothing out). share 0 or less: none.
+ * Only in a frame with meshes. A caller that never calls this gets what it got before. */
+void ngl_vk_set_afterimage(float share, float inset, float keep_depth);
+
+/* [rexglue-native] 2026-11-11 rn48b: the afterimage's kept picture (ngl_vk_set_afterimage) at a quarter of the picture's width and height
+ * (on), as Call of Duty 3 keeps it (320 x 180 for its 1280 x 720): the first draw's picture shrunk to that and
+ * stretched back, both filtered (rn48c), so its trails are as soft as the game's; or at full size (off, the default,
+ * as before). Stays as set until changed. */
+void ngl_vk_set_afterimage_small(int on);
+
+/* [rexglue-native] 2026-11-11 rn47i: for the next ngl_vk_draw_quads (one frame): its first vertex_count vertices (whole
+ * triangles; any number at or above the quads' count: all of them) are drawn before the afterimage's and post effect
+ * 7's draws instead of after them, in a frame that has one of the two (in any other frame this changes nothing). Call
+ * of Duty 3 asks for its post effects after it has drawn everything its list holds, the HUD included (rn47h: no draw
+ * of the game's follows them), so a concussion smears and doubles its compass and crosshair, and its hurt screen's
+ * dark red lies under the concussion's gray, not over it. The rest of the quads are drawn after, as before. */
+void ngl_vk_set_quads_under_effects(uint32_t vertex_count);
+
+/* [rexglue-native] 2026-11-11 rn47n: the last finished frame as a quad's texture. Call of Duty 3 draws its screen
+ * back over itself in a concussion: a whole-screen quad whose texture is the screen buffer shown last (its two screen
+ * textures take turns), a little to the side, blended by a share that fades: an echo of the last picture, HUD and
+ * all, fed back frame after frame. ngl_vk_keep_last_frame() asks that this frame's finished picture (the quads
+ * included) be kept for the next frame, and returns 1 when the last frame's is held now: then a quad of the next
+ * ngl_vk_draw_quads may name NGL_VK_LAST_FRAME as its texture (the whole target, 0..1 across it; alpha taken as its
+ * `textured` says). When it returns 0 (the frame before was not kept) such a quad would get the frame's picture
+ * instead: leave it out. One frame; a caller that never calls this gets what it got before. */
+#define NGL_VK_LAST_FRAME 0xFFFFFFFFu
+int ngl_vk_keep_last_frame(void);
+
+/* [rexglue-native] 2026-11-11 rn47o: this frame's picture so far as a quad's texture: a quad of ngl_vk_draw_quads that
+ * names NGL_VK_THIS_FRAME is drawn with the target as it stands when the quad's turn comes (the 3D, the post effects
+ * and the quads before it), the whole target, 0..1 across it. Call of Duty 3's concussion quad is this, not the last
+ * frame (rn47n): the game copies its screen into a texture at the end of every scene and the quad, in a later scene
+ * of the same frame, reads that copy. ngl_vk copies the target for it when it meets the quad (one copy a run of such
+ * quads). Only in a frame with meshes; in any other frame the quad gets the frame's picture, as an unknown number
+ * does. */
+#define NGL_VK_THIS_FRAME 0xFFFFFFFEu
 
 /* [rexglue-native] 2026-11-10 rn41b: the blur, grain and gray of a concussion for the next ngl_vk_draw_quads (one
  * frame; Call of Duty 3's post effect 7, drawn by the game as two passes over its screen copy after its other post
@@ -479,6 +738,31 @@ void ngl_vk_set_motion_blur(float amount, float keep_depth);
  * none. Only in a frame with meshes and the tint pass. */
 void ngl_vk_set_film(const float first[4], const float gray[3], float scale, const float move[2], float moved_share,
                      float keep_depth);
+
+/* [rexglue-native] 2026-11-10: the sky's glow for the next ngl_vk_draw_quads (one frame; Call of Duty 3 draws it every
+ * frame after its tint: its sky bleeds light over the roofs and trees before it). The picture where nothing is drawn
+ * (the opaque depth at its far end) shrunk to 256 x 256 with everything else black, blurred `passes` times (at most
+ * 8; pass k: the mean of four taps times gain, the taps in a plus k x tap of the small target's pixels from the
+ * middle), then added over the game's screen times strength; after the tint's draw, before the motion blur, post
+ * effect 7 and the quads. lean (0..1) moves each blur's taps from the plus onto the line from the pixel to `toward`
+ * (a point in the screen's 0..1, x across, y down; it may lie outside): 0, 1, 4 and 8 times k x tap / 256 of the way
+ * there (the game's shafts of light toward the sun). tap 0: no blur (the sky alone, softened by its small size).
+ * strength 0 or less: none. Only in a frame with meshes. */
+void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, float lean, const float toward[2]);
+
+/* [rexglue-native-fx] 2026-11-11 fx1: Call of Duty 3's heat haze (its "cdheathaze": the picture shimmers over fires,
+ * engines and gun barrels). A blended mesh draw (NGL_VK_ALPHA_BLEND, effect_layer 1) whose `blend` is
+ * NGL_VK_BLEND_HEAT_MASK is drawn into the effect layer's heat mask instead of the picture (built up as "over" builds
+ * alpha; left out where there is no effect layer); the screen warp then shows where that mask lies. Kept apart from the
+ * NGL_VK_BLEND_* list's numbers. */
+#define NGL_VK_BLEND_HEAT_MASK 16u                          /* [rexglue-native-fx] 2026-11-11 fx1 */
+#define NGL_VK_WARP_MOST_CORNERS 4096u                      /* [rexglue-native-fx] 2026-11-11 fx1 */
+/* [rexglue-native-fx] 2026-11-11 fx1: the screen warp for the next ngl_vk_draw_quads: one triangle strip of `count`
+ * corners (at most NGL_VK_WARP_MOST_CORNERS; past that it is dropped), four floats each: where the corner goes on the
+ * game's screen (x, y from -1 to 1, y down) and where it reads the picture (u, v from 0 to 1 across the game's screen).
+ * After the effect layer is back over the picture, the picture is copied and drawn back through the strip, blended by
+ * the heat mask. A frame with no NGL_VK_BLEND_HEAT_MASK draws draws no warp. */
+void ngl_vk_set_screen_warp(const float *corners, uint32_t count);  /* [rexglue-native-fx] 2026-11-11 fx1 */
 
 /* The grass (Call of Duty 3's GrassRenderNode), drawn by the game's own grass shaders translated: one strip of blades
  * shared by every patch, made once: vertex_count vertices of NGL_VK_GRASS_VERTEX_BYTES (two 16-bit signed numbers,
@@ -540,6 +824,21 @@ uint64_t ngl_vk_take_texture_uploads(uint64_t *flushes);
 /* side219: how long ngl_vk waited for the GPU to finish the last frame (in ns), and how many times (waits, unless
  * NULL), since the last call; the counts start again from 0. On the thread that draws. */
 uint64_t ngl_vk_take_gpu_wait(uint32_t *waits);
+
+/* [acct2-bro] 2026-11-12: anisotropic filtering. most: how many samples at most a texture with smaller levels
+ * (ngl_vk_texture_levels with more than one level) is read with along the direction it is stretched in on the
+ * screen: 2, 4, 8 or 16 (the GPU's own most if that is less); 1 or less: none (the default: every texture read as
+ * before). A texture of one level, the cubes, the picture and ngl_vk's own targets are always read as before.
+ * Vulkan wants the device's samplerAnisotropy feature on for it: ngl_vk's own device (ngl_vk_init) gets it when
+ * anisotropy is asked for and the GPU has it; on a borrowed device (ngl_vk_init_on_device)
+ * borrowed_device_has_it says whether its owner turned the feature on (0: no anisotropy there).
+ * Before ngl_vk_init (or ngl_vk_init_on_device): the samplers are made at the start.
+ * NGL_VK_ANISOTROPY tells a caller that this header has it. */
+#define NGL_VK_ANISOTROPY 1
+void ngl_vk_set_anisotropy(float most, int borrowed_device_has_it);
+
+/* [acct2-bro] 2026-11-12: the samples in use (see ngl_vk_set_anisotropy) once ngl_vk has started; 1: none. */
+float ngl_vk_anisotropy(void);
 
 /* Frees everything ngl_vk_init (or ngl_vk_init_on_device) made. */
 void ngl_vk_shutdown(void);

@@ -46,12 +46,21 @@ bool MultiplayerAvailable();
 // bdSession host flag.
 // True while a multiplayer match is running on this machine.
 bool IsMatchRunning();
-// True when this machine hosts the running match (or there is no match).
+// True when this machine hosts the running match (or there is no match). [acct2-ocr] 2026-11-07: in cod3mp, the
+// Demonware session's host (its bdSession has no host connection), which a match no other console plays
+// (IsLocalOnlyMatch) always is; false on every other console of a system link match.
 bool IsHost();
+// [acct2-ocr] 2026-11-07: true while a match runs that no other console plays (split screen, a local match):
+// this machine is its only one, so the match's rules (game/protected_dvars.h) are its own. False in the
+// campaign (no match) and whenever another console is, or might be, in the match. IsHost is true then.
+bool IsLocalOnlyMatch();
 // Tells every player in the match a short line ("Cheats enabled by the
 // host"): it goes into each machine's HUD announcement column
 // (ui/announcement_feed.h) and its console. Without a match it shows here
 // only. Text from another machine is shown as plain text, never run.
+// [acct2-ocr] 2026-11-07: in cod3mp the host's lines reach the other consoles as a peer message of the port's own
+// (game/mp/session.cpp, "the host's notices"); another console's are shown only when they come to a console that
+// isn't the host, printable text of at most 96 bytes, a few at a time.
 void Announce(const std::string& text);
 
 }  // namespace cod3::mp

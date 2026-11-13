@@ -85,6 +85,7 @@ add_executable(bro
     src/ngl/ngl_fps_counter.c
     src/settings/bro_settings.c
     src/settings/bro_view.c
+    src/settings/bro_game_cvars.c       # [f2-menus] the game's own cvars, for the F2 window
     src/ngl/ngl_scene.c
     src/ngl/ngl_font.c
     src/ngl/ngl_texture.c
@@ -157,8 +158,62 @@ if(Vulkan_FOUND AND BRO_GLSLC)
     add_subdirectory("${BRO_REPO_DIR}/ngl_vk" "${CMAKE_BINARY_DIR}/ngl_vk")
     target_link_libraries(bro PRIVATE ngl_vk)
     target_compile_definitions(bro PRIVATE BRO_HAVE_VULKAN=1)
+    # [acct2-ocr] 2026-11-12 (written by acct2-bro): on Windows src/ngl/ngl_present.c makes the window's Vulkan
+    # surface itself (vkCreateWin32SurfaceKHR), so the program links the loader there; ngl_vk no longer passes it
+    # on (11-09)
+    if(WIN32 AND TARGET Vulkan::Vulkan)                    # [acct2-ocr]
+        target_link_libraries(bro PRIVATE Vulkan::Vulkan)  # [acct2-ocr]
+    endif()                                                # [acct2-ocr]
 else()
     message(WARNING "Vulkan or glslc not found: building without ngl_vk, so frames are not drawn")
+endif()
+
+# [f2-menus] The F2 settings window (src/f2/, dev/agents/f2-menus/bro/BRO-F2.md): Call of Duty 3's window, shared with
+# the other games' ports (BRO_F2_SHARED_DIR: COD_3_WAW_Setup-tool/recomp/src), drawn with Dear ImGui (BRO_IMGUI_DIR:
+# the rexglue SDK's thirdparty/imgui) over ngl_vk's picture. Left out without ngl_vk, SDL3, a C++ compiler or those
+# two folders.
+set(BRO_IMGUI_DIR "" CACHE PATH "Dear ImGui (the rexglue SDK's thirdparty/imgui), for the F2 window")
+set(BRO_F2_SHARED_DIR "${BRO_REPO_DIR}/COD_3_WAW_Setup-tool/recomp/src" CACHE PATH "The shared F2 window's f2/ and ui/")
+# BRO_IMGUI_DIR not given: Call of Duty 3's SDK, when the SDL3 in use is the one it built (the setup tool passes
+# SDL3_DIR = <work>/rexglue-sdk/out/install/<preset>/lib/cmake/SDL3; Dear ImGui is <work>/rexglue-sdk/thirdparty/imgui).
+# Linux only until a Windows build of the window has been tried.
+if(NOT BRO_IMGUI_DIR AND SDL3_DIR AND NOT WIN32)
+    get_filename_component(_bro_f2_sdk "${SDL3_DIR}/../../../../../.." ABSOLUTE)
+    if(EXISTS "${_bro_f2_sdk}/thirdparty/imgui/imgui.h")
+        set(BRO_IMGUI_DIR "${_bro_f2_sdk}/thirdparty/imgui")
+    endif()
+endif()
+include(CheckLanguage)
+check_language(CXX)
+if(TARGET ngl_vk AND (TARGET bro_sdl3 OR TARGET SDL3::SDL3) AND CMAKE_CXX_COMPILER
+   AND EXISTS "${BRO_IMGUI_DIR}/imgui.h" AND EXISTS "${BRO_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp"
+   AND EXISTS "${BRO_F2_SHARED_DIR}/f2/f2_rows.cpp")
+    enable_language(CXX)
+    add_library(bro_f2 STATIC
+        src/f2/bro_f2.cpp src/f2/bro_f2_store.cpp src/f2/bro_dvars.cpp
+        "${BRO_F2_SHARED_DIR}/f2/f2_rows.cpp" "${BRO_F2_SHARED_DIR}/f2/f2_theme.cpp"
+        "${BRO_F2_SHARED_DIR}/f2/f2_pad.cpp" "${BRO_F2_SHARED_DIR}/f2/f2_console.cpp"
+        "${BRO_F2_SHARED_DIR}/f2/f2_accel.cpp"   # [f2-menus] 2026-11-11 in-game mouse acceleration, randomizer, scales
+        "${BRO_IMGUI_DIR}/imgui.cpp" "${BRO_IMGUI_DIR}/imgui_draw.cpp" "${BRO_IMGUI_DIR}/imgui_tables.cpp"
+        "${BRO_IMGUI_DIR}/imgui_widgets.cpp" "${BRO_IMGUI_DIR}/backends/imgui_impl_sdl3.cpp"
+        "${BRO_IMGUI_DIR}/backends/imgui_impl_vulkan.cpp")
+    set_target_properties(bro_f2 PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+    # ngl_vk opens the Vulkan loader at run time, so nothing links to it: ImGui's backend looks its functions up too
+    target_compile_definitions(bro_f2 PRIVATE IMGUI_IMPL_VULKAN_NO_PROTOTYPES VK_NO_PROTOTYPES)
+    target_include_directories(bro_f2 PRIVATE src/f2/shim src/f2 src/settings "${BRO_F2_SHARED_DIR}" "${BRO_IMGUI_DIR}"
+                               "${BRO_IMGUI_DIR}/backends" "${BRO_REPO_DIR}/ngl_vk/include")
+    if(TARGET bro_sdl3)
+        target_link_libraries(bro_f2 PRIVATE bro_sdl3 ngl_vk)
+    else()
+        target_link_libraries(bro_f2 PRIVATE SDL3::SDL3 ngl_vk)
+    endif()
+    target_compile_definitions(bro_f2 PRIVATE BRO_HAVE_SDL3=1)
+    target_link_libraries(bro PRIVATE bro_f2)
+    target_include_directories(bro PRIVATE src/f2)
+    target_compile_definitions(bro PRIVATE BRO_HAVE_F2=1)
+    message(STATUS "F2 settings window: on (Dear ImGui from ${BRO_IMGUI_DIR})")
+else()
+    message(STATUS "F2 settings window: left out (needs ngl_vk, SDL3, a C++ compiler, BRO_IMGUI_DIR and BRO_F2_SHARED_DIR)")
 endif()
 # Registers the lifted code can name that user code never really uses (src/x86_privileged.h)
 set(BRO_PRIVILEGED_H "${CMAKE_CURRENT_SOURCE_DIR}/src/x86_privileged.h")

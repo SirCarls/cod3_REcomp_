@@ -225,6 +225,33 @@ address = 0x8211F460
 name = "cod4_census_flush"
 registers = ["ctx", "base"]
 
+# [waw-decomp] 2026-11-11: the native renderer's struct map (src/cod4_census.cpp, record only, off unless
+# cod4_debug_native_capture). 0x8209BD80: the Direct3D layer's indexed draw, at its start (r3 the device, r4 the
+# primitive type, r5 the base vertex, r6 the first index, r7 the index count).
+[[midasm_hook]]
+address = 0x8209BD80
+name = "cod4_capture_draw"
+registers = ["ctx", "base"]
+
+# [waw-decomp-cod4] 2026-11-11: the native renderer's side check (src/cod4_native_side.cpp, off unless
+# cod4_debug_native_side). 0x82128488, the back end's frame, at its start (calls.tsv: it calls 0x82330CD0 and
+# 0x82128268, which runs the scene's views 0x82330E20 / 0x82330F48 / 0x82331150 and the render command loop
+# 0x82123B90): the frame before has ended.
+[[midasm_hook]]
+address = 0x82128488
+name = "cod4_native_frame"
+registers = ["ctx", "base"]
+
+# [f2-menus] game_draw_size (../recomp/src/f2/f2_render_size.cpp, "console" by default): the size the game draws its 3D
+# scene at. The video setup 0x82135318 (the same code as World at War's 0x823F9088)
+# picks 1024x600 (896x680 on 4:3) and stores it into its record (r31) at +8 / +0xC. Here, at the height's store
+# (`stw r10,12(r31)`, the width's store just before it is the branch target), the hook can make it the screen's size
+# (+0x10 / +0x14, 1280x720) and drop the 2x MSAA (+0x18) when that doesn't fit the emulated EDRAM. Not a branch target.
+[[midasm_hook]]
+address = 0x82135400
+name = "iw3_game_draw_size_hook"
+registers = ["ctx", "base"]
+
 # ---------------------------------------------------------------------------
 # A jump table the codegen switches on the wrong register
 # ---------------------------------------------------------------------------

@@ -101,6 +101,30 @@ of them streamed; the battle chatter 2,455, almost all streamed; a level bank 75
 almost all resident. Unless the game's configuration says otherwise, `nslFmodInit` sets aside
 0x23D7840 bytes (about 36 MB) for NSL's memory and 0x1400000 (20 MB) for FMOD's heap.
 
+## The bank pool (resident wave data)
+
+[acct2-ocr] 2026-11-07, from acct2-decomp's reading (`game/voice_language.cpp`, 11-04) and the runs named below.
+
+- **Where.** NSL keeps the resident wave data of every loaded bank in one fixed block: its start at
+  0x8290CF68, its size at 0x8290CF6C (36,700 KB in the campaign), the granularity at 0x825A184C. It
+  hands out space from both ends, like two stacks, with one table of 64 sizes for both (0x8290CE68,
+  bit 31 = freed; 0x825A1848 the last entry from the bottom, 0x825A1844 the first from the top).
+- **How.** 0x8211CB00 (size, flags) takes the size off the bottom (off the top with flag 1); a load
+  that doesn't fit fails, and that bank stays silent. 0x8211CBE8 only marks an entry freed;
+  0x8211C9D8 then drops the freed entries at the two ends. So space comes back only from an end:
+  a freed bank under one still in use stays lost until that one is freed too.
+- **Seen.** In mace2 everything is at the bottom: Global.wbk 2,072 KB, bcen_pol.wbk 756 KB,
+  mace2.wbk 14,164 KB, then 19,707 KB free (run acct2-ocr-lang3-pool). The other squads' chatter
+  banks (`bcen_can`, `_bri`, `_usa`) are registered there but not loaded.
+- **The port's voice change in the middle of a level** (`cod3_voice_language`) releases the banks
+  that change and loads them again, on top. The first change leaves the old copies of the banks
+  below the level's own bank (2.8 MB in mace2) until the next level load. Since 2026-11-07 a change
+  also waits, 10 s at most, until the speech of the voice before (loaded next to a level bank that
+  keeps playing) is let go, and loads the new speech there after the other banks. Before that, the
+  German speech's 13.9 MB stayed lost and mace2's later voices waited for the next level load (runs
+  acct2-ocr-lang2-voice and -lang3-pool: 0.1 MB free after six changes; -lang5-order: 16.9 MB).
+  `cod3_debug_voices` logs the pool, in KB from each end inwards (`*` freed).
+
 ## How a sound plays
 
 1. **Banks.** The level loader (0x82462790) registers each AUDIO entry of an archive with

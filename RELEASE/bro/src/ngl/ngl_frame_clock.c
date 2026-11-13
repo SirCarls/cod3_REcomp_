@@ -69,6 +69,7 @@
 #include "ngl_vk.h"             /* the GPU wait and the staging, for the log line */
 #include "bro_settings.h"
 #include "bro_view.h"
+#include "bro_game_cvars.h"         /* [f2-menus] */
 #include "ngl_frame_clock.h"
 #include "ngl_fps_counter.h"
 #include "ngl_present.h"
@@ -396,6 +397,7 @@ void ngl_frame_clock_end_frame(void)
     run_game_function(NGL_FRAME_DONE);
     flip_vblank = vblank;
     bro_view_apply();
+    bro_game_cvars_frame();     /* [f2-menus] the F2 window's changes to the game's cvars go in at the frame's end */
     count_frame(now, drawn, waited, now_ns());
 }
 

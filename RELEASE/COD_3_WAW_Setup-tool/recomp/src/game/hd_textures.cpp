@@ -175,7 +175,12 @@ void ApplyUserTextures(const std::filesystem::path& root) {
     g_user_state = HdTextures::kOff;
     if (have_pack) REXLOG_INFO("cod3: user textures off (cod3_user_textures); the pack is in {}", where);
   } else if (!have_pack) {
-    g_user_state = HdTextures::kNoPack;  // the usual case: nothing to say
+    g_user_state = HdTextures::kNoPack;
+    // [rexglue-native-settings] 2026-11-11 (owner 07:33 "insignia censoring doesn't work"): one line, so a log shows
+    // why the insignia (or the player's own pictures) look as the game has them: they need this pack built.
+    REXLOG_INFO("cod3: user textures: no pack in {} (the setup tool's Textures page builds it: the insignia "
+                "censor and your own pictures need it; Play builds it first when they changed)",
+                where);
   } else {
     g_user_state = HdTextures::kOn;
     value = PathToUtf8Generic(pack);

@@ -30,6 +30,8 @@
 #include <rex/system.h>
 
 #include "generated/default/waw_pch.h"
+#include "waw_f2.h"  // [f2-menus] the F2 window's console page and its commands
+#include "waw_keys.h"  // [f2-menus] keys the PC way: key events into the game's CL_KeyEvent
 
 REXCVAR_DEFINE_BOOL(waw_log_console, true, "waw", "Copy the game's console output into the log (\"waw: [console N]\")");
 REXCVAR_DEFINE_STRING(waw_debug_command, "", "waw",
@@ -66,13 +68,18 @@ REXCVAR_DEFINE_INT32(waw_move_hz, 0, "waw",
                      "gives 8), 20-1000, for the server's moves and the client's prediction alike, so a jump or a walk "
                      "is the same at any frame rate (0: the game's own, one step per drawn frame of at most 66 ms). "
                      "Above N frames a second the view moves once per step");
-REXCVAR_DEFINE_INT32(waw_move_snap_hz, 0, "waw",
+// [waw-decomp] 11-09: on by default at 60 Hz. The 360 ran World at War with com_maxfps 85 and r_vsync 1 on a 60 Hz
+// display, so its jumps had about 60 cuts a second. The 11-08 evening runs in pel1a (acct2-waw's evening28b) gave
+// 31.3-31.4 units at 500 fps with the game's own cut, 37.8-38.3 at 500 fps and 38.2-38.5 at 125 fps with this at 60,
+// and 0 steps left unmatched. Below 60 fps every step is longer than a 60 Hz tick and crosses a boundary, so
+// nothing changes there.
+REXCVAR_DEFINE_INT32(waw_move_snap_hz, 60, "waw",
                      "The player's velocity is cut to whole units (Sys_SnapVector, toward zero on the 360) at the end "
                      "of every movement step, so each step takes up to 1 unit/s off a jump's upward speed and more "
                      "steps make a lower jump (38.2 at 30 fps, 35.8 with 125 Hz steps, about 31 at 250 fps and up). "
                      "N (20-1000): cut it only on the steps that cross a boundary of a fixed N Hz clock on the "
-                     "command time, so the jump stops depending on the step rate (60: the 360's 60 fps cap). 0: "
-                     "the game's own, every step");
+                     "command time, so the jump stops depending on the step rate. 60 (the default): the 360's "
+                     "60 Hz display, about 38 units at any frame rate. 0: the game's own, every step");
 REXCVAR_DEFINE_DOUBLE(waw_fov, 0.0, "waw",
                       "Hold the game's cg_fov at this many degrees (1-160) every frame, over what the level sets "
                       "(the owner's FOV 100 for 500 fps tests, 11-07 21:50; 0: the game's own)");
@@ -176,6 +183,7 @@ void waw_console_print(PPCContext& ctx, uint8_t* base) {
   last.assign(line);
   last_channel = ctx.r3.s32;
   REXLOG_INFO("waw: [console {}] {}", last_channel, line);
+  waw::f2ui::NoteConsoleLine(last_channel, line);  // [f2-menus] F2's CONSOLE page
 }
 
 namespace {
@@ -1140,6 +1148,15 @@ void waw_frame_start(PPCContext& ctx, uint8_t* base) {
   const auto now = clock::now();
 
   HoldFov(base);
+  // [f2-menus] Commands from the F2 window (typed on its CONSOLE page, or a row that sets a game dvar), run through
+  // the game's command buffer like the debug commands below. Nothing is copied on a frame without any.
+  if (waw::f2ui::HasCommands()) {
+    static std::vector<std::string> f2_commands;
+    waw::f2ui::TakeCommands(f2_commands);
+    for (const std::string& command : f2_commands) QueueConsoleCommand(ctx, base, command);
+    f2_commands.clear();
+  }
+  waw::keys::RunFrame(ctx, base);  // [f2-menus] keys the PC way (waw_keys.cpp): queued key events into CL_KeyEvent
   g_clocks.frames.fetch_add(1, std::memory_order_relaxed);
   g_census_frames.fetch_add(1, std::memory_order_relaxed);
   if (const int32_t every = REXCVAR_GET(waw_log_clocks); every > 0) {

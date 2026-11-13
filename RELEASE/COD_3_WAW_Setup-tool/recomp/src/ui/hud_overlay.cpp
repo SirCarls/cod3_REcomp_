@@ -14,8 +14,17 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <atomic>        // [f2-menus] 2026-11-11 cod3mp's language settings shared with the campaign's cod3.toml
+#include <cctype>        // [f2-menus] the same
+#include <fstream>       // [f2-menus] the same
+#include <iterator>      // [f2-menus] the same, and the Console language row
+#include <sstream>       // [f2-menus] the same
+#include <system_error>  // [f2-menus] the same
 
 #include <imgui.h>
+#if defined(COD3_MP)
+#include <toml++/toml.hpp>  // [f2-menus] 2026-11-11 which language lines the campaign's cod3.toml has
+#endif
 
 #include <rex/audio/output_device.h>
 #include <rex/cvar.h>
@@ -26,6 +35,7 @@
 
 #include "app_defaults.h"
 #include "game/aim_assist.h"
+#include "game/cheat_guard.h"  // [acct2-ocr] sv_cheats, the watermark's second line
 #include "game/cheat_watch.h"
 #include "game/cutscene_skip.h"
 #include "game/button_prompts.h"  // [acct2-decomp] key caps, the skip prompt's device
@@ -38,6 +48,8 @@
 #include "game/program.h"
 #include "game/mouse_look.h"
 #include "game/keybinds/binds.h"     // [keybinds] both programs
+#include "game/keybinds/pad_binds.h"  // [f2-menus] 2026-11-11 item 8: the controller buttons
+#include "game/keybinds/pad_model.h"  // [f2-menus] 2026-11-11 item 8
 #if !defined(COD3_MP)
 #include "game/movement/settings.h"  // [movement] campaign only for now
 #endif
@@ -46,12 +58,15 @@
 #include "game/shadows.h"
 #include "game/viewmodel.h"  // [claude-9b] CS2 weapon position
 #include "game/aim_sensitivity.h"  // [claude-9b] sensitivity per weapon (F2 > Controls)
+#include "game/pad_settings.h"     // [acct2-ocr] 2026-11-07 the controller's rows, per player
 #include "game/sticky_aim.h"  // [claude-9b] what applies now (F2 > Aim)
 #include "ui/server_tab.h"  // [claude-9b] F2 > Game > Server, the match's rules, host only
 #include "ui/slider_box.h"  // [claude-9b] sliders with a number box (owner: "sliders + textbox")
+#include "f2/f2_accel.h"  // [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (F2 > Controls > Mouse)
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
 #include "game/text_language.h"  // [acct2-ocr]
+#include "game/use_hold.h"  // [acct2-ocr] 2026-11-07 the Use hold per split-screen player
 #include "ui/text_overlay.h"  // [acct2-ocr]
 #include "ui/film_text.h"  // [acct2-ocr]
 #include "game/frame_rate.h"
@@ -1311,7 +1326,12 @@ static void DrawMenuCrosshairPreview(ImGuiIO& io) {
 // "CHEATS USED" watermark (game/cheat_watch.h): top-left corner of the HUD
 // (owner), small and see-through, on every screen (menus too) until the
 // cheats are all reset.
+// [f2-menus] 2026-11-11 where the watermark's last line ends this frame (0 when it isn't shown), so the sensitivity
+// randomizer's line (f2::accel, top left too) goes under it.
+static float g_cheat_mark_bottom = 0.0f;
+
 static void DrawCheatWatermark(ImGuiIO& io) {
+  g_cheat_mark_bottom = 0.0f;  // [f2-menus]
   auto& watch = cod3::CheatWatch::Get();
   if (!watch.Active()) return;
   const HudArea area = CurrentHudArea(io);
@@ -1319,21 +1339,319 @@ static void DrawCheatWatermark(ImGuiIO& io) {
   ImFont* font = FontFor(32.0f * scale);
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   const float x = area.x + std::floor(24.0f * scale);
+  // [acct2-ocr] Text at (px, y) with its shadow; returns its size.
+  // [acct2-ocr] 2026-11-07 a text with characters past Latin-1 (the mark in Russian, Chinese, Japanese, Korean) is
+  // drawn with the text layer's font, which has them.
+  auto text_at = [&](const std::string& text, float size, float px, float y, ImU32 col) {
+    ImFont* f = font;
+    for (unsigned char c : text)
+      if (c >= 0xC4 && c <= 0xF4) {
+        if (ImFont* layer = cod3::text_overlay::Font()) f = layer;
+        break;
+      }
+    const ImVec2 ext = f->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
+    const ImVec2 pos(std::floor(px), std::floor(y));
+    dl->AddText(f, size, ImVec2(pos.x + 2, pos.y + 2), IM_COL32(0, 0, 0, 120), text.c_str());
+    dl->AddText(f, size, pos, col, text.c_str());
+    return ext;
+  };
+  // [acct2-ocr] 2026-11-07 (owner 17:48 "every way a text string is shown"): the mark's two lines in the chosen
+  // language (the packs' "@notices" rows), else the English.
+  auto notice = [](const char* english) {
+    std::string ours = cod3::text::NoticeText(english);
+    return ours.empty() ? std::string(english) : ours;
+  };
   auto line = [&](const std::string& text, float size, float y, ImU32 col) {
-    const ImVec2 ext = font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
-    const ImVec2 pos(x, std::floor(y));
-    dl->AddText(font, size, ImVec2(pos.x + 2, pos.y + 2), IM_COL32(0, 0, 0, 120), text.c_str());
-    dl->AddText(font, size, pos, col, text.c_str());
-    return ext.y;
+    return text_at(text, size, x, y, col).y;
   };
   float y = area.y + 24.0f * scale;
-  y += line("CHEATS USED", 32.0f * scale, y, IM_COL32(255, 255, 255, 140)) + 2.0f * scale;
-  const std::string reasons = watch.Reasons();
-  if (!reasons.empty()) line(reasons, 18.0f * scale, y, IM_COL32(255, 255, 255, 120));
+  y += line(notice("CHEATS USED"), 32.0f * scale, y, IM_COL32(255, 255, 255, 140)) + 2.0f * scale;
+  // [acct2-ocr] Owner 2026-11-05 17:53: "Cheats enabled" right under CHEATS
+  // USED (it was a line in the announcement column, top right; cheat_guard.cpp
+  // no longer puts it there while this shows), and each cheat in green while it
+  // is on, red once it is off (cheat_watch.h, Entries).
+  const ImU32 on_col = IM_COL32(80, 230, 95, 210);
+  const ImU32 off_col = IM_COL32(240, 70, 60, 210);
+  const bool cheats_on = cod3::cheats::Enabled();
+  y += line(notice(cheats_on ? "Cheats enabled" : "Cheats disabled"), 22.0f * scale, y, cheats_on ? on_col : off_col) +
+       3.0f * scale;
+  const auto entries = watch.Entries();
+  const float size = 18.0f * scale;
+  const float space = font->CalcTextSizeA(size, FLT_MAX, 0.0f, " ").x;
+  const float right = area.x + area.width * 0.45f;  // wraps before the announcement column
+  float px = x;
+  for (size_t i = 0; i < entries.size(); ++i) {
+    const std::string word = entries[i].name + (i + 1 < entries.size() ? "," : "");
+    const float w = font->CalcTextSizeA(size, FLT_MAX, 0.0f, word.c_str()).x;
+    if (px > x && px + w > right) {
+      y += size + 2.0f * scale;
+      px = x;
+    }
+    px += text_at(word, size, px, y, entries[i].on ? on_col : off_col).x + space;
+  }
+  g_cheat_mark_bottom = y + (entries.empty() ? 0.0f : size + 2.0f * scale) + 6.0f * scale;  // [f2-menus]
 }
+
+#if defined(COD3_MP)
+// [f2-menus] 2026-11-11 The language settings shared with the campaign (hud_overlay.h ShareLanguageSettings). Owner
+// 14:00: "Go over the language options within the f2 menu, setup tool and in-game. Make sure logic is sound and they
+// change each other." cod3mp took them from the campaign's cod3.toml at its start (cod3mp_app.cpp ApplySharedTable)
+// but saved its own changes only to cod3mp.toml, so a language picked in multiplayer never reached the campaign or
+// the setup tool, and one the campaign put back to the game's own (cod3.toml then has no line for it) stayed here.
+namespace {
+constexpr std::string_view kSharedLanguage[] = {
+    "cod3_text_language", "cod3_voice_language",  "user_language",       "cod3_text_menus",
+    "cod3_text_prompts",  "cod3_text_objectives", "cod3_text_subtitles", "cod3_text_loading",
+    "cod3_text_credits",  "cod3_text_film_cards"};
+constexpr uintmax_t kMaxSharedConfigBytes = 1024 * 1024;
+std::filesystem::path g_lang_campaign;  // cod3.toml; empty until ShareLanguageSettings found it
+std::filesystem::path g_lang_own;       // cod3mp.toml
+std::atomic<bool> g_lang_dirty{false};  // a shared setting changed (any thread); written at the next frame
+
+// The names a TOML table sets, nested tables joined with '_' as ApplySharedTable reads them; `top` gets the
+// ones set at the file's top level.
+void CollectTomlNames(const toml::table& table, const std::string& prefix, std::vector<std::string>* names,
+                      std::vector<std::string>* top) {
+  for (const auto& [key, value] : table) {
+    const std::string name = prefix.empty() ? std::string(key) : prefix + "_" + std::string(key);
+    if (value.is_table()) {
+      CollectTomlNames(*value.as_table(), name, names, top);
+      continue;
+    }
+    names->push_back(name);
+    if (prefix.empty()) top->push_back(name);
+  }
+}
+
+// False when the file isn't there, is too large or isn't TOML (then nothing is written into it).
+bool SharedConfigNames(const std::filesystem::path& path, std::vector<std::string>* names,
+                       std::vector<std::string>* top) {
+  std::error_code ec;
+  if (!std::filesystem::is_regular_file(path, ec) || std::filesystem::file_size(path, ec) > kMaxSharedConfigBytes)
+    return false;
+  try {
+    const toml::table table = toml::parse_file(cod3::PathToUtf8(path));
+    CollectTomlNames(table, "", names, top);
+  } catch (const toml::parse_error&) {
+    return false;
+  }
+  return true;
+}
+
+bool Listed(const std::vector<std::string>& list, std::string_view name) {
+  return std::find(list.begin(), list.end(), name) != list.end();
+}
+
+// A setting's line as the SDK's SaveConfig writes it (cvar.cpp SerializeLines, TomlString): name = value, a
+// string as a TOML basic string.
+std::string SharedLine(std::string_view name, rex::cvar::FlagType type, const std::string& value) {
+  std::string out(name);
+  out += " = ";
+  if (type != rex::cvar::FlagType::String) return out + value;
+  out += '"';
+  for (char c : value) {
+    const auto u = static_cast<unsigned char>(c);
+    if (c == '"' || c == '\\') {
+      out += '\\';
+      out += c;
+    } else if (u < 0x20 || u == 0x7F) {
+      constexpr char kHex[] = "0123456789ABCDEF";
+      out += "\\u00";
+      out += kHex[u >> 4];
+      out += kHex[u & 0xF];
+    } else {
+      out += c;
+    }
+  }
+  return out + '"';
+}
+
+// The key a line sets at the top level ("name = ..."), else "" (a comment, a table, a dotted key, anything else).
+std::string_view SharedLineKey(std::string_view line) {
+  size_t i = line.find_first_not_of(" \t");
+  if (i == std::string_view::npos) return {};
+  const size_t start = i;
+  while (i < line.size() && (std::isalnum(static_cast<unsigned char>(line[i])) || line[i] == '_' || line[i] == '-'))
+    ++i;
+  if (i == start) return {};
+  const std::string_view key = line.substr(start, i - start);
+  i = line.find_first_not_of(" \t", i);
+  return i != std::string_view::npos && line[i] == '=' ? key : std::string_view{};
+}
+
+// UI thread, each frame (HudOverlay::OnDraw): after a change, the shared settings' lines in cod3.toml become this
+// program's values, every other line kept; then cod3mp.toml is saved, so it stays the newer file (cod3mp_app.cpp
+// takes cod3.toml's values over its own only when cod3.toml is newer).
+void FlushSharedLanguage() {
+  using Clock = std::chrono::steady_clock;
+  static Clock::time_point retry_at;
+  if (g_lang_campaign.empty() || !g_lang_dirty.load(std::memory_order_acquire) || Clock::now() < retry_at) return;
+  g_lang_dirty.store(false, std::memory_order_release);
+  std::vector<std::string> names, top;
+  if (!SharedConfigNames(g_lang_campaign, &names, &top)) {
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      REXLOG_WARN("cod3mp: the campaign's {} is gone or can't be read as TOML; language changes stay in this "
+                  "program's settings",
+                  cod3::PathToUtf8(g_lang_campaign));
+    }
+    return;
+  }
+  // Each shared setting's wanted line: none at its default (as SaveConfig). Left as the file has them: a value
+  // set for this run only (the command line, the environment), and a name the file sets inside a table (a line
+  // of ours would be a second value for it).
+  struct Want {
+    std::string name;
+    std::string line;
+    bool done = false;
+  };
+  std::vector<Want> wants;
+  for (std::string_view name : kSharedLanguage) {
+    const auto* info = rex::cvar::GetFlagInfo(name);
+    if (!info) continue;
+    const auto source = info->source;
+    const auto type = info->type;
+    const std::string fallback = info->default_value;
+    if (source == rex::cvar::Source::kCommandLine || source == rex::cvar::Source::kEnvironment) continue;
+    if (Listed(names, name) && !Listed(top, name)) continue;
+    const std::string value = rex::cvar::GetFlagByName(name);
+    wants.push_back({std::string(name), value == fallback ? std::string() : SharedLine(name, type, value)});
+  }
+  std::string text;
+  {
+    std::ifstream in(g_lang_campaign, std::ios::binary);
+    if (!in) return;
+    std::ostringstream all;
+    all << in.rdbuf();
+    text = all.str();
+  }
+  const std::string eol = text.find("\r\n") != std::string::npos ? "\r\n" : "\n";
+  std::string out;
+  std::vector<std::string> changed;
+  auto add_missing = [&]() {  // top-level lines go before the first table
+    if (!out.empty() && out.back() != '\n') out += eol;
+    for (auto& want : wants) {
+      if (want.done) continue;
+      want.done = true;
+      if (want.line.empty()) continue;
+      out += want.line + eol;
+      changed.push_back(want.line);
+    }
+  };
+  bool in_table = false;
+  size_t pos = 0;
+  while (pos < text.size()) {
+    const size_t end = text.find('\n', pos);
+    const size_t next = end == std::string::npos ? text.size() : end + 1;
+    const std::string_view line(text.data() + pos, next - pos);
+    std::string_view bare = line;
+    while (!bare.empty() && (bare.back() == '\n' || bare.back() == '\r')) bare.remove_suffix(1);
+    pos = next;
+    if (!in_table) {
+      const size_t first = bare.find_first_not_of(" \t");
+      if (first != std::string_view::npos && bare[first] == '[') {
+        in_table = true;
+        add_missing();
+      } else if (const std::string_view key = SharedLineKey(bare); !key.empty()) {
+        auto it = std::find_if(wants.begin(), wants.end(), [&](const Want& w) { return w.name == key; });
+        if (it != wants.end()) {
+          if (!it->done) {
+            it->done = true;
+            if (!it->line.empty()) out += it->line + eol;
+            if (it->line != bare) changed.push_back(it->line.empty() ? it->name + " (the game's own: no line)"
+                                                                     : it->line);
+          } else {
+            changed.push_back(it->name + " (a second line)");
+          }
+          continue;  // the file's own line for it goes
+        }
+      }
+    }
+    out += line;
+  }
+  if (!in_table) add_missing();
+  if (out == text) return;
+  std::filesystem::path temp = g_lang_campaign;
+  temp += ".cod3mp-lang";
+  bool written = false;
+  {
+    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
+    if (file) {
+      file << out;
+      file.flush();
+      written = static_cast<bool>(file);
+    }
+  }
+  std::error_code ec;
+  if (written) std::filesystem::rename(temp, g_lang_campaign, ec);
+  if (!written || ec) {
+    std::filesystem::remove(temp, ec);
+    retry_at = Clock::now() + std::chrono::seconds(2);
+    g_lang_dirty.store(true, std::memory_order_release);
+    static bool warned = false;
+    if (!warned) {
+      warned = true;
+      REXLOG_WARN("cod3mp: couldn't write the language settings into the campaign's {} (trying again)",
+                  cod3::PathToUtf8(g_lang_campaign));
+    }
+    return;
+  }
+  try {
+    rex::cvar::SaveConfig(g_lang_own);
+  } catch (const std::exception& e) {
+    REXLOG_WARN("cod3mp: couldn't save {}: {}", cod3::PathToUtf8(g_lang_own), e.what());
+  }
+  std::string list;
+  for (const auto& c : changed) list += (list.empty() ? "" : ", ") + c;
+  REXLOG_INFO("cod3mp: the language settings went into the campaign's {} too: {}", cod3::PathToUtf8(g_lang_campaign),
+              list.empty() ? std::string("(lines rewritten)") : list);
+}
+}  // namespace
+
+void ShareLanguageSettings(const std::filesystem::path& campaign_config, const std::filesystem::path& own_config,
+                           bool campaign_newer) {
+  static bool started = false;
+  if (started) return;
+  started = true;
+  std::vector<std::string> names, top;
+  if (!SharedConfigNames(campaign_config, &names, &top)) {
+    REXLOG_INFO("cod3mp: no campaign settings ({}) to keep the language settings with",
+                cod3::PathToUtf8(campaign_config));
+    return;
+  }
+  // The campaign's file is the newer one: a setting it has no line for is at the game's own there (SaveConfig
+  // writes no line for a default), and ApplySharedTable only takes the lines a file has, so this program's
+  // saved value (cod3mp.toml) is put back as well.
+  if (campaign_newer) {
+    for (std::string_view name : kSharedLanguage) {
+      const auto* info = rex::cvar::GetFlagInfo(name);
+      if (!info || info->source != rex::cvar::Source::kConfig || Listed(names, name)) continue;
+      const std::string fallback = info->default_value;
+      if (rex::cvar::GetFlagByName(name) == fallback) continue;
+      if (rex::cvar::SetFlagByName(name, fallback))
+        REXLOG_INFO("cod3mp: {} = {} (the game's own), as in the campaign's newer {}", name, fallback,
+                    cod3::PathToUtf8(campaign_config));
+    }
+  }
+  g_lang_campaign = campaign_config;
+  g_lang_own = own_config;
+  for (std::string_view name : kSharedLanguage)
+    if (rex::cvar::GetFlagInfo(name))
+      rex::cvar::RegisterChangeCallback(name, [](std::string_view, std::string_view) {
+        g_lang_dirty.store(true, std::memory_order_release);
+      });
+  // Once now as well: a language chosen here before this (cod3mp.toml the newer file) reaches the campaign.
+  // Nothing is written when cod3.toml already has this program's values.
+  g_lang_dirty.store(true, std::memory_order_release);
+}
+#endif  // COD3_MP
 
 void HudOverlay::OnDraw(ImGuiIO& io) {
   if (on_frame) on_frame();
+#if defined(COD3_MP)
+  FlushSharedLanguage();  // [f2-menus] 2026-11-11 a language changed here goes into the campaign's cod3.toml too
+#endif
   cod3::PerfMonitor::Get().Tick();
   DrawCheatWatermark(io);
   cod3::hud::AnnouncementFeed::Draw(io);
@@ -1355,6 +1673,21 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   g_top_right_offset = DrawVersionLabel(io);  // [claude-9b] cod3_show_version, above the frame rate
   if (const int mode = cod3::Engine::Get().draw_fps(); mode > 0) DrawFpsCounter(io, mode);
   if (REXCVAR_GET(cod3_perf_overlay)) DrawPerfOverlay(io);
+  {
+    // [f2-menus] 2026-11-11 (owner 03:05) the mouse acceleration, the sensitivity randomizer and the sensitivity
+    // scales the other ports have (f2/f2_accel.h): told once that this game applies them (MouseLook::AddDelta) and
+    // which setting is its mouse sensitivity (cod3_sensitivity turns |cod3_m_yaw| degrees a count at 1); every
+    // frame the randomizer's run is read and its line drawn (the run itself goes by real time, not by frames).
+    static double told_yaw = -1.0;
+    const double yaw = std::abs(REXCVAR_GET(cod3_m_yaw));
+    if (yaw != told_yaw) {
+      told_yaw = yaw;
+      f2::accel::SetSupported(true);
+      f2::accel::SetGameSensitivity("cod3_sensitivity", nullptr, yaw, 0.01, 100.0);
+    }
+    f2::accel::SetCornerTop(g_cheat_mark_bottom);  // [f2-menus] 2026-11-11 under the "CHEATS USED" mark
+    f2::accel::Tick();
+  }
   DrawMenuCrosshairPreview(io);  // [claude-9b] the AIM page's preview (menus only)
   auto s = CurrentCrosshair();
   if (!s.enabled) return;
@@ -1495,6 +1828,31 @@ static bool CvarCheckbox(const char* label, const char* cvar, bool* restart) {
     return true;
   }
   return false;
+}
+
+// [f2-menus] 2026-11-11 Sliders with a number box bound to a setting by its name, for the rows f2/f2_accel.h draws
+// with this window's widgets (the mouse acceleration, the sensitivity randomizer, the sensitivity scales).
+static bool CvarSliderInt(const char* label, const char* cvar, int lo, int hi, const char* format, bool* restart) {
+  if (!Has(cvar)) return false;
+  int v = GetInt(cvar);
+  if (!SliderIntBox(label, &v, lo, hi, format)) return false;
+  rex::cvar::SetFlagByName(cvar, std::to_string(v));
+  auto* info = rex::cvar::GetFlagInfo(cvar);
+  if (info && info->lifecycle != rex::cvar::Lifecycle::kHotReload) *restart = true;
+  return true;
+}
+
+static bool CvarSliderDouble(const char* label, const char* cvar, double lo, double hi, const char* format,
+                             bool* restart) {
+  if (!Has(cvar)) return false;
+  float v = static_cast<float>(GetDouble(cvar));
+  if (!SliderFloatBox(label, &v, static_cast<float>(lo), static_cast<float>(hi), format)) return false;
+  char text[40];
+  std::snprintf(text, sizeof(text), "%.6g", static_cast<double>(v));
+  rex::cvar::SetFlagByName(cvar, text);
+  auto* info = rex::cvar::GetFlagInfo(cvar);
+  if (info && info->lifecycle != rex::cvar::Lifecycle::kHotReload) *restart = true;
+  return true;
 }
 
 // A short, plain description under an option (dimmed, wrapped to the window).
@@ -1656,6 +2014,7 @@ void SettingsWindow::DrawVideo() {
                                       "d3d12_allow_variable_refresh_rate_and_tearing", "present_letterbox",
                                       "swap_post_effect", "present_effect",
                                       "anisotropic_override", "cod3_hd_textures",
+                                      "cod3_user_textures", "cod3_mp_texture_policy",  // [f2-menus] 2026-11-11
                                       "cod3_max_fps", "cod3_shadow_quality", "cod3_color_space",
                                       "display_hdr", "display_hdr_paper_white", "display_hdr_peak",
                                       "cod3_refresh_rate", "cod3_live_resolution", "cod3_graphics_api",
@@ -2082,8 +2441,8 @@ void SettingsWindow::DrawVideoResolution() {
          "custom 2560x1080 gives 2.37:1 and 1650x900 1.83:1, a named size (1080p, 1440p) 16:9, and "
          "\"Match the screen\" the window's shape. A custom shape can be anything from 4:3 to 48:9. "
          "A picture of another shape than the window gets black bars, or is stretched with "
-         "Letterbox off. Applies at once; the game's resolution follows the new shape a moment "
-         "later.");
+         "\"Black bars instead of stretching\" off. Applies at once; the game's resolution follows "
+         "the new shape a moment later.");  // [f2-menus] 2026-11-11 the row's name (review item 7b)
   }
 }
 
@@ -2203,18 +2562,13 @@ void SettingsWindow::DrawVideoQuality() {
   }
   // [claude-9b] 2026-10-27 "Draw the game's 2x MSAA as real 2x" moved to EMULATION > GPU.
   {
-    // FSR 2 / 3 aren't offered (owner 2026-10-19): the game gives them no depth
-    // or motion vectors, so they can't work as meant. A value already saved (a
-    // Windows build made with the FidelityFX option) is still shown as the
-    // current one; picking another drops it.
+    // [acct2-decomp] 2026-11-05 (owner: "remove the references to FSR 2 and 3"): the SDK is built without
+    // AMD's FidelityFX SDK since setup tool 2.32.1, so present_effect takes only these three (the temporal
+    // upscalers had not been offered here since 2026-10-19: the game gives them no depth or motion vectors).
     const std::string cur = Get("present_effect");
-    const bool temporal = cur == "fsr2" || cur == "fsr3";
-    const char* v[] = {"bilinear", "cas", "fsr", cur.c_str()};
-    const char* n[] = {"Bilinear", "AMD CAS (sharpen)", "AMD FSR 1 (spatial)",
-                       cur == "fsr3" ? "AMD FSR 3 (experimental, no longer offered)"
-                                     : "AMD FSR 2 (experimental, no longer offered)"};
-    dirty_ |= CvarCombo("Output scaling", "present_effect", v, n, temporal ? 4 : 3,
-                        &restart_needed_);
+    const char* v[] = {"bilinear", "cas", "fsr"};
+    const char* n[] = {"Bilinear", "AMD CAS (sharpen)", "AMD FSR 1 (spatial)"};
+    dirty_ |= CvarCombo("Output scaling", "present_effect", v, n, 3, &restart_needed_);
     // SDK patch 0064: CAS and FSR 1 are in every build.
     Help("How the finished picture is fitted to the window. Bilinear is plain and soft. AMD CAS "
          "sharpens it. AMD FSR 1 upscales with sharper edges, but only when the game draws fewer "
@@ -2272,9 +2626,9 @@ void SettingsWindow::DrawVideoQuality() {
     if (CvarCombo("Shadow quality", "cod3_shadow_quality", v, n, 2, &restart_needed_)) dirty_ = true;
     Help("The shadows that soldiers, vehicles and other moving things cast in sunlight. The "
          "level's own light and shade are painted into it and stay either way. Original is the "
-         "Xbox 360 game; at a resolution scale of 2 or 3 its shadow maps are drawn 2 or 3 times "
-         "as sharp. Off removes them and keeps the sunlight (applies at once). The game's speed "
-         "doesn't change.");
+         "Xbox 360 game; above 1080p (the GPU drawing at 2x2 or 3x3) its shadow maps are drawn 2 "
+         "or 3 times as sharp. Off removes them and keeps the sunlight (applies at once). The "
+         "game's speed doesn't change.");  // [f2-menus] 2026-11-11 the scale row is 25-200% now (review item 7a)
   }
 #if defined(COD3_MP)
   {
@@ -2313,6 +2667,30 @@ void SettingsWindow::DrawVideoQuality() {
        "textures. The setup tool makes them (data/cod3/hd_textures) when \"Upscale the extracted "
        "textures\" is ticked; without them the game uses its own textures. Applies after a "
        "restart.");
+  // [f2-menus] 2026-11-11 rexglue-native's 08:27 (their helpers' settings check): the user texture pack
+  // [f2-menus] (cod3_user_textures) and multiplayer's replaced textures (cod3_mp_texture_policy), game/hd_textures.cpp.
+  if (Has("cod3_user_textures")) {  // [f2-menus]
+    dirty_ |= CvarCheckbox("Your own textures (insignia censor)", "cod3_user_textures", &restart_needed_);  // [f2-menus]
+    const char* now = "decided when the game starts";  // [f2-menus]
+    switch (cod3::hd::GetUserTextures()) {  // [f2-menus]
+      case cod3::HdTextures::kOn: now = "on"; break;  // [f2-menus]
+      case cod3::HdTextures::kOff: now = "off"; break;  // [f2-menus]
+      case cod3::HdTextures::kNoPack: now = "no pack built yet: the setup tool's Textures page (or Play) builds it"; break;  // [f2-menus]
+      case cod3::HdTextures::kUnsupported: now = "not available with this renderer"; break;  // [f2-menus]
+      case cod3::HdTextures::kCommandLine: now = "a texture folder from the command line is used instead"; break;  // [f2-menus]
+      default: break;  // [f2-menus]
+    }  // [f2-menus]
+    ImGui::TextDisabled("Now: %s.", now);  // [f2-menus]
+    Help("Use the texture pack the setup tool builds from the insignia censor and your own pictures "  // [f2-menus]
+         "(data/cod3/user_textures). Applies after a restart.");  // [f2-menus]
+  }  // [f2-menus]
+  if (cod3::kMultiplayer && Has("cod3_mp_texture_policy")) {  // [f2-menus] multiplayer's program only
+    const char* v[] = {"all", "insignia", "off"};  // [f2-menus]
+    const char* n[] = {"All", "Insignia only", "Off"};  // [f2-menus]
+    dirty_ |= CvarCombo("Replaced textures in multiplayer", "cod3_mp_texture_policy", v, n, 3, &restart_needed_);  // [f2-menus]
+    Help("All: the HD and your own pack, as in the campaign. Insignia: only the world insignia from your own "  // [f2-menus]
+         "pack. Off: none. Applies at once.");  // [f2-menus]
+  }  // [f2-menus]
 }
 
 void SettingsWindow::DrawGame() {
@@ -2328,8 +2706,13 @@ void SettingsWindow::DrawGame() {
                                       "cod3_key_prompts", "cod3_key_caps", "cod3_glyph_style", "cod3_glyph_color_mode",
                                       "cod3_key_cap_scale",  // [claude-9b-think]
                                       "cod3_qte_style", "cod3_qte_spinner_with_pad", "cod3_qte_spinner_scale",
-                                      "cod3_letterbox", "cod3_skip_prompt_position", "cod3_skip_hold_ms"});
+                                      "cod3_letterbox", "cod3_skip_prompt_position", "cod3_skip_hold_ms",
+                                      "cod3_use_hold_ms"});  // [acct2-decomp] the Use hold (Prompts tab)
     ResetGlyphColors();  // [claude-9b-think] the prompt pictures' colors
+    for (int p = 1; p < cod3::fov::kViewPlayers; ++p) {  // [acct2-ocr] 2026-11-07 split screen's own FOVs
+      cod3::fov::SetSplitFov(p, -1.0f);
+      cod3::fov::SetSplitScale(p, -1.0f);
+    }
     dirty_ = true;
   }
   // [claude-9b] Subtabs (owner 2026-10-20: "please add subtabs for whats under game in F2"),
@@ -2365,6 +2748,68 @@ void SettingsWindow::DrawGame() {
          "and at every level start, and only your own changes are saved.");
     if (fov::ScriptedViewActive())
       ImGui::TextDisabled("A scripted view has the FOV right now; yours comes back after it.");
+    // [acct2-ocr] 2026-11-07 split screen: players 2 to 4's own (game/fov.h; owner 22:24 "account for
+    // split-screen ... for everything", 22:26 "every gameplay altering settings").
+    if (fov::kViewPlayers > 1 && ImGui::TreeNode("Split screen: players 2 to 4")) {
+      for (int p = 1; p < fov::kViewPlayers; ++p) {
+        ImGui::PushID(p);
+        bool own = fov::SplitFov(p) >= 0.0f || fov::SplitScale(p) >= 0.0f;
+        char label[48];
+        std::snprintf(label, sizeof(label), "Player %d: own field of view", p + 1);
+        if (ImGui::Checkbox(label, &own)) {
+          // On: start from what the view uses now, so nothing moves until a slider does.
+          const fov::Settings now = fov::ViewSettings(p);
+          fov::SetSplitFov(p, own ? now.fov : -1.0f);
+          fov::SetSplitScale(p, own ? now.scale : -1.0f);
+          dirty_ = true;
+        }
+        if (own) {
+          const fov::Settings now = fov::ViewSettings(p);
+          ImGui::Indent();
+          float f = now.fov;
+          const fov::Range fr = fov::FovRange(now.scale);
+          if (ImGui::SliderFloat("Field of view", &f, fr.min, fr.max, "%.0f", ImGuiSliderFlags_AlwaysClamp)) {
+            fov::SetSplitFov(p, f);
+            dirty_ = true;
+          }
+          float sc = now.scale;
+          const fov::Range sr = fov::ScaleRange(now.fov);
+          if (ImGui::SliderFloat("FOV scale", &sc, sr.min, sr.max, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+            fov::SetSplitScale(p, sc);
+            dirty_ = true;
+          }
+          ImGui::Unindent();
+        } else {
+          ImGui::SameLine();
+          ImGui::TextDisabled("(player 1's, above)");
+        }
+        // [acct2-ocr] 2026-11-07 and the player's own vehicle FOV scale (fov.h VehicleScale)
+        bool own_vehicle = fov::OwnVehicleScale(p) > 0.0;
+        std::snprintf(label, sizeof(label), "Player %d: own vehicle FOV scale", p + 1);
+        if (ImGui::Checkbox(label, &own_vehicle)) {
+          fov::SetVehicleScale(p, own_vehicle ? fov::VehicleScale(p) : -1.0);
+          dirty_ = true;
+        }
+        if (own_vehicle) {
+          ImGui::Indent();
+          float vs = static_cast<float>(fov::VehicleScale(p));
+          if (ImGui::SliderFloat("Vehicle FOV scale", &vs, 0.5f, 2.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp)) {
+            fov::SetVehicleScale(p, vs);
+            dirty_ = true;
+          }
+          ImGui::Unindent();
+        } else {
+          ImGui::SameLine();
+          ImGui::TextDisabled("(player 1's)");
+        }
+        ImGui::PopID();
+      }
+      Help("A split-screen player's own field of view and FOV scale, on that player's view only, kept within 65 to "
+           "165 the same way (cod3_fov_p2 .. _p4, cod3_fov_scale_p2 .. _p4). Off: player 1's values above. Each "
+           "player can also set theirs in their own Pause > OPTIONS > GAMEPLAY. The vehicle FOV scale the same way "
+           "(cod3_vehicle_fov_scale_p2 .. _p4, 0.5 to 2).");
+      ImGui::TreePop();
+    }
     // [claude-9b] 2026-10-27 (owner 03:15: "vehicle fov needs to be a slider"; game/fov.cpp)
     if (Has("cod3_vehicle_fov_scale")) {
       float vehicle = static_cast<float>(GetDouble("cod3_vehicle_fov_scale", 1.0));
@@ -2520,6 +2965,12 @@ void SettingsWindow::DrawGame() {
     ImGui::EndTabItem();
   }
 #endif
+#if defined(COD3_MP)  // [acct2-ocr] 2026-11-07: the same tab in cod3mp (ui/server_tab.h)
+  if (server_tab::Shown() && ImGui::BeginTabItem("Server")) {
+    dirty_ |= server_tab::Draw();
+    ImGui::EndTabItem();
+  }
+#endif
   // [claude-9b] The player's name (owner 2026-10-26: "Selectable names... the in-game dvar still uses
   // the gamertag"): the gamertag the game is given (SDK patch 0070's user_name), both programs.
   if (Has("user_name") && ImGui::BeginTabItem("Player")) {
@@ -2547,7 +2998,7 @@ void SettingsWindow::DrawGame() {
     // [claude-9b] 2026-10-27 Split-screen players 2-4 (owner 2026-10-26: "Player names: setup tool and per
     // split-screen player"): SDK patch 0074's user_name_2..4, the names XamUserGetName gives the game for
     // users 1-3 (no one is signed in for them).
-    if (Has("user_name_2")) {
+    if (cod3::kMultiplayer && Has("user_name_2")) {  // [f2-menus] 2026-11-11 split screen is multiplayer only
       static char others[3][32] = {};
       static bool other_editing[3] = {};
       static const char* const kNames[] = {"user_name_2", "user_name_3", "user_name_4"};
@@ -2575,10 +3026,8 @@ void SettingsWindow::DrawGame() {
     // [claude-9b] 2026-10-27 The player order (owner 2026-10-26: "player order 1-4 in F2"): which
     // player each controller plays as, by the order the controllers connected (SDK patch 0071's
     // input_player_order: one digit a controller, the first controller's player first).
-    if (Has("input_player_order")) {
-      ImGui::Spacing();
-      ImGui::Separator();
-      ImGui::TextUnformatted("Controllers");
+    if (cod3::kMultiplayer && Has("input_player_order")) {  // [f2-menus] 2026-11-11 split screen only
+      Section("Controllers");  // [f2-menus] 2026-11-11 the gold header like the rest (was plain text)
       int order[4] = {0, 1, 2, 3};  // the player (0-3) of each controller, in connection order
       {
         const std::string text = Get("input_player_order");
@@ -2697,8 +3146,7 @@ void SettingsWindow::DrawGamePrompts() {
          "buttons in the key caps' gold style too.");
   }
   // [claude-9b-think] 2026-10-27 UNTESTED the pictures' colors (owner 13:59), like the crosshair's own colors.
-  ImGui::Spacing();
-  ImGui::TextUnformatted("Colors");
+  Section("Colors");  // [f2-menus] 2026-11-11 the gold header like the rest (was plain text)
   if (CurrentGlyphMode() != GlyphMode::kCustom)
     ImGui::TextDisabled("Used with Button colors \"Custom\"; changing one switches to it.");
   dirty_ |= GlyphColorRow(kGlyphAccent);
@@ -2726,13 +3174,72 @@ void SettingsWindow::DrawGamePrompts() {
   DrawGlyphPreview();
   dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h): the stick actions' prompts
   // [acct2-decomp] The cutscene skip prompt's rows are on the Cutscenes tab now, next to the automatic skip.
+  // [acct2-decomp] 2026-11-05 (owner 08:50: "reduce or completely eliminate the need to "press and hold""): how
+  // long Use is held (game/use_hold.h), both programs.
+  if (Has("cod3_use_hold_ms")) {
+    Section("Use: hold or press");
+    const int ms = std::clamp(GetInt("cod3_use_hold_ms", -1), -1, 1000);
+    bool game = ms < 0;
+    if (ImGui::Checkbox("The game's hold (250 ms)", &game)) {
+      rex::cvar::SetFlagByName("cod3_use_hold_ms", game ? "-1" : "0");
+      dirty_ = true;
+    }
+    Help("Picking up a weapon or ammo, manning a gun and getting into a vehicle need Use held for a moment "
+         "(\"Press and hold\"). Untick to choose the time: 0 makes Use a press, and the hints then say \"Press\".");
+    if (!game) {
+      int v = std::max(ms, 0);
+      if (SliderIntBox("Hold Use for", &v, 0, 1000, "%d ms")) {
+        rex::cvar::SetFlagByName("cod3_use_hold_ms", std::to_string(std::clamp(v, 0, 1000)));
+        dirty_ = true;
+      }
+      Help("0: a press uses at once. The controller's Use button also reloads: a press shorter than this reloads, "
+           "so at 0 it uses what is in reach (a weapon on the ground, a mounted gun) instead of reloading. The "
+           "keyboard's Use and Reload keys are separate. Planting a charge and the other scripted holds keep their "
+           "own time. Multiplayer: player 1's; players 2 to 4 of a split screen have their own below.");  // [acct2-ocr]
+      if (v == 0) ImGui::TextDisabled("Now: a press. The hints say \"Press [USE]\".");
+    }
+#if defined(COD3_MP)
+    // [acct2-ocr] 2026-11-07 (owner 23:40 "it's per person"): split-screen players 2 to 4's own (game/use_hold.h).
+    if (ImGui::TreeNode("Split screen: players 2 to 4")) {
+      for (int p = 1; p < cod3::use_hold::kPlayers; ++p) {
+        const char* name = cod3::use_hold::SettingName(p);
+        if (!name) continue;
+        ImGui::PushID(p);
+        const int own = cod3::use_hold::OwnSettingMs(p);
+        int mode = own == -1 ? 0 : own == -2 ? 1 : 2;
+        const char* modes[] = {"Player 1's", "The game's hold (250 ms)", "Its own time"};
+        char label[24];
+        std::snprintf(label, sizeof(label), "Player %d", p + 1);
+        if (ImGui::Combo(label, &mode, modes, 3)) {
+          const int start = std::max(cod3::use_hold::SettingMsFor(p), 0);
+          rex::cvar::SetFlagByName(name, mode == 0 ? std::string("-1")
+                                       : mode == 1 ? std::string("-2")
+                                                   : std::to_string(start));
+          dirty_ = true;
+        }
+        if (mode == 2) {
+          int v = std::max(own, 0);
+          if (SliderIntBox("Hold Use for", &v, 0, 1000, "%d ms")) {
+            rex::cvar::SetFlagByName(name, std::to_string(std::clamp(v, 0, 1000)));
+            dirty_ = true;
+          }
+        }
+        ImGui::PopID();
+      }
+      Help("Each split-screen player's own Use hold (cod3_use_hold_ms_p2 .. _p4): player 1's (the start), the "
+           "game's own, or its own time (0: a press). The hints follow each player's own. Each player can also set "
+           "it in their own Pause > OPTIONS > GAMEPLAY.");
+      ImGui::TreePop();
+    }
+#endif
+  }
 }
 
 // [claude-9b] SOUND, right next to VIDEO (owner 2026-10-21: "sound needs to be right next to
 // video within f2"); it was a GAME subtab.
 void SettingsWindow::DrawSound() {
   if (ResetButton("reset_sound", "sound settings")) {
-    ResetSettings({"cod3_volume", "audio_device"});
+    ResetSettings({"cod3_volume", "audio_device", "audio_output_layout"});  // [acct2-decomp] + speakers
     Save();  // at once, as a picked sound output is (DrawSoundOutput)
   }
   if (Has("cod3_volume")) {
@@ -2745,8 +3252,32 @@ void SettingsWindow::DrawSound() {
          "game's Options > Sound. Console: snd_volume 0-1.");
   }
   DrawSoundOutput();
+  DrawSpeakerLayout();  // [acct2-decomp]
   if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
   if (cod3::text::DrawSettingsRow()) Save();  // [acct2-ocr] the text language, next to the voices
+  // [f2-menus] 2026-11-11 The console language (the SDK's user_language, what XGetLanguage answers): the setup
+  // tool's "Console language", which F2 had no row for (owner 14:00: the language options in F2, the setup tool
+  // and in-game change each other).
+  if (Has("user_language")) {
+    static const char* const kConsoleValues[] = {"1", "3", "4", "5", "6"};
+    static const char* const kConsoleNames[] = {"English", "German", "French", "Spanish", "Italian"};
+    const std::string now = Get("user_language");
+    if (std::find_if(std::begin(kConsoleValues), std::end(kConsoleValues),
+                     [&](const char* v) { return now == v; }) == std::end(kConsoleValues))
+      ImGui::TextDisabled("Console language now: %s (set outside this list)", now.c_str());
+    if (CvarCombo("Console language", "user_language", kConsoleValues, kConsoleNames, 5, &restart_needed_)) Save();
+#if defined(COD3_MP)
+    Help("The console's language, the setup tool's Console language (the same setting, kept with the campaign's). "
+         "Multiplayer plays no films. On the French, Spanish and Italian disc the campaign also takes its own "
+         "text and voices from it (Spanish, Italian, else French) at its next start.");
+#else
+    Help("The console's language, the setup tool's Console language (the same setting). The films play their "
+         "sound in it from the next film on while Voices is the game's own (a film without that language plays "
+         "English). On the French, Spanish and Italian disc the game also takes its own text and voices from it "
+         "(Spanish, Italian, else French) after a restart; on the USA and German discs they stay the disc's, and "
+         "Voices and Text above choose others.");
+#endif
+  }
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -2790,7 +3321,61 @@ void SettingsWindow::DrawSoundOutput() {
        "goes back at that restart.");
 }
 
+// [acct2-decomp] What the game's 5.1 sound is mixed for (SDK patch 0180, audio_output_layout in
+// rex/audio/output_device.h; owner 2026-11-04: "alternate mixing for 5.1 7.1 stereo and headphones").
+// Both programs: the setting is the SDK's and this tab is shared.
+void SettingsWindow::DrawSpeakerLayout() {
+  if (!Has("audio_output_layout")) return;
+  using rex::audio::OutputLayout;
+  static constexpr struct {
+    OutputLayout layout;
+    const char* label;
+  } kLayouts[] = {
+      {OutputLayout::kAuto, "Automatic (the device's own)"},
+      {OutputLayout::kStereo, "Stereo speakers"},
+      {OutputLayout::kHeadphones, "Headphones (virtual surround)"},
+      {OutputLayout::kSurround51, "5.1 surround"},
+      {OutputLayout::kSurround71, "7.1 surround"},
+  };
+  const OutputLayout chosen = rex::audio::ParseOutputLayout(rex::cvar::GetFlagByName("audio_output_layout"));
+  const char* preview = kLayouts[0].label;
+  for (const auto& l : kLayouts) {
+    if (l.layout == chosen) preview = l.label;
+  }
+  if (ImGui::BeginCombo("Speakers", preview)) {
+    for (const auto& l : kLayouts) {
+      if (ImGui::Selectable(l.label, l.layout == chosen) && l.layout != chosen) {
+        rex::cvar::SetFlagByName("audio_output_layout", rex::audio::OutputLayoutName(l.layout));
+        Save();  // at once, as the sound output is
+      }
+    }
+    ImGui::EndCombo();
+  }
+  const std::string mixing = rex::audio::CurrentOutputLayout();
+  if (!mixing.empty()) ImGui::TextDisabled("Mixing for: %s", mixing.c_str());
+  Help("What the game's 5.1 sound is mixed for. Automatic follows the output: stereo for two "
+       "channels, 5.1 or 7.1 for a surround system. Headphones places the five speakers around "
+       "your head (the far ear hears each a little later and duller), for headphones on a stereo "
+       "output. 7.1 plays each surround on the side and the back speaker. A change takes effect "
+       "at once, with a moment of silence.");
+}
+
 void SettingsWindow::DrawCrosshair() {
+  // [acct2-decomp] 2026-11-05 owner 06:05: "check the crosshair menu for a redundant preview. Also when scrolling
+  // that menu the preview should stay on the right side of the menu while staying centered." The settings scroll
+  // in a column of their own; the one preview (claude-9b's, at its in-game size) has a column on the right that
+  // never scrolls, and sits centered in it. The second preview that was at the bottom of the page (the same
+  // crosshair at a fixed 1.5x on a green box, white unless Constant color, so it showed neither the per-case
+  // colors nor the custom crosshair being off) is gone.
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float preview_side = std::floor(ImGui::GetFrameHeight() * 5.0f);
+  static constexpr const char* kCaption[] = {"Preview, at its size", "in the game", "(custom crosshair off)"};
+  float caption_w = 0.0f;
+  for (const char* line : kCaption) caption_w = std::max(caption_w, ImGui::CalcTextSize(line).x);
+  const float column_w = std::floor(std::max(preview_side, caption_w) + style.WindowPadding.x * 2.0f);
+  const float page_w = ImGui::GetContentRegionAvail().x;
+  ImGui::BeginChild("##crosshair_settings",
+                    ImVec2(std::floor(std::max(page_w * 0.5f, page_w - column_w - style.ItemSpacing.x)), 0.0f));
   bool changed = false;
   if (ResetButton("reset_crosshair", "crosshair settings")) {
     ResetSettings({"cod3_crosshair", "cod3_crosshair_style", "cod3_crosshair_size", "cod3_crosshair_thickness",
@@ -2845,22 +3430,8 @@ void SettingsWindow::DrawCrosshair() {
   Help("Draws the crosshair below instead of the game's. It appears only when the game would show "
        "its own: not in menus or cutscenes, and it fades out as you aim down the sights. Show "
        "crosshair above (the game's own switch) still hides it.");
-  {
-    // [claude-9b] Preview at its in-game size (owner 2026-10-20: "the crosshair menu needs a preview").
-    const float side = std::floor(ImGui::GetFrameHeight() * 5.0f);
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const ImVec2 p1(p0.x + side, p0.y + side);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p0, p1, IM_COL32(40, 40, 40, 255));
-    dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
-    dl->PushClipRect(p0, p1, true);
-    DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
-                              std::max(0.5f, ImGui::GetIO().DisplaySize.y / 1080.0f));
-    dl->PopClipRect();
-    ImGui::Dummy(ImVec2(side, side));
-    ImGui::SameLine();
-    ImGui::TextDisabled("Preview, at its size in the game%s.", REXCVAR_GET(cod3_crosshair) ? "" : " (off now)");
-  }
+  ImGui::BeginDisabled(!en);  // [f2-menus] 2026-11-11 the custom crosshair's rows grey while it is off
+  // [acct2-decomp] the preview moved to the column on the right (end of this function).
   const char* styles[] = {"Classic cross", "Cross + dot", "Dot", "Circle", "T"};
   int st = REXCVAR_GET(cod3_crosshair_style);
   if (ImGui::Combo("Style", &st, styles, 5)) {
@@ -2950,19 +3521,38 @@ void SettingsWindow::DrawCrosshair() {
     ImGui::SameLine();
     ImGui::TextDisabled("Back to the game's own colors.");
   }
-  // Preview: the chosen color, or the game's normal white.
-  ImGui::Text("Preview:");
-  ImVec2 p = ImGui::GetCursorScreenPos();
-  ImGui::Dummy(ImVec2(120, 120));
-  ImDrawList* dl = ImGui::GetWindowDrawList();
-  dl->AddRectFilled(p, ImVec2(p.x + 120, p.y + 120), IM_COL32(70, 80, 70, 255));
-  auto ps = CurrentCrosshair();
-  if (!ps.constant_color) ps.color[0] = ps.color[1] = ps.color[2] = ps.color[3] = 1.0f;
-  ImVec2 c(p.x + 60, p.y + 60);
-  if (ps.outline) DrawCrosshairShape(dl, c, ps, 1.5f, IM_COL32(0, 0, 0, 255), ps.outline_thickness * 1.5f);
-  DrawCrosshairShape(dl, c, ps, 1.5f,
-                     ImGui::ColorConvertFloat4ToU32(ImVec4(ps.color[0], ps.color[1], ps.color[2], ps.color[3])),
-                     0.0f);
+  ImGui::EndDisabled();  // [f2-menus] 2026-11-11 the custom crosshair's rows
+  ImGui::EndChild();
+  ImGui::SameLine();
+  // [acct2-decomp] The preview's column: as tall as the page, never scrolls; the preview and its caption are
+  // centered in it, so they stay put while the settings beside them scroll.
+  ImGui::BeginChild("##crosshair_preview", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
+                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+  {
+    const int lines = REXCVAR_GET(cod3_crosshair) ? 2 : 3;
+    const ImVec2 area = ImGui::GetContentRegionAvail();
+    const ImVec2 start = ImGui::GetCursorPos();
+    const float block_h = preview_side + style.ItemSpacing.y + lines * ImGui::GetTextLineHeightWithSpacing();
+    ImGui::SetCursorPos(ImVec2(start.x + std::floor(std::max(0.0f, (area.x - preview_side) * 0.5f)),
+                               start.y + std::floor(std::max(0.0f, (area.y - block_h) * 0.5f))));
+    // [claude-9b] Preview at its in-game size (owner 2026-10-20: "the crosshair menu needs a preview").
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const ImVec2 p1(p0.x + preview_side, p0.y + preview_side);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, IM_COL32(40, 40, 40, 255));
+    dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
+    dl->PushClipRect(p0, p1, true);
+    DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
+                              std::max(0.5f, ImGui::GetIO().DisplaySize.y / 1080.0f));
+    dl->PopClipRect();
+    ImGui::Dummy(ImVec2(preview_side, preview_side));
+    for (int i = 0; i < lines; ++i) {
+      const float w = ImGui::CalcTextSize(kCaption[i]).x;
+      ImGui::SetCursorPosX(start.x + std::floor(std::max(0.0f, (area.x - w) * 0.5f)));
+      ImGui::TextDisabled("%s", kCaption[i]);
+    }
+  }
+  ImGui::EndChild();
   if (changed) dirty_ = true;
 }
 
@@ -2999,6 +3589,12 @@ void SettingsWindow::DrawControlsMouse() {
     // [acct2-decomp] mnk_mouse's default was fixed at start (cod3_app.cpp), not by the reset: the Mouse aim
     // combo's own rule, so raw input and the stick emulation are never on together (the view would turn twice).
     if (REXCVAR_GET(cod3_raw_mouse)) rex::cvar::SetFlagByName("mnk_mouse", "false");
+    restart_needed_ |= ResetSettings({"cod3_pc_menus", "cod3_mouse_resample"});  // [f2-menus] 2026-11-11 item 8
+    {  // [f2-menus] 2026-11-11 04:12 the mouse acceleration, the sensitivity randomizer and the scales too
+      const char* const* names = nullptr;
+      const int count = f2::accel::Settings(&names);
+      for (int i = 0; i < count; ++i) restart_needed_ |= ResetSettings({names[i]});
+    }
     dirty_ = true;
   }
   dirty_ |= CvarCheckbox("Keyboard & mouse", "mnk_mode", &restart_needed_);
@@ -3039,7 +3635,8 @@ void SettingsWindow::DrawControlsMouse() {
       ImGui::Text("%.0f mouse counts per full turn", cm360);
       Help("The same number as World at War's sensitivity setting (its default is 5).");
       float zoom = static_cast<float>(REXCVAR_GET(cod3_zoom_sensitivity));
-      if (ImGui::SliderFloat("ADS sensitivity multiplier", &zoom, 0.1f, 2.0f, "%.2f")) {
+      // [f2-menus] 2026-11-11 ctl 14:50 the setting's own range, as the game's MOUSE ADS SCALE row (was 0.1 to 2)
+      if (ImGui::SliderFloat("ADS sensitivity multiplier", &zoom, 0.05f, 4.0f, "%.2f")) {
         REXCVAR_SET(cod3_zoom_sensitivity, static_cast<double>(zoom));
         dirty_ = true;
       }
@@ -3076,11 +3673,41 @@ void SettingsWindow::DrawControlsMouse() {
              "uses 0.022 for both. A negative value turns that way round; 0 isn't taken.");
         ImGui::TreePop();
       }
+      // [f2-menus] 2026-11-11 (owner 03:05: "This will be needed within cod3 as well. Same goes for raw accel"; 03:09:
+      // "different sensitivity equations"): the rows the other ports' F2 windows have, drawn by f2/f2_accel.cpp with
+      // this window's widgets: sensitivity as another game counts it, mouse acceleration (Raw Accel's curves, inside
+      // this game only), the sensitivity randomizer with its graphs. Raw input only: they act on its counts.
+      {
+        static const f2::accel::Widgets kWidgets = {
+            [](const char* title) { Section(title); },
+            [](const char* label, const char* name, bool* restart) { return CvarCheckbox(label, name, restart); },
+            [](const char* label, const char* name, const char* const* values, const char* const* names, int count,
+               bool* restart) { return CvarCombo(label, name, values, names, count, restart); },
+            [](const char* label, const char* name, int lo, int hi, const char* format, bool* restart) {
+              return CvarSliderInt(label, name, lo, hi, format, restart);
+            },
+            [](const char* label, const char* name, double lo, double hi, const char* format, bool* restart) {
+              return CvarSliderDouble(label, name, lo, hi, format, restart);
+            },
+            [](const char* text) { Help(text); },
+        };
+        dirty_ |= f2::accel::DrawRows(kWidgets, &restart_needed_);
+      }
     } else if (mode == 1) {
       // [claude-9b-think] mnk_sensitivity's row is on the Controller tab (owner 13:28).
       ImGui::TextDisabled("Its speed: Stick sensitivity, on the Controller tab.");
     }
   }
+  // [f2-menus] 2026-11-11 item 8 (rexglue-native-f2's review): two mouse settings that had no row.
+  Section("Menus and frame timing");  // [f2-menus]
+  dirty_ |= CvarCheckbox("Mouse in the game's menus", "cod3_pc_menus", &restart_needed_);  // [f2-menus]
+  Help("On (the default): the pointer picks a menu row, a click chooses it, right click or Escape goes back, the "  // [f2-menus]
+       "wheel and arrow keys move and Enter chooses (game/pc_menu.h). Off: the port's mouse and keyboard handling "  // [f2-menus]
+       "stays out of the game's menus.");  // [f2-menus]
+  dirty_ |= CvarCheckbox("Even turning at high frame rates", "cod3_mouse_resample", &restart_needed_);  // [f2-menus]
+  Help("On (the default): the mouse's motion is spread over the time it arrived in, so every frame turns by its "  // [f2-menus]
+       "share (up to a few milliseconds later). Off: each frame takes what arrived since the last one. Applies at "  // [f2-menus]
+       "once.");  // [f2-menus]
   ImGui::EndDisabled();  // [acct2-decomp] Keyboard & mouse
 }
 
@@ -3137,14 +3764,182 @@ void SetJoyThreshold(int units) {
     engine.SetArchived("joy_threshold", v);
   REXLOG_INFO("cod3: stick dead zone: joy_threshold {} ({:.0f}% of a full push) (F2)", units, units * 100.0 / 128.0);
 }
+
+// [acct2-ocr] 2026-11-07 (docs/GAMEPLAY_PATCHES.md 1.6: no row anywhere): acct2-main's dead zone per player,
+// cod3_deadzone_p1..p4 (game/keybinds/pad_binds.cpp): -1 = joy_threshold above, else 0-100 of the stick's 128.
+// pad_binds reads them on every stick call, so a change applies at once; F2 saves them in cod3.toml. The campaign
+// has one player (player 1's setting); multiplayer shows all four for split screen.
+constexpr const char* kDeadZonePlayer[] = {"cod3_deadzone_p1", "cod3_deadzone_p2", "cod3_deadzone_p3",
+                                           "cod3_deadzone_p4"};
+#if defined(COD3_MP)
+constexpr int kDeadZoneRows = 4;
+#else
+constexpr int kDeadZoneRows = 1;
+#endif
+
+// One player's row: "own dead zone" and, when on, its slider. Returns true when the setting changed.
+bool DeadZonePlayerRow(int player) {
+  const char* name = kDeadZonePlayer[player];
+  if (!Has(name)) return false;
+  bool changed = false;
+  ImGui::PushID(name);
+  const int now = std::clamp(GetInt(name, -1), -1, kJoyThresholdMax);
+  bool own = now >= 0;
+  char check[48];
+  if (kDeadZoneRows > 1)
+    std::snprintf(check, sizeof(check), "Player %d: own dead zone", player + 1);
+  else
+    std::snprintf(check, sizeof(check), "Own dead zone for this player");
+  if (ImGui::Checkbox(check, &own)) {
+    // On: start from the shared value, so nothing moves until the slider does. Off: the shared one again.
+    rex::cvar::SetFlagByName(name, own ? std::to_string(JoyThresholdNow()) : std::string("-1"));
+    changed = true;
+  }
+  if (own) {
+    static int dragging[4] = {-1, -1, -1, -1};  // the slider's value while it is held
+    int units = dragging[player] >= 0 ? dragging[player] : std::max(now, 0);
+    char label[48];
+    std::snprintf(label, sizeof(label), "%d of 128 (%.0f%%)", units, units * 100.0 / 128.0);
+    ImGui::Indent();
+    if (ImGui::SliderInt("##deadzone", &units, 0, kJoyThresholdMax, label, ImGuiSliderFlags_AlwaysClamp))
+      dragging[player] = units;
+    if (ImGui::IsItemDeactivatedAfterEdit() && dragging[player] >= 0) {
+      rex::cvar::SetFlagByName(name, std::to_string(dragging[player]));
+      changed = true;
+    }
+    if (!ImGui::IsItemActive() && !ImGui::IsItemDeactivatedAfterEdit()) dragging[player] = -1;
+    ImGui::Unindent();
+  } else {
+    ImGui::SameLine();
+    ImGui::TextDisabled("(uses the dead zone above)");
+  }
+  ImGui::PopID();
+  return changed;
+}
+
+// Every player row back to the shared dead zone (-1).
+void ResetDeadZonePlayers() {
+  for (const char* name : kDeadZonePlayer)
+    if (Has(name) && GetInt(name, -1) != -1) rex::cvar::SetFlagByName(name, "-1");
+}
+
+// [f2-menus] 2026-11-11 item 8: each player's controller buttons (cod3_binds_pad_p1..p4, acct2-main's
+// game/keybinds/pad_binds.cpp and pad_model.h): a row per button but START, three actions each, with
+// pad_model's rules (an action given to a button leaves the button that had it; a button nobody changed does
+// what the game's button layout gives it). pad_binds reads the text again at its next look at the bind tables,
+// so a change applies at once; F2 saves it. The layout comes from pad_binds (SeatLayout) once that player's
+// bind table was read; before that the rows are greyed. The campaign has player 1; multiplayer all four.
+constexpr const char* kPadButtonsPlayer[] = {"cod3_binds_pad_p1", "cod3_binds_pad_p2", "cod3_binds_pad_p3",
+                                             "cod3_binds_pad_p4"};
+
+const char* PadActionName(cod3::binds::Action a) {
+  return a == cod3::binds::Action::kCount ? "--" : cod3::binds::Def(a).label;
+}
+
+// One player's rows. Returns true when the setting changed.
+bool PadButtonsSeat(int seat) {
+  namespace pad = cod3::binds::pad;
+  using cod3::binds::Action;
+  const char* name = kPadButtonsPlayer[seat];
+  if (!Has(name)) return false;
+  static std::string note[pad::kSeats];
+  static const std::vector<Action> choices = pad::Choices();
+  pad::PadSet set = pad::Parse(Get(name), nullptr);
+  pad::Layout layout;
+  std::string layout_text[pad::kButtonCount];
+  const bool have = cod3::binds::padbinds::SeatLayout(seat, &layout, layout_text);
+  bool changed = false;
+  ImGui::PushID(name);
+  if (!have) {
+    ImGui::TextDisabled("Start a level to change these: the game's button layout is read then.");
+    ImGui::BeginDisabled();
+  }
+  if (ImGui::BeginTable("##padbuttons", 5, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
+    ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthStretch, 1.2f);
+    ImGui::TableSetupColumn("Action 1", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Action 2", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("Action 3", ImGuiTableColumnFlags_WidthStretch, 1.0f);
+    ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthStretch, 0.6f);
+    ImGui::TableHeadersRow();
+    for (int b = 0; b < pad::kButtonCount; ++b) {
+      const auto button = static_cast<pad::Button>(b);
+      if (!pad::Changeable(button)) continue;
+      ImGui::PushID(b);
+      ImGui::TableNextRow();
+      ImGui::TableNextColumn();
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(pad::ButtonLabel(button));
+      const pad::ButtonBinds now = pad::Effective(set, layout, button);
+      for (int s = 0; s < pad::kPadSlots; ++s) {
+        ImGui::TableNextColumn();
+        ImGui::PushID(s);
+        ImGui::SetNextItemWidth(-1.0f);
+        // A layout binding that isn't one of the actions shows as the game has it.
+        const bool game_text = s == 0 && !set.custom[b] && now.act[0] == Action::kCount && !layout_text[b].empty();
+        // [f2-menus] 2026-11-11 ctl 14:50 (rexglue-native 14:33 (a), (b)): a layout binding that isn't one of the
+        // actions says it is the game's ("game: +class"), and the whole name shows on hover (cut at 720p).
+        const std::string game_preview = game_text ? "game: " + layout_text[b] : std::string();
+        const char* preview = game_text ? game_preview.c_str() : PadActionName(now.act[s]);
+        const bool open = ImGui::BeginCombo("##slot", preview);
+        if (!open && ImGui::IsItemHovered())
+          ImGui::SetTooltip(game_text ? "%s: what the game's button layout gives this button; not one of the actions "
+                                        "(choose one to replace it)"
+                                      : "%s",
+                            preview);
+        if (open) {
+          for (const Action a : choices) {
+            if (ImGui::Selectable(PadActionName(a), a == now.act[s]) && a != now.act[s]) {
+              note[seat] = pad::Assign(set, layout, button, s, a);
+              changed = true;
+            }
+          }
+          ImGui::EndCombo();
+        }
+        ImGui::PopID();
+      }
+      ImGui::TableNextColumn();
+      if (set.custom[b]) {
+        if (ImGui::SmallButton("Layout")) {
+          pad::Reset(set, layout, button);
+          note[seat].clear();
+          changed = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("This button back to what the game's layout gives it.");
+      } else {
+        ImGui::TextDisabled("layout");
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  if (!have) ImGui::EndDisabled();
+  if (!Get(name).empty() || changed) {
+    if (ImGui::SmallButton("Every button back to the layout")) {
+      pad::ResetAll(set);
+      note[seat].clear();
+      changed = true;
+    }
+  }
+  if (!note[seat].empty()) ImGui::TextWrapped("%s", note[seat].c_str());
+  if (changed) rex::cvar::SetFlagByName(name, pad::Serialize(set));
+  ImGui::PopID();
+  return changed;
+}
 }  // namespace
 
 void SettingsWindow::DrawControlsController() {
   if (ResetButton("reset_controller", "controller settings")) {
     restart_needed_ |= ResetSettings({"mnk_sensitivity"});
     if (cod3::Engine::Get().GameReady()) SetJoyThreshold(kJoyThresholdDefault);  // [acct2-ocr]
+    ResetDeadZonePlayers();  // [acct2-ocr] 2026-11-07
+    cod3::pad::ResetAll();   // [acct2-ocr] 2026-11-07
+    restart_needed_ |= ResetSettings({"cod3_rumble_with_keys"});  // [f2-menus] 2026-11-11 item 8
     dirty_ = true;
   }
+  // [acct2-ocr] 2026-11-07 The game's Options > Controls rows for each player, and how far they go (owner 22:08
+  // "same cap for both", 22:24 "account for split-screen"; game/pad_settings.h).
+  dirty_ |= cod3::pad::DrawF2Section();
+  ImGui::Spacing();
   {
     // [acct2-ocr] The stick dead zone (joy_threshold): applied when the slider is let go.
     auto& engine = cod3::Engine::Get();
@@ -3166,6 +3961,20 @@ void SettingsWindow::DrawControlsController() {
          "screen too), on each axis: smaller pushes count as nothing, larger ones are stretched back to the "
          "full range. The game's own is 25 (about 20%). Lower it for a precise stick, raise it for one that "
          "drifts. Applies at once and is saved; the same as joy_threshold in the ~ console.");
+    // [acct2-ocr] 2026-11-07: the dead zone per player (cod3_deadzone_p1..p4, game/keybinds/pad_binds.cpp).
+    bool any_row = false;
+    for (int p = 0; p < kDeadZoneRows; ++p) {
+      if (!Has(kDeadZonePlayer[p])) continue;
+      if (!any_row) ImGui::Spacing();
+      any_row = true;
+      dirty_ |= DeadZonePlayerRow(p);
+    }
+    if (any_row)
+      Help(kDeadZoneRows > 1
+               ? "A split-screen player's own dead zone, in place of the one above, for that player only. "
+                 "Applies at once and is saved (cod3_deadzone_p1 to _p4 in cod3.toml)."
+               : "Your own dead zone, in place of the one above, without changing the game's joy_threshold. "
+                 "Applies at once and is saved (cod3_deadzone_p1 in cod3.toml).");
   }
   if (Has("mnk_sensitivity")) {
     float sens = static_cast<float>(GetDouble("mnk_sensitivity", 1.0));
@@ -3181,10 +3990,31 @@ void SettingsWindow::DrawControlsController() {
     if (REXCVAR_GET(cod3_raw_mouse) || !GetBool("mnk_mouse"))
       ImGui::TextDisabled("Not in use now: Mouse aim isn't Right-stick emulation.");
   }
+  // [f2-menus] 2026-11-11 item 8: the first controller's vibration while the keyboard and mouse are in use.
+  dirty_ |= CvarCheckbox("Vibrate while using keyboard and mouse", "cod3_rumble_with_keys", &restart_needed_);  // [f2-menus]
+  Help("Lets the first controller vibrate while you play with the keyboard and mouse. Off (the default): it stays "  // [f2-menus]
+       "still until one of its buttons, triggers or sticks is used. Players 2-4 on their own controllers always "  // [f2-menus]
+       "feel the game's vibration.");  // [f2-menus]
+  // [f2-menus] 2026-11-11 item 8: each player's controller buttons (cod3_binds_pad_p1..p4).
+  Section("Buttons");  // [f2-menus]
+  for (int p = 0; p < kDeadZoneRows; ++p) {  // [f2-menus]
+    if (!Has(kPadButtonsPlayer[p])) continue;  // [f2-menus]
+    if (kDeadZoneRows > 1) {  // [f2-menus]
+      char head[24];  // [f2-menus]
+      std::snprintf(head, sizeof(head), "Player %d", p + 1);  // [f2-menus]
+      if (!ImGui::CollapsingHeader(head, p == 0 ? ImGuiTreeNodeFlags_DefaultOpen : 0)) continue;  // [f2-menus]
+    }  // [f2-menus]
+    dirty_ |= PadButtonsSeat(p);  // [f2-menus]
+  }  // [f2-menus]
+  Help("What each controller button does, up to three actions a button (pressed together). A button you don't "  // [f2-menus]
+       "change does what the game's button layout (Options > Controls) gives it. Giving an action to a button "  // [f2-menus]
+       "takes it from the button that had it, which then does nothing until it gets another. START stays the "  // [f2-menus]
+       "pause menu. Applies at once and is saved (cod3_binds_pad_p1 to _p4 in cod3.toml).");  // [f2-menus]
   ImGui::Spacing();
-  Help("A controller's own stick speed, Invert aim and layout are the game's Options > Controls; Sticky Aim is "
-       "Game > Aim (Options > Gameplay in the game); each weapon's speed, the Per weapon tab; how the prompts "
-       "show its buttons, Game > Prompts.");
+  Help("A controller's stick and button layouts are the game's Options > Controls (multiplayer: Pause > OPTIONS > "
+       "CONTROLLER); the pause menu's CONTROLLER page has the sensitivity limit and the dead zone too. Sticky Aim "
+       "is Game > Aim (Options > Gameplay in the game); each weapon's speed, the Per weapon tab; how the prompts "
+       "show its buttons, Game > Prompts.");  // [acct2-ocr] 2026-11-07
 }
 
 // [claude-9b-think] 2026-10-27 UNTESTED Per weapon (owner 13:28): the table (mouse and controller alike), and once
@@ -3227,21 +4057,24 @@ void SettingsWindow::DrawControlsKeys() {
   if (!pad_rows) {
     Help("The keys that walk and strafe (in a vehicle: steer). Separate keys with commas; what you type "
          "applies on Enter, when you click anywhere else (Save too) or close F2. Key names: A-Z, 0-9, "
-         "SPACE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT, mouse buttons LMB, RMB, MMB, MB4, MB5.");
+         "SPACE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT, mouse buttons MOUSE1 (left), MOUSE2 (right), "  // [f2-menus] 2026-11-11 the game's names
+         "MOUSE3 (middle), MOUSE4 (back), MOUSE5 (forward), also written LMB, RMB, MMB, MB4, MB5.");  // [f2-menus]
   } else {
 #if !defined(COD3_MP)
     Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
          "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
          "with commas; what you type applies on Enter, when you click anywhere else (Save too) or close F2. "
          "Key names: A-Z, 0-9, SPACE, TAB, ESCAPE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT; mouse buttons "
-         "LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written MOUSE4 / MOUSE5. "
+         "MOUSE1 (left), MOUSE2 (right), MOUSE3 (middle), MOUSE4 (back) and MOUSE5 (forward), also written "  // [f2-menus] 2026-11-11 the game's names
+         "LMB, RMB, MMB, MB4, MB5. "  // [f2-menus]
          "The left stick click and the D-pad are empty by default.");
 #else
     Help("Each row is a controller button and the keys that press it: in the game's menus, and while you "
          "play for keys that no action above has (WASD moves through the left stick rows). Separate keys "
          "with commas; what you type applies on Enter, when you click anywhere else (Save too) or close F2. "
          "Key names: A-Z, 0-9, SPACE, TAB, ESCAPE, SHIFT, CONTROL, ALT, UP/DOWN/LEFT/RIGHT; mouse buttons "
-         "LMB, RMB, MMB, and the side buttons MB4 (back) and MB5 (forward), also written MOUSE4 / MOUSE5. "
+         "MOUSE1 (left), MOUSE2 (right), MOUSE3 (middle), MOUSE4 (back) and MOUSE5 (forward), also written "  // [f2-menus] 2026-11-11 the game's names
+         "LMB, RMB, MMB, MB4, MB5. "  // [f2-menus]
          "SHIFT+UP means both together. The two grenade rows throw the frag and the special grenade also "
          "when the controller layout swaps the shoulder buttons.");
 #endif
@@ -3606,25 +4439,46 @@ void SettingsWindow::DrawEmulation() {
 
 // EMULATION > GPU: how the Xbox 360's graphics chip and its memory are emulated.
 void SettingsWindow::DrawEmulationGpu() {
-  // [acct2-decomp] Who draws, as a toggle (owner 2026-10-24 23:45: "Please make
-  // sure the option for emulation/native is a toggle"). Off: cod3_renderer
-  // "xenos", the emulated Xbox 360 GPU (the default). On: "rust", the native
-  // Rust renderer with the GPU emulation off (render/rust_renderer.h, acct2-main's
-  // setting; nothing about it changes here). Both programs; after a restart.
-  if (Has("cod3_renderer")) {
-    bool native = Get("cod3_renderer") == "rust";
-    // [claude-9b] Greyed out for now (owner 2026-10-26: "The F2 \"Native Renderer\" option/toggle
-    // needs to be grayed out for right now as it's not ready yet"): only turning it off is offered.
-    const bool can_turn_on = false;
-    ImGui::BeginDisabled(!can_turn_on && !native);
-    if (ImGui::Checkbox("Native renderer (no GPU emulation)", &native)) {
-      rex::cvar::SetFlagByName("cod3_renderer", native ? "rust" : "xenos");
-      restart_needed_ = true;
+  // [f2-menus] 2026-11-11 08:16 Who draws, as one switch. The owner (08:15): "the f2 menu still has mentions of the
+  // rust renderer. It should be vulkan and the toggle box should be able to be pressed if they desire." and "and
+  // actually make it the functional switch." So: cod3_native_vulkan (game/ngl_side.cpp, rexglue-native's; read at
+  // start, so it applies after a restart), clickable both ways (the 2026-10-26 greying is lifted by the owner's 08:15),
+  // and the older cod3_renderer row is gone. Using the switch also sets cod3_renderer back to "xenos", so an old saved
+  // value of that setting can't get in the way of either choice. Both programs (cod3mp has the setting when its build
+  // has ngl_side.cpp; Has() hides the row otherwise).
+  // [f2-menus] 2026-11-11 08:35 (rexglue-native 08:27): it is in a build only when CMake found ngl_vk
+  // (COD3_NGL_VK=1 on both programs; Windows from 2.41.0 on), and it draws through the window's Vulkan device, so on
+  // Windows turning it on also moves Graphics API off Direct3D 12.
+#if defined(COD3_NGL_VK)
+  constexpr bool kNativeBuilt = true;
+#else
+  constexpr bool kNativeBuilt = false;
+#endif
+  if (Has("cod3_native_vulkan")) {
+    ImGui::BeginDisabled(!kNativeBuilt && !GetBool("cod3_native_vulkan"));  // a saved "on" can still be turned off
+    if (CvarCheckbox("Native renderer (Vulkan)", "cod3_native_vulkan", &restart_needed_)) {
+      if (Has("cod3_renderer") && Get("cod3_renderer") != "xenos") rex::cvar::SetFlagByName("cod3_renderer", "xenos");
+#ifdef _WIN32
+      if (GetBool("cod3_native_vulkan") && Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12")
+        rex::cvar::SetFlagByName("cod3_graphics_api", "vulkan");
+#endif
       dirty_ = true;
     }
     ImGui::EndDisabled();
-    Help("Not ready yet: the native Rust renderer is still being written, so the emulated Xbox 360 "
-         "GPU draws the game. If it was turned on earlier, untick it here (applies after a restart).");
+    if (!kNativeBuilt)
+      ImGui::TextDisabled("Not in this build: it was built without the native renderer.");
+#ifdef _WIN32
+    else if (GetBool("cod3_native_vulkan") && Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12")
+      ImGui::TextDisabled("Needs Video > Display > Graphics API on Vulkan or Automatic, not Direct3D 12.");
+    Help("On: the port's own Vulkan renderer draws the game, and the Xbox 360 GPU emulation is off. Off: the emulated "
+         "Xbox 360 GPU draws it, as the game always has (the default). The Vulkan renderer is still being finished, "
+         "so a few things can look different from the game. It draws through Vulkan, so turning it on also sets "
+         "Video > Display > Graphics API to Vulkan if it was Direct3D 12. Applies after a restart.");
+#else
+    Help("On: the port's own Vulkan renderer draws the game, and the Xbox 360 GPU emulation is off. Off: the emulated "
+         "Xbox 360 GPU draws it, as the game always has (the default). The Vulkan renderer is still being finished, "
+         "so a few things can look different from the game. Applies after a restart.");
+#endif
   }
   {
     // How the Xbox 360's EDRAM (the GPU's own render memory) is emulated.
@@ -3923,7 +4777,12 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
         // The page scrolls up and down under the tabs; the Save row stays.
         // Text wraps to the page (no sideways scrolling, which made the
         // descriptions run under the scroll bar).
-        ImGui::BeginChild("##page", ImVec2(0, -ImGui::GetFrameHeightWithSpacing() - 6.0f));
+        // [f2-menus] 2026-11-11 (rexglue-native-f2's review, item 1) the Save row's real height: the spacing, the
+        // separator, the spacing again and the button. The old reserve was short by a few pixels with the theme's
+        // spacing, so the window itself overflowed: a second scroll bar, and a wheel turn over the tabs scrolled
+        // them away.
+        const float save_row = ImGui::GetFrameHeight() + 2.0f * ImGui::GetStyle().ItemSpacing.y + 1.0f;  // [f2-menus]
+        ImGui::BeginChild("##page", ImVec2(0, -save_row));  // [f2-menus] was -GetFrameHeightWithSpacing() - 6
         (this->*tab.draw)();
         ImGui::EndChild();
         ImGui::PushFont(BoldFont(), 0.0f);
@@ -3935,8 +4794,21 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
     ImGui::Separator();
     if (ImGui::Button(dirty_ ? "Save *" : "Save")) Save();
     ImGui::SameLine();
-    if (restart_needed_) ImGui::TextColored(CurrentPalette().warn, "Restart the game to apply some changes.");
-    if (!status_.empty()) ImGui::TextDisabled("%s", status_.c_str());
+    if (restart_needed_) {
+      ImGui::TextColored(CurrentPalette().warn, "Restart the game to apply some changes.");
+      if (!status_.empty()) ImGui::SameLine();  // [f2-menus] 2026-11-11 one line, as the ports' window
+    }
+    if (!status_.empty()) {
+      // [f2-menus] 2026-11-11 "Saved to cod3.toml": the file's name, the whole path in a tooltip (review item 1).
+      std::string shown = status_;
+      static const std::string kSavedTo = "Saved to ";
+      if (shown.compare(0, kSavedTo.size(), kSavedTo) == 0) {
+        const size_t slash = shown.find_last_of("/\\");
+        if (slash != std::string::npos && slash >= kSavedTo.size()) shown = kSavedTo + shown.substr(slash + 1);
+      }
+      ImGui::TextDisabled("%s", shown.c_str());
+      if (shown != status_ && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", status_.c_str());
+    }
   }
   ImGui::End();
   if (!open_) {

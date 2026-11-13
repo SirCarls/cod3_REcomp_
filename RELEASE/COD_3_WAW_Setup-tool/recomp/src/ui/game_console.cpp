@@ -23,9 +23,9 @@
 #include "game/program.h"
 #include "game/guest.h"     // [claude-9b-think] the level-command guard (campaign)
 #include "game/relaunch.h"
-#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
+// [movement] [acct2-ocr] 2026-11-07 cod3mp too: the host's match rules reach the other consoles now
+// (game/mp/session.cpp), so a match's host sets them here as in the campaign and a guest is told they are the host's.
 #include "game/protected_dvars.h"
-#endif
 #if !defined(COD3_MP)  // [keybinds] campaign only for now
 #include "game/keybinds/binds.h"
 #endif
@@ -343,10 +343,9 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
     if (args.empty()) continue;
     // The decomp trace build's trace_mark / trace_status / trace_write (game/decomp_trace.h).
     if (cod3::trace::kEnabled && cod3::trace::HandleConsoleCommand(ToLower(args[0]), args)) continue;
-#if !defined(COD3_MP)  // [movement]
-    // server_sided_protected dvars (game/protected_dvars.h), in every form
+    // [movement] server_sided_protected dvars (game/protected_dvars.h), in every form
     // (set, seta, reset, toggle, "<name> <value>" ...): the port's own; refused
-    // while a match's server sets them.
+    // while a match's server sets them. [acct2-ocr] 2026-11-07 cod3mp too (see the include).
     {
       bool changed = false;
       if (protected_dvars::HandleConsoleLine(
@@ -359,7 +358,6 @@ void GameConsole::Submit(std::string_view line, cheats::Source source) {
         continue;
       }
     }
-#endif
 #if !defined(COD3_MP)  // [keybinds]
     // "bind B +binoculars", "unbind B", "bind B": keyboard and mouse keys of
     // the port's own actions (game/keybinds/binds.h), saved like F2's keys.

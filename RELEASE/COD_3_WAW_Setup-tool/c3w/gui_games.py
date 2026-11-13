@@ -7,9 +7,10 @@ of Duty 2 and United Offensive tabs.
 - World at War: Content (its sources, map packs and "Rip content", moved
   here from Call of Duty 3's Set up page), Mods & maps (when switched on)
   and Port status.
-- Call of Duty 2 and United Offensive: New copy (the Rust tool newcopy:
-  find the install, make and check the data-only copy), LAN server (the
-  Rust iw-server, started and stopped from here) and Port status.
+- United Offensive: New copy (the tool newcopy: find the install, make and
+  check the data-only copy), LAN server (iw-server, started and stopped
+  from here) and Port status. [f2-menus] 2026-11-10: Call of Duty 2's tab
+  had the two pages too; the owner took them out (games.py).
 
 A mixin for gui.App, like gui_pages.Pages: it uses the App's variables and
 helpers (v_out, _row, _open, _info, _start_task ...).
@@ -242,12 +243,12 @@ class Games:
                 copy = ttk.Button(f, text=ACTION_LABELS["copy"], style="Big.Accent.TButton",
                                   command=lambda gid=g.id: self._pc_make_copy(gid))
                 copy.pack(side="left")
-                tip(copy, "Copy the game's data for the Rust engine (Ctrl+B).",
+                tip(copy, "Make a copy of the game with only its data (Ctrl+B).",   # [f2-menus] no "Rust engine"
                     reason=lambda gid=g.id: self._pc_copy_reason(gid))
                 server = ttk.Button(f, text=ACTION_LABELS["server"], style="Big.TButton",
                                     command=lambda gid=g.id: self._pc_server_toggle(gid))
                 server.pack(side="left", padx=(px(6), 0))
-                tip(server, "Start or stop the Rust LAN server.", reason=lambda gid=g.id: self._pc_server_reason(gid))
+                tip(server, "Start or stop the LAN server.", reason=lambda gid=g.id: self._pc_server_reason(gid))
                 self.pc_actions[g.id] = {"copy": copy, "server": server}
 
     def _compact_actions(self, compact: bool) -> None:
@@ -796,6 +797,9 @@ class Games:
                 on_line=lambda line, g=gid: self.q.put(("call", lambda: self._pc_server_line(g, line))),
                 on_exit=lambda code, g=gid: self.q.put(("call", lambda: self._pc_server_exited(g, code))))
         for gid in list(self._pc_searching):
+            if f"{gid}_copy" not in games.game(gid).pages:   # [f2-menus] no New copy page: nothing to look for
+                self._pc_searching.discard(gid)
+                continue
             self._pc_find(gid, first_start=True)
 
     def _pc_settings(self) -> dict:
@@ -834,8 +838,8 @@ class Games:
         v = self.pc[gid]
         ui = self.pc_ui.setdefault(gid, {})
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "New copy", f"Copy {pg.name}'s data for the Rust engine. Program files never come "
-                                           "along, so neither does any DRM.", columns=1)
+        widgets.page_header(t, "New copy", f"A copy of {pg.name} with only its data. Program files never come "
+                                           "along, so neither does any DRM.", columns=1)   # [f2-menus]
         self.pages[f"{gid}_copy"]["on_show"] = lambda: self._pc_check_install(gid)
         s = section(t, "Your game", 1, columns=1)
         self._grid_cols(s)
@@ -1032,8 +1036,8 @@ class Games:
         v = self.pc[gid]
         ui = self.pc_ui.setdefault(gid, {})
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "LAN server", f"Host a game your {pg.name} can join. Our own Rust server: your "
-                                             "game's program is only read, never run.", columns=1)
+        widgets.page_header(t, "LAN server", f"Host a game your {pg.name} can join. A server of our own: your "
+                                             "game's program is only read, never run.", columns=1)   # [f2-menus]
         # The form two fields a row (map and port, name and players), so the
         # server's output is in view without scrolling.
         s = section(t, "Server", 1, columns=1)

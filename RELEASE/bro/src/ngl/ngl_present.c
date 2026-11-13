@@ -47,6 +47,9 @@
 #include "ngl_quad_batch.h"
 #include "ngl_scene.h"
 #include "ngl_fps_counter.h"
+#if defined(BRO_HAVE_F2)
+#include "bro_f2.h"                  /* [f2-menus] the F2 settings window */
+#endif
 #include "bro_settings.h"
 #include "ngl_present.h"
 
@@ -76,6 +79,9 @@ static void check_quit(void)
         fflush(NULL);
         exit(0);
     }
+#if defined(BRO_HAVE_F2)
+    bro_f2_events();            /* [f2-menus] F2, and the window's keys, text and mouse, before they are dropped */
+#endif
     while (SDL_PeepEvents(&event, 1, SDL_GETEVENT, SDL_EVENT_MOUSE_BUTTON_DOWN, SDL_EVENT_MOUSE_BUTTON_DOWN) > 0)
         window_clicked = 1;
     SDL_FlushEvents(SDL_EVENT_FIRST, SDL_EVENT_WINDOW_FIRST - 1);
@@ -668,6 +674,20 @@ static unsigned add_quad(unsigned at, const float x[4], const float y[4], const 
     return at + 6;
 }
 
+/* [rexglue-native] 2026-11-11: the loading screen's map (owner 02:30: the route line and "Press A to start the game"
+ * on black). When a mission's film ends or is skipped the game loads the mission's map under the name "texload"
+ * (textures\en\sicily.dds for Gela), draws it as one quad in two frames, one for each of the Xbox's two screen
+ * buffers, and releases the texture. From then on its frames only draw the black bars, the route line and the text:
+ * the map is still in the screen buffers, which the Xbox doesn't clear. Here every frame starts empty, so the map was
+ * gone after those two frames and the frames showed the last picture the game had locked instead (a film's last
+ * picture, or black). So the map's quad is kept when it is drawn and is every later frame's first quad, in place of
+ * the locked picture, until the game locks a new picture (the next film) or draws the world (frame_has_meshes). */
+#define LOADING_MAP_NAME "texload"
+static struct ngl_quad kept_map;        /* the map's quad as the game drew it */
+static uint32_t kept_map_vk;            /* its ngl_vk texture; 0: no map is kept */
+static unsigned long kept_map_locks;    /* ngl_texture_lock_count() when it was kept */
+static int frame_has_meshes;            /* this frame draws the world (set by ngl_present_frame) */
+
 /* This frame's vertices: the locked picture over the whole screen (when there is one: picture_texture not 0), then
  * each quad. */
 static unsigned frame_vertices(uint32_t picture_texture, int placeholders, unsigned *drawn, unsigned *placeheld)
@@ -681,7 +701,38 @@ static unsigned frame_vertices(uint32_t picture_texture, int placeholders, unsig
     unsigned count = ngl_quad_frame(&quads), at, i;
 
     *drawn = *placeheld = 0;
+    {   /* [rexglue-native] 2026-11-11: the loading screen's map (see kept_map) */
+        int map_in_frame = 0;
+
+        for (i = 0; i < count; i++) {
+            uint32_t vk = ngl_texture_named(quads[i].texture, LOADING_MAP_NAME) ? vk_texture_for(quads[i].texture) : 0;
+
+            if (vk) {
+                if (vk != kept_map_vk)
+                    fprintf(stderr, "[ngl] the loading screen's map: texture 0x%08X kept as the frames' background\n",
+                            quads[i].texture);
+                kept_map = quads[i];
+                kept_map_vk = vk;
+                kept_map_locks = ngl_texture_lock_count();
+                map_in_frame = 1;
+                break;
+            }
+        }
+        if (kept_map_vk && (frame_has_meshes || ngl_texture_lock_count() != kept_map_locks)) {
+            fprintf(stderr, "[ngl] the loading screen's map: let go (%s)\n",
+                    frame_has_meshes ? "the world is drawn" : "the game locked a new picture");
+            kept_map_vk = 0;
+        }
+        if (kept_map_vk) {
+            picture_texture = 0;        /* the map is what the screen holds, not the last locked picture */
+            if (!map_in_frame) {
+                at = add_quad(0, kept_map.x, kept_map.y, kept_map.u, kept_map.v, kept_map.color, 2.0f, kept_map_vk);
+                goto quads_after_background;
+            }
+        }
+    }
     at = picture_texture ? add_quad(0, screen_x, screen_y, corner_u, corner_v, opaque, 1.0f, 0) : 0;
+quads_after_background:
     for (i = 0; i < count && at + 6 <= MAX_VERTICES; i++) {
         const struct ngl_quad *q = &quads[i];
 
@@ -1337,6 +1388,10 @@ void ngl_present_frame(void)
         }
         fprintf(stderr, "[ngl] Vulkan: drawing on %s, %ux%u, %s\n", ngl_vk_device_name(), target_width, target_height,
                 ngl_vk_showing() ? "shown in the window" : "offscreen");
+#if defined(BRO_HAVE_F2) && defined(BRO_HAVE_SDL3)
+        if (window)
+            bro_f2_init(window);    /* [f2-menus] the F2 settings window, on ngl_vk's device */
+#endif
         setting = getenv("BRO_VK_PLACEHOLDERS");
         placeholders = setting && setting[0] == '1';
         state = 1;
@@ -1362,6 +1417,7 @@ void ngl_present_frame(void)
     /* a frame with 3D meshes is the game's world: the last picture the game wrote (a loading screen) isn't its
      * background any more */
     meshes = frame_meshes();
+    frame_has_meshes = meshes != 0;     /* [rexglue-native] 2026-11-11: for the loading screen's map (kept_map) */
     count = frame_vertices(meshes ? 0 : picture_texture, placeholders, &drawn, &placeheld);
     count += ngl_fps_counter_vertices(vertices + count, MAX_VERTICES - count);
 #if defined(BRO_HAVE_SDL3)

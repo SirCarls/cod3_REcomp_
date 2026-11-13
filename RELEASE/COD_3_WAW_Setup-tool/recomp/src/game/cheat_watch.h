@@ -22,10 +22,16 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <vector>  // [acct2-ocr] Entries()
 
 struct PPCContext;
 
 namespace cod3 {
+
+// [acct2-ocr] The one-shot cheat_guard.cpp records for sv_cheats 1. The
+// watermark shows sv_cheats on its own line under CHEATS USED, so Entries()
+// leaves it out.
+inline constexpr char kSvCheatsOneShot[] = "sv_cheats 1";
 
 class CheatWatch {
  public:
@@ -45,6 +51,16 @@ class CheatWatch {
   // --- any thread -------------------------------------------------------------
   bool Active() const { return active_.load(std::memory_order_relaxed); }
   std::string Reasons();                           // "god, noclip, timescale"
+  // [acct2-ocr] Each cheat used since the watermark came on, and whether it is
+  // on now (owner 2026-11-05: green while on, red once off): god / notarget /
+  // noclip / ufo while toggled on, a cheat dvar while it isn't at its default,
+  // give / setviewpos / jumptonode until the next level start. sv_cheats is
+  // left out (kSvCheatsOneShot).
+  struct Entry {
+    std::string name;
+    bool on = false;
+  };
+  std::vector<Entry> Entries();
 
  private:
   CheatWatch() = default;
@@ -57,6 +73,7 @@ class CheatWatch {
   std::set<std::string> history_;                  // everything used since the watermark came on
   std::atomic<bool> active_{false};
   uint32_t player_ent_ = 0;                        // gentity_t* the toggles were used on (this level)
+  std::string shown_;                              // [acct2-ocr] the list last logged (cod3_debug_cheats)
 };
 
 }  // namespace cod3

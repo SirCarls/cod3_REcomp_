@@ -719,7 +719,13 @@ struct Slot {
   bool tap = false;              // kDirect: let go on the next poll (a wheel detent, a very short press)
   bool silent = false;           // kDirect: the action was already down from its other key
   bool toggle = false;           // kDirect aim: pressed as a toggle (nothing on the release)
+  // [rexglue-native qte] 2026-11-09 kPad: presses that came while the button was still down for the one before (each
+  // follows after one poll up, BeforePadPoll, so the game sees every press, as a controller's; at most kPadQueueMax).
+  uint8_t queued = 0;
+  bool gap = false;   // kPad: up for this poll, after a press (then the next queued one, or free)
+  bool held = false;  // kPad: the last queued press's key is still down (it stays down when its turn comes)
 };
+constexpr uint8_t kPadQueueMax = 4;  // [rexglue-native qte] 2026-11-09
 Slot g_slots[kActionCount][kSlots];
 bool g_port_held[kActionCount][kSlots] = {};  // [claude-9b] a port setting's key is down (one switch per press)
 // The frag key's press made the game hold +activatereload with the
@@ -1110,6 +1116,14 @@ void SwitchPortSetting(const ActionDef& def, uint32_t cl) {
 
 void Press(PPCContext& ctx, uint8_t* base, uint32_t cl, int a, int s, bool tap) {
   Slot& slot = g_slots[a][s];
+  // [rexglue-native qte] 2026-11-09 (owner 14:36: "frame rate shouldn't softlock the user within QTEs"): pressed again
+  // before the game saw the button let go: pressed again after one poll up, not dropped (a battle action that counts
+  // presses, a melee struggle, lost them below 60 fps; ButtonMash in game/qte_actions.cpp counts one an update).
+  if (slot.mode == Mode::kPad) {
+    if (slot.queued < kPadQueueMax) ++slot.queued;
+    slot.held = !tap;
+    return;
+  }
   if (slot.mode != Mode::kNone) return;
   const Action action = static_cast<Action>(a);
   if (Def(action).delivery == Delivery::kPort) {  // [claude-9b] the port's own setting, never the game's
@@ -1182,6 +1196,7 @@ void Release(int a, int s) {
     ReleaseDirect(a, s);
   } else if (slot.mode == Mode::kPad) {
     slot.release_pending = true;
+    slot.held = false;  // [rexglue-native qte] 2026-11-09
   }
 }
 
@@ -1256,7 +1271,24 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
     for (int s = 0; s < kSlots; ++s) {
       Slot& slot = g_slots[a][s];
       if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll) ReleaseDirect(a, s);
-      if (slot.mode == Mode::kPad && slot.release_pending && slot.since_poll < g_poll) slot = {};
+      // [rexglue-native qte] 2026-11-09 a button let go stays up for one poll (gap) before its slot is free; a press
+      // that came meanwhile (Press: queued) goes down after that poll, for at least one poll. So a press handed over
+      // in the same poll as the release before it is a press of its own (before, it went down at once and the game
+      // saw one long press: lost at 20-30 fps, f2-cap20). A press into a free slot goes down at once, as before.
+      if (slot.mode == Mode::kPad && slot.gap && slot.since_poll < g_poll) {
+        if (slot.queued == 0) {
+          slot = {};  // nothing came during the gap: free
+        } else {
+          --slot.queued;
+          slot.gap = false;
+          slot.since_poll = g_poll;
+          slot.release_pending = slot.queued > 0 || !slot.held;
+        }
+      } else if (slot.mode == Mode::kPad && slot.release_pending && slot.since_poll < g_poll) {
+        slot.gap = true;  // up for this poll
+        slot.release_pending = false;
+        slot.since_poll = g_poll;
+      }
     }
   // A key held when an interaction (or a vehicle's reading) starts or ends goes on as a held
   // controller button would: it stays what it was (fire held onto a turret
@@ -1280,7 +1312,8 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
   uint32_t buttons = 0, triggers = 0;
   for (auto& action : g_slots)
     for (const Slot& slot : action)
-      if (slot.mode == Mode::kPad) buttons |= slot.buttons, triggers |= slot.triggers;
+      // [rexglue-native qte] 2026-11-09 not while it is up between two presses (gap)
+      if (slot.mode == Mode::kPad && !slot.gap) buttons |= slot.buttons, triggers |= slot.triggers;
   g_inject_user.store(ActivePad(base, cl), std::memory_order_relaxed);
   g_inject_triggers.store(triggers, std::memory_order_relaxed);
   g_inject_buttons.store(buttons, std::memory_order_release);
@@ -1805,10 +1838,38 @@ uint32_t g_f2_text_gen = 0;
 std::map<std::string, std::string, std::less<>> g_pad_edits;
 std::set<std::string, std::less<>> g_pad_rows;
 
+// [f2-menus] 2026-11-11 (rexglue-native-f2's proposal A; rexglue-native's yes, board 10:38): the controller rows show
+// [f2-menus] the mouse buttons the game's way, MOUSE1-5, as the action rows do; ApplyPadText stores the SDK's LMB ...
+// [f2-menus] again (sdk::Spelled), so nothing stored changes.
 std::string UpperText(std::string_view text) {
   std::string out(text);
   for (char& c : out) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-  return out;
+  static constexpr struct {  // [f2-menus]
+    const char* sdk;  // [f2-menus]
+    const char* game;  // [f2-menus]
+  } kMouse[] = {{"LMB", "MOUSE1"}, {"RMB", "MOUSE2"}, {"MMB", "MOUSE3"}, {"MB4", "MOUSE4"},  // [f2-menus]
+               {"MM4", "MOUSE4"}, {"MB5", "MOUSE5"}, {"MM5", "MOUSE5"}};  // [f2-menus]
+  std::string shown;  // [f2-menus] each name between commas and plus signs; separators and spaces as they were
+  size_t start = 0;  // [f2-menus]
+  while (start <= out.size()) {  // [f2-menus]
+    size_t end = out.find_first_of(",+", start);  // [f2-menus]
+    if (end == std::string::npos) end = out.size();  // [f2-menus]
+    std::string part = out.substr(start, end - start);  // [f2-menus]
+    const size_t lead = part.find_first_not_of(" \t");  // [f2-menus]
+    if (lead != std::string::npos) {  // [f2-menus]
+      const size_t trail = part.find_last_not_of(" \t");  // [f2-menus]
+      const std::string name = part.substr(lead, trail - lead + 1);  // [f2-menus]
+      for (const auto& m : kMouse)  // [f2-menus]
+        if (name == m.sdk) {  // [f2-menus]
+          part = part.substr(0, lead) + m.game + part.substr(trail + 1);  // [f2-menus]
+          break;  // [f2-menus]
+        }  // [f2-menus]
+    }  // [f2-menus]
+    shown += part;  // [f2-menus]
+    if (end < out.size()) shown += out[end];  // [f2-menus]
+    start = end + 1;  // [f2-menus]
+  }  // [f2-menus]
+  return shown;  // [f2-menus] was: return out;
 }
 
 // Call right before the box's InputText. A box that is active and that nobody
@@ -1906,6 +1967,17 @@ bool CommitF2Edits() {
   return changed;
 }
 
+// [acct2-ocr] 2026-11-05 (owner 07:47: "BACKSPACE should allow for a removal of a bind when
+// clicking into the box."): a click into a key box selects its keys (ImGuiInputTextFlags_AutoSelectAll),
+// so one Backspace (or Delete) empties it; a box emptied by that key this frame is applied at once
+// (empty = no key), without Enter or a click elsewhere.
+constexpr ImGuiInputTextFlags kKeyBoxFlags =
+    ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase | ImGuiInputTextFlags_AutoSelectAll;
+static bool ClearedByKey(const char* text) {
+  return text[0] == '\0' && ImGui::IsItemEdited() &&
+         (ImGui::IsKeyPressed(ImGuiKey_Backspace, false) || ImGui::IsKeyPressed(ImGuiKey_Delete, false));
+}
+
 bool DrawPadKeyRow(const char* cvar) {
   if (g_pad_rows.find(std::string_view(cvar)) == g_pad_rows.end()) g_pad_rows.emplace(cvar);
   auto edit = g_pad_edits.find(std::string_view(cvar));
@@ -1915,11 +1987,10 @@ bool DrawPadKeyRow(const char* cvar) {
   ImGui::PushID(cvar);
   ImGui::SetNextItemWidth(-1);
   if (edit == g_pad_edits.end()) SyncActiveBox("##v", buf);
-  const bool entered = ImGui::InputText("##v", buf, sizeof(buf),
-                                        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase);
+  const bool entered = ImGui::InputText("##v", buf, sizeof(buf), kKeyBoxFlags);  // [acct2-ocr] flags
   if (ImGui::IsItemEdited()) g_pad_edits[cvar] = buf;
   bool changed = false;
-  if (entered || ImGui::IsItemDeactivated()) {
+  if (entered || ImGui::IsItemDeactivated() || ClearedByKey(buf)) {  // [acct2-ocr] ClearedByKey
     if (auto it = g_pad_edits.find(std::string_view(cvar)); it != g_pad_edits.end()) {
       changed = ApplyPadText(it->first, it->second);
       g_pad_edits.erase(it);
@@ -1940,7 +2011,7 @@ bool DrawF2Rows() {
     ImGui::PopStyleColor();
     ImGui::PopTextWrapPos();
   };
-  ImGui::TextUnformatted("Actions");
+  ui::Section("Actions");  // [f2-menus] 2026-11-11 the gold header like the rest (was plain text)
   bool actions = REXCVAR_GET(cod3_binds_actions);
   if (ImGui::Checkbox("Keys call the game's actions", &actions)) {
     rex::cvar::SetFlagByName("cod3_binds_actions", actions ? "true" : "false");
@@ -1961,7 +2032,8 @@ bool DrawF2Rows() {
   help("Vehicle: keys that count only while you drive (the tank, a jeep); the vehicle reads them itself. On foot "
        "the same keys keep their own actions (MOUSE2 aims, W walks).");
   help("Up to two keys each, separated by a comma (B, MOUSE4); empty = none. What you type applies on Enter, "
-       "when you click anywhere else (Save too) or close F2. Key names: "
+       "when you click anywhere else (Save too) or close F2. Click a box and press Backspace to remove its "
+       "keys at once. Key names: "
        "A-Z, 0-9, SHIFT, CTRL, ALT, SPACE, TAB, ENTER, UPARROW ..., MOUSE1-MOUSE5, MWHEELUP, MWHEELDOWN. "
        "No key combinations (Shift+key). The console's bind K +reload (or bind K reload) works too.");
   if (ImGui::BeginTable("##bind_actions", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
@@ -1999,10 +2071,11 @@ bool DrawF2Rows() {
       ImGui::PushID(def.id);
       ImGui::SetNextItemWidth(-1);
       if (!g_f2_edited[a]) SyncActiveBox("##keys", g_f2_text[a]);
-      const bool entered = ImGui::InputText("##keys", g_f2_text[a], sizeof(g_f2_text[a]),
-                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CharsUppercase);
+      const bool entered = ImGui::InputText("##keys", g_f2_text[a], sizeof(g_f2_text[a]), kKeyBoxFlags);
       if (ImGui::IsItemEdited()) g_f2_edited[a] = true;
-      if ((entered || ImGui::IsItemDeactivated()) && g_f2_edited[a]) changed |= ApplyF2Text(a);
+      // [acct2-ocr] ClearedByKey: Backspace on the selected keys removes the bind at once.
+      if ((entered || ImGui::IsItemDeactivated() || ClearedByKey(g_f2_text[a])) && g_f2_edited[a])
+        changed |= ApplyF2Text(a);
       ImGui::PopID();
       if (!g_f2_notes[a].empty()) {
         ImGui::PushTextWrapPos(0.0f);

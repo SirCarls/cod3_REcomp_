@@ -14,8 +14,10 @@
 //
 // Nothing here reads anything another console sent, and nothing is sent.
 
+#include <algorithm>  // [acct2-main] the camera check
 #include <array>
 #include <chrono>
+#include <cmath>  // [acct2-main] the camera check
 #include <cstdint>
 #include <string>
 
@@ -27,6 +29,7 @@
 #include "game/guest.h"
 #include "game/movement/program_mp.h"
 #include "game/movement/rules.h"
+#include "game/program.h"  // [rexglue-native-mp] 2026-11-11 COD3_ADDR (tools/mp_aliases.py --check)
 
 REXCVAR_DEFINE_STRING(cod3mp_movement_rule, "3", "cod3/Movement",
                       "Multiplayer host: the match's movement rule. 3 = Call of Duty 3 for everyone; 4abcd = Call of "
@@ -243,6 +246,121 @@ void MaybeLogSeen() {
   for (auto& n : g_think_calls) n = 0;
 }
 
+// --- stage 2 step 2: the camera beside the playerState (cod3mp_movement_stage2) ----------
+// [acct2-main] 2026-11-05 Observe only (dev/agents/acct2-main/MP_MOVEMENT_PLAN.md, step 2). Before the campaign's step
+// view (hooks_sp.cpp SmoothView) can be ported, cod3mp's camera has to be found and checked. CG_CalcViewValues is
+// 0x82467C18: the campaign's 0x82450C10 instruction for instruction (the view setup 0x824674E0 with this client's
+// 496-byte record at 0x82C77E30, then 0x8245D338 and 0x8245CDC0 as CG_CalcVrect and CG_CalcFov); CG_DrawActiveFrame
+// calls it and then reads the camera's axes at cg + 4976, as the campaign's at cg + 4496. After it, for the active
+// local client: the camera (cg + 4960, coronas.cpp; cg = 0x82C7D490 + client x 6368) against the drawn playerState's
+// eye (the entity list 0x82BCC7FC, the entity's gclient at + 512, the view height at + 220: viewmodel.cpp). Logged per
+// local player every 10 s: how often the camera is at the eye, how far off, and how often the camera and the
+// playerState moved, which tells step 3 whether the camera moves only with the movement steps. Nothing is written.
+namespace view {
+constexpr uint32_t kCg = COD3_ADDR(0x82A98D90, 0x82C7D490);  // cg_t of local client 0 [rexglue-native-mp] 2026-11-11 COD3_ADDR
+constexpr uint32_t kCgSize = 6368;          // (campaign 5840)
+constexpr uint32_t kCgViewOrigin = 4960;    // the camera's origin, vec3 (campaign 4480)
+constexpr uint32_t kActiveClient = COD3_ADDR(0x82A2A1C8, 0x82BCBE9C);  // program_mp.h client_active_index (client side) [rexglue-native-mp] 2026-11-11 COD3_ADDR
+constexpr uint32_t kEntityClient = 512;     // the entity's gclient, the playerState first (campaign 528)
+constexpr uint32_t kViewHeight = 220;       // the view height the client game reads (campaign 188)
+
+struct Stats {
+  uint64_t frames = 0, at_eye = 0, off_eye = 0, no_ps = 0;
+  uint64_t cam_moved = 0, origin_moved = 0, cam_only = 0;  // cam_only: the camera moved, the origin didn't
+  float max_across = 0.0f, min_up = 0.0f, max_up = 0.0f;   // the camera's offset from the eye (frames at the eye)
+  float last_cam[3] = {}, last_origin[3] = {};
+  float cam[3] = {}, eye[3] = {};  // the last frame's, for the log line
+  bool have_last = false;
+  uint32_t ps = 0;
+};
+std::array<Stats, 4> g_stats;
+Clock::time_point g_view_since = Clock::now();
+
+uint32_t DrawnPlayerState(uint8_t* base, uint32_t client) {
+  const uint32_t list = g::ReadU32(base, mv::mp_fn::kLocalEntities);
+  if (!ValidGuest(list)) return 0;
+  const uint32_t ent = g::ReadU32(base, list + 4 * (client + 1));
+  if (!ValidGuest(ent)) return 0;
+  const uint32_t ps = g::ReadU32(base, ent + kEntityClient);
+  return ValidGuest(ps) ? ps : 0;
+}
+
+void MaybeLog() {
+  const auto now = Clock::now();
+  const double seconds = std::chrono::duration<double>(now - g_view_since).count();
+  if (seconds < 10.0) return;
+  g_view_since = now;
+  for (uint32_t c = 0; c < g_stats.size(); ++c) {
+    const Stats& s = g_stats[c];
+    if (!s.frames) continue;
+    REXLOG_INFO("cod3mp: movement: stage 2: camera, local player {}: {} frames ({:.0f} a second); at the eye "
+                "(playerState {:#x} origin + view height) in {}, away from it in {}, no playerState in {}; at the eye "
+                "it was up to {:.2f} across and {:.2f} to {:.2f} up from it; the camera moved in {} frames, the "
+                "playerState in {}, the camera alone in {}; last frame camera ({:.1f} {:.1f} {:.1f}), eye "
+                "({:.1f} {:.1f} {:.1f})",
+                c + 1, s.frames, s.frames / seconds, s.ps, s.at_eye, s.off_eye, s.no_ps, s.max_across, s.min_up,
+                s.max_up, s.cam_moved, s.origin_moved, s.cam_only, s.cam[0], s.cam[1], s.cam[2], s.eye[0], s.eye[1],
+                s.eye[2]);
+  }
+  for (Stats& s : g_stats) {
+    const bool have = s.have_last;
+    float cam[3], origin[3];
+    for (int i = 0; i < 3; ++i) cam[i] = s.last_cam[i], origin[i] = s.last_origin[i];
+    s = Stats{};
+    s.have_last = have;  // keep the last frame, so the next 10 s count their first frame's movement too
+    for (int i = 0; i < 3; ++i) s.last_cam[i] = cam[i], s.last_origin[i] = origin[i];
+  }
+}
+
+void NoteFrame(uint8_t* base) {
+  const uint32_t client = g::ReadU32(base, kActiveClient);
+  if (client >= g_stats.size()) return;
+  Stats& s = g_stats[client];
+  ++s.frames;
+  const uint32_t at = kCg + client * kCgSize + kCgViewOrigin;
+  float cam[3];
+  for (int i = 0; i < 3; ++i) cam[i] = g::ReadF32(base, at + 4 * i);
+  const uint32_t ps = DrawnPlayerState(base, client);
+  if (!ps) {
+    ++s.no_ps;
+    s.have_last = false;
+    return;
+  }
+  s.ps = ps;
+  float origin[3];
+  for (int i = 0; i < 3; ++i) origin[i] = g::ReadF32(base, ps + P.ps.origin + 4 * i);
+  const float height = g::ReadF32(base, ps + kViewHeight);
+  const float eye[3] = {origin[0], origin[1], origin[2] + height};
+  const float dx = cam[0] - eye[0], dy = cam[1] - eye[1], dz = cam[2] - eye[2];
+  const float across = std::sqrt(dx * dx + dy * dy);
+  // The campaign's step view counts the camera as at the eye within 40 across (the lean, the bob) and a little up or
+  // down (the landing dip, the stair ease); a cutscene, a turret or a dead player's camera is elsewhere.
+  if (std::isfinite(across) && std::isfinite(dz) && across <= 40.0f && dz >= -24.0f && dz <= 24.0f) {
+    if (!s.at_eye) s.min_up = s.max_up = dz;
+    ++s.at_eye;
+    s.max_across = std::max(s.max_across, across);
+    s.min_up = std::min(s.min_up, dz);
+    s.max_up = std::max(s.max_up, dz);
+  } else {
+    ++s.off_eye;
+  }
+  if (s.have_last) {
+    const bool cam_moved = cam[0] != s.last_cam[0] || cam[1] != s.last_cam[1] || cam[2] != s.last_cam[2];
+    const bool origin_moved =
+        origin[0] != s.last_origin[0] || origin[1] != s.last_origin[1] || origin[2] != s.last_origin[2];
+    s.cam_moved += cam_moved;
+    s.origin_moved += origin_moved;
+    s.cam_only += cam_moved && !origin_moved;
+  }
+  for (int i = 0; i < 3; ++i) {
+    s.last_cam[i] = s.cam[i] = cam[i];
+    s.last_origin[i] = origin[i];
+    s.eye[i] = eye[i];
+  }
+  s.have_last = true;
+}
+}  // namespace view
+
 }  // namespace
 
 // [acct2-main] 2026-11-05 This file is built into cod3mp only, so COD3_MP is always set and nothing changes here.
@@ -329,6 +447,22 @@ REX_EXTERN(__imp__sub_824A9798);
 REX_HOOK_RAW(sub_824A9798) {  // PM_AirMove
   CountRule(kAirMove);
   __imp__sub_824A9798(ctx, base);
+}
+
+// [acct2-main] 2026-11-05 CG_CalcViewValues (stage 2 step 2, observe only: the view namespace above). The game's own
+// function always runs first and nothing it set is changed.
+REX_EXTERN(__imp__sub_82467C18);
+REX_HOOK_RAW(sub_82467C18) {  // CG_CalcViewValues
+  __imp__sub_82467C18(ctx, base);
+  if (!REXCVAR_GET(cod3mp_movement_stage2)) return;
+  static bool s_said = false;
+  if (!s_said) {
+    s_said = true;
+    REXLOG_INFO("cod3mp: movement: stage 2: watching the camera after CG_CalcViewValues (0x82467C18); nothing is "
+                "changed");
+  }
+  view::NoteFrame(base);
+  view::MaybeLog();
 }
 
 #endif  // defined(COD3_MP) [acct2-main]

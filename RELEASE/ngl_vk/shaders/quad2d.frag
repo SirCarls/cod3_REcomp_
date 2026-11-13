@@ -12,10 +12,12 @@ layout(set = 0, binding = 0) uniform sampler2D picture;
 void main()
 {
     vec4 texel = vec4(1.0);
+    // [rexglue-native-render] 2026-11-11 rn48l: NGL_VK_QUAD_ADD (4) on top of the mode only picks the pipeline (added)
+    float mode = use_picture > 3.5 ? use_picture - 4.0 : use_picture;
 
-    if (use_picture > 1.5)
+    if (mode > 1.5)
         texel = texture(picture, picture_uv);
-    else if (use_picture > 0.5)
+    else if (mode > 0.5)
         texel = vec4(texture(picture, picture_uv).rgb, 1.0);
 
     color = texel * quad_color;

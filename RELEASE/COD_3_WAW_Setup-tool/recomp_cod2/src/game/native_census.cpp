@@ -29,6 +29,11 @@
 //   stride), the index buffer (0x83D314C8), the textures (0x83D314FC + 4 x
 //   stage) and the render target id (0x83D31494), with the first words of
 //   each Direct3D object, to map their layouts (NATIVE-RENDERER.md 2.10).
+//   [waw-decomp] 2026-11-10, build 18b, for the struct map's open points
+//   (X360-GAMES.md, "native step 2"): 40 words of the vertex declaration (its
+//   elements are past the first 12) and, for the first texture stage, 16 words
+//   of the Direct3D texture the game's image points to (image + 4), where its
+//   fetch constant is.
 //
 // Addresses and registers from the decompile (dev/waw-decomp/cod2_360/sp). The
 // hooks only count and read; the game draws as before.
@@ -47,6 +52,7 @@
 #include <rex/logging.h>
 
 #include "game/native_capture.h"  // step N1: the census's hooks also feed the capture
+#include "game/native_side.h"     // [waw-decomp] 2026-11-10 step 3: and the 2D side by side
 
 REXCVAR_DEFINE_INT32(cod2_debug_native_census, 0, "cod2/Debug",
                      "Tests: every this many seconds, log what the back end drew a frame (0: off)")
@@ -265,6 +271,11 @@ void LogDrawSample(const uint8_t* base, uint32_t args, uint32_t draw, int sample
     textures += head;
     if (first) {
       textures += " (" + Words(base, texture, 13) + " )";
+      // [waw-decomp] build 18b: the Direct3D texture the image points to (image + 4).
+      const uint32_t d3d_texture = LoadU32(base, texture + 4u);
+      char object[24];
+      std::snprintf(object, sizeof object, " texture %08X:", d3d_texture);
+      textures += object + Words(base, d3d_texture, 16) + ";";
       first = false;
     }
   }
@@ -275,7 +286,7 @@ void LogDrawSample(const uint8_t* base, uint32_t args, uint32_t draw, int sample
       "cod2: native census: draw sample {} buffers: vertex shader {:08X}:{} | +0x248:{}; pixel shader {:08X}:{}; "
       "declaration {:08X}:{}; streams{}; indices {:08X}:{}; textures{}",
       sample, vs_d3d, Words(base, vs_d3d, 12), Words(base, vs_d3d + 0x248u, 6), ps_d3d, Words(base, ps_d3d, 18),
-      decl, Words(base, decl, 12),
+      decl, Words(base, decl, 40),  // [waw-decomp] build 18b: 40 words (was 12), to reach the elements
       streams.empty() ? std::string(" -") : streams, indices, Words(base, indices, 8),
       textures.empty() ? std::string(" -") : textures);
 }
@@ -311,6 +322,7 @@ REX_HOOK_RAW(sub_82368F20) {
 REX_EXTERN(__imp__sub_82368310);
 REX_HOOK_RAW(sub_82368310) {
   cod2::native::CaptureDraw(base, ctx.r3.u32, g_last_pass.load(std::memory_order_relaxed));
+  cod2::native::SideDraw(base, ctx.r3.u32, g_last_pass.load(std::memory_order_relaxed));  // [waw-decomp] 2026-11-10
   if (On() && IsGuestData(ctx.r3.u32)) {
     Add(LoadU32(base, ctx.r3.u32) == 0 ? g_counts.draws_from_tess : g_counts.draws_indexed);
     const uint32_t draw = g_frame_draws.fetch_add(1, std::memory_order_relaxed);
@@ -325,7 +337,7 @@ REX_HOOK_RAW(sub_82368310) {
 // "RB_SetupPass"(pass r3, vertex format r4): kept for the draw samples.
 REX_EXTERN(__imp__sub_82368C40);
 REX_HOOK_RAW(sub_82368C40) {
-  if (On() || cod2::native::CaptureOn()) {
+  if (On() || cod2::native::CaptureOn() || cod2::native::SideOn()) {  // [waw-decomp] SideOn: step 4's census
     g_last_pass.store(ctx.r3.u32, std::memory_order_relaxed);
     g_last_pass_format.store(ctx.r4.u32, std::memory_order_relaxed);
   }
@@ -365,6 +377,7 @@ REX_HOOK_RAW(sub_82372D78) {
   if (On()) CountCommands(base);
   __imp__sub_82372D78(ctx, base);
   cod2::native::CaptureFrameEnd();
+  cod2::native::SideFrameEnd(base);  // [waw-decomp] 2026-11-10 (cod2_debug_native_side)
   g_frame_draws.store(0, std::memory_order_relaxed);
   if (g_sample_frame.load(std::memory_order_relaxed) && g_samples.load(std::memory_order_relaxed) > 0)
     g_sample_frame.store(false, std::memory_order_relaxed);

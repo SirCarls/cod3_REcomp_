@@ -139,6 +139,25 @@ def tool_notes(tc, recomp: bool = True, rust: bool = True) -> List[Note]:
         notes.append(Note(ERROR, "Development libraries: " + ", ".join(tc.missing_libs),
                           "The SDK's window, sound and input code (SDL3, GTK file dialogs, Vulkan) needs them.",
                           "Build installs them with your package manager after your approval."))
+    # [rexglue-native-settings] 2026-11-11 (coordinator 08:30, dependency audit): glslc is optional (not in
+    # tc.problems()), so this is the one note without a problem: a warning, because without glslc the build quietly
+    # leaves the native renderer out (recomp/CMakeLists.txt: "cod3: no ngl_vk (Vulkan headers or glslc missing)").
+    # [rexglue-native-settings] 2026-11-11 (coordinator 08:54, P5): the same note names the Vulkan headers (found
+    # where CMake's FindVulkan looks, deps.vulkan_headers), which ngl_vk needs as well.
+    missing = [what for what, have in (("glslc", getattr(tc, "glslc", None)),  # [rexglue-native-settings]
+                                       ("the Vulkan headers", getattr(tc, "vulkan_headers", None))) if not have]  # [rexglue-native-settings]
+    if common.IS_LINUX and missing:  # [rexglue-native-settings]
+        fixes = {"glslc": "glslc: the package glslc (Debian, Ubuntu, Mint, Fedora) or shaderc (Arch, openSUSE, "
+                          "Void)",  # [rexglue-native-settings]
+                 "the Vulkan headers": "the Vulkan headers: libvulkan-dev (Debian, Ubuntu, Mint), vulkan-headers "
+                                       "(Fedora, Arch), vulkan-devel (openSUSE) or Vulkan-Headers (Void)"}  # [rexglue-native-settings]
+        notes.append(Note(WARN, "Optional, for the native renderer: " + " and ".join(missing),  # [rexglue-native-settings]
+                          "The game's native Vulkan renderer (ngl_vk, cod3_native_vulkan in F2) is compiled with the "
+                          "Vulkan headers and has its shaders compiled with glslc while the game is built. Without "
+                          "them the game is built without the native renderer; everything else works as before.",
+                          "Build installs them with the other build packages when it installs those (after your "
+                          "approval). Otherwise install " + "; and ".join(fixes[m] for m in missing) +
+                          "; then build again."))  # [rexglue-native-settings]
     return notes
 
 

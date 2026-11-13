@@ -72,6 +72,24 @@ static struct ngl_loaded_texture textures[MAX_TEXTURES];
 static uint8_t names[MAX_TEXTURES][NAME_BYTES];
 static unsigned texture_count;
 
+/* [rexglue-native] 2026-11-11: each texture's file as it was loaded (its bytes hashed, and how many), to tell a name
+ * loaded again with ANOTHER file from one loaded again with the same. The game loads every mission's loading-screen
+ * map under the one name "texload" (textures\en\sicily.dds for Gela), draws it twice and releases it
+ * (nglReleaseTexture, a stand-in here, so nothing is ever let go): one texture a name for good would show the first
+ * mission's map on every loading screen after it. */
+static uint64_t file_hashes[MAX_TEXTURES];
+static uint32_t file_sizes[MAX_TEXTURES];
+
+static uint64_t hash_bytes(const uint8_t *bytes, size_t count)
+{
+    uint64_t hash = 1469598103934665603ull;     /* FNV-1a */
+    size_t i;
+
+    for (i = 0; i < count; i++)
+        hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+}
+
 /* animated texture lists: each frame's name (lower case, without the hash), and the frame once found */
 static struct {
     uint32_t texture;
@@ -451,6 +469,19 @@ uint32_t ngl_texture_load(uint32_t name, uint32_t type, uint32_t data, uint32_t 
     memcpy(key, (const void *)XBOX_PTR(name), NAME_BYTES);
     for (i = 0; i < texture_count; i++) {
         if (!memcmp(names[i], key, NAME_BYTES)) {
+            /* [rexglue-native] 2026-11-11: the name again with another file (see file_hashes): the old texture
+             * gives up the name (it stays as it is for whatever still draws it) and a new one is made below */
+            if ((type == 0 || type == 1) && data && size >= DDS_HEADER_BYTES && file_sizes[i] &&
+                (file_sizes[i] != size ||
+                 file_hashes[i] != hash_bytes((const uint8_t *)XBOX_PTR(data), size))) {
+                static int renamed;
+
+                if (renamed++ < 16)
+                    fprintf(stderr, "[ngl] nglLoadTexture: \"%.28s\" again with another file (%u bytes, was %u): "
+                            "a new texture\n", (const char *)key + NAME_HASH_BYTES, size, file_sizes[i]);
+                memset(names[i], 0, NAME_BYTES);
+                break;
+            }
             MEM32(textures[i].texture) += 1;
             MEM32(textures[i].texture + TEXTURE_USE) |= 1;
             return textures[i].texture;
@@ -478,6 +509,8 @@ uint32_t ngl_texture_load(uint32_t name, uint32_t type, uint32_t data, uint32_t 
 
     if (!(t = new_texture(key, type)))
         return default_texture();
+    file_sizes[texture_count - 1] = size;       /* [rexglue-native] 2026-11-11 (see file_hashes) */
+    file_hashes[texture_count - 1] = hash_bytes(dds, size);
     texture = t->texture;
     MEM32(texture + TEXTURE_WIDTH) = width;
     MEM32(texture + TEXTURE_HEIGHT) = height;
@@ -623,6 +656,19 @@ uint32_t ngl_texture_lookup(uint32_t name)
         if (!memcmp(names[i], (const void *)XBOX_PTR(name), NAME_BYTES))
             return textures[i].texture;
     report_missing((const uint8_t *)XBOX_PTR(name));
+    return 0;
+}
+
+int ngl_texture_named(uint32_t texture, const char *name)
+{
+    unsigned i;
+
+    if (!texture || !name)
+        return 0;
+    for (i = 0; i < texture_count; i++)
+        if (textures[i].texture == texture)
+            return !strncmp((const char *)XBOX_PTR(texture + TEXTURE_NAME + NAME_HASH_BYTES), name,
+                            NAME_BYTES - NAME_HASH_BYTES);
     return 0;
 }
 

@@ -26,6 +26,7 @@
 #include "game/hd_textures.h"
 #include "game/guest.h"
 #include "game/script_threads.h"
+#include "game/pad_settings.h"  // [acct2-ocr] 2026-11-07
 #include "game/thread_profiler.h"  // [hw-scaling]
 #include "ui/game_console.h"
 
@@ -577,6 +578,7 @@ void Engine::OnGuestFrame(PPCContext& ctx, uint8_t* base) {
   fov::Sync(ctx, base);  // the player's cg_fov / cg_fovScale (game/fov.h)
   SyncWatchedCvars(ctx, base);
   settings::SyncCrosshair(ctx, base);  // cg_drawCrosshair = Options > Gameplay > Crosshair
+  pad::Sync(ctx, base);  // [acct2-ocr] 2026-11-07 the cod3_pad_* controller settings (game/pad_settings.h)
   if ((frame_ % 10) == 0) CheatWatch::Get().Update(base);
   CutsceneSkip::Get().OnGuestFrame(ctx, base);
   RunAutoexec(ctx, base);

@@ -38,6 +38,7 @@
 #include "game/screenshot.h"
 #include "game/thread_profiler.h"  // [hw-scaling]
 #include "game/function_profiler.h"  // [hw-scaling]
+#include "game/ngl_side.h"  // [acct2-bro] side230: OnLevelLoaded
 #include "util.h"
 
 REXCVAR_DEFINE_STRING(cod3_log_detail, "normal", "cod3/Performance",
@@ -426,6 +427,7 @@ void LevelLoadEnd() {
   }
   g_load_start = {};
   g_avg_frame_s = 0.0;  // a new level: don't compare with the menu's frame times
+  cod3::ngl_side::OnLevelLoaded();  // [acct2-bro] side230: the native renderer may forget the level before
 }
 
 void RecordPerfLine(const std::string& line) {

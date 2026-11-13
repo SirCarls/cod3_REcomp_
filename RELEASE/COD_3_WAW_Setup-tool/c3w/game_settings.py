@@ -153,6 +153,9 @@ class Setting:
     invert: bool = False
     scale: int = 1           # "int" kept divided by this (volume 0-100 % as 0.0-1.0)
     also: Optional[Callable[[Any], bool]] = field(default=None, compare=False)   # other values a "choice" takes
+    # [f2-menus] 2026-11-10 An "int" the game keeps as a decimal number (a DOUBLE cvar such as cod4_fov): written
+    # as 90.000000, the way the game writes it.
+    decimal: bool = False
 
     @property
     def names(self) -> Tuple[str, ...]:
@@ -274,17 +277,62 @@ SETTINGS: List[Setting] = [
             "the game's Options.", "int", min=0, max=100, default=100, scale=100),
     # [voice] game/voice_language.h; the other languages come from another disc (c3w/voices.py)
     Setting("cod3_voice_language", "Voices",
-            "The language the soldiers speak in the campaign and its films. German, French, Spanish and "
-            "Italian need that disc's voices: Add voices from another disc. The text stays as it is.",
+            "The language the soldiers speak in the campaign, its films and multiplayer. German, French, "
+            "Spanish and Italian need that disc's voices: Add voices from another disc (multiplayer has "
+            "German and French only). "
+            # [acct2-ocr] 2026-11-07 (owner 10:32 "the audio switching still seems broken"): when a change is heard
+            "Changed during a mission, the soldiers follow within seconds; a level whose sound memory can't "
+            "hold the new voice beside its own sounds (German, most often) changes when a mission is next started "
+            "or loaded. Films follow from the next film, multiplayer from the next map. "
+            # [acct2-ocr] 2026-11-07 the text has its own setting now (it said "The text stays as it is.")
+            "The text and subtitles have their own setting: Text, below.",
             "choice", (("disc", "The game's own"), ("en", "English"), ("de", "German"), ("fr", "French"),
                        ("es", "Spanish"), ("it", "Italian")), default="disc"),
     # The SDK's own setting (XGetLanguage): Xbox 360 language numbers.
     Setting("user_language", "Console language",
             "The language the game is told the console uses. It picks the films' sound and, on the "
             "French/Spanish/Italian disc, the soldiers' language and the text. Leave English for the "
-            "USA/Europe disc.",
+            "USA/Europe disc. "
+            "Voices and Text, when set to a language, come before it.",  # [acct2-ocr] 2026-11-07
             "choice", ((1, "English"), (3, "German"), (4, "French"), (5, "Spanish"), (6, "Italian")),
             default=1),
+    # [acct2-ocr] 2026-11-07 (owner 09:49: "the setup tool audio and subtle options need to reflect our changes"): the
+    # text's language and what it covers, as F2 > Sound > Text has them (recomp/src/game/text_language.cpp,
+    # game/font_fill.cpp). cod3mp takes them from cod3.toml too, so they're for both programs.
+    Setting("cod3_text_language", "Text",
+            "The language of the game's text: menus, button prompts, objectives, subtitles, loading screens and "
+            "credits, in both the campaign and multiplayer. The game's own is the disc's text. It can be changed "
+            "while playing too (F2 > Sound > Text); the texts on screen change as the game asks for them again.",
+            "choice", (("disc", "The game's own"), ("en-US", "English (United States)"),
+                       ("en-GB", "English (United Kingdom)"), ("fr-FR", "Français (France)"),
+                       ("fr-CA", "Français (Canada)"), ("fr-BE", "Français (Belgique)"), ("de-DE", "Deutsch"),
+                       ("it-IT", "Italiano"), ("es-ES", "Español (España)"), ("es-419", "Español (Latinoamérica)"),
+                       ("pt-BR", "Português (Brasil)"), ("pt-PT", "Português (Portugal)"), ("ru-RU", "Russian"),
+                       ("zh-Hans", "Chinese (Simplified)"), ("zh-Hant-TW", "Chinese (Traditional, Taiwan)"),
+                       ("zh-Hant-HK", "Chinese (Traditional, Hong Kong)"), ("ja-JP", "Japanese"),
+                       ("ko-KR", "Korean")), default="disc"),
+    # [acct2-ocr] F2 > Sound > Text by kind: each kind in the language above, or off for the game's own text.
+    Setting("cod3_text_subtitles", "Subtitles in that language",
+            "The subtitles and the soldiers' lines on screen in the Text language. Off: the game's own text.",
+            "bool", default=True),
+    Setting("cod3_text_menus", "Menus in that language",
+            "The menus and the interface in the Text language. Off: the game's own text.", "bool", default=True),
+    Setting("cod3_text_prompts", "Prompts in that language",
+            "The button prompts and hints in the Text language. Off: the game's own text.", "bool", default=True),
+    Setting("cod3_text_objectives", "Objectives in that language",
+            "The mission objectives in the Text language. Off: the game's own text.", "bool", default=True),
+    Setting("cod3_text_loading", "Loading screens in that language",
+            "The loading screens and tips in the Text language. Off: the game's own text.", "bool", default=True),
+    Setting("cod3_text_credits", "Credits in that language",
+            "The credits in the Text language. Off: the game's own text.", "bool", default=True),
+    Setting("cod3_text_film_cards", "Film title cards in that language",
+            "The English title cards burned into the mission films, shown in the Text language over the film.",
+            "bool", default=True),
+    Setting("cod3_font_fill", "Letters the game's fonts lack",
+            "Adds the letters and signs French, German, Spanish and Portuguese need that the game's own fonts "
+            "lack (« » „ “ ‘ ’ – ª º Ã Õ), drawn from the fonts' own letters. Off: plain stand-ins (\" for «). "
+            "The game reads it when it starts.",
+            "bool", default=True),
     # [claude-9b] The SDK's own setting (SDK patch 0070): the gamertag the game is given.
     Setting("user_name", "Player name",
             "Your name in the game, up to 15 characters: the name others see in multiplayer. Pick the "
@@ -327,12 +375,25 @@ SETTINGS: List[Setting] = [
                        ("rainbow", "Rainbow (smooth)"),
                        ("rainbow_codes", "Rainbow (^ colors)"),  # [claude-setup] 2026-11-03 "Both as choices"
                        ("gold", "Gold, like the key caps")), default="original"),
+    # [acct2-decomp] 2026-11-05 (owner 08:50: "reduce or completely eliminate the need to "press and hold""):
+    # game/use_hold.h, both programs.
+    Setting("cod3_use_hold_ms", "Use: hold or press",
+            "How long Use is held to pick up a weapon or ammo, man a gun or get into a vehicle. The game's own is "
+            "250 ms; 0 makes it a press, and the hints then say \"Press\" instead of \"Press and hold\". On a "
+            "controller Use is also Reload, so at 0 a press near a weapon picks it up instead of reloading. "
+            "Planting a charge or opening a gate keeps its own time. In multiplayer the host's setting counts.",
+            "int", ((-1, "The game's (250 ms)"), (0, "0 (a press)"), (100, "100"), (250, "250")),
+            min=-1, max=1000, default=-1),
 ]
 BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
 
 
-def settings_file(out_dir: Path) -> Path:
-    return Path(out_dir) / FILE_NAME
+# [f2-menus] 2026-11-10 The functions below also take another game's settings (c3w/x360_ports.py: World at War,
+# Call of Duty 2 and Call of Duty 4 keep theirs in <program>.toml the same way): `settings` a list of Setting,
+# `file_name` the file in out_dir, `exes` / `names` the game's program names. Left out, everything is Call of Duty
+# 3's, as before.
+def settings_file(out_dir: Path, file_name: str = FILE_NAME) -> Path:
+    return Path(out_dir) / file_name
 
 
 def for_platform(platform: str) -> List[Setting]:
@@ -485,10 +546,10 @@ def _read_text(path: Path) -> str:
         raise common.SetupError(f"Couldn't read {path.name}: {e.strerror or e}") from None
 
 
-def read_values(out_dir: Path) -> Dict[str, Any]:
+def read_values(out_dir: Path, file_name: str = FILE_NAME) -> Dict[str, Any]:
     """Every simple `name = value` setting in cod3.toml, by flattened name
     (the last one wins, as when the game reads it)."""
-    lines = _read_text(settings_file(out_dir)).splitlines(keepends=True)
+    lines = _read_text(settings_file(out_dir, file_name)).splitlines(keepends=True)
     return {info.name: info.value for info in _scan(lines) if info.name}
 
 
@@ -520,7 +581,7 @@ def _to_toml(s: Setting, value: Any) -> str:
     if isinstance(value, bool):
         return "true" if (value != s.invert) else "false"
     if isinstance(value, int):
-        if s.scale != 1:
+        if s.scale != 1 or s.decimal:
             return f"{value / s.scale:.6f}"   # as the game writes a decimal setting
         return str(value)
     return toml_string(str(value))
@@ -544,12 +605,12 @@ def toml_string(value: str) -> str:
     return "".join(out)
 
 
-def load(out_dir: Path) -> dict:
+def load(out_dir: Path, settings: Optional[Iterable[Setting]] = None, file_name: str = FILE_NAME) -> dict:
     """Every Setting's value from cod3.toml, as the GUI shows it (defaults
     for settings that aren't in the file or don't fit)."""
-    found = read_values(out_dir)
+    found = read_values(out_dir, file_name)
     result = {}
-    for s in SETTINGS:
+    for s in (SETTINGS if settings is None else settings):
         value = None
         raw = next((found[n] for n in s.names if n in found), None)
         if raw is not None:
@@ -558,10 +619,11 @@ def load(out_dir: Path) -> dict:
     return result
 
 
-def check(values: dict) -> None:
+def check(values: dict, settings: Optional[Iterable[Setting]] = None) -> None:
     """SetupError for an unknown setting or a value it doesn't allow."""
+    by_key = BY_KEY if settings is None else {s.key: s for s in settings}
     for key, value in values.items():
-        s = BY_KEY.get(key)
+        s = by_key.get(key)
         if s is None:
             raise common.SetupError(f"Unknown game setting: {str(key)[:40]}")
         if not s.valid(value):
@@ -570,16 +632,19 @@ def check(values: dict) -> None:
             raise common.SetupError(f"{s.label}: that value isn't one the game takes.")
 
 
-def save(out_dir: Path, values: dict) -> None:
+def save(out_dir: Path, values: dict, settings: Optional[Iterable[Setting]] = None, file_name: str = FILE_NAME,
+         exes: Optional[Iterable[str]] = None) -> None:
     """Change only the given settings in cod3.toml and keep everything else
     in the file byte for byte. Refuses while the game runs (it writes the
     file itself)."""
-    check(values)
+    settings = None if settings is None else list(settings)
+    by_key = BY_KEY if settings is None else {s.key: s for s in settings}
+    check(values, settings)
     if not values:
         return
-    if game_running(out_dir):
+    if game_running(out_dir, names=exes):
         raise common.SetupError("Close the game first: it saves its own settings when it quits.")
-    path = settings_file(out_dir)
+    path = settings_file(out_dir, file_name)
     if not Path(out_dir).is_dir():
         raise common.SetupError("The output folder isn't there. Build the game first.")
     text = _read_text(path)
@@ -587,8 +652,8 @@ def save(out_dir: Path, values: dict) -> None:
     newline = "\r\n" if "\r\n" in text else "\n"
     wanted: Dict[str, Tuple[Setting, Any]] = {}
     for key, value in values.items():
-        for name in BY_KEY[key].names:
-            wanted[name] = (BY_KEY[key], value)
+        for name in by_key[key].names:
+            wanted[name] = (by_key[key], value)
     done: Set[str] = set()
     first_header = None
     for i, info in enumerate(_scan(lines)):
@@ -723,11 +788,12 @@ def _windows_tasks() -> List[str]:
     return names
 
 
-def game_running(out_dir: Optional[Path] = None, proc: Optional[Path] = None) -> bool:
+def game_running(out_dir: Optional[Path] = None, proc: Optional[Path] = None,
+                 names: Optional[Iterable[str]] = None) -> bool:
     """True when the game seems to be running (best effort): a process with
     one of the game's executable names (exe_names). Linux reads /proc; Windows
     asks tasklist, and under Wine also looks at the Linux side's /proc."""
-    names = exe_names(out_dir)
+    names = exe_names(out_dir) if names is None else {n.lower() for n in names}   # [f2-menus] another game's
     roots = [proc] if proc else []
     if not proc:
         if common.IS_WINDOWS:

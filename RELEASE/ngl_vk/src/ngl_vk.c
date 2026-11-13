@@ -93,6 +93,27 @@ static const uint32_t dof_mix_frag_spirv[] =
 static const uint32_t tint_frag_spirv[] =
 #include "tint.frag.inc"
 ;
+static const uint32_t effect_depth_frag_spirv[] =  /* [rexglue-native] 2026-11-10: the effect layer (make_effect_layer) */
+#include "effect_depth.frag.inc"
+;
+static const uint32_t effect_back_frag_spirv[] =   /* [rexglue-native] */
+#include "effect_back.frag.inc"
+;
+static const uint32_t glow_first_frag_spirv[] =    /* [rexglue-native] 2026-11-10: the sky glow (make_glow) */
+#include "glow_first.frag.inc"
+;
+static const uint32_t glow_blur_frag_spirv[] =     /* [rexglue-native] */
+#include "glow_blur.frag.inc"
+;
+static const uint32_t glow_add_frag_spirv[] =      /* [rexglue-native] */
+#include "glow_add.frag.inc"
+;
+static const uint32_t heat_warp_vert_spirv[] =     /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp (make_heat) */
+#include "heat_warp.vert.inc"
+;
+static const uint32_t heat_warp_frag_spirv[] =     /* [rexglue-native-fx] 2026-11-11 fx1 */
+#include "heat_warp.frag.inc"
+;
 static const uint32_t output_frag_spirv[] =
 #include "output.frag.inc"
 ;
@@ -106,7 +127,11 @@ static const uint32_t output_frag_spirv[] =
 #define MAX_VERTICES    (8192u * 6u)                /* 8192 quads a draw */
 #define MAX_TEXTURES    2048u                       /* textures made with ngl_vk_texture */
 #define DOF_SETS        2u                          /* the depth of field's two blurred pictures' sets */
-#define POST_SETS       2u                          /* the tint's copy of the target, the last frame's (motion blur) */
+#define POST_SETS       3u                          /* the tint's copy of the target, the last frame's (motion blur);
+                                                     * [rexglue-native] 2026-11-11 rn47g: and the afterimage's kept
+                                                     * picture (was 2) */
+#define GLOW_SIZE       256u                        /* [rexglue-native] the sky glow's two targets, each way (make_glow) */
+#define GLOW_MOST_BLURS 8u                          /* [rexglue-native] and the most blurs it draws (the game's levels: 4) */
 #define OUTPUT_SETS     2u                          /* ngl_vk_output's: the target, the color table */
 #define EMPTY_CUBE_SETS 1u                          /* [rexglue-native] rn34: the empty cube's (make_empty_cube) */
 #define MAX_TEXTURE_LEVELS 14u                      /* a texture's levels: 8192 x 8192 down to 1 x 1 */
@@ -220,6 +245,11 @@ static struct {
     void *upload_pixels;
 
     VkSampler sampler;
+    /* [acct2-bro] 2026-11-12: the same sampler with anisotropy, for the textures with smaller levels; none
+     * (VK_NULL_HANDLE) unless it was asked for and the device has the feature on (ngl_vk_set_anisotropy) */
+    VkSampler aniso_sampler;
+    float anisotropy;                   /* its samples at most */
+    int anisotropy_feature;             /* the device in use has samplerAnisotropy on */
     VkDescriptorSetLayout set_layout;
     VkDescriptorPool descriptor_pool;
     VkDescriptorSet set;
@@ -262,6 +292,10 @@ static struct {
     /* 2D quads */
     VkPipelineLayout quad_layout;
     VkPipeline quad_pipeline;
+    /* [rexglue-native-render] 2026-11-11 rn48l: the same, adding (NGL_VK_QUAD_ADD), and which of the two is bound in
+     * the quads' loops (0 the plain one) */
+    VkPipeline quad_add_pipeline;
+    int quad_bound_added;
     VkBuffer vertices;
     VkDeviceMemory vertex_memory;
     void *vertex_data;
@@ -346,6 +380,68 @@ static struct {
     VkSampler soft_sampler;
     int soft_ready;                 /* the copy is in its sampled layout */
     int soft_live;                  /* drawing the second half: the copy holds this frame's depth */
+    /* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer; make_effect_layer): a color and a depth
+     * target of half the main target's width and height. Each frame that has layer draws: the layer's color cleared
+     * and its depth filled from the opaque depth's copy (effect_fill_pass, effect_fill_pipeline), the layer's draws
+     * with the mesh pipelines (effect_pass: the depth read only, tested and sampled, effect_shadow_set in set 3 with
+     * the layer's depth in its binding 2), then the layer over the main target (effect_back_pipeline, in the overlay
+     * pass). effect_ready 0: not made, the draws go into the main target. */
+    int effect_ready;
+    int effect_live;                /* drawing the layer's draws now (draw_meshes part 3) */
+    uint32_t effect_width, effect_height;
+    VkImage effect_color, effect_depth;
+    VkDeviceMemory effect_color_memory, effect_depth_memory;
+    VkImageView effect_color_view, effect_depth_view;
+    VkRenderPass effect_fill_pass, effect_pass;
+    VkFramebuffer effect_framebuffer;
+    VkDescriptorPool effect_pool;
+    VkDescriptorSet effect_color_set;   /* the layer's color, for the blend back (set 0) */
+    VkDescriptorSet effect_shadow_set;  /* the shadow set with the layer's depth in binding 2 */
+    VkPipeline effect_fill_pipeline, effect_back_pipeline;
+    /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp (ngl_vk_set_screen_warp; Call of Duty 3's heat haze) and its
+     * mask. The draws whose blend is NGL_VK_BLEND_HEAT_MASK go into heat_mask (the effect layer's size, its depth, the
+     * effect pass: draw_meshes part 4), cleared to 1 and multiplied by (1 - their alpha) each (mesh_heat_pipeline), so
+     * it holds 1 - the mask; then, with the layer back over the picture, the target copied (post_copy) and drawn back
+     * through the warp's strip (heat_pipeline, in the overlay pass), blended by the mask. heat_ready 0: not made: no
+     * warp, the mask draws left out. */
+    int heat_ready;                     /* [rexglue-native-fx] 2026-11-11 fx1 */
+    int heat_live;                      /* this frame has mask draws (part 4 follows part 3) [rexglue-native-fx] */
+    int heat_layout_ok;                 /* heat_mask has been drawn into (its layout known) [rexglue-native-fx] */
+    uint32_t warp_count;                /* the next frame's strip's corners (0: none) [rexglue-native-fx] */
+    float *warp_corners;                /* as ngl_vk_set_screen_warp took them, 4 floats each [rexglue-native-fx] */
+    VkImage heat_mask;                  /* [rexglue-native-fx] 2026-11-11 fx1 */
+    VkDeviceMemory heat_mask_memory;    /* [rexglue-native-fx] 2026-11-11 fx1 */
+    VkImageView heat_mask_view;         /* [rexglue-native-fx] 2026-11-11 fx1 */
+    VkFramebuffer heat_framebuffer;     /* heat_mask and the layer's depth, for effect_pass [rexglue-native-fx] */
+    VkDescriptorPool heat_pool;         /* [rexglue-native-fx] 2026-11-11 fx1 */
+    VkDescriptorSet heat_mask_set;      /* [rexglue-native-fx] 2026-11-11 fx1 */
+    VkPipelineLayout heat_layout;       /* [rexglue-native-fx] 2026-11-11 fx1: the picture's copy, the mask */
+    VkPipeline heat_pipeline;           /* [rexglue-native-fx] 2026-11-11 fx1: the strip over the picture */
+    VkPipeline mesh_heat_pipeline;      /* the mask draws (made with the mesh pipelines) [rexglue-native-fx] */
+    VkBuffer warp_buffer;               /* [rexglue-native-fx] 2026-11-11 fx1: the strip as drawn (host memory) */
+    VkDeviceMemory warp_memory;         /* [rexglue-native-fx] 2026-11-11 fx1 */
+    float *warp_data;                   /* [rexglue-native-fx] 2026-11-11 fx1: warp_buffer, mapped */
+    /* [rexglue-native] 2026-11-10: the sky glow (ngl_vk_set_glow; Call of Duty 3's, drawn each frame after its tint).
+     * Two targets of GLOW_SIZE x GLOW_SIZE (the game's are 256 x 256 whatever the picture's size). In a frame with a
+     * glow, after the tint's draw: the target copied (post_copy), its sky alone drawn small into glow 0
+     * (glow_first_pipeline: the opaque depth says where nothing is drawn), glow_passes blurs to and fro between the
+     * two (glow_blur_pipeline, in the dof's blur pass), then the last one added over the game's screen in the
+     * overlay pass (glow_add_pipeline), before the motion blur, post effect 7 and the quads. glow_ready 0: not made,
+     * no glow. */
+    int glow_ready;
+    int glow_on;                        /* this frame has a glow (ngl_vk_set_glow) */
+    float glow_tap, glow_gain, glow_strength;   /* ngl_vk_set_glow's, the tap in the small target's pixels */
+    float glow_lean, glow_toward[2];
+    uint32_t glow_passes;
+    VkPipelineLayout glow_layout;       /* a sampled picture, the shadow set, eight floats */
+    VkImage glow_image[2];
+    VkDeviceMemory glow_memory[2];
+    VkImageView glow_view[2];
+    VkFramebuffer glow_framebuffer[2];
+    VkDescriptorPool glow_pool;
+    VkDescriptorSet glow_set[2];
+    VkSampler glow_sampler;             /* filtered; black past the edges, as the game fetches its glow targets */
+    VkPipeline glow_first_pipeline, glow_blur_pipeline, glow_add_pipeline;
     /* depth of field (ngl_vk_set_depth_of_field): after the second half, the target shrunk to a half and a quarter of
      * its size (two blits), blurred across into dof_temp and down back into dof_quarter, then mixed over the target
      * by the opaque depth in the overlay pass, the main pass's third part, which the quads are drawn in after it */
@@ -377,12 +473,42 @@ static struct {
     uint64_t frames_done, history_frame; /* frames drawn; the one post_history holds (0: none) */
     int tint_on;                        /* this frame has a tint (or a brightness, or a motion blur) */
     uint32_t lookup_table;              /* ngl_vk_set_color_lookup's table this frame (0: none) */
-    float tint[24];                     /* the weights times the exposure, the amount, the color, the keep depth; then
+    /* [rexglue-native] 2026-11-11 rn47g: post effect 4 as the game draws it (ngl_vk_set_afterimage): the picture it
+     * keeps from frame to frame, sampled through after_set (in the tint's set 2); after_frame: the frame that last
+     * wrote it (0: never) */
+    VkImage after_image;
+    VkDeviceMemory after_memory;
+    VkImageView after_view;
+    VkDescriptorSet after_set;
+    int after_on;                       /* this frame has it */
+    float after_share, after_inset;     /* its share of the kept picture; how far in the kept picture is read */
+    uint64_t after_frame;
+    /* [rexglue-native] 2026-11-11 rn48b: the game keeps that picture at a quarter of the screen's width and height (320 x 180 for
+     * 1280 x 720), so its trails are soft; with after_small_on the picture is shrunk into after_small_image (a
+     * quarter of the target's size, made with the rest) and stretched back into after_image, both filtered, in place
+     * of the copy (ngl_vk_set_afterimage_small). [rexglue-native] 2026-11-11 rn48c: tint.frag reads the kept picture pixel by pixel in the
+     * second pass, so a quarter-size one read directly filled only a corner (lvl bf); after_small_set is unused */
+    VkImage after_small_image;
+    VkDeviceMemory after_small_memory;
+    VkImageView after_small_view;
+    VkDescriptorSet after_small_set;
+    uint32_t after_small_width, after_small_height;
+    int after_small_on;
+    uint32_t under_count;               /* [rexglue-native] 2026-11-11 rn47i: ngl_vk_set_quads_under_effects' count
+                                         * this frame (0: none) */
+    int keep_frame;                     /* [rexglue-native] 2026-11-11 rn47n: this frame's finished picture is
+                                         * kept in post_history for the next (ngl_vk_keep_last_frame) */
+    float tint[32];                     /* the weights times the exposure, the amount, the color, the keep depth; then
                                          * the brightness and the power (ngl_vk_set_brightness; 1, 1 for none), the
                                          * last frame's share (ngl_vk_set_motion_blur; 0 for none), the color look-up
                                          * (1 on); [rexglue-native] 2026-11-10 rn41b: then post effect 7's twelve
                                          * (ngl_vk_set_film; all 0 for none), as tint.frag's film, film_gray and
-                                         * film_move */
+                                         * film_move; rn47g: then tint.frag's after (24 to 27; was 24 floats), 0 in
+                                         * every draw but the afterimage's first; [waw-decomp] 2026-11-11: then
+                                         * tint.frag's tweak (28 to 31; was 28 floats, now 128 bytes, the push
+                                         * constants Vulkan always allows): the film tweak's delta and 1 for on
+                                         * (ngl_vk_set_film_tweak, which puts its bias and base where the weights and
+                                         * the color are), 0 in every draw but the tint's own */
     /* the window (ngl_vk_set_window): its surface and swapchain, while draws are shown in it */
     VkSurfaceKHR surface;
     VkSwapchainKHR swapchain;
@@ -440,6 +566,9 @@ static struct {
 } window;
 
 static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
+/* [acct2-bro] 2026-11-12: what ngl_vk_set_anisotropy asked for (settings: they stay across ngl_vk_shutdown) */
+static float anisotropy_asked = 1.0f;
+static int anisotropy_on_borrowed_device;
 
 /* A memory type in type_bits with all of the wanted properties. */
 static int find_memory(uint32_t type_bits, VkMemoryPropertyFlags wanted, uint32_t *index)
@@ -740,6 +869,7 @@ static int make_device(void)
     VkDeviceQueueCreateInfo queue_info = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
     VkDeviceCreateInfo info = { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     float priority = 1.0f;
+    VkPhysicalDeviceFeatures gpu_features, asked_features;     /* [acct2-bro] 2026-11-12: anisotropy */
 
     queue_info.queueFamilyIndex = vk.queue_family;
     queue_info.queueCount = 1;
@@ -751,6 +881,17 @@ static int make_device(void)
 
         info.enabledExtensionCount = 1;
         info.ppEnabledExtensionNames = swapchain_extension;
+    }
+    /* [acct2-bro] 2026-11-12: with anisotropy asked for (ngl_vk_set_anisotropy), the device's samplerAnisotropy
+     * feature on when the GPU has it; no other feature, as before */
+    if (anisotropy_asked > 1.0f) {
+        vkGetPhysicalDeviceFeatures(vk.gpu, &gpu_features);
+        if (gpu_features.samplerAnisotropy) {
+            memset(&asked_features, 0, sizeof asked_features);
+            asked_features.samplerAnisotropy = VK_TRUE;
+            info.pEnabledFeatures = &asked_features;
+            vk.anisotropy_feature = 1;
+        }
     }
     CHECK(vkCreateDevice(vk.gpu, &info, NULL, &vk.device));
     if (ngl_vk_load_device(vk.device)) {   /* [rexglue-native] 2026-11-09: its functions, from its driver */
@@ -1147,6 +1288,21 @@ static int make_pipeline(void)
     sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.sampler));
+    /* [acct2-bro] 2026-11-12: the anisotropic one (ngl_vk_set_anisotropy), the same otherwise */
+    if (vk.anisotropy_feature && anisotropy_asked > 1.0f) {
+        VkPhysicalDeviceProperties gpu;
+
+        vkGetPhysicalDeviceProperties(vk.gpu, &gpu);
+        vk.anisotropy = anisotropy_asked < gpu.limits.maxSamplerAnisotropy ? anisotropy_asked
+                                                                           : gpu.limits.maxSamplerAnisotropy;
+        if (vk.anisotropy < 1.0f)
+            vk.anisotropy = 1.0f;
+        sampler_info.anisotropyEnable = VK_TRUE;
+        sampler_info.maxAnisotropy = vk.anisotropy;
+        CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.aniso_sampler));
+        sampler_info.anisotropyEnable = VK_FALSE;
+        sampler_info.maxAnisotropy = 0.0f;
+    }
 
     binding.binding = 0;
     binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1213,6 +1369,19 @@ static int make_pipeline(void)
         return -1;
     }
     return 0;
+}
+
+/* [rexglue-native-render] 2026-11-11 rn48l: in the quads' loops (the plain quad pipeline bound before the loop and
+ * vk.quad_bound_added set to 0 there): the adding pipeline for a run of NGL_VK_QUAD_ADD corners, else the plain one,
+ * bound only when it changes (both have quad_layout, so the bound sets and push constants stay) */
+static void bind_quad_pipeline(int added)
+{
+    if (added && !vk.quad_add_pipeline)
+        added = 0;
+    if (added == vk.quad_bound_added)
+        return;
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, added ? vk.quad_add_pipeline : vk.quad_pipeline);
+    vk.quad_bound_added = added;
 }
 
 static int make_quad_pipeline(void)
@@ -1302,6 +1471,15 @@ static int make_quad_pipeline(void)
     info.renderPass = vk.render_pass;
     info.subpass = 0;
     result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.quad_pipeline);
+    /* [rexglue-native-render] 2026-11-11 rn48l: the same pipeline adding (source x source alpha + what is there, the
+     * target's alpha kept), for quads marked NGL_VK_QUAD_ADD; without it they are drawn alpha-blended, as before */
+    if (result == VK_SUCCESS) {
+        blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+        blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.quad_add_pipeline) != VK_SUCCESS)
+            vk.quad_add_pipeline = VK_NULL_HANDLE;
+    }
     vkDestroyShaderModule(vk.device, vertex_shader, NULL);
     vkDestroyShaderModule(vk.device, fragment_shader, NULL);
     if (result != VK_SUCCESS) {
@@ -1589,6 +1767,18 @@ void ngl_vk_set_geometry_on_gpu(int on)
     vk.geometry_in_host_memory = !on;
 }
 
+/* [acct2-bro] 2026-11-12: see ngl_vk.h */
+void ngl_vk_set_anisotropy(float most, int borrowed_device_has_it)
+{
+    anisotropy_asked = most > 1.0f ? most : 1.0f;
+    anisotropy_on_borrowed_device = borrowed_device_has_it != 0;
+}
+
+float ngl_vk_anisotropy(void)
+{
+    return vk.aniso_sampler ? vk.anisotropy : 1.0f;
+}
+
 uint64_t ngl_vk_take_staging(uint64_t *flushes)
 {
     uint64_t bytes = vk.staged_bytes;
@@ -1735,6 +1925,22 @@ static int make_mesh_pipeline(void)
         blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
         blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
         blend_attachment.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    }
+    /* [rexglue-native-fx] 2026-11-11 fx1: the heat haze's mask (NGL_VK_BLEND_HEAT_MASK): what is there x (1 - alpha),
+     * every channel; without it no heat haze */
+    if (result == VK_SUCCESS) {         /* [rexglue-native-fx] */
+        VkPipelineColorBlendAttachmentState kept = blend_attachment;                /* [rexglue-native-fx] */
+
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;               /* [rexglue-native-fx] */
+        blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; /* [rexglue-native-fx] */
+        blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;                            /* [rexglue-native-fx] */
+        blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;               /* [rexglue-native-fx] */
+        blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; /* [rexglue-native-fx] */
+        blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;                            /* [rexglue-native-fx] */
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_heat_pipeline) !=
+            VK_SUCCESS)                                                             /* [rexglue-native-fx] */
+            vk.mesh_heat_pipeline = VK_NULL_HANDLE;                                 /* [rexglue-native-fx] */
+        blend_attachment = kept;    /* as the subtracting pipeline left it, for what follows [rexglue-native-fx] */
     }
     if (result == VK_SUCCESS) {         /* the sun's shadow casters: depth only, into the shadow map */
         VkShaderModule shadow_shader = VK_NULL_HANDLE;
@@ -2111,6 +2317,14 @@ static int vehicle_draw(const struct ngl_vk_mesh_draw *d)
     return !d->fabric_mask && !d->noise_swatch && !d->metal_cube && !d->detail_map && d->vehicle_bumped;
 }
 
+/* [rexglue-native] 2026-11-10 rn46m: whether a bumped vehicle part's draw has the props' overlay (ngl_vk.h
+ * overlay_map): the map in set 4, its numbers at METAL_FLOATS_AT + 1, + 2 and the next vec4 */
+static int overlay_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vehicle_draw(d) && d->overlay_map && d->overlay_map <= vk.texture_count &&
+           !vk.textures[d->overlay_map].cube && d->overlay_scale > 0.0f;
+}
+
 /* [rexglue-native] 2026-11-10 rn40: whether a draw is drawn as glass with an environment cube (ngl_vk.h lens_cube): a
  * color map and a cube that is one, lit by the scene's lights, no normal map, environment map or second texture, on a
  * device that binds the fabric's sets (set 6 holds the cube) */
@@ -2119,6 +2333,32 @@ static int lens_draw(const struct ngl_vk_mesh_draw *d)
     return vk.fabric_sets && d->lens_cube && d->lens_cube <= vk.texture_count && vk.textures[d->lens_cube].cube &&
            d->texture && d->texture <= vk.texture_count && !d->blend_texture && !d->env_texture && !d->normal_map &&
            d->lit && d->shading == NGL_VK_SHADE_LIGHT;
+}
+
+/* [waw-decomp] 2026-11-10: whether a draw is drawn as Call of Duty 2's water (ngl_vk.h water_cube): a height map and a
+ * cube that is one, no second texture, environment map, normal map or other cube, on a device that binds the fabric's
+ * sets (set 6 holds the cube) */
+static int water_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vk.fabric_sets && d->water_cube && d->water_cube <= vk.texture_count && vk.textures[d->water_cube].cube &&
+           d->texture && d->texture <= vk.texture_count && !d->blend_texture && !d->env_texture && !d->normal_map &&
+           !d->metal_cube && !d->lens_cube;
+}
+
+/* [waw-decomp] 2026-11-10: whether a draw adds a detail map to its color map (ngl_vk.h detail_add_map): a 2D texture,
+ * on a device that binds the fabric's sets (set 5 holds the map) */
+static int detail_add_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vk.fabric_sets && d->detail_add_map && d->detail_add_map <= vk.texture_count &&
+           !vk.textures[d->detail_add_map].cube;
+}
+
+/* [waw-decomp] 2026-11-10: whether a draw's light is Call of Duty 2's light grid (ngl_vk.h grid_cube): a cube that
+ * is one, no other cube, on a device that binds the fabric's sets (set 6 holds the cube) */
+static int grid_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vk.fabric_sets && d->grid_cube && d->grid_cube <= vk.texture_count && vk.textures[d->grid_cube].cube &&
+           !d->metal_cube && !d->lens_cube && !d->water_cube;
 }
 
 /* rn34: whether a draw's metal_scratch is a 2D texture it can sample */
@@ -2151,6 +2391,60 @@ static int fabric_draw(const struct ngl_vk_mesh_draw *d)
             vehicle_draw(d));
 }
 
+/* [waw-decomp] 2026-11-10: whether a draw is drawn as one of Call of Duty 2's models with a highlights' lookup
+ * (ngl_vk.h specular_lookup): bumped and specular as draw_meshes tests them, its lookup a texture, and none of the
+ * fabric's kinds, on a device that binds the fabric's sets (set 4 holds the lookup) */
+static int lookup_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vk.fabric_sets && d->specular_lookup && d->specular_lookup <= vk.texture_count &&
+           !vk.textures[d->specular_lookup].cube && d->texture && d->texture <= vk.texture_count &&
+           !d->blend_texture && !d->env_texture && !d->blend_light && d->lit && d->shading == NGL_VK_SHADE_LIGHT &&
+           d->normal_map && d->normal_map <= vk.texture_count && d->specular_map &&
+           d->specular_map <= vk.texture_count && !fabric_draw(d);
+}
+
+/* [waw-decomp] 2026-11-10: whether a draw is one of Call of Duty 2's world surfaces with a highlights' lookup (ngl_vk.h
+ * specular_lookup, its second half): lightmapped with a sun (lightmap_scale), its specular map and its lookup both
+ * textures, no second texture, and none of the fabric's or the water's kinds, on a device that binds the fabric's
+ * sets (set 4 holds the lookup; the specular map goes to set 2) */
+static int world_lookup_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return vk.fabric_sets && d->specular_lookup && d->specular_lookup <= vk.texture_count &&
+           !vk.textures[d->specular_lookup].cube && d->texture && d->texture <= vk.texture_count &&
+           d->lightmap && d->lightmap <= vk.texture_count && !d->blend_texture && !d->blend_light && d->lit &&
+           (d->shading & 3u) == NGL_VK_SHADE_LIGHTMAP && d->lightmap_scale > 0.0f && d->specular_map &&
+           d->specular_map <= vk.texture_count && !fabric_draw(d) && !water_draw(d);
+}
+
+/* [waw-decomp] 2026-11-11: whether a draw is one of Call of Duty 2's world surfaces drawn by its normal map (ngl_vk.h
+ * world_normal_map): lightmapped with a sun as a world surface with a lookup is, its normal map a 2D texture (set 4),
+ * and, when it has a highlights' lookup too, its tables a cube (set 6: the lookup can't stay in set 4) */
+static int world_normal_draw(const struct ngl_vk_mesh_draw *d)
+{
+    int tables = d->world_tables && d->world_tables <= vk.texture_count && vk.textures[d->world_tables].cube;
+
+    return vk.fabric_sets && d->world_normal_map && d->world_normal_map <= vk.texture_count &&
+           !vk.textures[d->world_normal_map].cube && d->texture && d->texture <= vk.texture_count &&
+           d->lightmap && d->lightmap <= vk.texture_count && !d->blend_texture && !d->blend_light && d->lit &&
+           (d->shading & 3u) == NGL_VK_SHADE_LIGHTMAP && d->lightmap_scale > 0.0f && !fabric_draw(d) &&
+           !lens_draw(d) && !water_draw(d) && (tables || !world_lookup_draw(d));
+}
+
+/* [acct2-bro] 2026-11-12: whether a world surface drawn by its normal map reads it Call of Duty 3's way (ngl_vk.h
+ * world_bump_scale): a scale, and no highlights' lookup (that is Call of Duty 2's) */
+static int world_bump_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return world_normal_draw(d) && !world_lookup_draw(d) && d->world_bump_scale != 0.0f;
+}
+
+/* [acct2-bro] 2026-11-12: and whether such a draw has a detail normal map to mix in (a 2D texture and a repeat);
+ * the map rides in set 5 */
+static int world_bump_detail_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return world_bump_draw(d) && d->world_detail_normal_map && d->world_detail_normal_map <= vk.texture_count &&
+           !vk.textures[d->world_detail_normal_map].cube && d->world_detail_repeat > 0.0f;
+}
+
 /* A draw's own lights into this frame's slot (DRAW_LIGHT_FLOATS): its nearby lights, each place into its mesh's own
  * space (the world matrix's inverse; the world's meshes are rigid, so the range needs no scaling), then its irradiance
  * rows (already in the mesh's space), then (rexglue-native) the fabric's numbers, or (rn34) the gun metal's; the slot's
@@ -2163,12 +2457,20 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
     int rows = d->irradiance_rows == 9;
     int fabric = fabric_draw(d);
     int lens = !fabric && lens_draw(d);     /* rn40 */
+    int water = !fabric && !lens && water_draw(d);  /* [waw-decomp] */
+    int lookup = !fabric && !lens && !water && lookup_draw(d);  /* [waw-decomp] */
+    int grid = !fabric && !lens && !water && grid_draw(d);      /* [waw-decomp] */
+    int detail_add = !fabric && !lens && !water && detail_add_draw(d);  /* [waw-decomp] */
+    int world_lookup = !fabric && !lens && !water && world_lookup_draw(d);  /* [waw-decomp] */
+    int world_normal = !fabric && !lens && !water && world_normal_draw(d);  /* [waw-decomp] 2026-11-11 */
 
     if (!vk.draw_light_data || vk.draw_light_slots >= MAX_DRAW_LIGHT_SLOTS)
         return 0;
     if (count && !inverted(d->world, inverse))
         count = 0;
-    if (!count && !rows && !fabric && !lens)
+    /* [waw-decomp] water, lookup, grid, detail_add, world_lookup */
+    if (!count && !rows && !fabric && !lens && !water && !lookup && !grid && !detail_add && !world_lookup &&
+        !world_normal)  /* [waw-decomp] 2026-11-11 */
         return 0;
     slot = vk.draw_light_data + (size_t)vk.draw_light_slots * DRAW_LIGHT_FLOATS;
     memset(slot, 0, DRAW_LIGHT_FLOATS * sizeof(float));
@@ -2190,6 +2492,36 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[16 + 4 * row + 2] = d->irradiance[row][2];
     }
     slot[16 + 3] = rows ? 1.0f : 0.0f;
+    /* [waw-decomp] the rows' third-degree term (ngl_vk.h irradiance_cubic): row 1's w 1, and at METAL_FLOATS_AT its
+     * three axes, each with one part of its color as its w. Not for the draws whose own numbers are there. */
+    if (rows && !fabric && !lens && !water && !grid &&
+        (d->irradiance_cubic_axes[0][0] != 0.0f || d->irradiance_cubic_axes[0][1] != 0.0f ||
+         d->irradiance_cubic_axes[0][2] != 0.0f)) {
+        slot[16 + 4 + 3] = 1.0f;
+        for (int axis = 0; axis < 3; axis++) {
+            slot[METAL_FLOATS_AT + 4 * axis] = d->irradiance_cubic_axes[axis][0];
+            slot[METAL_FLOATS_AT + 4 * axis + 1] = d->irradiance_cubic_axes[axis][1];
+            slot[METAL_FLOATS_AT + 4 * axis + 2] = d->irradiance_cubic_axes[axis][2];
+            slot[METAL_FLOATS_AT + 4 * axis + 3] = d->irradiance_cubic[axis];
+        }
+    }
+    if (detail_add) {   /* [waw-decomp] the detail map's numbers (ngl_vk.h detail_add_map): the second fabric vec4's
+                         * y, z and w (its repeat and its offset; a lookup draw has its x), the third's w 2 (1 is
+                         * the fabric's detail kind and the scratched metal) */
+        slot[FABRIC_FLOATS_AT + 5] = d->detail_add_repeat[0];
+        slot[FABRIC_FLOATS_AT + 6] = d->detail_add_repeat[1];
+        slot[FABRIC_FLOATS_AT + 7] = d->detail_add_offset;
+        slot[FABRIC_FLOATS_AT + 11] = 2.0f;
+    }
+    if (grid) {     /* [waw-decomp] the light grid (ngl_vk.h grid_cube) in the rows' place: vec4s 4 to 6 the turn's
+                     * three rows, vec4 6's w 1 (vec4 4's w 0: no rows), vec4s 7 to 12 the six sets of four colors */
+        memset(slot + 16, 0, 9 * 4 * sizeof(float));
+        for (int row = 0; row < 3; row++)
+            for (int part = 0; part < 3; part++)
+                slot[16 + 4 * row + part] = d->grid_turn[row][part];
+        slot[16 + 4 * 2 + 3] = 1.0f;
+        memcpy(slot + 16 + 4 * 3, d->grid_colors, 6 * 4 * sizeof(float));
+    }
     if (fabric && metal_draw(d)) {  /* rn34: the gun metal (METAL_FLOATS_AT's comment) */
         const float *w = d->world;
 
@@ -2204,6 +2536,8 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[FABRIC_FLOATS_AT + 8] = d->metal_rim_scale;
         slot[FABRIC_FLOATS_AT + 10] = 1.0f;                 /* metal */
         slot[FABRIC_FLOATS_AT + 11] = metal_scratched(d) ? 1.0f : 0.0f;
+        /* [rexglue-native-guns] 2026-11-11: the game's blur of the reflection (0: none) */
+        slot[FABRIC_FLOATS_AT + 9] = d->metal_cube_blur;
         slot[METAL_FLOATS_AT] = d->metal_rim[0];
         slot[METAL_FLOATS_AT + 1] = d->metal_rim[1];
         slot[METAL_FLOATS_AT + 2] = d->metal_rim[2];
@@ -2214,6 +2548,12 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
             slot[METAL_FLOATS_AT + 5 + 4 * part] = w[4 + part];
             slot[METAL_FLOATS_AT + 6 + 4 * part] = w[8 + part];
         }
+        /* [acct2-bro] 2026-11-11: the mask's grey floor (ngl_vk.h metal_mask_floor; 0: none), in the w beside the
+         * world matrix's first column */
+        slot[METAL_FLOATS_AT + 7] = d->metal_mask_floor;
+        /* [acct2-bro] 2026-11-12: the normal map's depth (ngl_vk.h metal_normal_depth; 0: none), in the w beside the
+         * world matrix's second column */
+        slot[METAL_FLOATS_AT + 11] = d->metal_normal_depth;
     } else if (fabric && detail_draw(d)) {  /* rn36: the vehicles' detail-mapped metal (METAL_FLOATS_AT's comment) */
         slot[FABRIC_FLOATS_AT] = d->detail_repeat;
         slot[FABRIC_FLOATS_AT + 1] = 1.0f;                  /* the base as it is */
@@ -2240,6 +2580,14 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[FABRIC_FLOATS_AT + 8] = d->fabric_shadow_fade;
         slot[METAL_FLOATS_AT] = d->vehicle_normal_scale;
         slot[METAL_FLOATS_AT + 3] = 1.0f;                   /* a vehicle part */
+        if (overlay_draw(d)) {  /* [rexglue-native] 2026-11-10 rn46m: the props' overlay: its scale (0: none) and
+                                 * angle beside the normal's scale, its key color in the next vec4 */
+            slot[METAL_FLOATS_AT + 1] = d->overlay_scale;
+            slot[METAL_FLOATS_AT + 2] = d->overlay_angle;
+            slot[METAL_FLOATS_AT + 4] = d->overlay_key[0];
+            slot[METAL_FLOATS_AT + 5] = d->overlay_key[1];
+            slot[METAL_FLOATS_AT + 6] = d->overlay_key[2];
+        }
     } else if (fabric) {       /* [rexglue-native] vec4s 13 and 14 (mesh.frag's FABRIC_AT) */
         slot[FABRIC_FLOATS_AT] = d->fabric_swatch_repeat;
         slot[FABRIC_FLOATS_AT + 1] = d->fabric_diffuse_scale;
@@ -2262,6 +2610,11 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
              * place; a skin draw is none of those), 0: none */
             slot[METAL_FLOATS_AT] = d->skin_terminator_bias;
             slot[METAL_FLOATS_AT + 1] = d->skin_terminator_scale;
+            /* [acct2-bro] 2026-11-12 rn60a: its own tint (ngl_vk.h skin_tint; 0 0 0: none) in the next vec4, the
+             * place of the gun metal's first world column, which a skin draw doesn't use */
+            slot[METAL_FLOATS_AT + 4] = d->skin_tint[0];
+            slot[METAL_FLOATS_AT + 5] = d->skin_tint[1];
+            slot[METAL_FLOATS_AT + 6] = d->skin_tint[2];
         }
     } else if (lens) {  /* rn40: the glass (ngl_vk.h lens_cube): at FABRIC_FLOATS_AT (rn40e: 1 for the opaque eyes,
                          * the reflection's scale, the highlights' power, 0: not fabric), (the sun's color, rn40e: the
@@ -2292,6 +2645,42 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
             slot[METAL_FLOATS_AT + 6 + 4 * part] = w[8 + part];
             slot[METAL_FLOATS_AT + 7 + 4 * part] = d->lens_tint[part];
         }
+    } else if (water) { /* [waw-decomp] the water (ngl_vk.h water_cube): at FABRIC_FLOATS_AT (its color, 0: not
+                         * fabric), (the sun's color, 0), (0, 1: water, 0: not a lens, 0); at METAL_FLOATS_AT the
+                         * way toward the sun */
+        for (int part = 0; part < 3; part++) {
+            slot[FABRIC_FLOATS_AT + part] = d->water_color[part];
+            slot[FABRIC_FLOATS_AT + 4 + part] = d->water_sun_color[part];
+            slot[METAL_FLOATS_AT + part] = d->water_sun_toward[part];
+        }
+        slot[FABRIC_FLOATS_AT + 9] = 1.0f;
+    } else if (lookup) {    /* [waw-decomp] a model with a highlights' lookup (ngl_vk.h specular_lookup): at
+                             * FABRIC_FLOATS_AT (the highlights' color, 0: not fabric), (a shadowed highlight's share,
+                             * 0, 0, 0), (0, 1: a lookup, 0: not metal, 0) */
+        for (int part = 0; part < 3; part++)
+            slot[FABRIC_FLOATS_AT + part] = d->specular_lookup_color[part];
+        slot[FABRIC_FLOATS_AT + 4] = d->specular_lookup_shadowed;
+        slot[FABRIC_FLOATS_AT + 9] = 1.0f;
+    } else if (world_lookup) {  /* [waw-decomp] a world surface with a highlights' lookup: the same places as a
+                                 * model's (the highlights' color; a shadowed highlight's share), its mark the third
+                                 * fabric vec4's x 1 (y stays 0: in a lightmapped draw's slot y 1 is the water's) */
+        for (int part = 0; part < 3; part++)
+            slot[FABRIC_FLOATS_AT + part] = d->specular_lookup_color[part];
+        slot[FABRIC_FLOATS_AT + 4] = d->specular_lookup_shadowed;
+        slot[FABRIC_FLOATS_AT + 8] = 1.0f;
+    }
+    if (world_normal)   /* [waw-decomp] 2026-11-11: a world surface drawn by its normal map (ngl_vk.h
+                         * world_normal_map): that mark 2 with a highlight, -1 without one */
+        slot[FABRIC_FLOATS_AT + 8] = world_lookup ? 2.0f : -1.0f;
+    if (world_normal && world_bump_draw(d)) {   /* [acct2-bro] 2026-11-12: Call of Duty 3's way (ngl_vk.h
+                                                 * world_bump_scale): that mark -2, and in the first fabric vec4
+                                                 * the map's scale, the detail's scale, its repeat (0: no detail
+                                                 * map) and the frame's test bits */
+        slot[FABRIC_FLOATS_AT + 8] = -2.0f;
+        slot[FABRIC_FLOATS_AT + 0] = d->world_bump_scale;
+        slot[FABRIC_FLOATS_AT + 1] = d->world_detail_scale;
+        slot[FABRIC_FLOATS_AT + 2] = world_bump_detail_draw(d) ? d->world_detail_repeat : 0.0f;
+        slot[FABRIC_FLOATS_AT + 3] = (float)(d->world_bump_frame & 7u);
     }
     return ++vk.draw_light_slots;
 }
@@ -2310,7 +2699,13 @@ void ngl_vk_set_meshes(const struct ngl_vk_mesh_draw *draws, uint32_t count)
     for (uint32_t i = 0; i < count; i++) {
         /* the slot rides in point_light_count's high bits until push_mesh_draw takes it */
         uint32_t own = (vk.draws[i].point_light_count & 0xFFFFu) || vk.draws[i].irradiance_rows == 9 ||
-                       fabric_draw(&vk.draws[i]);   /* [rexglue-native] the fabric's numbers ride in the slot too */
+                       fabric_draw(&vk.draws[i]) || /* [rexglue-native] the fabric's numbers ride in the slot too */
+                       water_draw(&vk.draws[i]) ||  /* [waw-decomp] and the water's */
+                       lookup_draw(&vk.draws[i]) || /* [waw-decomp] and a highlights' lookup's */
+                       grid_draw(&vk.draws[i]) ||   /* [waw-decomp] and the light grid's */
+                       world_lookup_draw(&vk.draws[i]) ||   /* [waw-decomp] and a world surface's lookup */
+                       world_normal_draw(&vk.draws[i]) ||   /* [waw-decomp] 2026-11-11: and its normal map's */
+                       detail_add_draw(&vk.draws[i]);   /* [waw-decomp] and a detail map's */
         uint32_t slot = own ? place_draw_lights(&vk.draws[i]) : 0;
 
         vk.draws[i].point_light_count = slot << 16 | (vk.draws[i].point_light_count & 0xFFFFu);
@@ -2390,6 +2785,10 @@ void ngl_vk_set_sun_shadow(const float light_view_projection[16], const float ca
 #define PUSH_CORNER_ALPHA       128u    /* its alpha is its corners' alone (corner_alpha) */
 #define PUSH_MODE_SHIFT         8u      /* the draw's MESH_MODE_* bits, 8 of them */
 #define PUSH_DRAW_LIGHTS_SHIFT  16u     /* its own lights' slot in set 3 binding 3 (1 up), 0: none */
+#define PUSH_BILLBOARD          0x80000000u /* [rexglue-native-world] 2026-11-11 w1: a card turned to face the view
+                                             * (ngl_vk.h billboard); above the slot's bits (a slot is at most
+                                             * MAX_MESH_DRAWS, bits 16-30); mesh.vert clears it before the slot
+                                             * is read */
 
 /* A way toward a light as three 10-bit signed numbers (x in the low bits), scaled so its longest part is 511 (the
  * shader normalizes); 0 for none */
@@ -2515,6 +2914,8 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
         flags |= PUSH_SOFT;
     if (d->corner_alpha)
         flags |= PUSH_CORNER_ALPHA;
+    if (d->billboard)                       /* [rexglue-native-world] 2026-11-11 w1 */
+        flags |= PUSH_BILLBOARD;
     push[23] = flags;
     vkCmdPushConstants(vk.commands, vk.mesh_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof push, push);
 }
@@ -2583,7 +2984,7 @@ static void draw_shadow(void)
  * second where the lightmap goes (set 1) and its third in set 2; a shiny one its environment map and its mask; one
  * multiplied by a third texture alone, that one in set 2. */
 /* The frame's meshes: part 0 the opaque ones and then the grass, part 1 the blended ones, part 2 all of them (one
- * pass). The frame's draws are let go after part 1 or 2. */
+ * pass). The frame's draws are let go after part 1 or 2 (after part 3 when the effect layer follows part 1). */
 /* [rexglue-native] 2026-11-09: the scissor a mesh draw asks for (split screen), within the target; the whole target
  * when it asks for none */
 static VkRect2D draw_scissor(const struct ngl_vk_mesh_draw *d)
@@ -2602,11 +3003,28 @@ static void draw_meshes(int part)
     /* [rexglue-native] 2026-11-09: the scissor last set here (split screen); the pass starts with the whole target */
     VkRect2D whole = { { 0, 0 }, { vk.width, vk.height } }, scissor = whole;
 
+    /* [rexglue-native] 2026-11-10: part 3 is the effect layer's draws (ngl_vk.h effect_layer), into its half-size
+     * target: the blended draws marked for it, with the layer's depth in set 3's binding 2; parts 1 leaves those out
+     * while the layer is in use (effect_live says a part 3 follows this frame) */
+    if (part == 3) {
+        whole.extent.width = vk.effect_width;
+        whole.extent.height = vk.effect_height;
+        scissor = whole;
+    }
     vkCmdBindVertexBuffers(vk.commands, 0, 1, &vk.mesh_corners, &no_offset);
     vkCmdBindIndexBuffer(vk.commands, vk.mesh_indices, 0, VK_INDEX_TYPE_UINT16);
-    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.mesh_layout, 3, 1, &vk.shadow_set, 0,
-                            NULL);
-    for (int blended = part == 1; blended < (part == 0 ? 1 : 2); blended++) {
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.mesh_layout, 3, 1,
+                            part == 3 ? &vk.effect_shadow_set : &vk.shadow_set, 0, NULL);
+    /* [rexglue-native-fx] 2026-11-11 fx1: part 4 is the heat haze's mask draws (NGL_VK_BLEND_HEAT_MASK), into
+     * heat_mask: the layer's size and depth, as part 3 */
+    if (part == 4) {                                                                /* [rexglue-native-fx] */
+        whole.extent.width = vk.effect_width;                                       /* [rexglue-native-fx] */
+        whole.extent.height = vk.effect_height;                                     /* [rexglue-native-fx] */
+        scissor = whole;                                                            /* [rexglue-native-fx] */
+        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.mesh_layout, 3, 1,
+                                &vk.effect_shadow_set, 0, NULL);                    /* [rexglue-native-fx] */
+    }
+    for (int blended = part == 1 || part == 3; blended < (part == 0 ? 1 : 2); blended++) {
         VkPipeline pipeline = blended ? vk.mesh_blend_pipeline : vk.mesh_pipeline;
 
         if (blended && part == 2 && memcmp(&scissor, &whole, sizeof whole)) {
@@ -2652,7 +3070,9 @@ static void draw_meshes(int part)
                                      : lightmapped ? vk.textures[d->lightmap].set : untextured,
                 third ? vk.textures[d->blend_light].set
                       : env_masked ? vk.textures[d->env_mask].set
-                                   : specular ? vk.textures[d->specular_map].set : untextured,
+                                   : specular ? vk.textures[d->specular_map].set
+                                   /* [waw-decomp] a world surface with a highlights' lookup: its specular map */
+                                   : world_lookup_draw(d) ? vk.textures[d->specular_map].set : untextured,
             };
             int fabric = fabric_draw(d);    /* [rexglue-native] the uniforms: the mask in set 4, the swatch in set 5 */
             int skin = fabric && skin_draw(d);  /* rn32: the soldiers' skin: nothing in set 4 (rn40x: or the woven
@@ -2665,25 +3085,58 @@ static void draw_meshes(int part)
             int vehicle = fabric && !skin && !metal && !detail && vehicle_draw(d);
             /* rn40: the glass: nothing in sets 4 and 5, its cube in 6 */
             int lens = !fabric && lens_draw(d);
+            int water = !fabric && !lens && water_draw(d);  /* [waw-decomp] the water: its cube in set 6 too */
+            /* [waw-decomp] a model with a highlights' lookup: the lookup in set 4 */
+            int lookup = !fabric && !lens && !water && lookup_draw(d);
+            /* [waw-decomp] a model lit by Call of Duty 2's light grid: the weights' cube in set 6 */
+            int grid = !fabric && !lens && !water && grid_draw(d);
+            /* [waw-decomp] a draw that adds a detail map to its color map: the map in set 5 */
+            int detail_add = !fabric && !lens && !water && detail_add_draw(d);
+            /* [waw-decomp] a world surface with a highlights' lookup: the lookup in set 4 too */
+            int world_lookup = !fabric && !lens && !water && world_lookup_draw(d);
+            /* [waw-decomp] 2026-11-11: a world surface drawn by its normal map: the map in set 4 (in the lookup's
+             * place), its tables' cube in set 6 when it has a highlight */
+            int world_normal = !fabric && !lens && !water && world_normal_draw(d);
+            /* [acct2-bro] 2026-11-12: Call of Duty 3's bumped world with a detail normal map: the map in set 5 */
+            int world_bump_detail = world_normal && world_bump_detail_draw(d);
             VkDescriptorSet fabric_textures[3] = {
-                metal ? (metal_scratched(d) ? vk.textures[d->metal_scratch].set : untextured)
+                world_normal ? vk.textures[d->world_normal_map].set              /* [waw-decomp] 2026-11-11 */
+                : lookup || world_lookup ? vk.textures[d->specular_lookup].set   /* [waw-decomp] */
+                : metal ? (metal_scratched(d) ? vk.textures[d->metal_scratch].set : untextured)
+                      : vehicle && overlay_draw(d) ? vk.textures[d->overlay_map].set  /* [rexglue-native] rn46m */
                       : fabric && !skin && !detail && !vehicle ? vk.textures[d->fabric_mask].set
                       : skin && skin_woven(d)                  ? vk.textures[d->skin_swatch].set  /* rn40x */
                                                                : untextured,
                 metal || vehicle ? untextured
                       : skin ? vk.textures[d->noise_swatch].set
                              : detail ? vk.textures[d->detail_map].set
-                                      : fabric ? vk.textures[d->normal_swatch].set : untextured,
-                metal ? vk.textures[d->metal_cube].set : lens ? vk.textures[d->lens_cube].set : vk.empty_cube_set,
+                                      : fabric ? vk.textures[d->normal_swatch].set
+                                      : detail_add ? vk.textures[d->detail_add_map].set     /* [waw-decomp] */
+                                      /* [acct2-bro] 2026-11-12: or Call of Duty 3's world's detail normal map */
+                                      : world_bump_detail ? vk.textures[d->world_detail_normal_map].set
+                                                          : untextured,
+                metal ? vk.textures[d->metal_cube].set : lens ? vk.textures[d->lens_cube].set
+                      : water ? vk.textures[d->water_cube].set                       /* [waw-decomp] water */
+                      : grid ? vk.textures[d->grid_cube].set                         /* [waw-decomp] the grid */
+                      : world_normal && world_lookup ? vk.textures[d->world_tables].set /* [waw-decomp] 2026-11-11 */
+                                                     : vk.empty_cube_set,
             };
 
             if (!d->mesh || d->mesh > vk.mesh_count || (d->alpha == NGL_VK_ALPHA_BLEND) != blended)
                 continue;
+            /* [rexglue-native] 2026-11-10: the effect layer's draws in part 3 only, the others never in it */
+            if (vk.effect_live && blended && (part == 3) != (d->effect_layer != 0))
+                continue;
+            /* [rexglue-native-fx] 2026-11-11 fx1: the heat haze's mask draws in part 4 only, and nothing else there */
+            if ((d->blend == NGL_VK_BLEND_HEAT_MASK) != (part == 4))                   /* [rexglue-native-fx] */
+                continue;                                                           /* [rexglue-native-fx] */
             if (blended) {      /* in the order given: an effect's blending can change from one draw to the next */
                 VkPipeline wanted = d->blend == NGL_VK_BLEND_ADD ? vk.mesh_add_pipeline
                                   : d->blend == NGL_VK_BLEND_SUBTRACT ? vk.mesh_subtract_pipeline
                                   : d->blend == NGL_VK_BLEND_MULTIPLY ? vk.mesh_multiply_pipeline  /* [waw-decomp] */
                                                                       : vk.mesh_blend_pipeline;
+                if (d->blend == NGL_VK_BLEND_HEAT_MASK)     /* [rexglue-native-fx] 2026-11-11 fx1 */
+                    wanted = vk.mesh_heat_pipeline;                                 /* [rexglue-native-fx] */
 
                 if (wanted != pipeline) {
                     pipeline = wanted;
@@ -2708,6 +3161,24 @@ static void draw_meshes(int part)
             {   /* [rexglue-native] 2026-11-09: split screen: this draw's part of the screen */
                 VkRect2D wanted = draw_scissor(d);
 
+                if (part == 3) {    /* [rexglue-native] 2026-11-10: the same part of the half-size layer */
+                    uint32_t right = (uint32_t)wanted.offset.x + wanted.extent.width;
+                    uint32_t bottom = (uint32_t)wanted.offset.y + wanted.extent.height;
+
+                    wanted.offset.x /= 2;
+                    wanted.offset.y /= 2;
+                    wanted.extent.width = (right + 1u) / 2u - (uint32_t)wanted.offset.x;
+                    wanted.extent.height = (bottom + 1u) / 2u - (uint32_t)wanted.offset.y;
+                }
+                if (part == 4) {    /* [rexglue-native-fx] 2026-11-11 fx1: the same for the heat mask */
+                    uint32_t right = (uint32_t)wanted.offset.x + wanted.extent.width;      /* [rexglue-native-fx] */
+                    uint32_t bottom = (uint32_t)wanted.offset.y + wanted.extent.height;    /* [rexglue-native-fx] */
+
+                    wanted.offset.x /= 2;                                                   /* [rexglue-native-fx] */
+                    wanted.offset.y /= 2;                                                   /* [rexglue-native-fx] */
+                    wanted.extent.width = (right + 1u) / 2u - (uint32_t)wanted.offset.x;    /* [rexglue-native-fx] */
+                    wanted.extent.height = (bottom + 1u) / 2u - (uint32_t)wanted.offset.y;  /* [rexglue-native-fx] */
+                }
                 if (memcmp(&wanted, &scissor, sizeof wanted)) {
                     vkCmdSetScissor(vk.commands, 0, 1, &wanted);
                     scissor = wanted;
@@ -2731,6 +3202,12 @@ static void draw_meshes(int part)
         draw_grass();       /* the pass ends after it: nothing to bind again */
         return;
     }
+    /* [rexglue-native] 2026-11-10: with the effect layer in use, part 3 follows part 1 and needs the frame's draws
+     * still (the first build let them go here: the layer stayed empty and the smoke, dust and fire were gone) */
+    if (part == 1 && vk.effect_live)
+        return;
+    if (part == 3 && vk.heat_live)  /* [rexglue-native-fx] 2026-11-11 fx1: part 4 follows and needs them too */
+        return;
     vk.draw_count = 0;      /* a frame's meshes are drawn once, with that frame's shadow */
     vk.frame_corners_used = 0;
     vk.shadow_on = 0;
@@ -2990,6 +3467,8 @@ uint32_t ngl_vk_texture_levels(const void *const *levels, uint32_t level_count, 
     }
     if (!failed) {
         image_info.sampler = vk.sampler;
+        if (level_count > 1 && vk.aniso_sampler)    /* [acct2-bro] 2026-11-12: ngl_vk_set_anisotropy */
+            image_info.sampler = vk.aniso_sampler;
         image_info.imageView = vk.textures[n].view;
         image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         write.dstSet = vk.textures[n].set;
@@ -3020,6 +3499,63 @@ uint32_t ngl_vk_texture_levels(const void *const *levels, uint32_t level_count, 
     vk.textures[n].cube = 0;    /* [rexglue-native] rn34: the number may have been a cube's before ngl_vk_forget */
     vk.texture_count = n;
     return n;
+}
+
+/* [waw-decomp] 2026-11-10: new pixels for a texture made earlier (ngl_vk.h ngl_vk_texture_rewrite): its one level
+ * written whole. With batched textures it waits in the staging buffer like a new texture's pixels and is copied in at
+ * the start of the next draw, in the order asked (so after the texture's own first copy, when that still waits);
+ * else it is copied in and waited for now. The image's old pixels are given up first (its layout taken as undefined),
+ * which is sound because the whole level is written. */
+int ngl_vk_texture_rewrite(uint32_t texture, const void *pixels, uint32_t width, uint32_t height)
+{
+    VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkBufferImageCopy copy;
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+    void *staging_pixels = NULL;
+    VkDeviceSize bytes = (VkDeviceSize)width * height * BYTES_PER_PIXEL;
+    VkImage image;
+    int failed;
+
+    if (!vk.device || !pixels || !width || !height || !texture || texture > vk.texture_count ||
+        vk.textures[texture].cube || !vk.textures[texture].image)
+        return -1;
+    image = vk.textures[texture].image;
+    memset(&copy, 0, sizeof copy);
+    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.imageSubresource.layerCount = 1;
+    copy.imageExtent.width = width;
+    copy.imageExtent.height = height;
+    copy.imageExtent.depth = 1;
+    if (vk.batch_textures && vk.texture_staging_data && bytes <= TEXTURE_STAGING_HALF && !vk.low_frame_open)
+        return stage_texture(texture, &pixels, 1, &copy, bytes) ? -1 : 0;
+    finish_frame();     /* the copy reuses the draws' command buffer and fence */
+    failed = make_host_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &staging_memory, &staging_pixels) != 0;
+    if (!failed) {
+        memcpy(staging_pixels, pixels, (size_t)bytes);
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &vk.commands;
+        failed = vkResetFences(vk.device, 1, &vk.done) != VK_SUCCESS ||
+                 vkResetCommandBuffer(vk.commands, 0) != VK_SUCCESS ||
+                 vkBeginCommandBuffer(vk.commands, &begin) != VK_SUCCESS;
+    }
+    if (!failed) {
+        levels_barrier(image, 1, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
+                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        vkCmdCopyBufferToImage(vk.commands, staging, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        levels_barrier(image, 1, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        failed = vkEndCommandBuffer(vk.commands) != VK_SUCCESS || submit_to_queue(&submit, vk.done) != VK_SUCCESS ||
+                 vkWaitForFences(vk.device, 1, &vk.done, VK_TRUE, WAIT_NS) != VK_SUCCESS;
+    }
+    if (staging_memory)
+        vkUnmapMemory(vk.device, staging_memory);
+    vkDestroyBuffer(vk.device, staging, NULL);
+    vkFreeMemory(vk.device, staging_memory, NULL);
+    return failed ? -1 : 0;
 }
 
 /* [rexglue-native] 2026-11-09 rn34: a cube texture (ngl_vk.h), copied in and waited for now (never batched: a level
@@ -3190,6 +3726,9 @@ void ngl_vk_room(uint32_t *textures, uint32_t *texture_room, uint32_t *corners, 
 
 static int make_dof(void);
 static int make_tint(void);
+static int make_effect_layer(void);     /* [rexglue-native] 2026-11-10 */
+static int make_glow(void);             /* [rexglue-native] 2026-11-10 */
+static int make_heat(void);             /* [rexglue-native-fx] 2026-11-11 fx1 */
 
 /* [rexglue-native] 2026-11-09 rn34: the empty cube (set 6 for every mesh draw without a cube of its own): 1 x 1, black,
  * cleared once and left ready to sample, with its own set of the textures' one-sampler layout */
@@ -3250,6 +3789,12 @@ static int make_drawing(void)
         fprintf(stderr, "[ngl_vk] no depth of field pipeline: drawn without it\n");
     if (make_tint())
         fprintf(stderr, "[ngl_vk] no tint pipeline: drawn without it\n");
+    if (make_effect_layer())    /* [rexglue-native] 2026-11-10 */
+        fprintf(stderr, "[ngl_vk] no effect layer: its draws go straight into the picture\n");
+    if (make_heat())            /* [rexglue-native-fx] 2026-11-11 fx1 */
+        fprintf(stderr, "[ngl_vk] no screen warp: no heat haze\n");
+    if (make_glow())            /* [rexglue-native] 2026-11-10 */
+        fprintf(stderr, "[ngl_vk] no sky glow: drawn without it\n");
     return 0;
 }
 
@@ -3321,6 +3866,7 @@ int ngl_vk_init_on_device(uint32_t width, uint32_t height, void *instance, void 
     vk.queue_lock = lock;
     vk.queue_unlock = unlock;
     vk.queue_user = user;
+    vk.anisotropy_feature = anisotropy_on_borrowed_device;     /* [acct2-bro] 2026-11-12: as its owner made it */
     vkGetDeviceQueue(vk.device, queue_family, queue_index, &vk.queue);
     vkGetPhysicalDeviceProperties(vk.gpu, &properties);
     snprintf(device_name, sizeof device_name, "%s", properties.deviceName);
@@ -3640,8 +4186,23 @@ static int make_fullscreen_pipeline(const uint32_t *fragment_code, size_t fragme
         blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
         blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
     }
+    if (blended == 2)   /* [rexglue-native] 2026-11-10: the effect layer's blend back: its color as it is (already
+                         * times its alpha) + what is there x (1 - its alpha); the target's own alpha kept */
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
     blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
                                       VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    if (blended == 4) { /* [rexglue-native] 2026-11-10: the sky glow: added to what is there; the target's alpha kept */
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    }
+    if (blended == 3) { /* [rexglue-native] 2026-11-10: the effect layer's depth fill: no color, the depth the shader
+                         * writes, whatever is there */
+        blend_attachment.blendEnable = VK_FALSE;
+        blend_attachment.colorWriteMask = 0;
+        no_depth.depthTestEnable = VK_TRUE;
+        no_depth.depthWriteEnable = VK_TRUE;
+        no_depth.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    }
     blend.attachmentCount = 1;
     blend.pAttachments = &blend_attachment;
     dynamic.dynamicStateCount = 2;
@@ -3795,6 +4356,26 @@ static int make_tint(void)
     image.imageView = vk.post_history_view;
     write.dstSet = vk.post_history_set;
     vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    /* [rexglue-native] 2026-11-11 rn47g: the afterimage's kept picture (ngl_vk_set_afterimage); without it (no
+     * memory) the afterimage is left out (draw: after) */
+    if (!make_image(vk.width, vk.height, 1, TARGET_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                    &vk.after_image, &vk.after_memory, &vk.after_view)) {
+        if (vkAllocateDescriptorSets(vk.device, &set_info, &vk.after_set) == VK_SUCCESS) {
+            image.imageView = vk.after_view;
+            write.dstSet = vk.after_set;
+            vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+        } else {
+            vk.after_set = VK_NULL_HANDLE;
+        }
+    }
+    /* [rexglue-native] 2026-11-11 rn48b: the afterimage's kept picture at a quarter size; without it the full-size one is used */
+    vk.after_small_width = vk.width / 4u ? vk.width / 4u : 1u;
+    vk.after_small_height = vk.height / 4u ? vk.height / 4u : 1u;
+    /* [rexglue-native] 2026-11-11 rn48c: a blit source too (stretched back into after_image); no set of its own */
+    if (make_image(vk.after_small_width, vk.after_small_height, 1, TARGET_FORMAT,
+                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   &vk.after_small_image, &vk.after_small_memory, &vk.after_small_view))
+        vk.after_small_image = VK_NULL_HANDLE;
 
     layout_info.setLayoutCount = 4;
     layout_info.pSetLayouts = layouts;
@@ -3803,6 +4384,486 @@ static int make_tint(void)
     CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.tint_layout));
     return make_fullscreen_pipeline(tint_frag_spirv, sizeof tint_frag_spirv, vk.tint_layout, vk.render_pass, 0,
                                     &vk.tint_pipeline);
+}
+
+/* [rexglue-native] 2026-11-10: one of the effect layer's two passes (make_effect_layer). fill 1: the color cleared, the
+ * depth written whole by the fill draw and left to be read; fill 0: both loaded, the depth read only (tested and
+ * sampled at once), the color left to be sampled by the blend back. Both are compatible with the main pass (the same
+ * formats and dependencies), so the mesh pipelines serve the second. */
+static int make_effect_pass(int fill, VkRenderPass *pass)
+{
+    VkAttachmentDescription attachments[2] = { { 0 }, { 0 } };
+    VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth = { 1, fill ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL
+                                           : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkSubpassDescription subpass = { 0 };
+    VkSubpassDependency dependencies[2];
+    VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+
+    attachments[0].format = TARGET_FORMAT;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = fill ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = fill ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[0].finalLayout = fill ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                      : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    attachments[1].format = DEPTH_FORMAT;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = fill ? VK_ATTACHMENT_LOAD_OP_CLEAR : VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = fill ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    subpass.pDepthStencilAttachment = &depth;
+    target_pass_dependencies(dependencies);     /* the main pass's own set, so the passes stay compatible */
+    pass_info.attachmentCount = 2;
+    pass_info.pAttachments = attachments;
+    pass_info.subpassCount = 1;
+    pass_info.pSubpasses = &subpass;
+    pass_info.dependencyCount = 2;
+    pass_info.pDependencies = dependencies;
+    CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, pass));
+    return 0;
+}
+
+/* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer): its two images, passes, framebuffer, sets and
+ * pipelines. After make_dof (the overlay pass and the mix's layout, which the fill and the blend back use: set 0 a
+ * texture, set 1 the shadow set's layout) and the shadow's set. Returns 0 when made (effect_ready 1); when something
+ * can't be made the layer stays off and its draws go into the main target, as before. */
+static int make_effect_layer(void)
+{
+    VkImageView views[2];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    VkDescriptorPoolSize pool_sizes[3] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },   /* the layer's color; the shadow map and the layer's depth */
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+    };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.shadow_set_layout };
+    VkDescriptorSet sets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorImageInfo color_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo shadow_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorImageInfo depth_info = { VK_NULL_HANDLE, VK_NULL_HANDLE,
+                                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
+    VkDescriptorBufferInfo buffer_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo lights_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+    VkWriteDescriptorSet writes[5] = {
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+    };
+
+    vk.effect_ready = 0;
+    if (!vk.overlay_pass || !vk.dof_mix_layout || !vk.shadow_set_layout || !vk.shadow_view || !vk.soft_depth ||
+        !vk.blend_pass || !vk.shadow_uniform || !vk.draw_lights)
+        return -1;
+    vk.effect_width = (vk.width + 1u) / 2u;
+    vk.effect_height = (vk.height + 1u) / 2u;
+    if (make_image(vk.effect_width, vk.effect_height, 1, TARGET_FORMAT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   &vk.effect_color, &vk.effect_color_memory, &vk.effect_color_view) ||
+        make_image(vk.effect_width, vk.effect_height, 1, DEPTH_FORMAT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   &vk.effect_depth, &vk.effect_depth_memory, &vk.effect_depth_view) ||
+        make_effect_pass(1, &vk.effect_fill_pass) || make_effect_pass(0, &vk.effect_pass))
+        return -1;
+    views[0] = vk.effect_color_view;
+    views[1] = vk.effect_depth_view;
+    framebuffer_info.renderPass = vk.effect_fill_pass;
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.effect_width;
+    framebuffer_info.height = vk.effect_height;
+    framebuffer_info.layers = 1;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.effect_framebuffer));
+
+    pool_info.maxSets = 2;
+    pool_info.poolSizeCount = 3;
+    pool_info.pPoolSizes = pool_sizes;
+    CHECK(vkCreateDescriptorPool(vk.device, &pool_info, NULL, &vk.effect_pool));
+    set_info.descriptorPool = vk.effect_pool;
+    set_info.descriptorSetCount = 2;
+    set_info.pSetLayouts = layouts;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, sets));
+    vk.effect_color_set = sets[0];
+    vk.effect_shadow_set = sets[1];
+    color_info.sampler = vk.soft_sampler;       /* unfiltered: the blend back fetches texel by texel */
+    color_info.imageView = vk.effect_color_view;
+    writes[0].dstSet = vk.effect_color_set;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[0].pImageInfo = &color_info;
+    /* the shadow set over again (make_shadow), but for binding 2: the layer's depth in the opaque depth's place */
+    shadow_info.sampler = vk.shadow_sampler;
+    shadow_info.imageView = vk.shadow_view;
+    writes[1].dstSet = vk.effect_shadow_set;
+    writes[1].dstBinding = 0;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[1].pImageInfo = &shadow_info;
+    buffer_info.buffer = vk.shadow_uniform;
+    writes[2].dstSet = vk.effect_shadow_set;
+    writes[2].dstBinding = 1;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[2].pBufferInfo = &buffer_info;
+    depth_info.sampler = vk.soft_sampler;
+    depth_info.imageView = vk.effect_depth_view;
+    writes[3].dstSet = vk.effect_shadow_set;
+    writes[3].dstBinding = 2;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    writes[3].pImageInfo = &depth_info;
+    lights_info.buffer = vk.draw_lights;
+    writes[4].dstSet = vk.effect_shadow_set;
+    writes[4].dstBinding = 3;
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[4].pBufferInfo = &lights_info;
+    vkUpdateDescriptorSets(vk.device, 5, writes, 0, NULL);
+
+    if (make_fullscreen_pipeline(effect_depth_frag_spirv, sizeof effect_depth_frag_spirv, vk.dof_mix_layout,
+                                 vk.effect_fill_pass, 3, &vk.effect_fill_pipeline) ||
+        make_fullscreen_pipeline(effect_back_frag_spirv, sizeof effect_back_frag_spirv, vk.dof_mix_layout,
+                                 vk.render_pass, 2, &vk.effect_back_pipeline))
+        return -1;
+    vk.effect_ready = 1;
+    return 0;
+}
+
+/* [rexglue-native] 2026-11-10: the sky glow's two small targets, their sets and its three pipelines (the struct's note
+ * has the whole of it). After make_dof (its blur pass serves: one color attachment left ready to sample) and make_tint
+ * (the target's copy is what the first pass reads). A pool and a layout of its own (a sampled picture, the shadow set,
+ * eight floats). */
+static int make_glow(void)
+{
+    VkPushConstantRange range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 * sizeof(float) };
+    VkDescriptorSetLayout set_layouts[2] = { vk.set_layout, vk.shadow_set_layout };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 2 };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.set_layout };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorImageInfo images[2] = { { 0 }, { 0 } };
+    VkWriteDescriptorSet writes[2] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+                                       { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
+    VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+
+    vk.glow_ready = 0;
+    if (!vk.overlay_pass || !vk.dof_blur_pass || !vk.shadow_set_layout || !vk.tint_pipeline ||
+        !vk.post_copy_set || !vk.shadow_set || !vk.soft_depth)
+        return -1;
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = set_layouts;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &range;
+    CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.glow_layout));
+    framebuffer_info.renderPass = vk.dof_blur_pass;
+    framebuffer_info.attachmentCount = 1;
+    framebuffer_info.width = GLOW_SIZE;
+    framebuffer_info.height = GLOW_SIZE;
+    framebuffer_info.layers = 1;
+    for (uint32_t i = 0; i < 2; i++) {
+        if (make_image(GLOW_SIZE, GLOW_SIZE, 1, TARGET_FORMAT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &vk.glow_image[i],
+                       &vk.glow_memory[i], &vk.glow_view[i]))
+            return -1;
+        framebuffer_info.pAttachments = &vk.glow_view[i];
+        CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.glow_framebuffer[i]));
+    }
+    pool_info.maxSets = 2;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    CHECK(vkCreateDescriptorPool(vk.device, &pool_info, NULL, &vk.glow_pool));
+    set_info.descriptorPool = vk.glow_pool;
+    set_info.descriptorSetCount = 2;
+    set_info.pSetLayouts = layouts;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, vk.glow_set));
+    /* The game sets its glow's four samplers to the border mode with a black border (0x820D1A10: address mode 6 for
+     * both ways, border color 0), so a blur's tap past the target's edge fetches black: the glow fades toward the
+     * picture's edges, and a lean toward a sun outside the picture takes less light, not the edge's sky again. */
+    sampler_info.magFilter = VK_FILTER_LINEAR;
+    sampler_info.minFilter = VK_FILTER_LINEAR;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
+    CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.glow_sampler));
+    for (uint32_t i = 0; i < 2; i++) {
+        images[i].sampler = vk.glow_sampler;
+        images[i].imageView = vk.glow_view[i];
+        images[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        writes[i].dstSet = vk.glow_set[i];
+        writes[i].dstBinding = 0;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[i].pImageInfo = &images[i];
+    }
+    vkUpdateDescriptorSets(vk.device, 2, writes, 0, NULL);
+    if (make_fullscreen_pipeline(glow_first_frag_spirv, sizeof glow_first_frag_spirv, vk.glow_layout,
+                                 vk.dof_blur_pass, 0, &vk.glow_first_pipeline) ||
+        make_fullscreen_pipeline(glow_blur_frag_spirv, sizeof glow_blur_frag_spirv, vk.glow_layout,
+                                 vk.dof_blur_pass, 0, &vk.glow_blur_pipeline) ||
+        make_fullscreen_pipeline(glow_add_frag_spirv, sizeof glow_add_frag_spirv, vk.glow_layout, vk.render_pass,
+                                 4, &vk.glow_add_pipeline))
+        return -1;
+    vk.glow_ready = 1;
+    return 0;
+}
+
+void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, float lean, const float toward[2])
+{
+    vk.glow_on = strength > 0.0f;
+    vk.glow_tap = tap;
+    vk.glow_gain = gain;
+    vk.glow_passes = passes < GLOW_MOST_BLURS ? passes : GLOW_MOST_BLURS;
+    vk.glow_strength = strength;
+    vk.glow_lean = lean;
+    vk.glow_toward[0] = toward ? toward[0] : 0.0f;
+    vk.glow_toward[1] = toward ? toward[1] : 0.0f;
+}
+
+static void record_post_copy(void);     /* [rexglue-native-fx] 2026-11-11 fx1: (draw_warp copies the target first) */
+
+/* [rexglue-native-fx] 2026-11-11 fx1: the screen warp's pipeline: heat_warp.vert / heat_warp.frag, one triangle strip
+ * of corners (x, y, u, v) from warp_buffer, blended by the source alpha (the mask) over what is there, the target's
+ * alpha kept, in the overlay pass. */
+static int make_warp_pipeline(void)
+{
+    VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+    };
+    VkVertexInputBindingDescription binding = { 0, 4 * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attributes[2] = {
+        { 0, 0, VK_FORMAT_R32G32_SFLOAT, 0 },                   /* where the corner goes */
+        { 1, 0, VK_FORMAT_R32G32_SFLOAT, 2 * sizeof(float) },   /* where it reads the picture */
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    VkPipelineColorBlendAttachmentState blend_attachment = { 0 };
+    VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    VkPipelineDepthStencilStateCreateInfo no_depth = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    VkResult result;
+
+    if (make_shader(heat_warp_vert_spirv, sizeof heat_warp_vert_spirv, &vertex_shader) ||
+        make_shader(heat_warp_frag_spirv, sizeof heat_warp_frag_spirv, &fragment_shader)) {
+        vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+        return -1;
+    }
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex_shader;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment_shader;
+    stages[1].pName = "main";
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &binding;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = attributes;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP;   /* the game's own strip, its joins included */
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    blend_attachment.blendEnable = VK_TRUE;     /* the game's: source alpha, one less source alpha */
+    blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;   /* the target's alpha kept */
+    blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                                      VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attachment;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &blend;
+    info.pDepthStencilState = &no_depth;
+    info.pDynamicState = &dynamic;
+    info.layout = vk.heat_layout;
+    info.renderPass = vk.render_pass;       /* (the overlay pass is compatible) */
+    info.subpass = 0;
+    result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.heat_pipeline);
+    vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+    vkDestroyShaderModule(vk.device, fragment_shader, NULL);
+    if (result != VK_SUCCESS) {
+        fprintf(stderr, "[ngl_vk] vkCreateGraphicsPipelines (screen warp) failed (%d)\n", (int)result);
+        return -1;
+    }
+    return 0;
+}
+
+/* [rexglue-native-fx] 2026-11-11 fx1: the heat mask, its framebuffer (effect_pass: the mask and the layer's depth), its
+ * set, the warp's layout, buffers and pipeline. After make_effect_layer (its size, depth and pass) and make_tint
+ * (post_copy). */
+static int make_heat(void)
+{
+    VkImageView views[2];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorImageInfo image = { 0 };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.set_layout };   /* the picture's copy, the mask */
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+    vk.heat_ready = 0;
+    if (!vk.effect_ready || !vk.mesh_heat_pipeline || !vk.post_copy_set || !vk.overlay_pass)
+        return -1;
+    if (make_image(vk.effect_width, vk.effect_height, 1, TARGET_FORMAT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   &vk.heat_mask, &vk.heat_mask_memory, &vk.heat_mask_view))
+        return -1;
+    views[0] = vk.heat_mask_view;
+    views[1] = vk.effect_depth_view;
+    framebuffer_info.renderPass = vk.effect_pass;
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.effect_width;
+    framebuffer_info.height = vk.effect_height;
+    framebuffer_info.layers = 1;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.heat_framebuffer));
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    CHECK(vkCreateDescriptorPool(vk.device, &pool_info, NULL, &vk.heat_pool));
+    set_info.descriptorPool = vk.heat_pool;
+    set_info.descriptorSetCount = 1;
+    set_info.pSetLayouts = &vk.set_layout;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.heat_mask_set));
+    image.sampler = vk.sampler;
+    image.imageView = vk.heat_mask_view;
+    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    write.dstSet = vk.heat_mask_set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image;
+    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = layouts;
+    CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.heat_layout));
+    vk.warp_corners = calloc((size_t)NGL_VK_WARP_MOST_CORNERS * 4u, sizeof(float));
+    if (!vk.warp_corners ||
+        make_host_buffer((VkDeviceSize)NGL_VK_WARP_MOST_CORNERS * 4u * sizeof(float), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+                         &vk.warp_buffer, &vk.warp_memory, (void **)&vk.warp_data) ||
+        make_warp_pipeline())
+        return -1;
+    vk.heat_ready = 1;
+    return 0;
+}
+
+void ngl_vk_set_screen_warp(const float *corners, uint32_t count)     /* [rexglue-native-fx] 2026-11-11 fx1 */
+{
+    if (!vk.heat_ready || !vk.warp_corners || !corners || count < 3u || count > NGL_VK_WARP_MOST_CORNERS) {
+        vk.warp_count = 0;
+        return;
+    }
+    memcpy(vk.warp_corners, corners, (size_t)count * 4u * sizeof(float));
+    vk.warp_count = count;
+}
+
+/* [rexglue-native-fx] 2026-11-11 fx1: the screen warp, in the overlay pass the effect layer's blend back left open (the
+ * pass ends, the target is copied into post_copy, the pass goes on): the strip drawn over the game's screen (`view`),
+ * each corner reading the copy where the game's screen lies in the target, blended by the heat mask. The pass is left
+ * open. */
+static void draw_warp(VkRenderPassBeginInfo *pass, const VkViewport *view, const VkRect2D *whole)
+{
+    VkDescriptorSet sets[2] = { vk.post_copy_set, vk.heat_mask_set };
+    VkDeviceSize no_offset = 0;
+    float from_u = view->x / (float)vk.width, from_v = view->y / (float)vk.height;
+    float to_u = view->width / (float)vk.width, to_v = view->height / (float)vk.height;
+
+    vkCmdEndRenderPass(vk.commands);
+    record_post_copy();
+    for (uint32_t i = 0; i < vk.warp_count; i++) {     /* (the last frame is done with the buffer: finish_frame) */
+        vk.warp_data[4 * i + 0] = vk.warp_corners[4 * i + 0];
+        vk.warp_data[4 * i + 1] = vk.warp_corners[4 * i + 1];
+        vk.warp_data[4 * i + 2] = from_u + vk.warp_corners[4 * i + 2] * to_u;
+        vk.warp_data[4 * i + 3] = from_v + vk.warp_corners[4 * i + 3] * to_v;
+    }
+    pass->renderPass = vk.overlay_pass;
+    vkCmdBeginRenderPass(vk.commands, pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, view);
+    vkCmdSetScissor(vk.commands, 0, 1, whole);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.heat_pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.heat_layout, 0, 2, sets, 0, NULL);
+    vkCmdBindVertexBuffers(vk.commands, 0, 1, &vk.warp_buffer, &no_offset);
+    vkCmdDraw(vk.commands, vk.warp_count, 1, 0, 0);
+}
+
+/* [rexglue-native] 2026-11-10: the sky glow's small passes, between two parts of the overlay pass (the target left
+ * ready to be copied, post_copy holding the picture as it is now): the sky alone into glow 0, then glow_passes blurs
+ * to and fro; returns which of the two holds the last one. screen: the game's screen within the target (0..1). */
+static int record_glow(const float screen[4])
+{
+    VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkViewport view = { 0.0f, 0.0f, (float)GLOW_SIZE, (float)GLOW_SIZE, 0.0f, 1.0f };
+    VkRect2D area = { { 0, 0 }, { GLOW_SIZE, GLOW_SIZE } };
+    VkDescriptorSet first_sets[2] = { vk.post_copy_set, vk.shadow_set };
+    int from = 0;
+
+    pass.renderPass = vk.dof_blur_pass;
+    pass.renderArea = area;
+    pass.framebuffer = vk.glow_framebuffer[0];
+    vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, &view);
+    vkCmdSetScissor(vk.commands, 0, 1, &area);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_first_pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_layout, 0, 2, first_sets, 0, NULL);
+    vkCmdPushConstants(vk.commands, vk.glow_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float), screen);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
+    vkCmdEndRenderPass(vk.commands);
+    for (uint32_t k = 1; k <= vk.glow_passes; k++) {
+        /* the taps' distance in the small target's 0..1, the gain, the lean; the point the taps lean toward */
+        float blur[8] = { (float)k * vk.glow_tap / (float)GLOW_SIZE, vk.glow_gain, vk.glow_lean, 0.0f,
+                          vk.glow_toward[0], vk.glow_toward[1], 0.0f, 0.0f };
+
+        pass.framebuffer = vk.glow_framebuffer[from ^ 1];
+        vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(vk.commands, 0, 1, &view);
+        vkCmdSetScissor(vk.commands, 0, 1, &area);
+        vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_blur_pipeline);
+        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_layout, 0, 1,
+                                &vk.glow_set[from], 0, NULL);
+        vkCmdPushConstants(vk.commands, vk.glow_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof blur, blur);
+        vkCmdDraw(vk.commands, 3, 1, 0, 0);
+        vkCmdEndRenderPass(vk.commands);
+        from ^= 1;
+    }
+    return from;
 }
 
 /* The tint's push constants with nothing to do: no amount, brightness 1, power 1. */
@@ -3873,6 +4934,43 @@ void ngl_vk_set_film(const float first[4], const float gray[3], float scale, con
     vk.tint[23] = moved_share;
 }
 
+/* [rexglue-native] 2026-11-11 rn47n: the last finished frame for this frame's quads (NGL_VK_LAST_FRAME), and this
+ * frame's kept for the next (draw: after the quads, record_history_copy, as the motion blur keeps it) */
+int ngl_vk_keep_last_frame(void)
+{
+    if (!vk.device || !vk.post_history_set)
+        return 0;
+    vk.keep_frame = 1;
+    return vk.history_frame && vk.history_frame == vk.frames_done;
+}
+
+/* [rexglue-native] 2026-11-11 rn47i: this frame's quads, or the first of them, under the afterimage and post effect
+ * 7 (draw: under) */
+void ngl_vk_set_quads_under_effects(uint32_t vertex_count)
+{
+    vk.under_count = vertex_count;
+}
+
+/* [rexglue-native] 2026-11-11 rn47g: post effect 4 as the game draws it (draw: after; tint.frag main) */
+void ngl_vk_set_afterimage(float share, float inset, float keep_depth)
+{
+    if (!(share > 0.0f))
+        return;
+    if (!vk.tint_on)
+        reset_tint();
+    vk.tint_on = 1;
+    vk.tint[7] = keep_depth;
+    vk.after_on = 1;
+    vk.after_share = share < 1.0f ? share : 1.0f;
+    vk.after_inset = inset > 0.0f ? (inset < 0.45f ? inset : 0.45f) : 0.0f;
+}
+
+/* [rexglue-native] 2026-11-11 rn48b: the afterimage's kept picture at a quarter size (as the game's) or full size */
+void ngl_vk_set_afterimage_small(int on)
+{
+    vk.after_small_on = on != 0;
+}
+
 void ngl_vk_set_tint(float amount, const float weights[3], const float color[3], float keep_depth)
 {
     if (!vk.tint_on)
@@ -3886,6 +4984,26 @@ void ngl_vk_set_tint(float amount, const float weights[3], const float color[3],
     vk.tint[5] = color[1];
     vk.tint[6] = color[2];
     vk.tint[7] = keep_depth;
+}
+
+/* [waw-decomp] 2026-11-11: Call of Duty 4's and World at War's film tweak, in the tint's own draw in place of its tint,
+ * brightness and color look-up (tint.frag toned_at): the bias where the weights and the amount are, the base where the
+ * color is, the delta and the "on" in tint.frag's tweak */
+void ngl_vk_set_film_tweak(const float bias[4], const float base[3], const float delta[3], float keep_depth)
+{
+    if (!bias || !base || !delta)
+        return;
+    if (!vk.tint_on)
+        reset_tint();
+    vk.tint_on = 1;
+    for (int i = 0; i < 4; i++)
+        vk.tint[i] = bias[i];
+    for (int i = 0; i < 3; i++) {
+        vk.tint[4 + i] = base[i];
+        vk.tint[28 + i] = delta[i];
+    }
+    vk.tint[7] = keep_depth;
+    vk.tint[31] = 1.0f;
 }
 
 /* After the tint's pass (its overlay pass ended, the target left ready to be copied): the target copied whole into
@@ -3972,6 +5090,138 @@ static void record_film_copy(void)
     image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                   VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+}
+
+/* [rexglue-native] 2026-11-11 rn47g: after the afterimage's first draw (its pass ended, the target left ready to be
+ * copied): the target copied whole into the afterimage's kept picture (as record_history_copy does it for the motion
+ * blur's). Also once before that draw the first time ever, so the kept picture starts as this frame's. */
+static void record_after_copy(void)
+{
+    VkImageCopy copy = { 0 };
+
+    /* [rexglue-native] 2026-11-11 rn48b: into the quarter-size kept picture, filtered, when that one is used;
+     * [rexglue-native] 2026-11-11 rn48c: then stretched back into after_image, filtered, which the draws read */
+    if (vk.after_small_on && vk.after_small_image && vk.after_image) {
+        VkImageBlit blit = { 0 };
+
+        image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        image_barrier(vk.after_small_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT);
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.layerCount = 1;
+        blit.dstSubresource = blit.srcSubresource;
+        blit.srcOffsets[1].x = (int32_t)vk.width;
+        blit.srcOffsets[1].y = (int32_t)vk.height;
+        blit.srcOffsets[1].z = 1;
+        blit.dstOffsets[1].x = (int32_t)vk.after_small_width;
+        blit.dstOffsets[1].y = (int32_t)vk.after_small_height;
+        blit.dstOffsets[1].z = 1;
+        vkCmdBlitImage(vk.commands, vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.after_small_image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        image_barrier(vk.after_small_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT);
+        image_barrier(vk.after_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                      VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT);
+        blit.srcOffsets[1] = blit.dstOffsets[1];
+        blit.dstOffsets[1].x = (int32_t)vk.width;
+        blit.dstOffsets[1].y = (int32_t)vk.height;
+        vkCmdBlitImage(vk.commands, vk.after_small_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.after_image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+        image_barrier(vk.after_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                      VK_ACCESS_TRANSFER_READ_BIT,
+                      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                      VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        vk.after_frame = vk.frames_done + 1;
+        return;
+    }
+
+    image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    image_barrier(vk.after_image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.srcSubresource.layerCount = 1;
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent.width = vk.width;
+    copy.extent.height = vk.height;
+    copy.extent.depth = 1;
+    vkCmdCopyImage(vk.commands, vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.after_image,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    image_barrier(vk.after_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    vk.after_frame = vk.frames_done + 1;  /* this frame's (frames_done counts the frames finished) */
+}
+
+/* [rexglue-native] 2026-11-11 rn47o: for a quad drawn with the picture so far (NGL_VK_THIS_FRAME), between two parts
+ * of the quads' pass (the pass ended, the target left ready to be copied): the target copied whole into post_copy,
+ * as record_film_copy does it, but whatever post_copy held or was last used for (its old picture isn't wanted). */
+static void record_this_frame_copy(void)
+{
+    VkImageCopy copy = { 0 };
+
+    image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    image_barrier(vk.post_copy, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    copy.srcSubresource.layerCount = 1;
+    copy.dstSubresource = copy.srcSubresource;
+    copy.extent.width = vk.width;
+    copy.extent.height = vk.height;
+    copy.extent.depth = 1;
+    vkCmdCopyImage(vk.commands, vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.post_copy,
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    image_barrier(vk.post_copy, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    image_barrier(vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+}
+
+/* [rexglue-native] 2026-11-10: this frame's sky glow (ngl_vk_set_glow), called inside a part of the main pass, which
+ * it ends: the target copied whole into post_copy (after_tint 1: as record_film_copy does it, post_copy having been
+ * read by the tint's draw; 0: as record_post_copy, nothing having used it this frame), the glow's small passes, then
+ * the overlay pass begun and the blurred sky added over the game's screen (view). Leaves the overlay pass open with
+ * that viewport, as the quads want it. */
+static void draw_glow(VkRenderPassBeginInfo *pass, const VkViewport *view, const VkRect2D *whole, int after_tint)
+{
+    float screen[4] = { view->x / (float)vk.width, view->y / (float)vk.height, view->width / (float)vk.width,
+                        view->height / (float)vk.height };
+    float strength[4] = { vk.glow_strength, 0.0f, 0.0f, 0.0f };
+    int last;
+
+    vkCmdEndRenderPass(vk.commands);
+    if (after_tint)
+        record_film_copy();
+    else
+        record_post_copy();
+    last = record_glow(screen);
+    pass->renderPass = vk.overlay_pass;
+    vkCmdBeginRenderPass(vk.commands, pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, view);
+    vkCmdSetScissor(vk.commands, 0, 1, whole);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_add_pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_layout, 0, 1,
+                            &vk.glow_set[last], 0, NULL);
+    vkCmdPushConstants(vk.commands, vk.glow_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof strength, strength);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
 }
 
 /* Between the second half and the overlay pass: the target (left ready to be copied) shrunk to a half and then a
@@ -4127,6 +5377,10 @@ static int submit_and_show(int showing, uint32_t window_image)
     vk.tint_on = 0;         /* and a tint or a brightness */
     vk.lookup_table = 0;    /* and a color look-up */
     vk.motion_on = 0;       /* and a motion blur */
+    vk.after_on = 0;        /* [rexglue-native] 2026-11-11 rn47g: and an afterimage (its kept picture stays) */
+    vk.under_count = 0;     /* [rexglue-native] 2026-11-11 rn47i: and quads under the effects */
+    vk.keep_frame = 0;      /* [rexglue-native] 2026-11-11 rn47n: and a frame kept for the next */
+    vk.glow_on = 0;         /* [rexglue-native] and a sky glow */
     vk.frames_done++;
     return 0;
 }
@@ -4157,9 +5411,14 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
      * tint's, with its pipeline and nothing else of it (motion_constants, film_constants), over the whole 3D, the
      * scenes in front included; the last frame's picture kept after the quads */
     int film = tint && vk.tint[20] > 0.0f;
-    float film_constants[24];
+    float film_constants[32];   /* [waw-decomp] 2026-11-11: 32 (was 24), pushed whole: the film tweak's four 0 */
     int motion = tint && vk.motion_on;
-    float motion_constants[24];
+    float motion_constants[32]; /* [waw-decomp] 2026-11-11: as film_constants (was 24) */
+    /* [rexglue-native] 2026-11-11 rn47g: and post effect 4 as the game draws it (ngl_vk_set_afterimage): two draws
+     * of its own where the motion blur's is, before post effect 7's */
+    int after = tint && vk.after_on && vk.after_image && vk.after_set;
+    /* [rexglue-native] 2026-11-10: and the sky glow (ngl_vk_set_glow), right after the tint's draw */
+    int glow = halves && vk.glow_on && vk.glow_ready && vk.overlay_pass;
 
     if (!vk.device || !pixels || !width || !height || pitch < width * BYTES_PER_PIXEL)
         return -1;
@@ -4242,17 +5501,117 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
             vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdSetViewport(vk.commands, 0, 1, &view);
             vkCmdSetScissor(vk.commands, 0, 1, &whole);
+            /* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer), when this frame has draws for it */
+            vk.effect_live = 0;
+            if (vk.effect_ready && vk.overlay_pass) {
+                for (uint32_t i = 0; i < vk.draw_count && !vk.effect_live; i++)
+                    vk.effect_live = vk.draws[i].effect_layer && vk.draws[i].alpha == NGL_VK_ALPHA_BLEND;
+            }
+            vk.heat_live = 0;       /* [rexglue-native-fx] 2026-11-11 fx1: and the heat haze's mask draws among them */
+            if (vk.effect_live && vk.heat_ready) {                                  /* [rexglue-native-fx] */
+                for (uint32_t i = 0; i < vk.draw_count && !vk.heat_live; i++)       /* [rexglue-native-fx] */
+                    vk.heat_live = vk.draws[i].blend == NGL_VK_BLEND_HEAT_MASK &&
+                                   vk.draws[i].effect_layer && vk.draws[i].alpha == NGL_VK_ALPHA_BLEND;
+            }
             vk.soft_live = 1;
             draw_meshes(1);
             vk.soft_live = 0;
+            if (vk.effect_live) {   /* [rexglue-native] 2026-11-10 */
+                VkRenderPassBeginInfo layer_pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+                VkClearValue layer_clear[2] = { { { { 0.0f, 0.0f, 0.0f, 0.0f } } }, { { { 1.0f, 0.0f, 0.0f, 0.0f } } } };
+                VkRect2D layer_whole = { { 0, 0 }, { vk.effect_width, vk.effect_height } };
+                VkViewport all = { 0.0f, 0.0f, (float)vk.width, (float)vk.height, 0.0f, 1.0f };
+                VkViewport layer_all = { 0.0f, 0.0f, (float)vk.effect_width, (float)vk.effect_height, 0.0f, 1.0f };
+                /* The layer's pixel (x, y) stands for the picture's pixel (2x, 2y), as the game's does: what the
+                 * picture draws at the middle of that pixel, (2x + 0.5, 2y + 0.5), is at (x + 0.25, y + 0.25) of the
+                 * layer at half the size, and has to be at the layer pixel's middle: a quarter pixel further on. */
+                VkViewport layer_view = { view.x * 0.5f + 0.25f, view.y * 0.5f + 0.25f, view.width * 0.5f,
+                                          view.height * 0.5f, 0.0f, 1.0f };
+                VkDescriptorSet fill_sets[2] = { vk.dof_quarter_set, vk.shadow_set };   /* (set 0 isn't read) */
+                VkDescriptorSet back_sets[2] = { vk.effect_color_set, vk.shadow_set };
+
+                vkCmdEndRenderPass(vk.commands);
+                /* its color cleared, its depth from the opaque depth's copy at every second pixel */
+                layer_clear[1].depthStencil.depth = 1.0f;
+                layer_clear[1].depthStencil.stencil = 0;
+                layer_pass.renderPass = vk.effect_fill_pass;
+                layer_pass.framebuffer = vk.effect_framebuffer;
+                layer_pass.renderArea = layer_whole;
+                layer_pass.clearValueCount = 2;
+                layer_pass.pClearValues = layer_clear;
+                vkCmdBeginRenderPass(vk.commands, &layer_pass, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdSetViewport(vk.commands, 0, 1, &layer_all);
+                vkCmdSetScissor(vk.commands, 0, 1, &layer_whole);
+                vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.effect_fill_pipeline);
+                vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.dof_mix_layout, 0, 2,
+                                        fill_sets, 0, NULL);
+                vkCmdDraw(vk.commands, 3, 1, 0, 0);
+                vkCmdEndRenderPass(vk.commands);
+                /* its draws, tested against that depth and fading by it */
+                layer_pass.renderPass = vk.effect_pass;
+                vkCmdBeginRenderPass(vk.commands, &layer_pass, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdSetViewport(vk.commands, 0, 1, &layer_view);
+                vkCmdSetScissor(vk.commands, 0, 1, &layer_whole);
+                vk.soft_live = 1;
+                draw_meshes(3);
+                vk.soft_live = 0;
+                vkCmdEndRenderPass(vk.commands);
+                vk.effect_live = 0;
+                if (vk.heat_live) {     /* [rexglue-native-fx] 2026-11-11 fx1: the heat haze's mask (part 4) */
+                    /* cleared to 1 (no haze) with a transfer clear (the loader has vkCmdClearColorImage) */
+                    VkClearColorValue one = { { 1.0f, 1.0f, 1.0f, 1.0f } };                /* [rexglue-native-fx] */
+                    VkImageSubresourceRange mask_range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
+
+                    image_barrier(vk.heat_mask, vk.heat_layout_ok ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                                                  : VK_IMAGE_LAYOUT_UNDEFINED,
+                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+                    vkCmdClearColorImage(vk.commands, vk.heat_mask, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &one, 1,
+                                         &mask_range);
+                    image_barrier(vk.heat_mask, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                  VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                                  VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                    vk.heat_layout_ok = 1;
+                    layer_pass.renderPass = vk.effect_pass;
+                    layer_pass.framebuffer = vk.heat_framebuffer;
+                    vkCmdBeginRenderPass(vk.commands, &layer_pass, VK_SUBPASS_CONTENTS_INLINE);
+                    vkCmdSetViewport(vk.commands, 0, 1, &layer_view);
+                    vkCmdSetScissor(vk.commands, 0, 1, &layer_whole);
+                    vk.soft_live = 1;
+                    draw_meshes(4);
+                    vk.soft_live = 0;
+                    vkCmdEndRenderPass(vk.commands);
+                    layer_pass.framebuffer = vk.effect_framebuffer;
+                }
+                /* and the layer over the picture (the overlay pass: the target as the second half left it) */
+                pass.renderPass = vk.overlay_pass;
+                vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdSetViewport(vk.commands, 0, 1, &all);
+                vkCmdSetScissor(vk.commands, 0, 1, &whole);
+                vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.effect_back_pipeline);
+                vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.dof_mix_layout, 0, 2,
+                                        back_sets, 0, NULL);
+                vkCmdDraw(vk.commands, 3, 1, 0, 0);
+                vkCmdSetViewport(vk.commands, 0, 1, &view);
+                /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp over the picture as the layer left it, blended by
+                 * the heat mask (the game draws its heat haze right after its effects' blend back) */
+                if (vk.heat_live && vk.warp_count >= 3u)                                 /* [rexglue-native-fx] */
+                    draw_warp(&pass, &view, &whole);                                    /* [rexglue-native-fx] */
+                vk.heat_live = 0;                                                       /* [rexglue-native-fx] */
+            }
             if (dof) {
                 VkViewport all = { 0.0f, 0.0f, (float)vk.width, (float)vk.height, 0.0f, 1.0f };
                 VkDescriptorSet sets[2] = { vk.dof_quarter_set, vk.shadow_set };
 
                 vkCmdEndRenderPass(vk.commands);
-                /* the blanket (the menus' blur) is wider than the depth of field: two rounds, the taps further apart */
+                /* the blanket (the menus' blur) is wider than the depth of field: more rounds, the taps further apart.
+                 * [rexglue-native-render] 2026-11-11 rn48m: three rounds 1.25 texels apart, sigma 3.72 quarter texels
+                 * against the game's chain's 3.51 (post effect 10; RENDER-NOTES.md, 10:37 item 4); it was two rounds
+                 * 2.0 apart: sigma 4.78, every odd texel skipped */
                 if (vk.dof_focus[3] > 0.0f)
-                    record_dof(2, 2.0f);
+                    record_dof(3, 1.25f);   /* [rexglue-native-render] 2026-11-11 rn48m: was record_dof(2, 2.0f) */
                 else
                     record_dof(1, 1.5f);
                 pass.renderPass = vk.overlay_pass;
@@ -4305,10 +5664,81 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                 vkCmdPushConstants(vk.commands, vk.tint_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof vk.tint,
                                    vk.tint);
                 vkCmdDraw(vk.commands, 3, 1, 0, 0);
+                if (glow)   /* [rexglue-native] 2026-11-10: the sky glow, of the picture as the tint left it */
+                    draw_glow(&pass, &view, &whole, 1);
                 /* rn41g: then the motion blur and post effect 7, each over the whole 3D, the scenes in front
                  * included (the game's concussion blurs its gun): the target copied again and drawn back. The
                  * quads come after them (the game's crosshair stays sharp), and the last frame's picture is kept
                  * after the quads (its compass trails: its motion blur's last frame holds the HUD) */
+                /* [rexglue-native] 2026-11-11 rn47g: post effect 4 as the game draws it (ngl_vk_set_afterimage; the
+                 * game: decomp 0x82149950), before post effect 7's draw: the picture so far copied (post_copy);
+                 * first its shader drawn with the coordinates drawn in, which the game draws into its kept picture
+                 * and ngl_vk draws over the target and copies into after_image; then the same over the target with
+                 * plain coordinates, which is the tint's mix with "the last frame" with after_image as that frame.
+                 * The tint pass's other numbers are neutral in both (film_constants', without post effect 7's). */
+                /* [rexglue-native] 2026-11-11 rn47i: the quads the caller wants under the afterimage and post effect
+                 * 7 (ngl_vk_set_quads_under_effects), in a frame with one of the two: drawn here, in the overlay
+                 * pass the tint's draw (or the sky glow) left open, as the quads below are drawn; `first` then
+                 * leaves only the rest to that loop */
+                if (vk.under_count && (after || film) && vertex_count) {
+                    uint32_t under = vk.under_count < vertex_count ? vk.under_count : vertex_count;
+
+                    under -= under % 3u;    /* whole triangles */
+                    vkCmdSetViewport(vk.commands, 0, 1, &view);
+                    vkCmdSetScissor(vk.commands, 0, 1, &whole);
+                    memcpy(vk.vertex_data, quad_vertices, (size_t)vertex_count * sizeof *quad_vertices);
+                    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.quad_pipeline);
+                    vk.quad_bound_added = 0;    /* [rexglue-native-render] rn48l */
+                    vkCmdPushConstants(vk.commands, vk.quad_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof screen,
+                                       screen);
+                    vkCmdBindVertexBuffers(vk.commands, 0, 1, &vk.vertices, &no_offset);
+                    while (first < under) {
+                        uint32_t texture = quad_vertices[first].texture, end = first + 1;
+                        VkDescriptorSet set = texture && texture <= vk.texture_count ? vk.textures[texture].set
+                                              : texture == NGL_VK_LAST_FRAME && vk.history_frame &&
+                                                vk.history_frame == vk.frames_done ? vk.post_history_set  /* rn47n */
+                                                                                     : vk.set;
+                        int added = quad_vertices[first].textured > 3.5f;   /* [rexglue-native-render] rn48l */
+
+                        while (end < under && quad_vertices[end].texture == texture &&
+                               (quad_vertices[end].textured > 3.5f) == added)
+                            end++;
+                        bind_quad_pipeline(added);
+                        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.quad_layout, 0, 1,
+                                                &set, 0, NULL);
+                        vkCmdDraw(vk.commands, end - first, 1, first, 0);
+                        first = end;
+                    }
+                }
+                if (after) {
+                    VkDescriptorSet after_sets[4] = { sets[0], sets[1], vk.after_set, sets[3] };
+                    float after_constants[32];  /* [waw-decomp] 2026-11-11: 32 (was 28): the film tweak's four 0 */
+
+                    memset(after_constants, 0, sizeof after_constants);
+                    memcpy(after_constants, film_constants, 12 * sizeof(float));
+                    after_constants[10] = vk.after_share;
+                    after_constants[24] = vk.after_inset > 0.0f ? vk.after_inset : 1.0e-6f;
+                    vkCmdEndRenderPass(vk.commands);
+                    record_film_copy();
+                    if (!vk.after_frame)    /* the first time ever: the kept picture starts as this frame's */
+                        record_after_copy();
+                    for (int half = 0; half < 2; half++) {
+                        vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+                        vkCmdSetViewport(vk.commands, 0, 1, &all);
+                        vkCmdSetScissor(vk.commands, 0, 1, &whole);
+                        vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.tint_pipeline);
+                        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.tint_layout, 0, 4,
+                                                after_sets, 0, NULL);
+                        vkCmdPushConstants(vk.commands, vk.tint_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                           sizeof after_constants, after_constants);
+                        vkCmdDraw(vk.commands, 3, 1, 0, 0);
+                        if (half == 0) {
+                            vkCmdEndRenderPass(vk.commands);
+                            record_after_copy();
+                            after_constants[24] = 0.0f;     /* the second draw: plain coordinates */
+                        }
+                    }
+                }
                 for (int step = 0; step < 2; step++) {
                     const float *constants = step == 0 ? (motion ? motion_constants : NULL)
                                                        : (film ? film_constants : NULL);
@@ -4329,6 +5759,8 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                 }
                 vkCmdSetViewport(vk.commands, 0, 1, &view);
             }
+            if (glow && !tint)  /* [rexglue-native] 2026-11-10: a frame with a sky glow and no tint */
+                draw_glow(&pass, &view, &whole, 0);
         } else if (vk.draw_count) {
             draw_meshes(2);
         }
@@ -4337,13 +5769,37 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
         vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.quad_pipeline);
         vkCmdPushConstants(vk.commands, vk.quad_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof screen, screen);
         vkCmdBindVertexBuffers(vk.commands, 0, 1, &vk.vertices, &no_offset);
+        vk.quad_bound_added = 0;    /* [rexglue-native-render] rn48l: the plain pipeline is the one bound */
         /* each run of vertices with one texture, with that texture's set */
         while (first < vertex_count) {
             uint32_t texture = quad_vertices[first].texture, end = first + 1;
             VkDescriptorSet set = texture && texture <= vk.texture_count ? vk.textures[texture].set : vk.set;
+            int added = quad_vertices[first].textured > 3.5f;       /* [rexglue-native-render] rn48l */
 
-            while (end < vertex_count && quad_vertices[end].texture == texture)
+            /* [rexglue-native] 2026-11-11 rn47n: the last finished frame (ngl_vk_keep_last_frame), when it is held */
+            if (texture == NGL_VK_LAST_FRAME && vk.history_frame && vk.history_frame == vk.frames_done)
+                set = vk.post_history_set;
+            /* [rexglue-native] 2026-11-11 rn47o: the picture so far (NGL_VK_THIS_FRAME), in a frame with meshes (the
+             * target can be taken up again by the overlay pass): the pass ended, the target copied into post_copy
+             * and the quads gone on with in the overlay pass */
+            if (texture == NGL_VK_THIS_FRAME && halves && vk.post_copy && vk.post_copy_set && vk.overlay_pass &&
+                pass.renderPass != vk.render_pass && pass.renderPass != vk.opaque_pass) {
+                vkCmdEndRenderPass(vk.commands);
+                record_this_frame_copy();
+                pass.renderPass = vk.overlay_pass;      /* the target as it was left, whichever pass that was */
+                vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+                vkCmdSetViewport(vk.commands, 0, 1, &view);
+                vkCmdSetScissor(vk.commands, 0, 1, &whole);
+                vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.quad_pipeline);
+                vk.quad_bound_added = 0;    /* [rexglue-native-render] rn48l */
+                vkCmdPushConstants(vk.commands, vk.quad_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof screen, screen);
+                vkCmdBindVertexBuffers(vk.commands, 0, 1, &vk.vertices, &no_offset);
+                set = vk.post_copy_set;
+            }
+            while (end < vertex_count && quad_vertices[end].texture == texture &&
+                   (quad_vertices[end].textured > 3.5f) == added)
                 end++;
+            bind_quad_pipeline(added);  /* [rexglue-native-render] rn48l */
             vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.quad_layout, 0, 1, &set, 0,
                                     NULL);
             vkCmdDraw(vk.commands, end - first, 1, first, 0);
@@ -4353,6 +5809,9 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
     vkCmdEndRenderPass(vk.commands);
     if (motion)  /* rn41g: the whole picture, the quads included, kept for the next frame's motion blur */
         record_history_copy();
+    if (!motion && vk.keep_frame && vk.post_history)    /* [rexglue-native] 2026-11-11 rn47n: or for its quads */
+        record_history_copy();
+    vk.warp_count = 0;      /* [rexglue-native-fx] 2026-11-11 fx1: a warp is the frame's it was given for */
     return submit_and_show(showing, window_image);
 }
 
@@ -4732,6 +6191,7 @@ void ngl_vk_shutdown(void)
         vkDestroyPipeline(vk.device, vk.mesh_add_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_subtract_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_multiply_pipeline, NULL);  /* [waw-decomp] */
+        vkDestroyPipeline(vk.device, vk.mesh_heat_pipeline, NULL);      /* [rexglue-native-fx] 2026-11-11 fx1 */
         vkDestroyPipeline(vk.device, vk.mesh_shadow_pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.mesh_layout, NULL);
         if (vk.shadow_uniform_memory)
@@ -4771,6 +6231,8 @@ void ngl_vk_shutdown(void)
         vkDestroyBuffer(vk.device, vk.vertices, NULL);
         vkFreeMemory(vk.device, vk.vertex_memory, NULL);
         vkDestroyPipeline(vk.device, vk.quad_pipeline, NULL);
+        if (vk.quad_add_pipeline)   /* [rexglue-native-render] 2026-11-11 rn48l */
+            vkDestroyPipeline(vk.device, vk.quad_add_pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.quad_layout, NULL);
         vkDestroyPipeline(vk.device, vk.pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.pipeline_layout, NULL);
@@ -4780,6 +6242,8 @@ void ngl_vk_shutdown(void)
         vkDestroyDescriptorPool(vk.device, vk.descriptor_pool, NULL);
         vkDestroyDescriptorSetLayout(vk.device, vk.set_layout, NULL);
         vkDestroySampler(vk.device, vk.sampler, NULL);
+        if (vk.aniso_sampler)   /* [acct2-bro] 2026-11-12 */
+            vkDestroySampler(vk.device, vk.aniso_sampler, NULL);
         if (vk.readback_memory)
             vkUnmapMemory(vk.device, vk.readback_memory);
         vkDestroyBuffer(vk.device, vk.readback, NULL);
@@ -4792,6 +6256,53 @@ void ngl_vk_shutdown(void)
         vkDestroyImageView(vk.device, vk.post_history_view, NULL);
         vkDestroyImage(vk.device, vk.post_history, NULL);
         vkFreeMemory(vk.device, vk.post_history_memory, NULL);
+        /* [rexglue-native] 2026-11-11 rn47g: the afterimage's kept picture; null handles where it wasn't made */
+        vkDestroyImageView(vk.device, vk.after_view, NULL);
+        vkDestroyImage(vk.device, vk.after_image, NULL);
+        vkFreeMemory(vk.device, vk.after_memory, NULL);
+        /* [rexglue-native] 2026-11-11 rn48b: and its quarter-size one */
+        vkDestroyImageView(vk.device, vk.after_small_view, NULL);
+        vkDestroyImage(vk.device, vk.after_small_image, NULL);
+        vkFreeMemory(vk.device, vk.after_small_memory, NULL);
+        /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp (make_heat); null handles where it wasn't made */
+        vkDestroyPipeline(vk.device, vk.heat_pipeline, NULL);
+        vkDestroyPipelineLayout(vk.device, vk.heat_layout, NULL);
+        vkDestroyDescriptorPool(vk.device, vk.heat_pool, NULL);
+        vkDestroyFramebuffer(vk.device, vk.heat_framebuffer, NULL);
+        vkDestroyImageView(vk.device, vk.heat_mask_view, NULL);
+        vkDestroyImage(vk.device, vk.heat_mask, NULL);
+        vkFreeMemory(vk.device, vk.heat_mask_memory, NULL);
+        vkDestroyBuffer(vk.device, vk.warp_buffer, NULL);
+        vkFreeMemory(vk.device, vk.warp_memory, NULL);
+        free(vk.warp_corners);
+        vk.warp_corners = NULL;
+        vk.heat_ready = 0;
+        /* [rexglue-native] 2026-11-10: the effect layer (make_effect_layer); null handles where it wasn't made */
+        vkDestroyPipeline(vk.device, vk.effect_fill_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.effect_back_pipeline, NULL);
+        vkDestroyDescriptorPool(vk.device, vk.effect_pool, NULL);
+        vkDestroyFramebuffer(vk.device, vk.effect_framebuffer, NULL);
+        vkDestroyRenderPass(vk.device, vk.effect_fill_pass, NULL);
+        vkDestroyRenderPass(vk.device, vk.effect_pass, NULL);
+        vkDestroyImageView(vk.device, vk.effect_color_view, NULL);
+        vkDestroyImageView(vk.device, vk.effect_depth_view, NULL);
+        vkDestroyImage(vk.device, vk.effect_color, NULL);
+        vkDestroyImage(vk.device, vk.effect_depth, NULL);
+        vkFreeMemory(vk.device, vk.effect_color_memory, NULL);
+        vkFreeMemory(vk.device, vk.effect_depth_memory, NULL);
+        /* [rexglue-native] 2026-11-10: the sky glow (make_glow); null handles where it wasn't made */
+        vkDestroyPipeline(vk.device, vk.glow_first_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.glow_blur_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.glow_add_pipeline, NULL);
+        vkDestroyPipelineLayout(vk.device, vk.glow_layout, NULL);
+        vkDestroyDescriptorPool(vk.device, vk.glow_pool, NULL);
+        vkDestroySampler(vk.device, vk.glow_sampler, NULL);
+        for (uint32_t i = 0; i < 2; i++) {
+            vkDestroyFramebuffer(vk.device, vk.glow_framebuffer[i], NULL);
+            vkDestroyImageView(vk.device, vk.glow_view[i], NULL);
+            vkDestroyImage(vk.device, vk.glow_image[i], NULL);
+            vkFreeMemory(vk.device, vk.glow_memory[i], NULL);
+        }
         vkDestroyPipeline(vk.device, vk.dof_blur_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.dof_mix_pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.dof_blur_layout, NULL);

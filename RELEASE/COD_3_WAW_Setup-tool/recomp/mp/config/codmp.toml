@@ -95,3 +95,16 @@ address = 0x821DE26C
 name = "cod3_script_yield_returned"
 after_instruction = true
 return = true
+
+# ---------------------------------------------------------------------------
+# [acct2-decomp] How long Use is held (src/game/use_hold.cpp; campaign
+# 0x8254A4F8, mp/config/campaign_map.tsv). The same hold check here is
+# 0x8256B478 (useHoldEntity / useHoldTime at client +2208 / +2212, the
+# campaign's +1616 / +1620): it loads g_useholdtime's integer (vmCvar
+# 0x82B33DF0 + 12) into r11 at 0x8256B578 and compares it here, for each
+# client on this machine's server.
+# ---------------------------------------------------------------------------
+[[midasm_hook]]
+address = 0x8256B57C
+name = "Cod3UseHoldTime"
+registers = ["r11"]

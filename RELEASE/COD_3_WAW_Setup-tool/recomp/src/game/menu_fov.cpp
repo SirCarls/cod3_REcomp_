@@ -51,6 +51,9 @@
 #include "game/movement/menu_movement.h"  // [movement]
 #include "game/menu_aim.h"  // [claude-9b] the AIM page
 #include "game/menu_slider.h"  // [claude-9b] slider rows: the number box
+#include "game/pad_settings.h"  // [acct2-ocr] 2026-11-07 the sensitivity rows' cap; controller settings
+#include "game/menu_controller.h"  // [acct2-ocr] 2026-11-07 the CONTROLLER page
+#include "game/menu_port_rows.h"  // [acct2-ocr] 2026-11-07 the port's settings rows on GAMEPLAY and CONTROLLER
 #include "game/qte_actions.h"
 #include "game/text_language.h"  // [acct2-ocr] the port's texts in the chosen language
 
@@ -739,13 +742,20 @@ namespace {
 namespace adv = fe::adv;
 namespace mm = cod3::movementmenu;  // [movement]
 namespace am = cod3::aimmenu;  // [claude-9b]
+namespace cm = cod3::controllermenu;  // [acct2-ocr] 2026-11-07
+namespace pr = cod3::portrows;        // [acct2-ocr] 2026-11-07
 constexpr int kAdvFovItem = adv::kItemCount;           // 11
 constexpr int kAdvScaleItem = adv::kItemCount + 1;     // 12
 constexpr int kAdvVideoItem = adv::kItemCount + 2;     // 13: VIDEO OPTIONS
 constexpr int kAdvVideoFirst = adv::kItemCount + 3;    // 14..20: the rows of the sub page shown
 // [movement] The video and the movement rows share these copied rows.
 // [claude-9b] and the aim rows
-constexpr int kAdvSubRows = std::max({int(vm::kRowCount), mm::kRows, am::kRows});
+// [acct2-ocr] 2026-11-07 GAMEPLAY: BATTLE ACTIONS and the port's rows; CONTROLLER: its three and the port's
+// (game/menu_port_rows.h; owner 23:17 "Option menus need more options. We can edit a lot"). Ten rows at most, as AIM.
+constexpr int kGameplayPageRows = 1 + int(std::size(pr::kCampaignGameplay));
+constexpr int kControllerPageRows = cm::kRows + int(std::size(pr::kCampaignController));
+constexpr int kAdvSubRows =
+    std::max({int(vm::kRowCount), mm::kRows, am::kRows, kGameplayPageRows, kControllerPageRows});  // [acct2-ocr]
 constexpr int kAdvItemsMax = kAdvVideoFirst + kAdvSubRows;
 // [menus-brightness] BRIGHTNESS (the game's brightness, menu_video.h): the
 // last row of OPTIONS / VIDEO, under the video rows, with a gauge like
@@ -768,7 +778,11 @@ constexpr int kAdvAimItem = kAdvMovementItem + 1;
 // 13:26: "the battle action should be gameplay. within the menus"). The options list itself has no room for a row
 // (BRIGHTNESS's note above), and the front end's Gameplay page none for a seventh (menu_video.h).
 constexpr int kAdvGameplayItem = kAdvAimItem + 1;
-constexpr int kAdvItemsAll = kAdvGameplayItem + 1;
+// [acct2-ocr] 2026-11-07 CONTROLLER (25): a fifth page button, last on the line (GAMEPLAY, VIDEO, MOVEMENT, AIM,
+// CONTROLLER), after GAMEPLAY's item (only added when GAMEPLAY was). Its page: SENSITIVITY LIMIT, STICK DEAD ZONE,
+// VIBRATE WITH KEYBOARD (game/menu_controller.h; owner 22:22: "a controller tab in every settings menu").
+constexpr int kAdvControllerItem = kAdvGameplayItem + 1;
+constexpr int kAdvItemsAll = kAdvControllerItem + 1;
 namespace br = cod3::addr::brightness;
 
 bool IsSubRow(int item) { return item >= kAdvVideoFirst && item < kAdvVideoFirst + kAdvSubRows; }
@@ -797,20 +811,75 @@ std::string VideoNote(int i) { return vm::Note(VideoRow(i)); }
 std::string VideoStep(PPCContext& ctx, uint8_t* base, int i, bool right) { return vm::Step(ctx, base, VideoRow(i), right); }
 const SubPage kVideoPage = {kVideoPageRows, VideoLabelKey, VideoValue, VideoNote, VideoStep, vm::TitleKey};
 // [claude-9b-think] GAMEPLAY: BATTLE ACTIONS.
-const char* GameplayLabelKey(int) { return vm::LabelKey(vm::kBattleActions); }
-std::string GameplayValue(int) { return vm::Value(vm::kBattleActions); }
-std::string GameplayNote(int) { return vm::Note(vm::kBattleActions); }
-std::string GameplayStep(PPCContext& ctx, uint8_t* base, int, bool right) {
-  return vm::Step(ctx, base, vm::kBattleActions, right);
+// [acct2-ocr] 2026-11-07 then the port's rows (pr::kCampaignGameplay): SKIP CUTSCENES, HOLD TO SKIP, CUTSCENE BARS,
+// USE HOLD TIME, LEFT-HANDED WEAPON, VEHICLE FOV SCALE, TEXT LANGUAGE, VOICES, MASTER VOLUME. Row i > 0 is port row
+// GameplayPort(i).
+int GameplayPort(int i) { return i >= 1 && i < kGameplayPageRows ? pr::kCampaignGameplay[i - 1] : -1; }
+const char* GameplayLabelKey(int i) {
+  const int p = GameplayPort(i);
+  return p >= 0 ? pr::LabelKey(p) : vm::LabelKey(vm::kBattleActions);
 }
-const SubPage kGameplayPage = {1, GameplayLabelKey, GameplayValue, GameplayNote, GameplayStep, vm::GameplayTitleKey};
+std::string GameplayValue(int i) {
+  const int p = GameplayPort(i);
+  return p >= 0 ? pr::ValueFor(0, p) : vm::Value(vm::kBattleActions);
+}
+std::string GameplayNote(int i) {
+  const int p = GameplayPort(i);
+  return p >= 0 ? pr::NoteFor(0, p) : vm::Note(vm::kBattleActions);
+}
+std::string GameplayStep(PPCContext& ctx, uint8_t* base, int i, bool right) {
+  const int p = GameplayPort(i);
+  return p >= 0 ? pr::StepFor(0, p, right) : vm::Step(ctx, base, vm::kBattleActions, right);
+}
+bool GameplayNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  const int p = GameplayPort(i);
+  return p >= 0 && pr::NumberOfFor(0, p, n, value);
+}
+std::string GameplaySetNumber(int i, double value) {
+  const int p = GameplayPort(i);
+  return p >= 0 ? pr::SetNumberFor(0, p, value) : std::string();
+}
+const SubPage kGameplayPage = {kGameplayPageRows, GameplayLabelKey,     GameplayValue,    GameplayNote,
+                               GameplayStep,      vm::GameplayTitleKey, GameplayNumberOf, GameplaySetNumber};
 const SubPage kMovementPage = {mm::kRows, mm::LabelKey, mm::Value, mm::Note, mm::Step, mm::TitleKey};
 const SubPage kAimPage = {am::kRows,  am::LabelKey, am::Value,    am::Note,
                           am::Step,   am::TitleKey, am::NumberOf, am::SetNumber};  // [claude-9b]
+// [acct2-ocr] 2026-11-07 CONTROLLER: game/menu_controller.h's three rows, then the port's (pr::kCampaignController):
+// KEYS IN PROMPTS, KEYS AS KEY CAPS, BUTTON PICTURES, RAW MOUSE, INVERT MOUSE, MOUSE ADS SCALE, EVEN MOUSE TURNING.
+int ControllerPort(int i) {
+  return i >= cm::kRows && i < kControllerPageRows ? pr::kCampaignController[i - cm::kRows] : -1;
+}
+const char* ControllerLabelKey(int i) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::LabelKey(p) : cm::LabelKey(i);
+}
+std::string ControllerValue(int i) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::ValueFor(0, p) : cm::Value(i);
+}
+std::string ControllerNote(int i) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::NoteFor(0, p) : cm::Note(i);
+}
+std::string ControllerStep(PPCContext& ctx, uint8_t* base, int i, bool right) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::StepFor(0, p, right) : cm::Step(ctx, base, i, right);
+}
+bool ControllerNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::NumberOfFor(0, p, n, value) : cm::NumberOf(i, n, value);
+}
+std::string ControllerSetNumber(int i, double value) {
+  const int p = ControllerPort(i);
+  return p >= 0 ? pr::SetNumberFor(0, p, value) : cm::SetNumber(i, value);
+}
+const SubPage kControllerPage = {kControllerPageRows, ControllerLabelKey, ControllerValue,    ControllerNote,
+                                 ControllerStep,      cm::TitleKey,       ControllerNumberOf, ControllerSetNumber};
 constexpr int kPageVideo = 0;
 constexpr int kPageMovement = 1;
 constexpr int kPageAim = 2;  // [claude-9b]
 constexpr int kPageGameplay = 3;  // [claude-9b-think]
+constexpr int kPageController = 4;  // [acct2-ocr] 2026-11-07
 
 // [claude-9b] Slider rows (game/menu_slider.h; owner 2026-10-20 21:09: "the
 // arrows should be next to the sliders and the sliders need to reflect the
@@ -852,6 +921,14 @@ constexpr NativeGauge kNativeGauges[3] = {
     {3, 156, 50, "VSensProgBar1", "VSensProgbar2"},         // Vertical Sensitivity
     {6, 160, 50, "MusicVolProgbar", "MusicVolumeProgbar2"},  // Volume (the music's)
 };
+// [acct2-ocr] 2026-11-07 The two sensitivity rows go up to cod3_pad_sensitivity_max (game/pad_settings.h; owner
+// 22:08: "same cap for both"); the table's max stays the game's own (37 and 50), Volume's its own 50.
+int GaugeMax(int slot) {
+  return slot == kSlotHSens || slot == kSlotVSens ? cod3::pad::SensitivityMax() : kNativeGauges[slot].max;
+}
+// The page's own gauge parts for the two rows (the game's OnLeft / OnRight refills them with 0x824DC108).
+constexpr uint32_t kSensGaugePart[2] = {136, 140};
+constexpr uint32_t kGaugeFillCall = 0x824DC108;  // (page, part, value, f1 = the most)
 constexpr const char* kGaugeBand = "bkg_detail_07";  // the grey band behind the three gauges
 // Menu units: an arrow to the gauge, the right arrow to the number box, the box.
 constexpr float kGaugeGap = 3.0f;
@@ -880,6 +957,8 @@ struct AdvRows {
   uint32_t aim_label = 0;            // [claude-9b] AIM (a copy of Reset's label)
   bool has_gameplay = false;         // [claude-9b-think] GAMEPLAY, first on the page buttons' line
   uint32_t gameplay_label = 0;       // [claude-9b-think] GAMEPLAY (a copy of Reset's label)
+  bool has_controller = false;       // [acct2-ocr] 2026-11-07 CONTROLLER, last on the page buttons' line
+  uint32_t controller_label = 0;     // [acct2-ocr] CONTROLLER (a copy of Reset's label)
   int button = 0;                    // [claude-9b] the page button last on (kAdvVideoItem when 0)
   FovRow vrow[kAdvSubRows];          // the sub page's rows (copies of the ADS row)
   uint32_t note = 0;                 // the line under them (a copy of Reset's label)
@@ -921,6 +1000,7 @@ void PutAdv(uint32_t self, const AdvRows& r) {
 
 // [movement] The sub page shown (or last shown).
 const SubPage& PageOf(const AdvRows& r) {
+  if (r.page == kPageController) return kControllerPage;  // [acct2-ocr]
   if (r.page == kPageGameplay) return kGameplayPage;  // [claude-9b-think]
   if (r.page == kPageAim) return kAimPage;  // [claude-9b]
   return r.page == kPageMovement ? kMovementPage : kVideoPage;
@@ -928,10 +1008,12 @@ const SubPage& PageOf(const AdvRows& r) {
 // [claude-9b] The page buttons on one line (with AIM): which item, which page.
 bool IsButton(int item) {
   return item == kAdvVideoItem || item == kAdvMovementItem || item == kAdvAimItem ||
-         item == kAdvGameplayItem;  // [claude-9b-think]
+         item == kAdvGameplayItem ||  // [claude-9b-think]
+         item == kAdvControllerItem;  // [acct2-ocr]
 }
 int ButtonItem(const AdvRows& r) { return IsButton(r.button) ? r.button : kAdvVideoItem; }
 int PageItem(int page) {
+  if (page == kPageController) return kAdvControllerItem;  // [acct2-ocr]
   if (page == kPageGameplay) return kAdvGameplayItem;  // [claude-9b-think]
   return page == kPageAim ? kAdvAimItem : page == kPageMovement ? kAdvMovementItem : kAdvVideoItem;
 }
@@ -1081,10 +1163,11 @@ bool SlotNumber(uint8_t* base, uint32_t self, const AdvRows& r, int slot, ms::Nu
   if (slot < kSlotFov) {
     if (r.video) return false;
     const NativeGauge& g = kNativeGauges[slot];
+    const int most = GaugeMax(slot);  // [acct2-ocr] 2026-11-07 the sensitivities: cod3_pad_sensitivity_max
     // Volume shows 0..100%, the sensitivities the game's own steps.
-    *n = slot == kSlotVolume ? ms::Number{0.0, double(g.max), 1.0, 100.0 / g.max, 0, "%"}
-                             : ms::Number{0.0, double(g.max), 1.0, 1.0, 0, ""};
-    *v = std::clamp(cod3::guest::ReadS32(base, self + g.value), 0, g.max);
+    *n = slot == kSlotVolume ? ms::Number{0.0, double(most), 1.0, 100.0 / most, 0, "%"}
+                             : ms::Number{0.0, double(most), 1.0, 1.0, 0, ""};
+    *v = std::clamp(cod3::guest::ReadS32(base, self + g.value), 0, most);
     return true;
   }
   if (slot == kSlotFov || slot == kSlotScale) {
@@ -1121,7 +1204,7 @@ void ApplyTyped(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, int s
     // The page's own step, once, from one short of the number: its sound,
     // its gauge and (Volume) the music's volume, as from the pad.
     const NativeGauge& g = kNativeGauges[slot];
-    const int target = std::clamp(int(std::lround(v)), 0, g.max);
+    const int target = std::clamp(int(std::lround(v)), 0, GaugeMax(slot));  // [acct2-ocr] the cap
     const int now = cod3::guest::ReadS32(base, self + g.value);
     if (target == now || Selected(base, self) != item) return;
     const bool right = target > now;
@@ -1369,14 +1452,20 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
     // [claude-9b-think] With GAMEPLAY first: four, a little closer (0.45 of Reset's distance from the labels' column
     // apart instead of 0.55; GAMEPLAY and MOVEMENT are the long ones).
     const float cx = ReadF32(base, r.reset + fe::kTextX);
-    const int n = r.has_gameplay ? 4 : 3;
-    const float dx = (n == 4 ? 0.45f : 0.55f) * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
-    const uint32_t labels[4] = {r.has_gameplay ? r.gameplay_label : 0u, r.video_label, r.movement_label,
-                                r.aim_label};
-    for (int i = 4 - n; i < 4; ++i) {
+    // [acct2-ocr] 2026-11-07 With CONTROLLER last: five, closer still (0.36 apart: the line about as wide as
+    // four's).
+    const uint32_t all[5] = {r.has_gameplay ? r.gameplay_label : 0u, r.video_label, r.movement_label, r.aim_label,
+                             r.has_controller ? r.controller_label : 0u};
+    uint32_t labels[5] = {};
+    int n = 0;
+    for (const uint32_t l : all)
+      if (l) labels[n++] = l;
+    const float dx = (n >= 5 ? 0.36f : n == 4 ? 0.45f : 0.55f) *
+                     std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+    for (int i = 0; i < n; ++i) {
       FollowText(base, r.reset, labels[i], -label_step);
-      const float at = float(i - (4 - n)) - 0.5f * float(n - 1);  // -1.5 .. 1.5, or -1 .. 1
-      if (labels[i]) cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * at);
+      const float at = float(i) - 0.5f * float(n - 1);  // -2 .. 2, -1.5 .. 1.5, or -1 .. 1
+      cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * at);
     }
   } else {
     FollowText(base, r.reset, r.video_label, -label_step * (r.has_movement ? 2.0f : 1.0f));
@@ -1466,6 +1555,7 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   if (page == kPageMovement && !r.has_movement) return;  // [movement]
   if (page == kPageAim && !r.has_aim) return;  // [claude-9b]
   if (page == kPageGameplay && !r.has_gameplay) return;  // [claude-9b-think]
+  if (page == kPageController && !r.has_controller) return;  // [acct2-ocr]
   r.page = page;
   const int count = static_cast<int16_t>(ReadU16(base, self + fe::kItemCount));
   for (int i = 0; i < count && i < kAdvItemsAll; ++i) {
@@ -1492,7 +1582,8 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   AdvSelect(ctx, base, self, kAdvVideoFirst);
   ShowAdvNote(ctx, base, self, r);
   REXLOG_INFO("cod3: pause menu: {} options",
-              page == kPageGameplay ? "gameplay"  // [claude-9b-think]
+              page == kPageController ? "controller"  // [acct2-ocr]
+              : page == kPageGameplay ? "gameplay"  // [claude-9b-think]
               : page == kPageAim    ? "aim"
               : page == kPageMovement ? "movement"
                                       : "video");  // [claude-9b] aim
@@ -1685,6 +1776,25 @@ int AddAdvGameplayRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r)
   for (int i = 0; i < 4; ++i) x[i] = labels[i] ? ReadF32(base, labels[i] + fe::kTextX) : 0.0f;
   REXLOG_INFO("cod3: in-game options: GAMEPLAY added; GAMEPLAY, VIDEO, MOVEMENT, AIM at x {:.1f} {:.1f} {:.1f} {:.1f}",
               x[0], x[1], x[2], x[3]);
+  return kAdvControllerItem;  // [acct2-ocr] was kAdvItemsAll (CONTROLLER comes after)
+}
+
+// [acct2-ocr] 2026-11-07 Adds CONTROLLER (Init, after GAMEPLAY): one more copy of Reset's label, last on the page
+// buttons' line. Returns the page's item count.
+int AddAdvControllerRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  auto valid = [](uint32_t p) { return p >= 0x10000 && (p & 3) == 0; };
+  if (!r.has_gameplay) return kAdvControllerItem;
+  r.controller_label = CopyElement(ctx, base, r.reset, false, 0.0f);  // owned by the page (dtor hook)
+  if (!valid(r.controller_label) ||
+      !AddLabelItem(ctx, base, self, kAdvControllerItem, r.controller_label, cm::ButtonKey())) {
+    REXLOG_WARN("cod3: in-game options: CONTROLLER not added (its settings are in F2 > Controls > Controller)");
+    if (valid(r.controller_label)) SetVisible(ctx, base, r.controller_label, false);
+    return kAdvControllerItem;
+  }
+  r.has_controller = true;
+  FollowTank(base, r);
+  REXLOG_INFO("cod3: in-game options: CONTROLLER added, last on the page buttons' line (x {:.1f})",
+              ReadF32(base, r.controller_label + fe::kTextX));
   return kAdvItemsAll;
 }
 
@@ -1831,6 +1941,7 @@ REX_HOOK_RAW(sub_824E60E8) {
       if (used == kAdvMovementItem) used = AddAdvMovementRow(ctx, base, self, r);  // [movement]
       if (used == kAdvAimItem) used = AddAdvAimRow(ctx, base, self, r);  // [claude-9b]
       if (used == kAdvGameplayItem) used = AddAdvGameplayRow(ctx, base, self, r);  // [claude-9b-think]
+      if (used == kAdvControllerItem) used = AddAdvControllerRow(ctx, base, self, r);  // [acct2-ocr]
       if (used >= kAdvGameplayItem) AddSliders(ctx, base, panel, r);  // [claude-9b] slider rows (with or without GAMEPLAY)
     }
   }
@@ -1860,7 +1971,7 @@ REX_HOOK_RAW(AdvancedOptionsMenu__dtor) {
   const FovRow& sc = r.row[1];
   copies.insert(copies.end(), {sc.text_a, sc.text_b, sc.arrow_left, sc.arrow_right, r.video_label, r.note,
                                r.movement_label, r.aim_label,
-                               r.gameplay_label});  // [movement] [claude-9b] aim_label [claude-9b-think] gameplay
+                               r.gameplay_label, r.controller_label});  // [movement] [claude-9b] aim_label [claude-9b-think] gameplay [acct2-ocr] controller
   for (const FovRow& v : r.vrow)
     copies.insert(copies.end(), {v.text_a, v.text_b, v.arrow_left, v.arrow_right});
   copies.insert(copies.end(), {r.bright_label, r.bright_back, r.bright_fill});  // [menus-brightness]
@@ -2039,6 +2150,28 @@ REX_HOOK_RAW(sub_824C4218) {
 // OnLeft / OnRight (this, right): our rows step cg_fov / cg_fovScale, the
 // video rows their settings.
 REX_EXTERN(__imp__sub_824DC1C0);
+
+// [acct2-ocr] 2026-11-07 Horizontal and Vertical Sensitivity (items 2 and 3) step one by one up to
+// cod3_pad_sensitivity_max, both rows (the game stopped Horizontal at 37 and Vertical at 50; owner 22:00 "vertical
+// and horizontal don't have the same caps", 22:08 "same cap for both"). The game's own step still runs (its sound
+// when the value moves, its page refresh) on a value inside its own range; then the row gets the real value and
+// its gauge the cap's scale. The stick's turn reads the setting as it is (+68 / +72 times 0.04, no limit).
+void StepSensitivity(PPCContext& ctx, uint8_t* base, uint32_t self, int item, bool right) {
+  const int slot = item == kNativeGauges[0].item ? 0 : 1;
+  const NativeGauge& g = kNativeGauges[slot];
+  const int cap = GaugeMax(slot);
+  const int now = std::clamp(cod3::guest::ReadS32(base, self + g.value), 0, cap);
+  const int next = std::clamp(now + (right ? 1 : -1), 0, cap);
+  // At an end the game's own clamp keeps it silent; otherwise its step moves inside 0..its most, with the sound.
+  const int game_step_from = next == now ? (right ? g.max : 0) : (right ? g.max - 1 : 1);
+  cod3::guest::WriteU32(base, self + g.value, uint32_t(game_step_from));
+  __imp__sub_824DC1C0(ctx, base);
+  cod3::guest::WriteU32(base, self + g.value, uint32_t(next));
+  Call c(ctx, base);
+  c.Invoke(kGaugeFillCall, {self, ReadU32(base, self + kSensGaugePart[slot]), uint32_t(next)}, {double(cap)});
+  cod3::pad::FollowPage(0, item, next);
+}
+
 REX_HOOK_RAW(sub_824DC1C0) {
   const uint32_t self = ctx.r3.u32;
   const bool right = (ctx.r4.u32 & 0xFF) != 0;
@@ -2066,12 +2199,15 @@ REX_HOOK_RAW(sub_824DC1C0) {
   // [claude-9b] The page buttons' line: left and right move along it.
   if (IsButton(sel) && GetAdv(base, self, r) && r.has_aim && !r.video) {
     // [claude-9b-think] GAMEPLAY first on the line when it is there.
-    static constexpr int kLine[4] = {kAdvGameplayItem, kAdvVideoItem, kAdvMovementItem, kAdvAimItem};
+    // [acct2-ocr] 2026-11-07 and CONTROLLER last when it is there.
+    static constexpr int kLine[5] = {kAdvGameplayItem, kAdvVideoItem, kAdvMovementItem, kAdvAimItem,
+                                     kAdvControllerItem};
     const int first = r.has_gameplay ? 0 : 1;
+    const int last = r.has_controller ? 4 : 3;
     int at = first;
-    for (int i = first; i < 4; ++i)
+    for (int i = first; i <= last; ++i)
       if (kLine[i] == sel) at = i;
-    const int next = kLine[std::clamp(at + (right ? 1 : -1), first, 3)];
+    const int next = kLine[std::clamp(at + (right ? 1 : -1), first, last)];
     if (next != sel) {
       r.button = next;
       PutAdv(self, r);
@@ -2080,7 +2216,12 @@ REX_HOOK_RAW(sub_824DC1C0) {
     return;
   }
   if (sel >= kAdvVideoItem) return;  // VIDEO / MOVEMENT OPTIONS: no value
+  // [acct2-ocr] 2026-11-07 the two sensitivity rows: up to cod3_pad_sensitivity_max (StepSensitivity)
+  if (sel == kNativeGauges[0].item || sel == kNativeGauges[1].item) return StepSensitivity(ctx, base, self, sel, right);
   __imp__sub_824DC1C0(ctx, base);
+  // [acct2-ocr] 2026-11-07 Invert Aim and Vibration: a controller setting set in the console follows the page
+  // (game/pad_settings.h; the page's own copies at +166 / +167, swapped into the profile's +65 / +66 when it closes)
+  if (sel == 0 || sel == 1) cod3::pad::FollowPage(0, sel, ReadU8(base, self + (sel == 0 ? 166u : 167u)));
 }
 
 // The item handler (this, item): VIDEO OPTIONS shows the video rows,
@@ -2103,6 +2244,9 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_19) {
       PutAdv(self, r);
     } else if (item == kAdvGameplayItem && r.has_gameplay && !r.video) {  // [claude-9b-think]
       EnterAdvVideo(ctx, base, self, r, kPageGameplay);
+      PutAdv(self, r);
+    } else if (item == kAdvControllerItem && r.has_controller && !r.video) {  // [acct2-ocr] 2026-11-07
+      EnterAdvVideo(ctx, base, self, r, kPageController);
       PutAdv(self, r);
     }
     if (IsButton(item) && r.has_aim) {  // [claude-9b] B comes back to this button
@@ -2204,6 +2348,16 @@ REX_HOOK_RAW(Localize) {
     }
     // [claude-9b] The AIM page's texts (game/menu_aim.h).
     if (const uint32_t text = cod3::aimmenu::Localize(base, k)) {
+      ctx.r3.u64 = text;
+      return;
+    }
+    // [acct2-ocr] 2026-11-07 The CONTROLLER page's texts (game/menu_controller.h).
+    if (const uint32_t text = cod3::controllermenu::Localize(base, k)) {
+      ctx.r3.u64 = text;
+      return;
+    }
+    // [acct2-ocr] 2026-11-07 The port's settings rows' labels (game/menu_port_rows.h).
+    if (const uint32_t text = cod3::portrows::Localize(base, k)) {
       ctx.r3.u64 = text;
       return;
     }

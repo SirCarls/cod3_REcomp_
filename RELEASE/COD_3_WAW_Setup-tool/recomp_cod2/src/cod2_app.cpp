@@ -19,15 +19,21 @@
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
+#include <rex/input/input_system.h>  // [f2-menus] the input system's active callback
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/gpu_plugin.h>
 #include <rex/system/interfaces/graphics.h>
 #include <rex/ui/presenter.h>
 
+#include "cod2_f2.h"  // [f2-menus] the F2 settings window
+#include "cod2_pc_input.h"  // [f2-menus] the PC copy's keys and mouse
 #include "game/debug_shots.h"
 #include "game/frame_rate.h"
 #include "game/front_end.h"
+#include "game/native_compare.h"  // [waw-decomp] 2026-11-11 the native renderer's live A/B compare
+#include "game/native_side.h"  // [waw-decomp] 2026-11-10
+#include "game/native_window.h"  // [waw-decomp] 2026-11-11 4z61: cod2_native_vulkan
 
 #if defined(COD2_MP)
 #include "generated/default_mp/cod2mp_init.h"
@@ -88,6 +94,7 @@ void Cod2App::OnConfigurePaths(rex::PathConfig& paths) {
     paths.cache_root = root / "userdata" / "cache";
   }
   paths.config_path = root / (std::string(kProgram) + ".toml");
+  config_path_ = paths.config_path;  // [f2-menus] where the F2 window saves
   userdata_dir_ = paths.user_data_root;
   if (userdata_dir_.empty()) {
     const std::string flag{rex::cvar::GetFlagByName("user_data_root")};
@@ -121,6 +128,9 @@ void Cod2App::OnPreSetup(rex::RuntimeConfig& config) {
   }
   // The Xenos GPU emulation unless the user picked another plugin (or none).
   if (config.gpu_plugin.empty() && !REXCVAR_GET(cod2_no_gpu)) config.gpu_plugin = "xenos";
+  // [waw-decomp] 2026-11-11 4z61: the native renderer as the game's picture (cod2_native_vulkan, off by default): the
+  // plugin's host backend in place of the GPU emulation (game/native_window.h); then the block below is skipped
+  cod2::native::StartNativeVulkan(config);
 #ifdef _WIN32
   // Windows builds have Direct3D 12 and Vulkan; "auto" tries Vulkan first, as
   // on Linux, and the SDK falls back to Direct3D 12 when it can't start.
@@ -137,6 +147,9 @@ void Cod2App::OnPreSetup(rex::RuntimeConfig& config) {
 #endif
 }
 
+// [f2-menus] The window's keys and mouse for the PC copy's keys and the game's own mouse look (cod2_pc_input.h).
+static cod2::pc_input::Listener g_pc_input_listener;
+
 void Cod2App::OnPostSetup() {
   // The guest vblank at 1000 Hz, the frame limit the port's (game/frame_rate.h).
   // The GPU plugin's settings exist once it is loaded, which on Linux is
@@ -149,6 +162,46 @@ void Cod2App::OnPostSetup() {
     auto* presenter = graphics ? graphics->presenter() : nullptr;
     return presenter && presenter->CaptureGuestOutput(image);
   });
+  // [waw-decomp] 2026-11-11: the native renderer's live A/B compare (game/native_compare.h; cod2_native_compare,
+  // Ctrl+Home; off by default): a drawer on the presenter, under ImGui's, and its keys, before the PC copy's (only
+  // Ctrl+Home, and Ctrl+arrows while the compare is on, are taken); never while the F2 window has the input.
+  if (auto* graphics = runtime() ? runtime()->graphics_system() : nullptr)
+    cod2::compare::Attach(window(), graphics->presenter(), graphics->provider(), 202,
+                          []() { return !cod2::f2ui::GameGetsInput(); });
+  // [waw-decomp] 2026-11-10: the native renderer's 2D beside the game's (cod2_debug_native_side; off by default).
+  cod2::native::SideStart(userdata_dir_ / "logs" / "screenshots", [this](rex::ui::RawImage& image) {
+    auto* graphics = runtime() ? runtime()->graphics_system() : nullptr;
+    auto* presenter = graphics ? graphics->presenter() : nullptr;
+    return presenter && presenter->CaptureGuestOutput(image);
+  });
+  // [f2-menus] While the F2 settings window is open the game gets no input: no keys, mouse or controller.
+  if (auto* input = static_cast<rex::input::InputSystem*>(runtime() ? runtime()->input_system() : nullptr))
+    input->SetActiveCallback([]() { return cod2::f2ui::GameGetsInput(); });
+  // [f2-menus] The PC copy's keys and mouse (cod2_pc_input.h): above the SDK's keyboard/mouse driver, so a key it
+  // takes doesn't press a controller button as well.
+  if (auto* win = window()) {
+    g_pc_input_listener.window = win;
+    win->AddInputListener(&g_pc_input_listener, 199);
+  }
 }
 
-void Cod2App::OnShutdown() { cod2::shots::Stop(); }
+// [f2-menus] The F2 settings window (cod2_f2.h): Call of Duty 3's window with Call of Duty 2's pages.
+void Cod2App::OnConfigureFonts(ImFontAtlas* atlas) { cod2::f2ui::ConfigureFonts(atlas); }
+
+void Cod2App::OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
+  cod2::f2ui::ConfigureStyle(imgui_style, ui_style);
+}
+
+void Cod2App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
+  // The window is made and closed after the frame that asks for it, outside the drawer's loop over its windows.
+  cod2::f2ui::Attach(drawer, window(), config_path_,
+                     [this](std::function<void()> fn) { app_context().CallInUIThreadDeferred(std::move(fn)); });
+}
+
+void Cod2App::OnShutdown() {
+  if (auto* win = window()) win->RemoveInputListener(&g_pc_input_listener);  // [f2-menus]
+  cod2::f2ui::Detach();  // [f2-menus] saves what changed; before the ImGui drawer goes
+  cod2::native::SideStop();  // [waw-decomp] 2026-11-10
+  cod2::compare::Detach(window());  // [waw-decomp] 2026-11-11: before the presenter goes
+  cod2::shots::Stop();
+}

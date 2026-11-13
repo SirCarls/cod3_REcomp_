@@ -21,6 +21,10 @@ class WawApp : public rex::ReXApp {
   void OnPreSetup(rex::RuntimeConfig& config) override;
   void OnPostSetup() override;
   void OnShutdown() override;
+  // [f2-menus] The F2 settings window (waw_f2.h): its fonts, colors and the window itself.
+  void OnConfigureFonts(ImFontAtlas* atlas) override;
+  void OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) override;
+  void OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) override;
 
  private:
   std::filesystem::path root_dir_;  // the game folder: assets/, userdata/, waw.toml (OnConfigurePaths)

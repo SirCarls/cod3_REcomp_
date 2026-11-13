@@ -21,7 +21,10 @@
 #else
 #include "generated/default/cod4_init.h"
 #endif
+#include "cod4_f2.h"  // [f2-menus] the F2 settings window
 #include "cod4_mouse.h"
+#include "cod4_native_side.h"  // [waw-decomp-cod4] 2026-11-11 the native renderer's side check
+#include "cod4_native_window.h"  // [waw-decomp-cod4] 2026-11-11 round 6: cod4_native_vulkan
 #include "cod4_profile.h"
 #include "cod4_shots.h"
 #include "test_input.h"  // Call of Duty 3's scripted test pad (../recomp/src), built here as well
@@ -154,6 +157,10 @@ void Cod4App::OnPreSetup(rex::RuntimeConfig& config) {
     REXLOG_WARN("cod4: gpu_plugin '{}' isn't a plain plugin name; using xenos", config.gpu_plugin);
     config.gpu_plugin = "xenos";
   }
+  // [waw-decomp-cod4] 2026-11-11 round 6: the native renderer as the game's picture (cod4_native_vulkan, off by
+  // default): the plugin's host backend in place of the GPU emulation (cod4_native_window.h); then the block below is
+  // skipped
+  cod4::native::StartNativeVulkan(config);
 #ifdef _WIN32
   // Windows builds have Vulkan and Direct3D 12. "auto" is Vulkan, as on Linux, and Direct3D 12 when Vulkan can't
   // start (then the SDK loads the plugin with its own default).
@@ -181,6 +188,14 @@ void Cod4App::OnPostSetup() {
     return presenter && presenter->CaptureGuestOutput(image);
   });
 
+  // [waw-decomp-cod4] 2026-11-11: the native renderer's side check (cod4_native_side.h, cod4_debug_native_side, off
+  // by default): its pictures go beside the debug screenshots, the game's own read the same way.
+  cod4::native::SideStart(user_dir / "logs" / "screenshots", [this](rex::ui::RawImage& image) {
+    auto* graphics = runtime() ? runtime()->graphics_system() : nullptr;
+    auto* presenter = graphics ? graphics->presenter() : nullptr;
+    return presenter && presenter->CaptureGuestOutput(image);
+  });
+
   // A sampling profile of one thread, for the frame-rate audit (cod4_debug_profile_thread, cod4_profile.h).
   cod4::profile::Start(user_dir / "logs");
 
@@ -197,10 +212,30 @@ void Cod4App::OnPostSetup() {
     else
       REXLOG_WARN("cod4: no input system; cod4_test_input not used");
   }
+
+  // [f2-menus] While the F2 settings window is open the game gets no input: no keys, mouse or controller (and the
+  // mouse look lets the pointer go, cod4_mouse.cpp).
+  if (auto* input = static_cast<rex::input::InputSystem*>(runtime() ? runtime()->input_system() : nullptr))
+    input->SetActiveCallback([]() { return cod4::f2ui::GameGetsInput(); });
+}
+
+// [f2-menus] The F2 settings window (cod4_f2.h): Call of Duty 3's window in Call of Duty 4's own colors.
+void Cod4App::OnConfigureFonts(ImFontAtlas* atlas) { cod4::f2ui::ConfigureFonts(atlas); }
+
+void Cod4App::OnConfigureStyle(ImGuiStyle& imgui_style, rex::ui::Style& ui_style) {
+  cod4::f2ui::ConfigureStyle(imgui_style, ui_style);
+}
+
+void Cod4App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
+  // The window is made and closed after the frame that asks for it, outside the drawer's loop over its windows.
+  cod4::f2ui::Attach(drawer, window(), root_dir_ / (std::string(kProgram) + ".toml"),
+                     [this](std::function<void()> fn) { app_context().CallInUIThreadDeferred(std::move(fn)); });
 }
 
 void Cod4App::OnShutdown() {
+  cod4::f2ui::Detach();  // [f2-menus] saves what changed; before the ImGui drawer goes
   cod4::profile::Stop();
   if (auto* win = window()) win->RemoveInputListener(&g_mouse_listener);
+  cod4::native::SideStop();  // [waw-decomp-cod4] 2026-11-11 before the GPU emulation's presenter goes
   cod4::shots::Stop();  // before the GPU emulation's presenter goes
 }

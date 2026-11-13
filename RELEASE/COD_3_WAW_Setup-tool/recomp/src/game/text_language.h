@@ -86,6 +86,12 @@ uint32_t KeyHash(std::string_view key);
 // wasn't added at start). Any thread.
 std::string FilmText(std::string_view key);
 
+// [acct2-ocr] 2026-11-07 For the port's own HUD notices (ui/announcement_feed.cpp, the CHEATS USED mark in
+// ui/hud_overlay.cpp): the chosen language's text for the English notice `english` in UTF-8 (the pack's "@notices"
+// rows, "ENGLISH<tab>TEXT"), or "" when the English stays (the game's own text chosen, no such row, "Menus &
+// interface" kept in English, or a script whose font wasn't added at start). Any thread.
+std::string NoticeText(std::string_view english);
+
 // assets/ (SetGameDataRoot), for the other text files there.
 std::filesystem::path GameDataRoot();
 
@@ -126,5 +132,19 @@ std::string ToGameFontBytes(std::string_view utf8, bool with_fill);
 // F2 > Sound, under Voices: the Text row. Returns true when the player changed
 // it (the caller saves the settings at once).
 bool DrawSettingsRow();
+
+// [acct2-ocr] 2026-11-07 For the in-game Options rows (game/menu_port_rows.h): the Text setting's languages in its
+// order, 0 to LanguageCount() - 1 (-1 is the game's own text). The code ("de-DE"), the name as F2's list has it
+// ("Deutsch"); usable: its file is in text/ and, for a script the port draws itself, its font; after a restart:
+// chosen now, it shows once the game starts again (Russian, Chinese, Japanese and Korean). Any thread.
+int LanguageCount();
+const char* LanguageCode(int index);
+const char* LanguageName(int index);
+bool LanguageUsable(int index);
+bool LanguageAfterRestart(int index);
+int ChosenLanguage();
+// Chooses `index` (-1: the game's own) as F2's row does: from the next text the game asks for. False when it is
+// the one already or can't be chosen. The caller saves the settings.
+bool ChooseLanguage(int index);
 
 }  // namespace cod3::text

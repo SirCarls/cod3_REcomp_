@@ -6,9 +6,8 @@
 //    actions (the receiver classes exist, nothing starts one); the button
 //    prompts' pointer and pad hooks call into it;
 //  - game/aim_assist.cpp: the setting lives in each controller profile's
-//    block in multiplayer, read by other code (later);
-//  - game/voice_language.cpp: multiplayer registers its own sound banks
-//    (later: its banks and region index differ).
+//    block in multiplayer, read by other code (later).
+// ([acct2-ocr] 2026-11-07 game/voice_language.cpp is compiled into cod3mp now.)
 
 #include <cstdint>
 #include <optional>
@@ -16,7 +15,6 @@
 #include "game/aim_assist.h"
 #include "game/cutscene_skip.h"
 #include "game/qte_actions.h"
-#include "game/voice_language.h"
 #include "ui/qte_spinner.h"
 
 namespace cod3 {
@@ -40,10 +38,6 @@ bool MouseOwnsView() { return false; }
 
 std::optional<bool> AimAssistEnabled() { return std::nullopt; }
 void SetAimAssist(bool) {}
-
-namespace voice {
-bool DrawSettingsRow() { return false; }
-}  // namespace voice
 
 namespace ui {
 void DrawQteSpinner(ImGuiIO&) {}

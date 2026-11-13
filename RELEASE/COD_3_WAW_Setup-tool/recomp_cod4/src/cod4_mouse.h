@@ -24,6 +24,10 @@ namespace cod4::mouse {
 // cod4_mouse_look and the keyboard pad (mnk_mode) both on.
 bool Enabled();
 
+// [f2-menus] 2026-11-11 00:50 The game read mouse counts in the last 1.5 s: a level runs (a menu or a load stops the
+// reads). Any thread. For the F2 window's f2::SetLevelRuns.
+bool InGameplay();
+
 // The window's mouse: holds the pointer (relative mode, else re-centering) while the game reads mouse counts and the
 // window has focus, and hands the motion to the game. Added in Cod4App::OnPostSetup, above the SDK's keyboard/mouse
 // driver, which then doesn't see the motion (so mnk_mouse can't turn the view a second time).

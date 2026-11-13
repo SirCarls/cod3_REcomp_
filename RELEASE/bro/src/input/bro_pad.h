@@ -19,3 +19,7 @@ void bro_launch_info(void);
  * string the game draws meanwhile (ngl_font.c hands them over, without their control codes). */
 int bro_pad_waiting_for_text(void);
 void bro_pad_text_drawn(const char *text);
+
+/* [f2-menus] 2026-11-11 A control setting changed in the F2 window: the next poll reads them all again (any
+ * thread may call it; bro/src/f2/bro_f2_store.cpp does). */
+void bro_pad_reload(void);

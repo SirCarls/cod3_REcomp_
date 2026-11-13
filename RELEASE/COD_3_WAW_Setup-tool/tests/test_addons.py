@@ -208,6 +208,48 @@ class AddonTests(unittest.TestCase):
         self.assertIn("Test map pack", addons.summary(self.out))
         self.assertEqual(p.read_bytes(), make_package(GOOD))           # the download is never changed
 
+    # ------------------------------------------------------------ pack numbers [acct2-bro 2026-11-08]
+    # cod3mp mounts a pack on "dlc" + the last character of its folder's name and looks for its maps on
+    # dlc<MapPack>: (acct2-bro HANDOFF 2026-11-08 15:38), so a numbered pack's folder ends in its number.
+    NUMBERED = "AB" * 20 + "A9"                     # "AB" * 21 with its last character made the pack number, 9
+
+    def known_numbered(self, path: Path, number: int):
+        sha = hashlib.sha1(path.read_bytes()).hexdigest()
+        pack = addons.KnownPack("Test map pack", "AB" * 21, path.stat().st_size, number)
+        return mock.patch.dict(addons.KNOWN_PACKS, {sha: pack}, clear=True)
+
+    def test_installed_under_its_pack_number(self):
+        p = self.write_pkg()                        # DLMAPS gives pack 9
+        with self.known_numbered(p, 9):
+            added = addons.add([p], self.out, self.scratch, self.cancel, self.log)
+        self.assertEqual([a.id for a in added], [self.NUMBERED])
+        self.assertTrue((self.out / "userdata" / addons.CONTENT_DIR / self.NUMBERED / "mp" / "dlmaps.txt").is_file())
+        head = addons.header_path(self.out, self.NUMBERED).read_bytes()
+        self.assertEqual(head[0x108:0x108 + 42], self.NUMBERED.encode("ascii"))
+        self.assertFalse(self.installed().exists())
+
+    def test_wrong_pack_number_refused(self):
+        p = self.write_pkg()                        # DLMAPS gives pack 9, the known list says 2
+        with self.known_numbered(p, 2), self.assertRaises(common.SetupError):
+            addons.add([p], self.out, self.scratch, self.cancel, self.log)
+        content = self.out / "userdata" / addons.CONTENT_DIR
+        self.assertFalse(content.exists() and any(content.iterdir()))
+
+    def test_old_install_moved_to_its_pack_number(self):
+        p = self.write_pkg()
+        with self.known(p):                          # installed the old way, under the package's own name
+            addons.add([p], self.out, self.scratch, self.cancel, self.log)
+        self.assertTrue(self.installed().is_dir())
+        with self.known_numbered(p, 9):
+            self.assertEqual(addons.ensure_names(self.out, self.log), 1)
+            self.assertEqual(addons.ensure_names(self.out, self.log), 0)       # only once
+        self.assertFalse(self.installed().exists())
+        self.assertTrue((self.out / "userdata" / addons.CONTENT_DIR / self.NUMBERED / "mp" / "dlmaps.txt").is_file())
+        self.assertFalse(addons.header_path(self.out, "AB" * 21).exists())
+        head = addons.header_path(self.out, self.NUMBERED).read_bytes()
+        self.assertEqual(head[0x108:0x108 + 42], self.NUMBERED.encode("ascii"))
+        self.assertEqual([(a.id, a.present) for a in addons.read_registry(self.out)], [(self.NUMBERED, True)])
+
     def test_add_from_zip(self):
         p = self.write_pkg()
         z = self.root / "in" / "pack.zip"

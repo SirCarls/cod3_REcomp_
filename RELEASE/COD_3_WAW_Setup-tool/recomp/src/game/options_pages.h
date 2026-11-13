@@ -22,7 +22,8 @@
 
 namespace cod3::options_pages {
 
-enum class Category : uint8_t { kGameplay, kControls, kAim, kVideo, kAudio, kMovement };
+enum class Category : uint8_t { kGameplay, kControls, kAim, kVideo, kAudio, kMovement,
+                                kInterface /* [acct2-ocr] 2026-11-07 */ };
 
 // Where a row's value comes from.
 enum class Source : uint8_t {
@@ -33,6 +34,8 @@ enum class Source : uint8_t {
   kBattleActions,  // stick battle actions (campaign; game/qte_actions.h)
   kMovement,       // a row of game/movement/menu_movement.h
   kAim,            // a row of game/menu_aim.h
+  kController,     // [acct2-ocr] 2026-11-07 a row of game/menu_controller.h (`index` is its Row)
+  kPort,           // [acct2-ocr] 2026-11-07 one of the port's settings, game/menu_port_rows.h (`index` its Row)
 };
 
 struct Row {

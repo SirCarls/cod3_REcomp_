@@ -44,12 +44,18 @@
 #include "generated/default/cod4_pch.h"
 #endif
 
+#include "cod4_native_side.h"  // [waw-decomp-cod4] 2026-11-11 the native renderer's side check
+
 REXCVAR_DEFINE_INT32(cod4_debug_frame_audit, 0, "cod4",
                      "Debug (the frame-rate audit): every N seconds, log drawn frames, server frames (G_RunFrame) and "
                      "the client's prediction runs (CG_PredictPlayerState_Internal) per second; 0 = off. Record only");
 REXCVAR_DEFINE_INT32(cod4_debug_native_census, 0, "cod4",
                      "Debug: every N seconds, log what the backend drew a frame on average (techniques with their "
                      "surface types and passes, render commands); 0 = off. Record only");
+REXCVAR_DEFINE_INT32(cod4_debug_native_capture, 0, "cod4",
+                     "Debug (the native renderer's struct map): every N seconds, log one frame's indexed draws as "
+                     "the Direct3D layer gets them, the first of each technique and surface type, with the backend's "
+                     "state for it (material, technique, pass, streams); 0 = off. Record only");
 
 namespace {
 
@@ -120,6 +126,53 @@ struct Census {
 Census& TheCensus() {
   static Census census;
   return census;
+}
+
+// [waw-decomp] 2026-11-11, the native renderer's struct map (cod4_debug_native_capture). The draw-list loop's context
+// of the run being drawn, kept by cod4_census_tess on the thread that draws it, and the run's surface type.
+thread_local uint32_t t_run_context = 0;
+thread_local uint32_t t_run_type = 0;
+
+// One captured frame: armed by the frame's start every N seconds; the first draw of each (technique, surface type)
+// is logged, up to kCaptureLines.
+constexpr uint32_t kCaptureLines = 40;
+struct Capture {
+  std::mutex mutex;
+  bool armed = false;
+  uint32_t logged = 0;
+  uint64_t frame_draws = 0;  // indexed draws since the frame's start
+  uint64_t last_frame_draws = 0;
+  std::vector<std::pair<uint32_t, uint32_t>> seen;  // (technique, surface type) logged this frame
+  uint32_t detailed[kTessSlots] = {};  // [waw-decomp-cod4] lit draws logged in full this frame, by surface type
+  std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
+};
+
+Capture& TheCapture() {
+  static Capture capture;
+  return capture;
+}
+
+// Whether a guest address can be read: the program's own image and data, its heaps, or physical memory.
+bool Readable(uint32_t address) {
+  return (address >= 0x40000000u && address < 0x7FFF0000u) || (address >= 0x82000000u && address < 0x90000000u) ||
+         (address >= 0xA0000000u && address < 0xE0000000u);
+}
+
+// `count` words from `address` as hex, for a record whose layout is being mapped.
+std::string Words(const uint8_t* base, uint32_t address, uint32_t count) {
+  if (!Readable(address)) return "-";
+  std::string text;
+  char word[12];
+  for (uint32_t i = 0; i < count; ++i) {
+    std::snprintf(word, sizeof word, "%s%08X", i ? " " : "", Load32(base, address + 4 * i));
+    text += word;
+  }
+  return text;
+}
+
+// The name a record starts with (a material, a technique, a shader), or "?".
+std::string NameOf(const uint8_t* base, uint32_t record) {
+  return Readable(record) && Readable(Load32(base, record)) ? GuestName(base, Load32(base, record)) : "?";
 }
 
 void Report(Census& c, const uint8_t* base) {
@@ -244,6 +297,8 @@ void cod4_audit_client_end_frame(PPCContext& ctx, uint8_t* base) {
 
 // The draw-surface list loop's call of a tess function (0x82123A88, before the bctrl).
 void cod4_census_tess(PPCContext& ctx, uint8_t* base) {
+  t_run_context = ctx.r31.u32;  // [waw-decomp] for cod4_capture_draw: the run a Direct3D draw belongs to
+  t_run_type = (ctx.r28.u32 >> 2) & (kTessSlots - 1);
   if (REXCVAR_GET(cod4_debug_native_census) <= 0) return;
   const uint32_t type = (ctx.r28.u32 >> 2) & (kTessSlots - 1);
   const uint32_t pass = ctx.r30.u32;
@@ -277,6 +332,14 @@ void cod4_census_command(PPCContext& ctx, uint8_t* base) {
     }
   }
   ++c.other_commands;
+}
+
+// [waw-decomp-cod4] 2026-11-11: the start of the back end's frame (campaign 0x82128488, config/default.toml; it runs
+// 0x82330CD0 and the scene's views 0x82128268, whose render command loop is 0x82123B90): the native renderer's side
+// check ends the frame before (cod4_native_side.h).
+void cod4_native_frame(PPCContext& ctx, uint8_t* base) {
+  (void)ctx;
+  cod4::native::SideFrame(base);
 }
 
 namespace {
@@ -327,8 +390,171 @@ void cod4_census_flush(PPCContext& ctx, uint8_t* base) {
   ++c.pass_flushes[c.current_pass];
 }
 
+// [waw-decomp-cod4] 2026-11-11, for cod4_debug_native_capture: `count` floats from `address`, for constants.
+namespace {
+
+std::string Floats(const uint8_t* base, uint32_t address, uint32_t count) {
+  if (!Readable(address)) return "-";
+  std::string text;
+  char number[20];
+  for (uint32_t i = 0; i < count; ++i) {
+    const uint32_t bits = Load32(base, address + 4 * i);
+    float value;
+    std::memcpy(&value, &bits, sizeof value);
+    std::snprintf(number, sizeof number, "%s%.5g", i ? (i % 4 ? " " : " | ") : "", value);
+    text += number;
+  }
+  return text;
+}
+
+// [waw-decomp-cod4] 2026-11-11. One lit draw in full, for the native renderer's struct map (the layouts are in
+// dev/agents/waw-decomp/COD4-NATIVE.md): the pass's vertex shader (pass + 4 + 4 x the vertex declaration's type:
+// Xenon's MaterialPass keeps one vertex shader per declaration type), its arguments (8 bytes each: type u16, dest
+// u16, then a code constant's index u16, first row u8 and row count u8, or a sampler's code index, or a name hash,
+// or a pointer to a literal), the material's texture and constant tables, what each sampler has bound (state + 0x88)
+// and how (state + 0x20), the code constants the frame's source state holds (source + 0x800, 16 bytes each), the
+// shader constants as the device holds them (vertex c0 at device + 0x780, pixel c0 at device + 0x1780: 0x820D59C8
+// writes a pixel constant to device + (register + 0x178) x 16), and the draw's first corners.
+void LogDrawDetail(const uint8_t* base, uint32_t n, uint32_t device, uint32_t state, uint32_t source,
+                   uint32_t first_index) {
+  const uint32_t material = Load32(base, state + 0x118), pass = Load32(base, state + 0x124);
+  if (!Readable(material) || !Readable(pass)) return;
+  const uint32_t decl_type = Load32(base, state + 0xF8);
+  const uint32_t vs = decl_type < 15 ? Load32(base, pass + 4 + 4 * decl_type) : 0;
+  const uint32_t arg_count = uint32_t(base[pass + 0x48]) + base[pass + 0x49] + base[pass + 0x4A];
+  const uint32_t args = Load32(base, pass + 0x50);
+  REXLOG_INFO("cod4: capture {} detail: vs \"{}\" (declaration type {}); declaration (pass + 0) {:08X}: {}; {} "
+              "arguments at {:08X}: {}", n, NameOf(base, vs), decl_type, Load32(base, pass),
+              Words(base, Load32(base, pass), 12), arg_count, args, Words(base, args, 2 * std::min(arg_count, 40u)));
+  const uint32_t texture_count = base[material + 0x32], constant_count = base[material + 0x33];
+  const uint32_t textures = Load32(base, material + 0x3C), constants = Load32(base, material + 0x40);
+  std::string table;
+  for (uint32_t i = 0; i < texture_count && i < 8 && Readable(textures); ++i) {
+    const uint32_t image = Load32(base, textures + 12 * i + 8);
+    table += " [" + Words(base, textures + 12 * i, 3) + " -> " + Words(base, image, 22) + "]";
+  }
+  REXLOG_INFO("cod4: capture {} detail: material +0x30: {}; {} textures at {:08X}:{}; {} constants at {:08X}: {}",
+              n, Words(base, material + 0x30, 8), texture_count, textures, table, constant_count, constants,
+              Words(base, constants, 8 * std::min(constant_count, 4u)));
+  std::string bound;
+  for (uint32_t i = 0; i < 16; ++i) {
+    const uint32_t texture = Load32(base, state + 0x88 + 4 * i);
+    if (!texture) continue;
+    char head[48];
+    std::snprintf(head, sizeof head, " s%u (state %08X) %08X: ", i, Load32(base, state + 0x20 + 4 * i), texture);
+    bound += head + Words(base, texture, 14) + ";";
+  }
+  REXLOG_INFO("cod4: capture {} detail: samplers:{}", n, bound);
+  REXLOG_INFO("cod4: capture {} detail: device vertex c0-c27: {}", n, Floats(base, device + 0x780, 112));
+  REXLOG_INFO("cod4: capture {} detail: device pixel c0-c15: {}", n, Floats(base, device + 0x1780, 64));
+  REXLOG_INFO("cod4: capture {} detail: source code constants 0-57: {}", n, Floats(base, source + 0x800, 232));
+  REXLOG_INFO("cod4: capture {} detail: source code images (source + 0xBA0): {}; viewport (state + 0xA5C): {}", n,
+              Words(base, source + 0xBA0, 27), Words(base, state + 0xA5C, 6));
+  // the first triangle's corners: the index buffer's data (+0x18 its address), stream 0's (its vertex buffer's
+  // fetch constant at +0x18: the address in the first word) plus the stream's offset
+  const uint32_t index_buffer = Load32(base, state + 0xF4), vertex_buffer = Load32(base, state + 0x100);
+  if (!Readable(index_buffer) || !Readable(vertex_buffer)) return;
+  const uint32_t indices = Load32(base, index_buffer + 0x18) + 2 * first_index;
+  const uint32_t stride = Load32(base, state + 0xFC);
+  const uint32_t vertices = (Load32(base, vertex_buffer + 0x18) & ~3u) + Load32(base, state + 0x104);
+  if (!Readable(indices) || !Readable(vertices) || stride < 12 || stride > 64) return;
+  std::string corners;
+  for (uint32_t i = 0; i < 3; ++i) {
+    const uint32_t index = Load16(base, indices + 2 * i);
+    corners += " [" + std::to_string(index) + ": " + Floats(base, vertices + index * stride, 3) + " / " +
+               Words(base, vertices + index * stride + 12, (stride - 12) / 4) + "]";
+  }
+  REXLOG_INFO("cod4: capture {} detail: indices at {:08X}, vertices at {:08X} stride {}:{}", n, indices, vertices,
+              stride, corners);
+}
+
+}  // namespace
+
+// [waw-decomp] 2026-11-11. The Direct3D layer's indexed draw, at its start (campaign 0x8209BD80; read in the
+// decompile: the world's draw 0x8210C468 calls it as (device, 4, 0, first index, index count), after setting the
+// vertex stream with the world's 44-byte corners). r3 the device, r4 the primitive type (4: a triangle list), r5 to
+// r7 as that call has them. The backend's state for the draw is the run's command buffer state (context + 4), read
+// by KisakCOD's layout moved to where the 360 program keeps it (seen in the decompile of the world's tess function
+// 0x821043B0 and of 0x820D3D30): +0xF0 the device, +0xF4 the index buffer, +0xF8 the vertex declaration's type,
+// +0xFC two streams of {stride, vertex buffer, offset}, +0x114 the vertex declaration, +0x118 the material, +0x11C
+// the technique type, +0x120 the technique, +0x124 the pass (+0x40 its vertex shader, +0x44 its pixel shader, +0x48
+// to +0x4A its argument counts, +0x50 its arguments), +0x12C the depth range's kind. Logged to check exactly that.
+void cod4_capture_draw(PPCContext& ctx, uint8_t* base) {
+  // [waw-decomp-cod4] 2026-11-11 cod4_debug_native_side (off by default): the draw kept for the native picture
+  cod4::native::SideDraw(base, t_run_context, t_run_type, ctx.r3.u32, uint32_t(ctx.lr), ctx.r5.u32, ctx.r6.u32,
+                         ctx.r7.u32);
+  if (REXCVAR_GET(cod4_debug_native_capture) <= 0) return;
+  Capture& c = TheCapture();
+  std::lock_guard<std::mutex> lock(c.mutex);
+  ++c.frame_draws;
+  if (!c.armed || c.logged >= kCaptureLines) return;
+  const uint32_t context = t_run_context;
+  const uint32_t state = Readable(context) ? Load32(base, context + 4) : 0;
+  const uint32_t source = Readable(context) ? Load32(base, context) : 0;
+  const uint32_t technique = Readable(state) ? Load32(base, state + 0x120) : 0;
+  const std::pair<uint32_t, uint32_t> key{technique, t_run_type};
+  if (std::find(c.seen.begin(), c.seen.end(), key) != c.seen.end()) return;
+  c.seen.push_back(key);
+  ++c.logged;
+  if (!Readable(state)) {
+    REXLOG_INFO("cod4: capture {}: draw type {} base {} first {} count {} from {:08X}: no run's state (context "
+                "{:08X})", c.logged, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, uint32_t(ctx.lr), context);
+    return;
+  }
+  const uint32_t material = Load32(base, state + 0x118), pass = Load32(base, state + 0x124);
+  const bool pass_ok = Readable(pass);
+  REXLOG_INFO("cod4: capture {}: surface type {}, draw type {} base {} first {} count {} from {:08X}; state {:08X} "
+              "source {:08X} device {:08X}; material \"{}\", technique type {} \"{}\", pass {:08X}: vs \"{}\" ps "
+              "\"{}\" args {} {} {}; prim +0xF0: {}; depth range +0x12C: {}",
+              c.logged, t_run_type, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, uint32_t(ctx.lr), state, source,
+              ctx.r3.u32, NameOf(base, material), Load32(base, state + 0x11C), NameOf(base, technique), pass,
+              pass_ok ? NameOf(base, Load32(base, pass + 0x40)) : "?",
+              pass_ok ? NameOf(base, Load32(base, pass + 0x44)) : "?", pass_ok ? uint32_t(base[pass + 0x48]) : 0u,
+              pass_ok ? uint32_t(base[pass + 0x49]) : 0u, pass_ok ? uint32_t(base[pass + 0x4A]) : 0u,
+              Words(base, state + 0xF0, 10), Words(base, state + 0x12C, 3));
+  if (c.logged <= 4) {  // the first ones whole: the state's start, the material, the buffers, for the map
+    REXLOG_INFO("cod4: capture {}: state +0x00: {}", c.logged, Words(base, state, 60));
+    REXLOG_INFO("cod4: capture {}: material +0x00: {}; technique +0x00: {}; pass +0x00: {}", c.logged,
+                Words(base, material, 20), Words(base, technique, 4), Words(base, pass, 22));
+    REXLOG_INFO("cod4: capture {}: index buffer: {}; vertex buffer 0: {}; vertex buffer 1: {}; declaration: {}",
+                c.logged, Words(base, Load32(base, state + 0xF4), 8), Words(base, Load32(base, state + 0x100), 8),
+                Words(base, Load32(base, state + 0x10C), 8), Words(base, Load32(base, state + 0x114), 8));
+  }
+  // [waw-decomp-cod4] 2026-11-11: the lit draws (technique types 7 and up) in full, the first two of each surface
+  // type in a captured frame (LogDrawDetail)
+  if (Load32(base, state + 0x11C) >= 7 && t_run_type < kTessSlots && c.detailed[t_run_type] < 2) {
+    ++c.detailed[t_run_type];
+    LogDrawDetail(base, c.logged, ctx.r3.u32, state, source, ctx.r6.u32);
+  }
+}
+
+namespace {
+
+// The capture's frame: counts the last frame's draws and arms the next frame every N seconds.
+void CaptureFrame() {
+  const int32_t seconds = REXCVAR_GET(cod4_debug_native_capture);
+  if (seconds <= 0) return;
+  Capture& c = TheCapture();
+  std::lock_guard<std::mutex> lock(c.mutex);
+  if (c.armed)
+    REXLOG_INFO("cod4: capture: the frame had {} indexed draws; {} lines logged", c.frame_draws, c.logged);
+  c.last_frame_draws = c.frame_draws;
+  c.frame_draws = 0;
+  c.armed = false;
+  if (std::chrono::steady_clock::now() - c.since >= std::chrono::seconds(seconds)) {
+    c.since = std::chrono::steady_clock::now();
+    c.armed = true;
+    c.logged = 0;
+    c.seen.clear();
+    std::fill(c.detailed, c.detailed + kTessSlots, 0u);  // [waw-decomp-cod4]
+  }
+}
+
+}  // namespace
+
 // Called once a frame from cod4_frame_start (cod4_hooks.cpp): counts frames and logs the averages every N seconds.
 void Cod4CensusFrame(uint8_t* base) {
+  CaptureFrame();  // [waw-decomp] cod4_debug_native_capture
   if (const int32_t audit_seconds = REXCVAR_GET(cod4_debug_frame_audit); audit_seconds > 0) {
     Audit& a = TheAudit();
     std::lock_guard<std::mutex> lock(a.mutex);

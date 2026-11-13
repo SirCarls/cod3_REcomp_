@@ -471,10 +471,12 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(len(addresses), len(set(addresses)))
 
     def test_patches_are_patches(self):
+        # [acct2-bro] 2026-11-08: xboxrecomp's runtime (src/) and, since xboxrecomp-lazy-decode.patch, its tools.
         lay = bro.layout(Path("/o"), Path("/w"), repo=PROJECT)
         self.assertTrue(lay.patches)
         for p in lay.patches:
-            self.assertTrue(p.read_text(encoding="utf-8").startswith("diff --git a/src/"), p.name)
+            text = p.read_text(encoding="utf-8")
+            self.assertTrue(text.startswith("diff --git a/src/") or text.startswith("diff --git a/tools/"), p.name)
 
 
 if __name__ == "__main__":

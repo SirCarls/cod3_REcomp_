@@ -58,6 +58,15 @@ int SettingMsFor(int player);
 int OwnSettingMs(int player);
 // Its setting's name ("cod3_use_hold_ms", "cod3_use_hold_ms_p2" ...), or nullptr past the players.
 const char* SettingName(int player);
+
+// [acct2-main] 2026-11-13 Whether `text` has a word of the Use hold: "[HOLD_USE]", "[USE]", and the campaign's
+// "[HOLD_ACTIVATE]" / "[ACTIVATE]" (its use triggers' hints, the battle actions' starts among them: use_hold.cpp).
+bool HasUseWord(const std::string& text);
+
+// [acct2-main] 2026-11-13 With cod3_debug_use_hold (both programs): a text with a Use word ("[HOLD_USE]",
+// "[USE]") as the prompts lay it out, `how` it was treated and the hold `ms` it was laid out for; once per text and
+// result, at most 200 lines.
+void NoteWords(const std::string& text, const std::string& shown, int ms, const char* how);
 // What `player`'s Use takes now (CurrentMs for that player).
 int CurrentMsFor(uint8_t* base, int player);
 // Every player's setting in one text (the prompts lay their texts out again when it changes).
@@ -68,6 +77,8 @@ std::string SettingsKey();
 // first letter, mid-sentence). The words are the game's (INGAME_PRESS_AND_HOLD
 // and INGAME_PRESS in the language shown); English ones are tried too. Call it
 // only when the hold is 0 (CurrentMs).
+// [acct2-main] 2026-11-13 The same for ACTIVATE ("[HOLD_ACTIVATE]" -> "[VERB_ACTIVATE]"). A plain "Hold [ACTIVATE]"
+// stays (a level may time that hold itself: use_hold.cpp).
 std::string Pressed(const std::string& text, const std::string& press_and_hold, const std::string& press);
 
 }  // namespace cod3::use_hold

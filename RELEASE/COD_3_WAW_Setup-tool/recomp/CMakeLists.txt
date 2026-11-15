@@ -82,6 +82,8 @@ set(COD3_SOURCES
     src/game/options_pages.cpp  # [menus-categories] which rows each Options category page has, both programs
     src/game/mouse_look.cpp
     src/f2/f2_accel.cpp  # [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (the ports' shared file)
+    src/f2/f2_crosshair_cs2.cpp  # [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
+    src/f2/crosshair_cs2_code.cpp  # [acct2-decomp] CS2's share codes (copied in by acct2-ocr)
     src/game/movement/hooks_sp.cpp  # [movement] sprint and the CoD4 movement style (campaign only)
     src/game/movement/menu_movement.cpp  # [movement]
     src/game/movement/rules.cpp  # [movement]

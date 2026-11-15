@@ -23,3 +23,7 @@ uint32_t ngl_stand_in_block(int id);
 /* For the Lock functions, whose callers write vertices, indices or pixels into what they get back: one shared 1 MB
  * guest buffer. What is written there is thrown away; nothing is drawn in phase 1. */
 uint32_t ngl_stand_in_scratch(void);
+
+/* [acct2-bro] 2026-11-13: not a logged stand-in but done natively: the game's fast sine and cosine (0x000110F0)
+ * with the rounding the game sets for it (bro/src/runtime/bro_fast_sincos.c) */
+void bro_fast_sincos(void);

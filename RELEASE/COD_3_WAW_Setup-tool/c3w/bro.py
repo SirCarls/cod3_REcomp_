@@ -15,17 +15,22 @@ The Big Red One tab (games.py) builds it in the same steps as Call of Duty 3's S
    approval first, like every download.
 4. Recompile default.xbe to C with xboxrecomp's own steps: its parser, the disassembly (seeded with
    bro/config/seed_functions.json), function IDs, ABI analysis, then the lift, with bro/config/
-   stand_in_functions.tsv as the manual functions. About 17 minutes on a fast PC (a Ryzen 9 5900X), 12 of them the
-   disassembly; it was 105, 99 of them the disassembly, before bro/patches/xboxrecomp-lazy-decode.patch ([acct2-bro]
-   2026-11-08, owner 09:43 "Is there a way to speed up the setup tool for the big red one?": the same C, byte for
-   byte). The C is the game's code, so it stays in the work folder and is deleted with it.
+   stand_in_functions.tsv as the manual functions. About 7 minutes on a fast PC (a Ryzen 9 5900X), 3.6 of them the
+   disassembly and 3.3 the lift, and up to 3.6 GB of memory; it was 19 minutes before
+   bro/patches/xboxrecomp-speed.patch ([acct2-ocr] 2026-11-12, owner 18:07 "work on making the decompilation
+   process for BRO quicker": decode caches and fewer garbage collections, the same C byte for byte on all four discs)
+   and 105 before bro/patches/xboxrecomp-lazy-decode.patch ([acct2-bro] 2026-11-08, owner 09:43 "Is there a way to
+   speed up the setup tool for the big red one?": the same C, byte for byte). The C is the game's code, so it stays
+   in the work folder and is deleted with it.
 5. Build bro/ with CMake against that C: graphics on ../ngl_vk; the window, sound and pads through SDL3, the static
    SDL3 Call of Duty 3's SDK builds when that SDK is in the same work folder (both games then use one SDL), else the
    system's own SDL3 (owner 2026-11-07 10:04: "Ok just use what cod3 has").
 6. Install bin/bro, saves/, a launcher (play.sh) and bro.json in <output>/bro.
 
-Linux only for now: the Windows build is the next step (Port status). Plain logic, no Tk, so the tests run
-without Tkinter. The disc and default.xbe are only read; what runs is the port's own C.
+Linux and Windows ([acct2-ocr] 2026-11-12, owner 23:06 "Also the windows build needs to happen"): on Windows step 5
+builds bin/bro.exe with llvm-mingw, and the launcher is play.bat (c3w/bro_windows.py); on Linux BuildOptions.windows
+builds that too, beside the Linux program. Plain logic, no Tk, so the tests run without Tkinter. The disc and
+default.xbe are only read; what runs is the port's own C.
 """
 from __future__ import annotations
 
@@ -43,8 +48,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import common, deps
-from .common import IS_LINUX, IS_WINDOWS, APPROVAL, Install, Log, Runner, SetupError, human, is_within
+from . import bro_windows, common, deps
+from .common import IS_LINUX, IS_WINDOWS, APPROVAL, Cancelled, Install, Log, Runner, SetupError, human, is_within
 from .xiso import XisoImage
 
 GAME_NAME = "Call of Duty 2: Big Red One"
@@ -119,23 +124,28 @@ LINUX_PACKAGES: Dict[str, List[str]] = {
 # Room the build needs besides the game's own files: the recompiler's tables and the C (about 0.6 GB), the build
 # (about 0.4 GB).
 WORK_ROOM = 1_500_000_000
+# [acct2-ocr] the Windows version besides: its build (about 0.4 GB), SDL3's, and llvm-mingw (about 1 GB unpacked)
+WINDOWS_ROOM = 1_600_000_000
 
 # The recompiler's steps: (key, what the log says, share of the build's time).
 STEPS: Tuple[Tuple[str, str, float], ...] = (
     ("xbe_parser", "Reading default.xbe", 0.01),
-    ("disasm", "Disassembling (the long step: 10-20 minutes)", 0.69),
-    ("func_id", "Naming functions", 0.01),
+    ("disasm", "Disassembling (the long step: 3-8 minutes)", 0.50),
+    ("func_id", "Naming functions", 0.02),
     ("abi_analysis", "Working out how each function is called", 0.01),
-    ("recomp", "Turning the program into C", 0.28),
+    ("recomp", "Turning the program into C", 0.46),
 )
 
 
 def supported() -> Tuple[bool, str]:
-    """(True, "") where the build works, else (False, why)."""
+    """(True, "") where the build works, else (False, why): Linux, and 64-bit Windows ([acct2-ocr] 2026-11-12)."""
     if IS_LINUX:
         return True, ""
-    return False, ("Big Red One builds on Linux for now; the Windows version is the next step (Port status). On "
-                   "Windows, build it in a Linux installation, or wait for the next version of the tool.")
+    if IS_WINDOWS:
+        if sys.maxsize > 2 ** 32:
+            return True, ""
+        return False, "Big Red One's Windows build needs 64-bit Windows and a 64-bit Python."
+    return False, "Big Red One builds on Windows and on Linux for now, not on this system."
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +285,15 @@ class Layout:
     @property
     def launcher(self) -> Path:
         return self.out / ("play.bat" if IS_WINDOWS else "play.sh")
+
+    # [acct2-ocr] the Windows program and its launcher, whichever system built them
+    @property
+    def exe_windows(self) -> Path:
+        return self.out / "bin" / bro_windows.EXE
+
+    @property
+    def launcher_windows(self) -> Path:
+        return self.out / bro_windows.LAUNCHER_BAT
 
     @property
     def manifest(self) -> Path:
@@ -506,9 +525,10 @@ def capstone_install(lay: Layout) -> Install:
                    "Python environment of its own", str(lay.python_env), "about 10 MB", "pypi.org")
 
 
-def downloads(lay: Layout, t: Tools, runner: Runner, allow_install: bool) -> List[Install]:
+def downloads(lay: Layout, t: Tools, runner: Runner, allow_install: bool, windows: bool = False) -> List[Install]:
     """Everything the build would download or install on this PC, for one approval list before anything starts:
-    the packages (when some are missing and installing is on), xboxrecomp and Capstone (when not there yet)."""
+    the packages (when some are missing and installing is on), xboxrecomp and Capstone (when not there yet), and
+    for the Windows version (`windows`, always on Windows) its compiler and sources (bro_windows.downloads)."""
     items = []
     if t.problems() and allow_install and IS_LINUX:
         pm = deps._linux_package_manager()
@@ -519,7 +539,14 @@ def downloads(lay: Layout, t: Tools, runner: Runner, allow_install: bool) -> Lis
         items.append(xboxrecomp_install(lay))
     if not (lay.python.is_file() and runner.capture([lay.python, "-c", "import capstone"])[0] == 0):
         items.append(capstone_install(lay))
+    if windows or IS_WINDOWS:
+        items += bro_windows.downloads(lay.tools, t.git, t.glslc, runner)
     return items
+
+
+# [acct2-ocr] 2026-11-12: files as they are in the repository (LF), whatever the system's Git does with line ends (Git
+# for Windows turns LF into CRLF by default): bro/patches are applied to them.
+NO_CRLF = ["-c", "core.autocrlf=false", "-c", "core.eol=lf"]
 
 
 def _git_head(git: Path, repo: Path, runner: Runner) -> str:
@@ -536,8 +563,8 @@ def ensure_xboxrecomp(lay: Layout, git: Path, runner: Runner, log: Log) -> Path:
     src.mkdir(parents=True, exist_ok=True)
     if not (src / ".git").is_dir():
         runner.run([git, "init", "-q", src])
-    runner.run([git, "-C", src, "fetch", "--depth", "1", XBOXRECOMP_URL, XBOXRECOMP_COMMIT])
-    runner.run([git, "-C", src, "checkout", "-q", "--force", "--detach", XBOXRECOMP_COMMIT])
+    runner.run([git, *NO_CRLF, "-C", src, "fetch", "--depth", "1", XBOXRECOMP_URL, XBOXRECOMP_COMMIT])
+    runner.run([git, *NO_CRLF, "-C", src, "checkout", "-q", "--force", "--detach", XBOXRECOMP_COMMIT])
     if _git_head(git, src, runner) != XBOXRECOMP_COMMIT:
         raise SetupError(f"xboxrecomp in {src} isn't at commit {XBOXRECOMP_COMMIT[:12]} after the download.")
     return src
@@ -550,10 +577,10 @@ def prepare_xboxrecomp(lay: Layout, git: Path, runner: Runner, log: Log) -> None
         common.safe_rmtree(lay.xboxrecomp, lay.work, [lay.out], log)
     lay.stamp.unlink(missing_ok=True)   # the steps' tables were in the copy just removed
     lay.work.mkdir(parents=True, exist_ok=True)
-    runner.run([git, "clone", "-q", "--no-checkout", lay.xboxrecomp_cache, lay.xboxrecomp])
-    runner.run([git, "-C", lay.xboxrecomp, "checkout", "-q", "--detach", XBOXRECOMP_COMMIT])
+    runner.run([git, *NO_CRLF, "clone", "-q", "--no-checkout", lay.xboxrecomp_cache, lay.xboxrecomp])
+    runner.run([git, *NO_CRLF, "-C", lay.xboxrecomp, "checkout", "-q", "--detach", XBOXRECOMP_COMMIT])
     for patch in lay.patches:
-        runner.run([git, "-C", lay.xboxrecomp, "apply", "--whitespace=nowarn", patch])
+        runner.run([git, *NO_CRLF, "-C", lay.xboxrecomp, "apply", "--whitespace=nowarn", patch])
         log.info(f"Applied {patch.name}")
 
 
@@ -564,7 +591,7 @@ def ensure_python(lay: Layout, runner: Runner, log: Log) -> Path:
         return py
     APPROVAL.require([capstone_install(lay)], log)
     if not py.is_file():
-        runner.run([sys.executable, "-m", "venv", lay.python_env])
+        runner.run([bro_windows.console_python(), "-m", "venv", lay.python_env])
     runner.run([py, "-m", "pip", "install", "--disable-pip-version-check", "--no-input", "--only-binary", ":all:",
                 CAPSTONE])
     if runner.capture([py, "-c", "import capstone"])[0] != 0:
@@ -784,10 +811,11 @@ def _copy_folder(src: Path, dest: Path, log: Log, cancel: threading.Event) -> No
     log.progress(1.0, f"Copied {human(total)}")
 
 
-def check_room(disc: Disc, lay: Layout) -> None:
-    """Enough free space for the game's files (output) and the build (work)."""
+def check_room(disc: Disc, lay: Layout, windows: bool = False) -> None:
+    """Enough free space for the game's files (output) and the build (work); `windows`: and the Windows version's
+    ([acct2-ocr] its build, and llvm-mingw unpacked in tools/ the first time)."""
     have_game = sum(f.stat().st_size for f in _folder_files(lay.game)) if lay.game.is_dir() else 0
-    needs = [(lay.out, max(0, disc.size - have_game)), (lay.work, WORK_ROOM)]
+    needs = [(lay.out, max(0, disc.size - have_game)), (lay.work, WORK_ROOM + (WINDOWS_ROOM if windows else 0))]
     for folder, need in needs:
         probe = folder
         while not probe.exists() and probe != probe.parent:
@@ -896,9 +924,10 @@ def _progress_lines(log: Log, what: str, frac) -> Callable[[str], None]:
     return handle
 
 
-# About how long the recompile's steps take in all; STEPS' shares are of this time. [acct2-bro] 2026-11-08 measured
-# (lazy233, Ryzen 9 5900X): xbe_parser 0 s, disasm 706 s, func_id 7 s, abi_analysis 5 s, recomp 300 s.
-RECOMPILE_SECONDS = 1020
+# About how long the recompile's steps take in all; STEPS' shares are of this time. [acct2-ocr] 2026-11-12 measured
+# with bro/patches/xboxrecomp-speed.patch (v3ce, the owner's PC): xbe_parser 0 s, disasm 215 s, func_id 7 s,
+# abi_analysis 5 s, recomp 196 s. Before it ([acct2-bro] 2026-11-08, lazy233): 0, 706, 7, 5 and 300 s (1020).
+RECOMPILE_SECONDS = 425
 
 
 class _StepClock:
@@ -938,7 +967,9 @@ def format_minutes(seconds: float) -> str:
 
 def configure_command(lay: Layout, t: Tools) -> List[str]:
     cmd = [str(t.cmake), "-S", str(lay.bro_src), "-B", str(lay.build), f"-DXBOXRECOMP_DIR={lay.xboxrecomp}",
-           f"-DBRO_GEN_DIR={lay.gen}", "-DCMAKE_BUILD_TYPE=Release", f"-DPython3_EXECUTABLE={sys.executable}"]
+           f"-DBRO_GEN_DIR={lay.gen}", "-DCMAKE_BUILD_TYPE=Release",
+           f"-DPython3_EXECUTABLE={bro_windows.console_python()}",
+           f"-DCMAKE_C_FLAGS={bro_windows.C_FLAGS}"]   # [acct2-ocr] 2026-11-13: GCC 14 (bro_windows.C_FLAGS)
     if t.sdl3:
         cmd.append(f"-DSDL3_DIR={t.sdl3}")    # Call of Duty 3's SDK's static SDL3 (bro/CMakeLists.txt's find_package)
     if t.ninja:
@@ -984,24 +1015,37 @@ exec "$here/bin/bro" "$here/game" "$here/saves" "$@"
 """
 
 
-def install(lay: Layout, exe: Path, disc: Disc, tool_version: str) -> None:
-    """The program into <output>/bro/bin, the launcher, saves/ and bro.json."""
-    lay.exe.parent.mkdir(parents=True, exist_ok=True)
-    tmp = lay.exe.with_name(lay.exe.name + ".new")
+def _place(exe: Path, dest: Path, executable: bool) -> None:
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".new")
     shutil.copy2(exe, tmp)
-    if not IS_WINDOWS:
+    if executable and not IS_WINDOWS:
         tmp.chmod(tmp.stat().st_mode | 0o755)
-    tmp.replace(lay.exe)
+    tmp.replace(dest)
+
+
+def install(lay: Layout, exe: Optional[Path], disc: Disc, tool_version: str,
+            exe_windows: Optional[Path] = None) -> None:
+    """The programs into <output>/bro/bin (Linux: bro, Windows: bro.exe; [acct2-ocr] both when both were built),
+    their launchers (play.sh, play.bat), saves/ and bro.json."""
+    if exe is not None:
+        _place(exe, lay.exe, True)
+    if exe_windows is not None:
+        _place(exe_windows, lay.exe_windows, False)
     lay.saves.mkdir(parents=True, exist_ok=True)
     lay.logs.mkdir(parents=True, exist_ok=True)
-    if not IS_WINDOWS:
+    if exe is not None and not IS_WINDOWS:
         lay.launcher.write_text(LAUNCHER_SH, encoding="utf-8")
         lay.launcher.chmod(0o755)
-    common.write_json(lay.manifest, {
-        "game": GAME_NAME, "tool_version": tool_version, "built": time.strftime("%Y-%m-%d %H:%M"),
-        "xbe_md5": disc.xbe_md5, "xboxrecomp": XBOXRECOMP_COMMIT,
-        ("exe_windows" if IS_WINDOWS else "exe_linux"): lay.exe.relative_to(lay.out).as_posix(),
-        "game_dir": "game", "saves_dir": "saves"})
+    if exe_windows is not None:
+        lay.launcher_windows.write_text(bro_windows.LAUNCHER_BAT_TEXT, encoding="utf-8", newline="")
+    m = {"game": GAME_NAME, "tool_version": tool_version, "built": time.strftime("%Y-%m-%d %H:%M"),
+         "xbe_md5": disc.xbe_md5, "xboxrecomp": XBOXRECOMP_COMMIT}
+    if exe is not None and not IS_WINDOWS:
+        m["exe_linux"] = lay.exe.relative_to(lay.out).as_posix()
+    if exe_windows is not None:
+        m["exe_windows"] = lay.exe_windows.relative_to(lay.out).as_posix()
+    common.write_json(lay.manifest, {**m, "game_dir": "game", "saves_dir": "saves"})
 
 
 @dataclass
@@ -1093,7 +1137,7 @@ def play_command(output: Path) -> Tuple[Optional[List[str]], str]:
         ended = last_build(Path(output)) if output else ""
         if ended:
             return None, (f"Not built yet. {ended} Press Build again: it goes on from where it stopped. The "
-                          "disassembly takes 10-20 minutes; leave the tool open until it says Done.")
+                          "recompile takes 5-15 minutes; leave the tool open until it says Done.")
         return None, "Not built yet: choose your disc on Big Red One's Set up page and press Build."
     lay = layout(Path(output), Path(output))
     return [str(exe), str(lay.game), str(lay.saves)], ""
@@ -1111,6 +1155,9 @@ class BuildOptions:
     install_deps: bool = True
     cleanup: bool = True
     tool_version: str = ""
+    # [acct2-ocr] 2026-11-12: on Linux, also the Windows version (bin/bro.exe and play.bat, for a Windows PC), made
+    # with llvm-mingw. On Windows the build is the Windows version anyway.
+    windows: bool = False
 
 
 def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event,
@@ -1144,7 +1191,7 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
         raise SetupError(f"The work folder {work} and the output folder {lay.out.parent} are inside each other: "
                          "pick two separate folders.")
     common.claim_work_dir(work)
-    check_room(disc, lay)
+    check_room(disc, lay, windows=IS_WINDOWS or o.windows)
     # The build's log is also kept in <output>/bro/logs/build.log (the one before as build.previous.log).
     try:
         lay.logs.mkdir(parents=True, exist_ok=True)
@@ -1164,10 +1211,18 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
     log.info(f"Setup tool {o.tool_version or '?'}, xboxrecomp {XBOXRECOMP_VERSION} ({XBOXRECOMP_COMMIT[:12]}), "
              f"{len(lay.patches)} patches, output {lay.out}, work {lay.work}")
     step(1)
-    found = find_tools(runner, lay.sdk_sdl3)
-    APPROVAL.require(downloads(lay, found, runner, o.install_deps), log)   # one list, before anything is fetched
-    tools = ensure_tools(runner, log, o.install_deps, found, lay.sdk_sdl3)
-    log.info("SDL3: " + (f"Call of Duty 3's SDK's ({tools.sdl3})" if tools.sdl3 else "the system's"))
+    if IS_WINDOWS:
+        # [acct2-ocr] Git, CMake and Ninja on PATH or pinned in tools/; the compiler and the rest: bro_windows
+        host = bro_windows.find_host_tools(lay.tools, runner)
+        found = Tools(git=host.git, cmake=host.cmake, ninja=host.ninja, glslc=host.glslc)
+        APPROVAL.require(bro_windows.host_downloads(host, lay.tools) + downloads(lay, found, runner, False), log)
+        host = bro_windows.ensure_host_tools(host, lay.tools, o.install_deps, runner, log, cancel)
+        tools = Tools(git=host.git, cmake=host.cmake, ninja=host.ninja, glslc=host.glslc)
+    else:
+        found = find_tools(runner, lay.sdk_sdl3)
+        APPROVAL.require(downloads(lay, found, runner, o.install_deps, o.windows), log)   # one list, before anything
+        tools = ensure_tools(runner, log, o.install_deps, found, lay.sdk_sdl3)
+        log.info("SDL3: " + (f"Call of Duty 3's SDK's ({tools.sdl3})" if tools.sdl3 else "the system's"))
     step(2)
     # default.xbe first; the rest of the disc is copied beside the recompile and the build (GameCopy).
     place_xbe(disc, lay)
@@ -1184,16 +1239,37 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
         recompile(lay, py, disc.xbe_md5, runner, log,
                   on_step=lambda what, frac: log.progress(frac, what))
         step(5)
-        exe = build(lay, tools, o.jobs, runner, log)
+        exe = None if IS_WINDOWS else build(lay, tools, o.jobs, runner, log)
+        exe_windows = _build_windows(o, lay, tools, runner, log, cancel) if (IS_WINDOWS or o.windows) else None
         copier.finish()
     except BaseException:
         copier.stop()
         raise
     step(6)
-    install(lay, exe, disc, o.tool_version)
+    install(lay, exe, disc, o.tool_version, exe_windows)
     if o.cleanup:
         common.safe_rmtree(lay.work, work, [lay.out, disc.path], log)
         log.info(f"Removed the build files in {lay.work}. xboxrecomp and Capstone stay in {lay.tools}.")
     log.progress(1.0, "Done")
-    return (f"{GAME_NAME} is in {lay.out}: Play starts it (or {lay.launcher.name} there).\n"
+    text = (f"{GAME_NAME} is in {lay.out}: Play starts it (or {lay.launcher.name} there).\n"
             f"Saves: {lay.saves}")
+    if o.windows and not IS_WINDOWS:
+        text += ("\nThe Windows version: bin/bro.exe and play.bat there (copy the whole bro folder to a Windows PC)."
+                 if exe_windows else "\nThe Windows version wasn't made: see the log.")
+    return text
+
+
+def _build_windows(o: BuildOptions, lay: Layout, tools: Tools, runner: Runner, log: Log,
+                   cancel: threading.Event) -> Optional[Path]:
+    """[acct2-ocr] bro.exe (bro_windows.build). On Linux it comes besides the Linux game: if it fails, the reason is
+    logged and the Linux game is installed all the same (as Call of Duty 3's Windows version)."""
+    try:
+        return bro_windows.build(lay, tools.git, tools.cmake, tools.ninja, tools.glslc, o.jobs, runner, log, cancel,
+                                 line_filter=_progress_lines(log, "Compiling the Windows version", 0.0))
+    except Cancelled:
+        raise
+    except Exception as e:  # noqa: BLE001 - downloads, unpacking, the compiler: all reported the same way
+        if IS_WINDOWS:
+            raise
+        log.warn(f"The Windows version wasn't made: {e}")
+        return None

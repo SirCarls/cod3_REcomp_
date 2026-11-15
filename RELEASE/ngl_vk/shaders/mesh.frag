@@ -75,6 +75,10 @@
 // them for the helmets, which are 1D4725CEF0551EBB's, drawn as the skin above) the same way but
 // opaque: the base texture x the light, plus (the highlights, power 500, + the cube x 0.072696) x (0.882, 1, 0.990363);
 // the sun shadowed and held as the treads' (max(mix(color x shadow, 1, fade x depth), floor)).
+// [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (the game's 99861CE203379D5B; ngl_vk.h cod3_water) rides
+// Call of Duty 2's water's slot and cube: its ripple map read twice bends the normal; its color x the world's light
+// where the sky doesn't show, the sky in the cube (and the sun's glint) where it does, by a Fresnel term; blended.
+// Not in the four-sets build either.
 // rn41q: the lanterns' unlit effects (ngl_vk.h NGL_VK_TINT_*, in an unlit textured draw's tint): the base texture x
 // the corners' colors with the texture's alpha alone (the glass, 5DD7AA099EE15C4F), or the same from one frame of a
 // strip of frames side by side (the flames, 1DF1E9465C1429B4); no fog, as for every unlit draw.
@@ -128,6 +132,7 @@ layout(location = 0) out vec4 color;
 const uint ALPHA_TEST = 0x80000000u;        // ngl_vk.c's MESH_ALPHA_TEST
 const uint TEXTURED = 0x40000000u;          // ngl_vk.c's MESH_TEXTURED
 const uint SHADING_SHIFT = 28u;             // MESH_SHADING_SHIFT; the values are NGL_VK_SHADE_*
+const uint SHADE_LIGHT = 0u;                // [acct2-bro] 2026-11-13 rn67a: NGL_VK_SHADE_LIGHT, named for ONE_SIDED
 const uint SHADE_LIGHTMAP = 1u;
 const uint SHADE_VERTEX_COLOR = 2u;
 const uint SHADE_UNLIT = 3u;
@@ -149,6 +154,13 @@ const uint TINT_LIGHT_DIMMED = 0x01000000u;
 // lit draw was taken for a tree: waw-decomp's 21:10 report); now TINT_MAP_ALPHA's number, which is read in the unlit
 // branch only, as this one is in the scene-light branch only
 const uint TINT_LIGHT_MAPPED = 0x02000000u;
+// [acct2-bro] 2026-11-13 rn67a: a textured lit draw's tint (ngl_vk.h NGL_VK_TINT_ONE_SIDED; Call of Duty 3's old
+// simple class, the oaks' leaf cards): seen from one side only. The mesh pipeline culls nothing and its front
+// faces wind clockwise on the screen; the game's cull mode for these (D3DCULL_CW) drops exactly those. With
+// TINT_OTHER_SIDE the faces that wind the other way are dropped instead. TINT_EFFECT's number: that one is read on
+// unlit draws only (see effect in main), this one on lit draws only.
+const uint TINT_ONE_SIDED = 0x04000000u;
+const uint TINT_OTHER_SIDE = 0x00000001u;
 const uint MODE_MIX = 1u;                   // the base texture and the second (set 1) mixed
 const uint MODE_THIRD = 2u;                 // times the third (set 2) at the coordinates in the normal's place
 const uint MODE_SHINY = 4u;                 // plus the environment map (set 1)
@@ -366,6 +378,35 @@ vec3 water_color(uint slot)
            pow(glint, 64.0) * draw_lights[at + FABRIC_AT + 1u].rgb;
 }
 
+// [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (ngl_vk.h cod3_water; the game's 99861CE203379D5B, its
+// instructions 16-27: two reads of the ripple normal map, each scrolled on its own). The base texture is that map (x in
+// its alpha, y in its green). The slot holds (the water's color, 0), (the reflection's color, 0), (0, 1, 0, -1) from
+// FABRIC_AT and from METAL_AT the two layers (scale, offset u, offset v, then the bump's scale and the cube's bias),
+// (the Fresnel numbers, the opacity), (the highlights' power, 0, 0, 0). surface is the corner's normal and sun_seen
+// how much of the sun reaches the pixel. Gives ((the sky x f + the glint) x the reflection's color, f) and the normal
+// the ripples bend, which the draw's light then takes.
+vec4 cod3_water_part(uint slot, vec3 surface, float sun_seen, out vec3 bent)
+{
+    uint at = DRAW_LIGHT_VEC4S * (slot - 1u);
+    vec4 first = draw_lights[at + METAL_AT];
+    vec4 later = draw_lights[at + METAL_AT + 1u];
+    vec4 fresnel = draw_lights[at + METAL_AT + 2u];
+    vec2 a = 2.0 * wrapped(base_texture, texture_uv * first.x + first.yz).ag - 1.0;
+    vec2 b = 2.0 * wrapped(base_texture, texture_uv * later.x + later.yz).ag - 1.0;
+    bent = normalize(surface + vec3(a + b, 0.0) * first.w);
+    vec3 eye = normalize(object_position - vec3(eye_x.w, eye_y.w, eye_w.w));   // the way from the eye to the pixel
+    vec3 mirrored = reflect(eye, bent);
+    float f = clamp(fresnel.x + fresnel.y * pow(max(1.0 - abs(dot(eye, bent)), 0.0), fresnel.z), 0.0, 1.0);
+    vec3 sky = texture(metal_cube, vec3(mirrored.x, mirrored.z, mirrored.y), later.w).rgb;
+    vec3 toward = unpacked_toward(light_toward[0]);
+    float glint = dot(toward, toward) > 0.0
+                  ? pow(max(dot(mirrored, normalize(toward)), 0.0), max(draw_lights[at + METAL_AT + 3u].x, 1.0))
+                  : 0.0;
+    vec3 reflection = draw_lights[at + FABRIC_AT + 1u].rgb;
+
+    return vec4((sky * f + glint * sun_seen * unpacked_color(light_colors[0])) * reflection, f);
+}
+
 // [waw-decomp] 2026-11-10: Call of Duty 2's light grid (ngl_vk.h grid_cube; the game's lprobe pixel shaders, the PC
 // copy's lightprobe.hlsl), there when the slot's irradiance row 2 has w 1: the normal turned to the world by rows 0
 // to 2, the cube of weights (set 6) read there and at the opposite direction, each against its four numbers of
@@ -392,7 +433,9 @@ void main()
 {
     uint shading = (tint >> SHADING_SHIFT) & 3u;
     uint mode = (flags >> MODE_SHIFT) & 255u;
-    bool effect = (tint & TEXTURED) != 0u && (tint & TINT_EFFECT) != 0u;   // rn41q (the same for the whole draw)
+    // rn41q (the same for the whole draw); [acct2-bro] 2026-11-13 rn67a: on unlit draws only, as ngl_vk.h has it
+    // (on a lit draw the same bit is TINT_ONE_SIDED)
+    bool effect = (tint & TEXTURED) != 0u && shading == SHADE_UNLIT && (tint & TINT_EFFECT) != 0u;
     uint strip_frames = effect ? tint & 15u : 0u;
     vec4 base = (tint & TEXTURED) == 0u ? vec4(tint_color(tint & TINT), 1.0)
               : strip_frames > 1u      ? strip_frame(base_texture, texture_uv, strip_frames, (tint >> 4) & 15u)
@@ -441,7 +484,15 @@ void main()
     // vec4's y 1 (the glass leaves it 0); its color is made here, before the alpha test, like every lookup
     bool water = lens_slot != 0u && !lens &&
                  draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].y > 0.0;
-    vec3 water_rgb = water ? water_color(lens_slot) : vec3(0.0);
+    // [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (ngl_vk.h cod3_water): of the water's kind, its third
+    // vec4's w -1 (Call of Duty 2's leaves it 0); its ripples bend the normal before the light takes it
+    bool cod3_water = water && draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].w < -0.5;
+    vec3 water_rgb = water && !cod3_water ? water_color(lens_slot) : vec3(0.0);
+    vec3 cod3_bent = normal;
+    float cod3_sun = cod3_water ? ((mode & MODE_LIGHTMAP_SUN) != 0u ? second.a : 1.0) * sun_reaching() : 0.0;
+    vec4 cod3_part = cod3_water ? cod3_water_part(lens_slot, normal, cod3_sun, cod3_bent) : vec4(0.0);
+    if (cod3_water)
+        normal = cod3_bent;
     // [waw-decomp] 2026-11-10: Call of Duty 2's detail map (ngl_vk.h detail_add_map; its "_dtl" pixel shaders): any
     // slot that is not the fabric's, the metal's, the glass's or the water's, its third fabric vec4's w 2
     uint detail_slot = flags >> 16;
@@ -476,6 +527,8 @@ void main()
     const bool world_lookup = false;        // [waw-decomp]
     const bool world_bumped = false;        // [waw-decomp] 2026-11-11
     const vec3 water_rgb = vec3(0.0);
+    const bool cod3_water = false;          // [acct2-bro] 2026-11-13 rn86a
+    const vec4 cod3_part = vec4(0.0);
 #endif
     vec3 noise = vec3(0.0);     // rn32: the skin's noise swatch, read before the alpha test like every lookup
     vec3 scratch = vec3(0.0);   // rn34: the gun metal's scratch map and its cube's color, the same
@@ -674,6 +727,10 @@ void main()
     }
 
     if ((tint & ALPHA_TEST) != 0u && alpha <= 128.0 / 255.0)
+        discard;
+    // [acct2-bro] 2026-11-13 rn67a: seen from one side only (TINT_ONE_SIDED, see there)
+    if ((tint & TEXTURED) != 0u && shading == SHADE_LIGHT && (tint & TINT_ONE_SIDED) != 0u &&
+        gl_FrontFacing == ((tint & TINT_OTHER_SIDE) == 0u))
         discard;
 
     float doubled = (tint & LIGHT_ONCE) != 0u ? 1.0 : 2.0;
@@ -917,7 +974,19 @@ void main()
 #endif
     if (lookup)     // [waw-decomp] 2026-11-10: 98A77B2DFA1049B4's instruction 38, the color map x the corners' color
         base.rgb *= vertex_color.rgb;
-    if (water) {    // [waw-decomp] the water's own color (water_color), its alpha its corners' alone
+    if (cod3_water) {   // [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (cod3_water_part): its own color in
+                        // the world's light where the sky doesn't show, the sky and the glint where it does
+        uint at = DRAW_LIGHT_VEC4S * (lens_slot - 1u);
+        float given = draw_lights[at + METAL_AT + 2u].w;    // [acct2-bro] 2026-11-13 rn86e: negative: rn86a's
+        float opacity = abs(given);
+
+        base.rgb = vec3(1.0);
+        light = draw_lights[at + FABRIC_AT].rgb * light * (1.0 - cod3_part.a);
+        shine = cod3_part.rgb;
+        // [acct2-bro] 2026-11-13 rn86e: the game's alpha, 1 - (1 - a) x b with b its Fresnel-like term (nearly
+        // opaque looking down); rn86a's opacity + (1 - opacity) x f when the opacity came negative
+        alpha = given < 0.0 ? opacity + (1.0 - opacity) * cod3_part.a : 1.0 - (1.0 - opacity) * cod3_part.a;
+    } else if (water) {    // [waw-decomp] the water's own color (water_color), its alpha its corners' alone
         base.rgb = vec3(1.0);
         light = water_rgb;
         shine = vec3(0.0);

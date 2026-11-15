@@ -276,6 +276,41 @@ class Pages:
         self._censor_builtin_load()
         self._refresh_disc_needs()
 
+    # [acct2-main] 2026-11-14 (owner 12:12 "The censorship with pre-made flags don't show in-game", 12:25 "those
+    # errors need fixing as well. Please look for similar stuff"): the built-in censor's pictures and the player's own
+    # are in the user texture pack, and the game takes that pack only while "Your own textures" is on (Play page,
+    # Graphics: cod3_user_textures in cod3.toml). The owner's was off, so the pack was built and never used, and
+    # nothing here said so. Choosing a design now turns it on; otherwise the Textures page and Play say it is off.
+    def _game_setting(self, out: Optional[Path], key: str, default=True):
+        """A game setting as cod3.toml has it (its default when the file can't be read)."""
+        if out is None:
+            return default
+        try:
+            return game_settings.load(out).get(key, default)
+        except Exception:  # noqa: BLE001 - only a note depends on it
+            return default
+
+    def _user_textures_note(self, out: Optional[Path], turn_on: bool) -> str:
+        """While the censor is on: "" when "Your own textures" is on; else turns it on (turn_on: a design was just
+        chosen, and the game isn't running) and says so, or says that it is off."""
+        if out is None or self._game_setting(out, "cod3_user_textures", True):
+            return ""
+        if not turn_on:
+            return '"Your own textures" is off (Play page, Graphics): the game won\'t show the censor until it\'s on.'
+        try:
+            if game_settings.game_running(out):
+                # [acct2-main] 2026-11-14 17:55 the setting applies after a restart (cod3_user_textures)
+                return ('"Your own textures" is off in the running game: turn it on in F2 (Video) and restart the '
+                        "game, or the censor won't show.")
+            game_settings.save(out, {"cod3_user_textures": True})
+        except (SetupError, OSError, ValueError, NotImplementedError) as e:
+            return f'"Your own textures" is off and couldn\'t be turned on ({e}): the censor won\'t show.'
+        self.log.info('"Your own textures" (Play page, Graphics) was off: turned on, because the insignia censor\'s '
+                      "pictures are in that texture pack.")
+        if getattr(self, "_gs_vars", None):
+            self._load_game_settings(keep_edits=True)   # the Play page's box follows
+        return '"Your own textures" was off: turned on (Play page, Graphics), since the censor needs it.'
+
     # [acct2-decomp] The built-in censor (c3w/censor_builtin.py), joined with your own pictures in the
     # Textures page's section (owner 2026-11-05 07:24): the choice is saved as it is made, and every
     # build of the texture pack (the button there, or a full build) makes or takes back its pictures.
@@ -360,7 +395,9 @@ class Pages:
                 censor_builtin.save_settings(out / "data" / "cod3", s)
                 self._cb_dirty = True
                 # [rexglue-native-settings] 2026-11-11 Play builds the pack first now (_play_builds_pack_first)
-                self.v_cb_state.set("Saved. Play builds the texture pack first (or press Build texture pack now).")
+                note = self._user_textures_note(out, turn_on=True) if s.on else ""  # [acct2-main] 2026-11-14
+                self.v_cb_state.set("Saved. Play builds the texture pack first (or press Build texture pack now)." +
+                                    (" " + note if note else ""))
             except (OSError, SetupError) as e:
                 self.v_cb_state.set(f"Not saved: {e}")
         self._censor_builtin_show()
@@ -378,7 +415,8 @@ class Pages:
             self.v_cb_flags.set(censor_builtin.LABELS[s.flags])
             self.v_cb_insignia.set(censor_builtin.LABELS[s.insignia])
         if not self._cb_dirty:
-            self.v_cb_state.set("")
+            # [acct2-main] 2026-11-14 the censor on but its pack switched off in the game's settings: said here
+            self.v_cb_state.set(self._user_textures_note(out, turn_on=False) if s.on else "")
         self._censor_builtin_show()
 
     def _toggle_censored(self) -> None:  # [acct2-decomp]
@@ -582,6 +620,15 @@ class Pages:
         # when it is out of date, then this starts the game.
         if not pack_ready and self._play_builds_pack_first(out):
             return
+        # [acct2-main] 2026-11-14 the censor on but its pack switched off: said as the game starts (not changed: it
+        # may have been turned off in F2 on purpose since the censor was chosen)
+        try:
+            if censor_builtin.load_settings(out / "data" / "cod3").on and \
+                    not self._game_setting(out, "cod3_user_textures", True):
+                self.log.warn('The insignia censor is on, but "Your own textures" is off (Play page, Graphics, or '
+                              "F2 > Video in the game), so the flags and insignia look as the game has them.")
+        except Exception:  # noqa: BLE001 - a note must never keep the game from starting
+            pass
         self._migrate_windowed(out)
         args = [str(exe)]
         if self.v_cod3_args.get().strip():
@@ -1047,6 +1094,7 @@ class Pages:
         else:
             text = ("HD textures from an earlier build are in the output folder; the game uses them unless "
                     "turned off in F2." if packed else "")
+        text = self._hd_textures_note(out, packed, text)   # [acct2-main] 2026-11-14
         self.v_hd_state.set(text)
         if text:
             self.lbl_hd_state.grid()
@@ -1055,6 +1103,18 @@ class Pages:
         if hasattr(self, "v_user_pack_state"):   # [rexglue-native-settings] 2026-11-11 the user pack's state
             self.v_user_pack_state.set(self._user_pack_status(out))
         self._update_page_states()
+
+    def _hd_textures_note(self, out: Optional[Path], packed: bool, text: str) -> str:
+        """[acct2-main] 2026-11-14 (owner 12:25 "Please look for similar stuff", after the censor's pack that the game
+        never used because "Your own textures" was off): the HD pack's line says so too when the game's "HD textures
+        (waifu2x)" (Play page, Graphics: cod3_hd_textures) is off, instead of "the game uses them"."""
+        if not packed or self._game_setting(out, "cod3_hd_textures", True):
+            return text
+        if self.v_upscale.get():
+            return (text + ' "HD textures (waifu2x)" is off (Play page, Graphics): the game won\'t use them until '
+                    "it's on.")
+        return ('HD textures from an earlier build are in the output folder, but "HD textures (waifu2x)" is off '
+                "(Play page, Graphics), so the game doesn't use them.")
 
     def _user_pack_status(self, out: Optional[Path]) -> str:
         """[rexglue-native-settings] 2026-11-11 One line on the user texture pack (the insignia censor's pictures and
@@ -1070,6 +1130,9 @@ class Pages:
             return f"Texture pack: can't be read ({e})."
         text = (f"Texture pack: {keys} texture(s), used from the game's next start." if keys else
                 "Texture pack: none built.")
+        if keys and not self._game_setting(out, "cod3_user_textures", True):   # [acct2-main] 2026-11-14
+            text = (f"Texture pack: {keys} texture(s), but \"Your own textures\" is off (Play page, Graphics), so "
+                    "the game doesn't use it.")
         if why:
             text += f" {why[0].upper()}{why[1:]}: Play builds it first."
         return f"{text} {censor}"

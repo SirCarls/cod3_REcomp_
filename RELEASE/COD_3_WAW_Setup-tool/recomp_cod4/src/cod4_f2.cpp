@@ -411,44 +411,89 @@ void TakeCommands(std::vector<std::string>& out) { g_commands.Take(out); }
 // measure them and leave them undrawn (f2::crosshair's capture). The overlay gets the game's color and spread. The color is looked for in r5 first, then r8, r6, r7: the first that points at four
 // numbers between 0 and 1 that aren't all 0. f2_debug_crosshair logs the registers once a second.
 namespace {
+// [acct2-ocr] 2026-11-14 Special crosshairs (owner 17:06: "vehicle crosshairs, and unique ones like the WAW
+// flamethrower"; 17:19: "default should be the game's own"; f2_common.h). CG_DrawCrosshair takes one of three ways
+// (dev/x360-family/cod4_360): a turret (the player's flags 0x300) gets the turret weapon's scope overlay
+// (CG_DrawAdsOverlay, campaign 0x822FB7F8, multiplayer 0x82311A58) or the turret crosshair (0x822FB690 / 0x82311898);
+// a vehicle (campaign only: flag 0x20000 without 0x80000) gets the vehicle's reticle 0x822FB560; on foot, the
+// scope's overlay while aiming, else the center piece and the sides, drawn with the weapon's own pictures (the
+// weapon in r4, its center picture at +0x21C, the side one at +0x220). The HUD's vehicle reticle (campaign 0x8231F548,
+// from CG_OwnerDraw 0x822EB1F0: the pip on a stick) is a vehicle's too. A weapon whose two pictures aren't the pair
+// most of the level's weapons share (the weapon table: campaign 0x8339C900, its last index at 0x8379B1F4;
+// multiplayer 0x823B9CD8 and 0x85022F98) has a crosshair of its own. Each kind is the game's own unless player 1
+// chose Mine, Both or None for it on the CROSSHAIR page; an ordinary weapon's hip-fire crosshair is the custom one.
+#ifdef COD4_MP
+constexpr f2::crosshair::WeaponTable kWeapons{0x823B9CD8, 0x85022F98, 0x21C, 0x220};
+[[maybe_unused]] const bool kSpecialOffered =
+    (f2::crosshair::OfferSpecial((1u << f2::xhair::kSpecialOwnCross) | (1u << f2::xhair::kSpecialTurret) |
+                                 (1u << f2::xhair::kSpecialScope)),
+     true);
+#else
+constexpr f2::crosshair::WeaponTable kWeapons{0x8339C900, 0x8379B1F4, 0x21C, 0x220};
+[[maybe_unused]] const bool kSpecialOffered =
+    (f2::crosshair::OfferSpecial((1u << f2::xhair::kSpecialOwnCross) | (1u << f2::xhair::kSpecialTurret) |
+                                 (1u << f2::xhair::kSpecialVehicle) | (1u << f2::xhair::kSpecialScope)),
+     true);
+#endif
+
+// What the hip-fire hooks do for the weapon in r4: an ordinary one gets the custom crosshair, one with a crosshair
+// of its own follows its row.
+f2::xhair::Plan HipPlan(uint8_t* base, uint32_t weapon) {
+  if (!f2::crosshair::Enabled()) return {};
+  return f2::crosshair::PlanFor(f2::crosshair::OwnCross(base, kWeapons, weapon) ? f2::xhair::kSpecialOwnCross
+                                                                                 : f2::xhair::kHipFire);
+}
+
 // `game` runs the game's own function: with the capture on it works out its spread and asks for its four side
-// pieces, which the two hooks below it measure and leave undrawn.
+// pieces, which the two hooks below it measure and leave undrawn (or, with `keep`, drawn). `notify`: the custom
+// crosshair is drawn there.
 template <typename Ctx, typename Game>
-void CrosshairSides(Ctx& ctx, uint8_t* base, Game game) {
+void CrosshairSides(Ctx& ctx, uint8_t* base, Game game, bool keep = false, bool notify = true) {
   float rgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
   const uint32_t r[6] = {ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32, ctx.r7.u32, ctx.r8.u32};
   const uint32_t candidates[] = {r[2], r[5], r[3], r[4]};  // r5 (seen 2026-11-10 in World at War), r8, r6, r7
   int found = -1;
   for (int i = 0; i < 4 && found < 0; ++i)
     if (f2::crosshair::ReadGuestColor(base, candidates[i], rgba)) found = i;
-  f2::crosshair::CaptureBegin();
+  f2::crosshair::CaptureBegin(keep);
   game();
   float spread = 0.0f;
   const int rects = f2::crosshair::CaptureEnd(&spread);
-  if (rects > 0) f2::crosshair::Notify(0, rgba, spread);  // 0: the game chose not to draw (faded out)
+  if (rects > 0 && notify) f2::crosshair::Notify(0, rgba, spread);  // 0: the game chose not to draw (faded out)
   static std::atomic<int64_t> logged{0};
   const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
                           std::chrono::steady_clock::now().time_since_epoch())
                           .count();
   if (f2::GetBool("f2_debug_crosshair") && logged.exchange(now) != now)
     REXLOG_INFO("f2: crosshair hook: r3 {:08X} r4 {:08X} r5 {:08X} r6 {:08X} r7 {:08X} r8 {:08X}, color from "
-                "candidate {} = {:.2f} {:.2f} {:.2f} {:.2f}, {} rectangles, spread {:.2f}",
-                r[0], r[1], r[2], r[3], r[4], r[5], found, rgba[0], rgba[1], rgba[2], rgba[3], rects, spread);
+                "candidate {} = {:.2f} {:.2f} {:.2f} {:.2f}, {} rectangles, spread {:.2f}, the game's kept {}, "
+                "the custom one {}",
+                r[0], r[1], r[2], r[3], r[4], r[5], found, rgba[0], rgba[1], rgba[2], rgba[3], rects, spread, keep,
+                notify);
+}
+
+// The center piece and the sides: the custom crosshair for an ordinary weapon, a weapon's own by its row.
+template <typename Ctx, typename Game>
+void CenterPiece(Ctx& ctx, uint8_t* base, Game game) {
+  if (HipPlan(base, ctx.r4.u32).game) game();
+}
+template <typename Ctx, typename Game>
+void Sides(Ctx& ctx, uint8_t* base, Game game) {
+  const f2::xhair::Plan plan = HipPlan(base, ctx.r4.u32);
+  if (plan.mine || !plan.game)  // None also goes through the capture, so the game's spread still runs
+    CrosshairSides(ctx, base, game, plan.game, plan.mine);
+  else
+    game();
 }
 }  // namespace
 #ifdef COD4_MP
 REX_EXTERN(__imp__sub_82311610);
-REX_HOOK_RAW(sub_82311610) {
-  if (f2::crosshair::Enabled()) return;  // the center piece: the custom crosshair has its own
-  __imp__sub_82311610(ctx, base);
+REX_HOOK_RAW(sub_82311610) {  // the center piece
+  CenterPiece(ctx, base, [&] { __imp__sub_82311610(ctx, base); });
 }
 REX_EXTERN(__imp__sub_82312058);
-REX_HOOK_RAW(sub_82312058) {
-  if (f2::crosshair::Enabled()) {
-    CrosshairSides(ctx, base, [&] { __imp__sub_82312058(ctx, base); });
-    return;
-  }
-  __imp__sub_82312058(ctx, base);
+REX_HOOK_RAW(sub_82312058) {  // the sides
+  Sides(ctx, base, [&] { __imp__sub_82312058(ctx, base); });
 }
 REX_EXTERN(__imp__sub_822B1D58);
 REX_HOOK_RAW(sub_822B1D58) {  // ScrPlace_ApplyRect(place r3, &x r4, &y r5, &width r6, &height r7, ...)
@@ -457,22 +502,26 @@ REX_HOOK_RAW(sub_822B1D58) {  // ScrPlace_ApplyRect(place r3, &x r4, &y r5, &wid
 }
 REX_EXTERN(__imp__sub_82310460);
 REX_HOOK_RAW(sub_82310460) {  // CG_DrawRotatedPicPhysical: the side piece itself
-  if (f2::crosshair::Capturing()) return;
+  if (f2::crosshair::Hiding()) return;  // [acct2-ocr] 2026-11-14 was Capturing(): Both keeps it drawn
   __imp__sub_82310460(ctx, base);
+}
+// [acct2-ocr] 2026-11-14 the special crosshairs' own functions, each the game's own unless player 1 chose otherwise.
+REX_EXTERN(__imp__sub_82311898);
+REX_HOOK_RAW(sub_82311898) {  // the turret crosshair (local client r3)
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialTurret, [&] { __imp__sub_82311898(ctx, base); });
+}
+REX_EXTERN(__imp__sub_82311A58);
+REX_HOOK_RAW(sub_82311A58) {  // CG_DrawAdsOverlay: a scope's overlay, also a scoped turret's
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialScope, [&] { __imp__sub_82311A58(ctx, base); });
 }
 #else
 REX_EXTERN(__imp__sub_822FB320);
-REX_HOOK_RAW(sub_822FB320) {
-  if (f2::crosshair::Enabled()) return;  // the center piece: the custom crosshair has its own
-  __imp__sub_822FB320(ctx, base);
+REX_HOOK_RAW(sub_822FB320) {  // the center piece
+  CenterPiece(ctx, base, [&] { __imp__sub_822FB320(ctx, base); });
 }
 REX_EXTERN(__imp__sub_822FBD88);
-REX_HOOK_RAW(sub_822FBD88) {
-  if (f2::crosshair::Enabled()) {
-    CrosshairSides(ctx, base, [&] { __imp__sub_822FBD88(ctx, base); });
-    return;
-  }
-  __imp__sub_822FBD88(ctx, base);
+REX_HOOK_RAW(sub_822FBD88) {  // the sides
+  Sides(ctx, base, [&] { __imp__sub_822FBD88(ctx, base); });
 }
 REX_EXTERN(__imp__sub_822C2B90);
 REX_HOOK_RAW(sub_822C2B90) {  // ScrPlace_ApplyRect(place r3, &x r4, &y r5, &width r6, &height r7, ...)
@@ -481,7 +530,24 @@ REX_HOOK_RAW(sub_822C2B90) {  // ScrPlace_ApplyRect(place r3, &x r4, &y r5, &wid
 }
 REX_EXTERN(__imp__sub_822FA318);
 REX_HOOK_RAW(sub_822FA318) {  // CG_DrawRotatedPicPhysical: the side piece itself
-  if (f2::crosshair::Capturing()) return;
+  if (f2::crosshair::Hiding()) return;  // [acct2-ocr] 2026-11-14 was Capturing(): Both keeps it drawn
   __imp__sub_822FA318(ctx, base);
+}
+// [acct2-ocr] 2026-11-14 the special crosshairs' own functions, each the game's own unless player 1 chose otherwise.
+REX_EXTERN(__imp__sub_822FB690);
+REX_HOOK_RAW(sub_822FB690) {  // the turret crosshair (local client r3)
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialTurret, [&] { __imp__sub_822FB690(ctx, base); });
+}
+REX_EXTERN(__imp__sub_822FB560);
+REX_HOOK_RAW(sub_822FB560) {  // a vehicle's reticle (local client r3)
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialVehicle, [&] { __imp__sub_822FB560(ctx, base); });
+}
+REX_EXTERN(__imp__sub_8231F548);
+REX_HOOK_RAW(sub_8231F548) {  // the HUD's vehicle reticle (an owner draw: the pip on a stick)
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialVehicle, [&] { __imp__sub_8231F548(ctx, base); });
+}
+REX_EXTERN(__imp__sub_822FB7F8);
+REX_HOOK_RAW(sub_822FB7F8) {  // CG_DrawAdsOverlay: a scope's overlay, also a scoped turret's
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialScope, [&] { __imp__sub_822FB7F8(ctx, base); });
 }
 #endif

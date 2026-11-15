@@ -79,6 +79,7 @@ file(GLOB BRO_GEN_SOURCES CONFIGURE_DEPENDS "${BRO_GEN_DIR}/*.c")
 add_executable(bro
     src/main.c
     src/recomp_manual.c
+    src/runtime/bro_fast_sincos.c       # [acct2-bro] the game's fast sine and cosine (0x000110F0), natively
     src/ngl/ngl_log.c
     src/ngl/ngl_frame_clock.c
     src/ngl/ngl_movie.c
@@ -224,4 +225,10 @@ if(MSVC)
 else()
     # the generated files are large and the lifted code is not written for warnings
     set_source_files_properties(${BRO_GEN_SOURCES} PROPERTIES COMPILE_OPTIONS "-w;${BRO_GEN_OPTIMIZE_LIST};-include;${BRO_PRIVILEGED_H}")
+endif()
+
+# [acct2-bro] 2026-11-13: the game's fast sine and cosine rounds each step as the game's code does, so no fused
+# multiply-adds there (MSVC makes none unless asked)
+if(NOT MSVC)
+    set_source_files_properties(src/runtime/bro_fast_sincos.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()

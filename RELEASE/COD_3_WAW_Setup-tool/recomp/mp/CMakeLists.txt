@@ -59,6 +59,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/machine_profile.cpp
     ${COD3_SRC}/game/mouse_look.cpp
     ${COD3_SRC}/f2/f2_accel.cpp  # [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (the ports' shared file)
+    ${COD3_SRC}/f2/f2_crosshair_cs2.cpp  # [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
+    ${COD3_SRC}/f2/crosshair_cs2_code.cpp  # [acct2-decomp] CS2's share codes (copied in by acct2-ocr)
     ${COD3_SRC}/game/pc_menu.cpp  # [mp-menus] mouse and keyboard in the game's menus, shared with the campaign
     ${COD3_SRC}/game/perf_stats.cpp
     ${COD3_SRC}/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
@@ -106,9 +108,11 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/campaign_stubs.cpp
     ${COD3_SRC}/game/mp/controls_mp.cpp
     ${COD3_SRC}/game/mp/hud_mp.cpp
+    ${COD3_SRC}/game/mp/map_packs_mp.cpp  # [acct2-main] map packs copied in by hand: their folder name and header at start
     ${COD3_SRC}/game/mp/menus_mp.cpp
     ${COD3_SRC}/game/mp/options_mp.cpp  # [mp-menus] FIELD OF VIEW and FOV SCALE on Options > Gameplay; [menus-categories] Pause > OPTIONS as category pages
     ${COD3_SRC}/game/mp/session.cpp
+    ${COD3_SRC}/game/mp/peer_guard_mp.cpp  # [acct2-main] peer messages the game's handlers don't check (a position update for another console's player)
     ${COD3_SRC}/game/mp/test_autojoin_mp.cpp  # [claude-9b] tests: each local player joins a team and picks a class (cod3_test_autojoin)
     ${COD3_SRC}/game/mp/test_syslink_mp.cpp  # [claude-9b-think] tests: host or join a system link match from the front end (cod3_test_syslink)
     ${COD3_SRC}/game/mp/pose_debug_mp.cpp  # [claude-9b] rival players' poses between draws, measurement (cod3_debug_pose_mp)

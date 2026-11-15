@@ -151,17 +151,22 @@ REXCVAR_DEFINE_BOOL(cod3_native_gpu_geometry, true, "cod3/Display",
                     "With cod3_native_vulkan, keep the models' corners in the GPU's own memory (copied in as they "
                     "change) instead of memory the GPU reads over the bus every frame (side220)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DEFINE_BOOL(cod3_native_shared_device, false, "cod3/Display",
+// [acct2-bro] 2026-11-13 rn71a: on by default (t70: with the worker, a player's frame with no cap went from 88-104
+// to 220-236 fps on The Mace, 91 to 180-193 on St-Bert; t74: no smoke left out, the picture as close to the game's or
+// closer, 0 errors). A window not drawn by Vulkan (Windows' D3D12) keeps ngl_vk on a device of its own, as before.
+REXCVAR_DEFINE_BOOL(cod3_native_shared_device, true, "cod3/Display",
                     "With cod3_native_vulkan, draw on the window's own Vulkan device and hand each picture to the "
-                    "window on the GPU, with no copy back to the CPU (in testing)")
+                    "window on the GPU, with no copy back to the CPU (off: copied through the CPU, as before "
+                    "2026-11-13)")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // side212: each native frame read from the game's lists and drawn on a thread of its own ("ngl worker") while the
 // game's main thread goes on with the next frame. The game keeps two buffers of list memory and switches them in
 // nglBeginFrame (0x82130808), so a frame's lists stay as they are until the frame after next begins, and its own render
 // job reads them on another thread meanwhile. The worker is done before the next nglListSend goes on.
-REXCVAR_DEFINE_BOOL(cod3_native_worker, false, "cod3/Display",
+// [acct2-bro] 2026-11-13 rn71a: on by default (see cod3_native_shared_device)
+REXCVAR_DEFINE_BOOL(cod3_native_worker, true, "cod3/Display",
                     "With cod3_native_vulkan, read and draw each native frame on a thread of its own while the game "
-                    "goes on with the next frame (in testing)");
+                    "goes on with the next frame (off: on the game's own thread, as before 2026-11-13)");
 // side222 [acct2-bro] 2026-11-07: in native mode the host backend draws nothing, so the game's own Direct3D draws
 // (on its render job's threads: 2.2 ms a frame in St-Bert, and the GPU commands thread that reads them, 52% busy) are
 // work with no picture. This leaves them out; everything else the render job does (state, fences, interrupts, the
@@ -189,9 +194,13 @@ REXCVAR_DEFINE_BOOL(cod3_native_rain, true, "cod3/Display",
 // list: the frame drawn then finds none (or only some) of the last list's effects, and the next finds them mixed in.
 // With this on, nglListSend's hook waits for the render job first (the wait the game itself does next), so every
 // flush is counted with the list it belongs to and each frame draws a whole list's effects.
-REXCVAR_DEFINE_BOOL(cod3_native_effects_whole_list, false, "cod3/Display",
+// [acct2-bro] 2026-11-12 rn62a (owner 23:40: "There's flicker with smoke effects. It becomes noticeable when above
+// 60fps."): on by default. The shorter a frame, the more often the render job's flushes come after the next list is
+// counted, and the frame drawn then has no smoke (EffectDraws counts those frames: its rn62a line). Every compare
+// run since 11-07 has had this on; the native mode's own default had stayed off.
+REXCVAR_DEFINE_BOOL(cod3_native_effects_whole_list, true, "cod3/Display",
                     "With cod3_native_vulkan, wait for the game's render job before counting the next list sent, so "
-                    "each frame's effects are a whole list's (in testing)")
+                    "each frame's effects are a whole list's (off: smoke can drop out for single frames)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // side228 [acct2-bro] 2026-11-08: the native caches are keyed by guest addresses and ngl_vk never freed anything, so a
 // second level in one session could show the last level's textures and meshes where the new ones landed, and a few
@@ -211,6 +220,22 @@ REXCVAR_DEFINE_STRING(cod3_native_resolution, "", "cod3/Display",
                       "drawn at for the window (cod3_render_resolution), or 720p, 1080p, 1440p, 2160p or WxH (kept "
                       "16:9; 1280x720 was the old fixed size). Applies at the next start")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-12 rn61a (owner 22:21: "the anti-aliasing doesn't seem very sharp, I believe the game has msaa
+// 2x but we need to expand that to at least 16x"): the native picture had no anti-aliasing: ngl_vk draws one sample a
+// pixel (the game's own 2x MSAA belongs to its 1040x624 picture). With this the picture is drawn N times larger each
+// way than it is shown, and every shown pixel is the mean of the N x N drawn ones it covers (ngl_vk_output): 4 is
+// 2 x 2, 9 is 3 x 3, 16 is 4 x 4 samples a pixel; a number between takes the step below. That smooths all a pixel
+// holds: edges, foliage cut-outs, thin wires, sparkle on bumpy surfaces. The drawn size stays within 7680x4320 (a
+// 1920x1080 picture can have 16, a 2560x1440 one 9, a 3840x2160 one 4). The averaging is done where the picture is
+// handed to the window on the GPU, so (rn61b) a value above 1 asks for that hand-over by itself, as
+// cod3_native_shared_device does; it needs a window drawn by Vulkan (the F2 window's Native renderer row sets that).
+// Where the hand-over can't be had the picture is drawn as before, and the log says so.
+REXCVAR_DEFINE_INT32(cod3_native_antialiasing, 1, "cod3/Display",
+                     "With cod3_native_vulkan, anti-aliasing in samples a pixel: 1 = none; 4, 9 or 16 = the native "
+                     "picture drawn 2, 3 or 4 times larger each way and averaged down (the drawn size stays within "
+                     "7680x4320). The GPU draws that many times the pixels. Applies at the next start")
+    .range(1, 16)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // [rexglue-native] 2026-11-09 (owner 11-09 09:35: "Native rendering should work"): rn1's long native frames came with
 // bursts of new textures, about 10 ms each, because ngl_vk copied every new texture to the GPU and waited for it on its
 // own. With this on (ngl_vk_set_batched_textures) a frame's new textures wait in a staging buffer and go to the GPU
@@ -226,6 +251,29 @@ REXCVAR_DEFINE_BOOL(cod3_native_batched_textures, true, "cod3/Display",
 REXCVAR_DEFINE_BOOL(cod3_debug_host_draws, false, "cod3/Debug",
                     "With cod3_native_vulkan: count the game's own draws by render target format, exponent bias and "
                     "blend (read from the GPU's registers) and by shader pair, logged every 10 s");
+// [acct2-bro] 2026-11-14 rn92a: when each native picture reaches the window (owner 16:37: the vehicle and the player
+// jitter together, in both renderers). The game draws a frame for the time its updates start (server_step.cpp's
+// SubMsFrame: the view trace's rt) and the window shows it once the painter's tail is done; if that gap changes from
+// frame to frame, whatever moves fast (a ride) is shown off even motion though it is drawn on it.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_present_trace, 0, "cod3/Debug",
+                     "With cod3_native_vulkan, log the first N pictures handed to the window: when each was handed "
+                     "over and when its painting began and ended (steady-clock microseconds, as the view trace's rt), "
+                     "and each picture dropped because the last was still being painted (0: off)")
+    .range(0, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-14 rn92d: b72's trace (t115, the hostage jeep): each native picture was drawn on its frame's
+// clock evenly (1.0% off even motion), but reached the window 2.9 to 6.2 ms after that clock (10th to 90th), varying
+// with each frame's work, so as shown it was 9.6% off even motion (17% at 144): the vehicle and the player shaking
+// together, in both renderers (the emulated GPU's swap goes through the same presenter). On: the worker holds each
+// picture until its frame's clock plus a steady delay before handing it to the window, so the pictures are shown as
+// evenly as they are drawn. 1: the delay follows the recent pictures (their 90th percentile, at most 20 ms); 100 and
+// more: that many microseconds. A picture already later than that goes at once. Off (0, the default until tested).
+REXCVAR_DEFINE_INT32(cod3_native_present_pacing, 0, "cod3/Display",
+                     "With cod3_native_vulkan, show each picture a steady time after the moment it was drawn for, so "
+                     "fast motion (a ride) looks even: 0 off, 1 the delay follows the recent frames, 100 or more that "
+                     "many microseconds")
+    .range(0, 50000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_arms, 0, "cod3/Debug",
                      "With cod3_debug_ngl_side, how the first-person arms (the front scene's skinned surfaces) are drawn "
                      "in the native picture: 0 as the rest, 1 plain white and unlit, 2 their texture unlit, 3 plain and "
@@ -416,6 +464,20 @@ constexpr const char* kOtherTechnique = "(rn57f: their node's technique is not t
 REXCVAR_DEFINE_BOOL(cod3_native_drawn_list, false, "cod3/Display",
                     "With cod3_native_vulkan, draw each frame one list send later, once the game itself has drawn "
                     "it, so every object takes its own light, pose and pass values of that frame (in testing)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-14 rn90a (see rebase:: by SceneCamera)
+REXCVAR_DEFINE_INT32(cod3_native_rebase, 1, "cod3/Display",
+                     "With cod3_native_vulkan, draw about the camera's place, so the depth stays exact far from the "
+                     "map's middle (the gun and the hand holding it no longer take turns in front): 0 off, 1 the gun "
+                     "and arms' scene, 2 every scene (in testing)")
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn83a: the models' light and pass values the game keeps as it draws, kept for the native
+// draws at the next list send (see DeferKeep), so a frame drawn natively reads only what was kept up to its own send
+REXCVAR_DEFINE_BOOL(cod3_native_deferred_keeps, true, "cod3/Display",
+                    "With cod3_native_vulkan, the light and pass values the game keeps for each model as it draws are "
+                    "taken in at the next list send (each native frame reads the list before's, never a mix); off: "
+                    "taken in at once, under the lock the native worker reads them with")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [acct2-bro] 2026-11-12 rn57j, rn57k: the owner 11-12 16:28 to 17:20: Saint-Lo's distant tree ("the greyish one
 // in the middle that malforms") and the folding table by the tent, drawn for single frames as a pale striped
@@ -701,6 +763,19 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_drawn_values, true, "cod3/Debug",
                     "and place, its shadow's fade and floor) are those the game drew the model with; off: read when "
                     "the native frame is built (the last object's, which changed from frame to frame)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn85a: the forest's one-frame light pops (the owner, 17:00: "try to establish a pattern for
+// those one frame blips"). fl1.py's patterns of the l86 to l89 burst checks: the lightmapped world and its plants lit
+// brighter for one frame, every kind by the same amount (a draw's light 2.725 -> 3.865), on 45 frames in 1000 with
+// the worker (w1a) and on none without it (w1b). A draw's sun is read from its shader state's parameters (StateSun),
+// whose values sit in the state's value block; the game's parameter fill (0x82142F20) writes that block again for
+// each object it draws (rn43a), and the worker builds the native frame while the game's render job draws the same
+// list, so now and then it read another object's values. With this on, a state's sun changes only when it is read
+// the same on two frames in a row (HeldStateSun): a real change shows one frame after the game's.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_sun_hold, true, "cod3/Debug",
+                    "With cod3_native_vulkan, a shader state's sun (the lightmapped world's light, and the sun of the "
+                    "draws that take their node's) changes only when it is read the same on two frames in a row; off: "
+                    "as read each frame (with the worker, now and then another object's for one frame)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn43i: a model part on its first frame (no pass values kept as drawn yet) takes its light
 // block's main light as its sun for that frame, in place of its state's block as another object left it.
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_late_sun_block, true, "cod3/Debug",
@@ -723,9 +798,18 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_own_light_place, true, "cod3/Debug",
 // map's draw once (its material's maps, how the native side draws it, the light it gives it, its pass's binding); the
 // host-draw log (cod3_debug_host_draws) logs which pixel shaders the game draws the same texture with, and their
 // constants. Debug only (cod3_debug_ngl_side).
+// [acct2-bro] 2026-11-14 rn88a (debug): the frame the per-draw logs start on (the watch above, the pick, the culling
+// and light lines that use kWatchFrom; 2900 as before). The owner, 13:57: Saint-Lo's barbed wire, the papers on the
+// crate by the jeep and a net canopy are missing natively, and they are in view only on the opening jeep ride.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_watch_from, 2900, "cod3/Debug",
+                     "With cod3_debug_ngl_side: the frame the watch, pick and other per-draw log lines start on (2900 "
+                     "as before)")
+    .range(0, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_STRING(cod3_debug_ngl_side_watch, "", "cod3/Debug",
                       "With cod3_debug_ngl_side: log the native and the game's draws of the color maps whose own name "
-                      "holds this text, from frame 2900 (empty: none; a check)");
+                      "holds this text, or one of several with commas between them, from frame 2900 (empty: none; a "
+                      "check)");
 // side168: how a model with its own light set is lit. The game's per-pixel model shaders (7D4E7CAD9503762D and kin:
 // IrradianceCoeffs_0..8 c18-c26, __1_COD_SHADOW_PROJCOLOR_cmn c28, position_Light0 c27, LIGHT_COLOR1 c17) light by
 // the nine irradiance rows (the set's ambient and its other lights folded in) + the scene's sun (COD_SHADOW_PROJCOLOR
@@ -817,6 +901,20 @@ REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_texture_levels, 0, "cod3/Debug",
                      "level, 2 none (a check)")
     .range(0, 2)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn63a (the owner, 11-12 23:40: "the trees on Mace don't render in right"; 11-13 00:51: "You
+// can see one on the right side of the tank. It's super blocky."): a cut-out's smaller levels as the game has them.
+// KeepCoverage scaled every smaller level's alpha until as many texels passed the cut as in the top level. The game
+// cuts its models' cut-outs at one half on its own levels (pixel shader C1F972CEED0F963B kills under c254.w; the
+// foliage's 958A306F47544AEF under 0.502), and those levels thin like a box filter: far away a crown shows more sky
+// between its leaves and a bare tree's twigs fade. Kept, The Mace's crowns were solid dark blocks and its far bare
+// trees thick black (m34a, frame 3000: the crown's box 55 58 56 natively, 68 71 67 in the game's picture, the tank's
+// hull and the sky the same in both). The trees' own leaf maps have been the game's since w1 (CutLikeTheGame). Off:
+// the game's own levels; on: as before 2026-11-13. Read when a texture is made.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_keep_coverage, false, "cod3/Debug",
+                    "With cod3_native_vulkan, a cut-out texture's smaller levels keep the top level's share of solid "
+                    "texels (far branches, nets and fences thicker than the game's); off: the game's own levels, as "
+                    "the game's picture has them")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // side183: the lightmapped world's two nearby lights (its shaders' LIGHT_POSITION1/2, LIGHT_COLOR1/2, LIGHT_INVFAR1/2),
 // from each object's light set (side182)
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_world_nearby_lights, true, "cod3/Debug",
@@ -880,6 +978,37 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_menu_blur_game, true, "cod3/Debug",
                     "With cod3_native_vulkan, the menus' blur (pause menu, death screen) as the game draws it: as "
                     "dark as the game's and over every pixel of the world when no gun is drawn; off: as before rn48f")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn64a (the owner, 11-13 01:18: "bug report with native renderer. DOF when ADS is super
+// blurry."): the depth of field mixed as the game's own shader mixes it. The pass (0x82149C80) draws with pixel
+// shader 257C1107399A3162 (falaise's dump), sharp picture tf0, blurred tf1, depth tf2:
+//   z = c255.z - depth                         (the depth turned over: 0 near to 1 far)
+//   amount = saturate(max((c0.z - z) x c255.y, (z - c0.w) x c255.y)),  and c255.x where z < c0.y
+//   color = sharp + (blurred - sharp) x amount
+// with c0 = (the near plane, then the depths at 10 units, at the near distance and at the far one). So the picture
+// is sharp everywhere between the near distance and the far one and blurred outside them, the blur growing by c255.y
+// per unit of depth; and what is nearer than 10 units takes c255.x. side125 mixed by a ramp from the near distance to
+// the far one instead: none at the near distance, all of it at the far one. While aiming the game sets the near
+// distance to 0 and the far one to somewhere in the scene (a36a to a36c on The Mace: 144 to 4420 units), and a depth
+// buffer keeps most of its range for the first few units, so the ramp gave nearly everything nearly all of the blur
+// (gd1-a36a.jpg: the tank and the soldier beside it blurred natively, sharp in the game's picture; sh1.py on a36a's
+// 42 aimed frames: the tank's box has 0.10 of the game's sharpness, the soldier's 0.11, the far tree line's 0.07,
+// and the whole picture 0.90 when not aiming). On: the game's mix; off: the ramp, as before 2026-11-13.
+// With it and rn64c (a37a, the same boxes): 0.87, 0.94 and 0.87, the whole picture 0.89.
+// rn64c: and with the game's mix the blur is the game's as well (ngl_vk's record_dof). The pass shrinks the scene 4 x
+// 4 (0x82147608: 16 taps from 0x82145C78, pixel shader BAE9722F15251C86) and blurs that once with 13 taps
+// (0x82147458: the taps from 0x82146E90, the texels where |x| + |y| <= 2 weighted exp(-(x^2 + y^2) / 2) over their
+// sum; pixel shader 019C0B5CF349676A): a Gaussian of sigma 0.83 quarter texels each way. The native blur was two
+// lines of nine taps 1.5 texels apart, sigma 2.5: three times as wide.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_dof_bands, true, "cod3/Debug",
+                    "With cod3_native_vulkan, the depth of field while aiming is mixed as the game's shader does it: "
+                    "sharp between its near and far distances, blurred outside them; off: a ramp from the near "
+                    "distance to the far one, as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// rn64a (a check): other values in place of the game's shader's two own numbers (100 and 0)
+REXCVAR_DEFINE_STRING(cod3_debug_ngl_side_dof_try, "", "cod3/Debug",
+                      "With cod3_debug_ngl_side_dof_bands: two numbers with a comma between them to try in place of "
+                      "the built-in ones: the blur's growth per unit of depth, then the blur (0 to 1) of what is "
+                      "nearer than 10 units, as in 100,0 (empty: the built-in ones; a check)");
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_afterimage, true, "cod3/Debug",
                     "With cod3_native_vulkan, draw the game's post effect 4 (the afterimage of a hit or a concussion) "
                     "as the game does, with a kept picture of its own that streams outward; off: as before rn47g, a "
@@ -965,6 +1094,20 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_moving_lights, true, "cod3/Debug",
                     "With cod3_native_vulkan, the point lights the game hands its draws (lightning, muzzle flashes, "
                     "blasts) light the lightmapped world and the models that have none kept; off: as before rn47w")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn84a (the owner, 13:54, the BAR's rear sight on the island: "red circles those flicker";
+// 14:10, the Forest: "The leaves are flickering"): rn47z hands the frame's moving point lights to every lit draw
+// without a lightmap as a model, and the foliage shader's draws (the bushes) and the trees' leaves are such draws: a
+// muzzle flash lit them by their cards' normals for its two to five frames. lb86's l86a (the BAR aimed, 30 live
+// frames from 6200): the bushes right of the aperture at brightness 155 and warmth (R - B) 40 on 11 of the 30
+// frames, 70 to 82 and 8 to 9 on the others; t88's c88 (the game's picture of the same frames): 72 to 81, never
+// brighter; k86's marks: those bushes are the foliage shader's draws. The game's foliage shader adds a nearby light
+// only by its height (c23, 0 at every draw read: rn46g), and rn47z left the trees out by intent (its probe counts
+// the lit draws with a lightmap of their own "left as they were"); the leaves have no lightmap, so they slipped
+// through. Bit 1: the foliage shader's draws take no moving light; bit 2: nor the trees' parts. 0: as rn47z.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_moving_lights_skip, 3, "cod3/Debug",
+                     "With cod3_debug_ngl_side_moving_lights, the draws the frame's moving point lights leave out: 1 "
+                     "the foliage shader's (bushes), 2 the trees' parts, 3 both; 0: as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn41q: the game's unlit effects, by the effect a node's pass was compiled from
 // (PassEffect): the lanterns' glass (standard_7_1: both its passes 5DD7AA099EE15C4F, the color map x the corners'
 // colors with the map's alpha, blended, no light, no fog) and their flames (standard_10: 1DF1E9465C1429B4, the same
@@ -985,6 +1128,12 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_leaf_light, true, "cod3/Debug",
                     "With cod3_native_vulkan, light the trees' leaves as the game does (the scene's ambient plus the "
                     "sun by each leaf's normal and dimming, no shadow); off: a fixed dark green, as before")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-13 rn82a: the leaves' ambient as their own pass sets it, whichever pass the game set last (see
+// LeavesOwnAmbient). Off: as read, as before (the leaves dark for a frame now and then: the fronds' ambient).
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_leaf_own_ambient, true, "cod3/Debug",
+                    "With cod3_debug_ngl_side_leaf_light, the leaves keep their own pass's ambient (the scene's plus "
+                    "their share of the sun) when the game's effect holds the fronds' at the list send")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn46b: the trees' branches and fronds by the game's light. The Forest's trunks and ferns
 // came out flat natively (a fixed tint 0x5A4632 / 0x3C6432 over the map, one light from above). The game's shaders
 // (rn46a's draws; rn40/dump41t): branches, pixel shader EA6B670C8ACDCED1: the bark x (c17 + c16 x the self-shadow map
@@ -1031,6 +1180,149 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_foliage_light, true, "cod3/Debug",
                     "ambient plus the sun by its height alone, no normals, no shadow); off: as plain objects, as "
                     "before 2026-11-10")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-13 rn63c (the owner, 11-12 23:40 and 11-13 00:51: The Mace's trees): the foliage shader's draws
+// are told by their pass alone. The Mace's leafy trees ("wood$deciduous_c") and its bare ones ("wood$us_dead_tree2_c",
+// "wood$us_dead_tree2a_c") are each two materials: a bumped one, trunk and boughs (the game's C1F972CEED0F963B), and
+// a plain one, the crown's leaf cards and the twigs, which the game draws with the foliage shader (958A306F47544AEF;
+// t47's host-draw lines: vertex shader 45949C0D5F0EB710 and, without the wind's two registers, 022E6861F1D75173;
+// the shader's factor is 1.1 on The Mace). rn46g gave that shader's light only to color maps named
+// "foliage_masked$", so these crowns were lit as plain objects, each card's own normal against the sun under the
+// sun's shadow map: near black where the game has them olive (m34a, frame 3000: the crown's box 55 58 56 natively,
+// 68 71 67 in the game's picture; the tank's hull and the sky the same in both). On: every plain draw whose pass
+// binds the foliage shader's registers (FoliageDiffuse) takes its light; off: only the maps named so, as before.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_foliage_by_pass, true, "cod3/Debug",
+                    "With cod3_debug_ngl_side_foliage_light, every object the game draws with its foliage shader takes "
+                    "that shader's light, told by its pass; off: only those whose color map is named "
+                    "foliage_masked$, as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-13 rn63d (the owner, 11-13 00:51: "the mace trees still look bad"): the foliage shader's sun
+// is the one its own pass binds. The shader's light is (c24 + c25) + (c27 x c28) x the sun's height (rn46g); rn46g
+// took the sun the native side gives the object for c27, which rn46f had read as the scene's sun at the Forest's
+// draws. On The Mace there are two suns: the models' passes bind 0.905 0.868 0.749 (fourth float 2.4; the GPU has
+// it at the crowns' own draws: t47's host-draw lines) and the scene's is 0.377 0.362 0.312, the same color 2.4
+// times weaker. An object that takes the scene's gets 0.29 + 0.377 x 1.1 x 0.5 = 0.498 of its map where the game's
+// draw has 0.29 + 0.905 x 1.1 x 0.5 = 0.788: so m36a's probe has the crown ("wood$deciduous_c", the foliage
+// shader's since rn63c) at its first sight, and over frames 2400 to 3400 the crown's box measures 0.76 of the
+// game's brightness. (w35a's bush "foliage_masked$bushtree3_c" had 0.788 at frame 2900: its object's sun was the
+// models'.) On: c27 as the pass binds it (the register before the factor's: c27, the twin's c25), as the game drew
+// the object when that was kept (DrawnValue), else as the value block holds it now, when it reads as a color; off:
+// the object's sun, as before.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_foliage_pass_sun, true, "cod3/Debug",
+                    "With cod3_debug_ngl_side_foliage_light, the foliage shader's sun color is the one its own pass "
+                    "binds; off: the sun every lit object gets, as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn65a (debug; the owner, 11-13 00:51: The Mace's trees): which part of a tree is which. A
+// model tree is two materials under one color map (a bumped one and a plain one that the game draws with its
+// foliage shader), and on b33 its crown is still a fifth darker than in the game's picture though each part's
+// light reads right in the logs. Bit 1: the foliage shader's draws in flat magenta; bit 2: the bumped draws of the
+// color maps cod3_debug_ngl_side_watch names in flat cyan. And from frame 2900 a line for each marked draw's color
+// map with the light it had before the mark (the watch's own lines come once a color map, so one material's).
+// rn65b: bit 4, the draws cod3_debug_ngl_side_pick finds in flat yellow.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_part_mark, 0, "cod3/Debug",
+                     "A check: 1 the foliage shader's draws flat magenta, 2 the watched color maps' bumped draws "
+                     "flat cyan, 4 the draws cod3_debug_ngl_side_pick finds flat yellow (added together); with a "
+                     "log line for each kind of marked draw from frame 2900")
+    .range(0, 7)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn65b (debug; the owner, 11-13 00:51: The Mace's trees): what is drawn at one point of the
+// picture. p38a's and p38b's marks left The Mace's big crown unmarked: it is not the foliage shader's, not a
+// watched bumped draw and not one of the engine's trees (branches, fronds, leaves). Given "X,Y" (fractions of the
+// picture from its top-left corner, as 0.8,0.4): from frame 2900 a line for each solid draw whose surface's sphere
+// covers that point (PickSphere), once for each (color map, surface), 160 lines at most: its color map's name, its
+// object, effect and kind, an old class's node or not, where its sphere lies in the picture, and its light.
+REXCVAR_DEFINE_STRING(cod3_debug_ngl_side_pick, "", "cod3/Debug",
+                      "A check: \"X,Y\", a point of the picture in fractions from its top-left corner (0.8,0.4): "
+                      "from frame 2900 a log line for each solid draw whose bounding sphere covers it (empty: none)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn66a (the owner, 11-12 23:40 and 11-13 00:51: "the mace trees still look bad. You can see
+// one on the right side of the tank"): that tree is an oak of an old material class (cdSimple, color map
+// "wood$oak_grn_single": p38c's pick), as Saint-Lo's far oak is (rn57k). The class has a draw of its own (0x820E0AB8)
+// with vertex shader C4130C72D4721102 and pixel shader 5530951752B56CCC (p38d's host-draw line; their text from
+// falaise's dump):
+//   light = saturate(c11 + sum over four lights of max(N . c4..c7, 0) x their colors (c8, c9, c10: the four reds,
+//           greens, blues)), in the vertex shader, N the corner's own normal;
+//   out   = the fog's color + (saturate(the map x light) - the fog's color) x (1 - the fog's amount), alpha the
+//           map's (cut at 128 of 255); no shadow map, no rows, no light of the scene's state.
+// The four lights are the first four of the object's light list (0x82150F18 fills it from the object's light set,
+// or the scene's at scene +0x36C, the lights of the model's group: kinds 1, 3, 4, 5, 8 and the positional kind 0
+// in range), each turned into a way and a color by 0x821502F8: kind 1 its data's +0x00 and +0x10, kinds 3 and 4
+// its data's +0x40 and +0x50, kinds 0, 5, 6, 7 through 0x82150108 (a positional light: the way from its place to
+// the model's middle, its color times how far inside its reach the middle is), any other none; c11 is the set's
+// ambient (+0x60). On The Mace an oak's draw has two lights that travel the same way: the set's own directional
+// light, 0.377 0.362 0.312, and the scene's sun, 0.373 0.358 0.309, the list's kind 3 (rn66e: its data lies in the
+// program's globals past kImageEnd, which Readable() refuses, so b37 to b41 read one light of the two), over 0.290:
+// the sun at 0.750 0.720 0.621. On Saint-Lo the two are 0.595 0.589 0.573 and 0.960 0.941 0.888 (p38e). Natively
+// such a node was lit as a plain model: the set's ambient, the
+// scene's sun in place of the set's first light (side168) and dimmed by the sun's shadow map (ShadowFor), not
+// held to 1: half the game's sun, less where the crown shadows itself. The crown's box at frame 3000 was 54.8
+// 58.0 56.4 against the game's 68.8 72.2 67.8. On: its light is read as that draw reads it (SimpleNodeLights) and
+// none of it takes the shadow; off: as before.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_simple_light, true, "cod3/Debug",
+                    "With cod3_native_vulkan, an old material class's simple object (cdSimple: some levels' oaks) is "
+                    "lit as its own draw lights it: its light set's ambient plus every directional light of its "
+                    "list, held to 1, with no sun shadow; off: as a plain model, as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn67a (the owner, 11-13 00:51: "the mace trees still look bad ... super blocky"): the
+// same class's draw (0x820E0AB8) sets the cull mode from its material's +0x14: 2 gives none, anything else
+// D3DCULL_CW, so the faces that wind clockwise on the screen are not drawn. The oaks' material has 1: a leaf card
+// shows its front alone, and behind a card's back the game shows what lies beyond it. ngl_vk culls nothing, so
+// natively every card showed both sides, the back lit by a normal that points away from the eye: a denser crown
+// with dark patches (its cover 1.03 to 1.18 of the game's, m36a to m40a). 1: such a draw drops the faces the game
+// drops (NGL_VK_TINT_ONE_SIDED); 2: the other faces instead (a check of which way the faces wind); 0: both sides,
+// as before.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_simple_sides, 1, "cod3/Debug",
+                     "With cod3_native_vulkan, an old material class's simple object (cdSimple: some levels' oaks) "
+                     "whose material asks for one side is drawn from that side alone, as the game draws it; 2: from "
+                     "the other side (a check); 0: from both sides, as before 2026-11-13")
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn67b: ngl_vk took a draw's lights into the mesh's own space through the world matrix's
+// cofactors, which are its inverse times its determinant. Under a mirroring world matrix (a model placed with one
+// scale below 0) the determinant is below 0, so every directional light came out turned around and the model was
+// lit from its far side. ngl_vk.c now puts the sign back. On: so; off: this side turns such a draw's lights
+// around again, which gives the picture from before (a check). The census counts the lit draws it touches.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_mirror_light, true, "cod3/Debug",
+                    "With cod3_native_vulkan, a lit model placed mirrored (one scale below 0) is lit from the side "
+                    "its lights are on; off: from the far side, as before 2026-11-13 (a check)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn69a: the faces the game's own state drops. A technique pass sets its cull mode from its
+// word at +0x30 (0x82141180: 2 D3DCULL_CW, 6 D3DCULL_CCW, else none), and b43's count found 6 on every pass that
+// asks, world and models alike (t63). ngl_vk culled nothing, so back faces showed through cut-out cards and open
+// surfaces. On: an opaque technique draw gets its pass's mode (ngl_vk_mesh_draw's cull); off: both sides, as before.
+// rn70a: the mode is the one the pass's compiled register writes give the GPU (PassCullMode); b44 took the word at
+// +0x30 and drew The Mace inside out, b45 took 0x82141180's and culled nothing (it sets none in every scene).
+// rn71b: off by default until the forest is understood (t73, the same programs: 6.88 against the game's picture
+// with it, 6.53 without; Black Baron the same, Saint-Lo closer with it). cod3_debug_ngl_side_pass_cull_alternate
+// culls on even frames only (whatever this says), so the two frames of a picture burst differ by the culled faces.
+// [acct2-bro] 2026-11-13 rn73a: on again. With the alternate check (t75) the forest's culled and unculled frames
+// differ by 0.26 to 0.35 and sit as near the game's picture (8.20 and 8.21, culled closer in 7 of 12 pairs); The
+// Mace's even frames sit about 0.3 further from the game's whether culled or not (b46's m46a, both culled: 24 of 26
+// pairs), a pairing effect. t73's two forest runs differed by themselves (their game pictures by 5.0).
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_pass_cull, true, "cod3/Debug",
+                    "With cod3_native_vulkan, an opaque object drops the faces the game's GPU drops for it (its pass's "
+                    "compiled cull mode); off: every face from both sides, as before 2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-14 rn87b (the owner, 13:00: "with the left handed model it flckers"): the mirrored view
+// model's facing taken steady in PassCullMode, not as the pass's block reads at that moment (see there).
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_flip_face_steady, true, "cod3/Debug",
+                    "With cod3_debug_ngl_side_pass_cull and the left-handed weapon, the gun's facing is the turned one "
+                    "whatever its pass's block reads at that moment; off: as read, turned (as before 2026-11-14)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_pass_cull_alternate, false, "cod3/Debug",
+                    "A check: cod3_debug_ngl_side_pass_cull on even frames and off on odd ones, so a burst of two "
+                    "pictures shows what the culling changes")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn72a: see TexturePage. Off by default until a compare run says it draws closer to the game.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_e_view_page, false, "cod3/Debug",
+                    "With cod3_native_vulkan, read a texture or buffer whose header names the guest's 0xE0000000 view "
+                    "4 KB further on, as Direct3D does when it binds; off: at the address's low 29 bits, as before "
+                    "2026-11-13")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-13 rn73b: see SolidLap
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_solid_laps, false, "cod3/Debug",
+                    "With cod3_native_vulkan, time the steps of each solid the native frame draws and log each step's "
+                    "milliseconds a frame with the live lines (a check of where the solids' time goes)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // rn46d (debug): which part of a picture is which tree part. After rn46c the Forest's trunks are the game's, but a
 // bush the game lights yellow-green stays dark natively, with or without the self-shadow map (lvl f / lvl g): is it a
 // tree's fronds, its leaves, or no tree at all?
@@ -1168,9 +1460,40 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_effect_soft_ab, false, "cod3/Debug",
 // Opacity, the depth buffer to soften the edges) blended over the ground (SRC_ALPHA / INV_SRC_ALPHA); natively the
 // material's first texture became an opaque color (bright cyan patches). 0: left out until that shader is done
 // natively (the ground shows); 1: drawn as before.
-REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_water, 0, "cod3/Debug",
+// [acct2-bro] 2026-11-13 rn86a: 2, the default now, draws them as the game's water shader does (Cod3Water; ngl_vk.h
+// cod3_water). The owner, 17:51: "Water will not spawn in on the Island mission. Please check for other levels too."
+// wt2 (the logs of the 11-12 and 11-13 runs): water left out on 8 levels, the most surfaces in one frame the island's
+// 13, Saint-Lo's 4, Hostage's and Laison's 3, The Mace's 2, Crossroads', Night Drop's and St-Bert's 1.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_water, 2, "cod3/Debug",
                      "With cod3_native_vulkan, the lightmapped world's water and puddles: 0 left out (the ground under "
-                     "them shows), 1 drawn as before (opaque, their first texture as the color)")
+                     "them shows), 1 drawn as before (opaque, their first texture as the color), 2 drawn as the game's "
+                     "water shader draws them (ripples, the sky's reflection, blended)")
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn86a: what the water's draws read, logged once a material (Cod3Water)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_water_log, true, "cod3/Debug",
+                    "With cod3_native_vulkan, log once a material what the water's draws read (its pass's registers "
+                    "c16 and c20 to c29 and its parameters)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn86b: the water appended after every other solid draw (SolidDraws), as the game draws it
+// after the terrain's layers; off: in its place in the list (a later terrain's second layer can paint over it)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_water_late, true, "cod3/Debug",
+                    "With cod3_native_vulkan, draw the water after the frame's other solid draws (as the game does), "
+                    "not in its place among them")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn86c: a test: the water's draws lifted in world z (z is up) by this many tenths of a unit.
+// wt10 showed the island's riverbed poking through the native water (drawn opaque) in patches: its surface lies
+// below the rocks where the game's covers them. The sweep against the game's picture measures by how much.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_water_lift, 0, "cod3/Debug",
+                     "With cod3_native_vulkan, lift the water's draws in world z by this many tenths of a unit "
+                     "(a test; 0 = as the vertices say)")
+    .range(-2000, 2000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-13 rn86e: the water's alpha: 0 the game's 1 - (1 - opacity) x f (nearly opaque looking down),
+// 1 rn86a's opacity + (1 - opacity) x f (the opacity looking down)
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_water_alpha, 0, "cod3/Debug",
+                     "With cod3_native_vulkan, the water's alpha: 0 the game's 1 - (1 - opacity) x Fresnel, 1 the "
+                     "earlier opacity + (1 - opacity) x Fresnel")
     .range(0, 1)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_model_irradiance, 1, "cod3/Debug",
@@ -1193,6 +1516,14 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_limits, false, "cod3/Debug",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);  // [rexglue-native-limits] 2026-11-11
 #if defined(_WIN32)
 REXCVAR_DECLARE(std::string, cod3_graphics_api);  // [rexglue-native] 2026-11-09: ui/hud_overlay.cpp (StartNativeVulkan)
+#endif
+
+#if !defined(COD3_MP)
+namespace cod3::server_step {
+// [acct2-bro] 2026-11-14 rn92c: game/server_step.cpp: when this frame's clock was read (SubMsFrame), the moment its
+// moving things and camera are drawn for, steady-clock microseconds (0 before the first frame)
+int64_t FrameClockMicroseconds();
+}  // namespace cod3::server_step
 #endif
 
 namespace cod3::ngl_side {
@@ -1413,6 +1744,11 @@ constexpr float kScreenSqueeze = kScreenHeight / 480.0f;
 // frame is drawn; read only after that). Was a fixed 1280x720, which stays the size when nothing better is known.
 uint32_t g_target_width = 1280;
 uint32_t g_target_height = 720;
+// [acct2-bro] 2026-11-12 rn61a: the size the picture is shown at (what goes to the window), and how many times larger
+// each way the target is drawn (cod3_native_antialiasing; 1: the same size, as before).
+uint32_t g_shown_width = 1280;
+uint32_t g_shown_height = 720;
+uint32_t g_target_scale = 1;
 constexpr uint64_t kDumpEvery = 600;  // frames (rn41s: the live timing line's; the dumps' is DumpEvery)
 // rn41s: the dumps' spacing and count (cod3_debug_ngl_side_shot_every, _shots)
 uint64_t DumpEvery() { return static_cast<uint64_t>(std::max(60, REXCVAR_GET(cod3_debug_ngl_side_shot_every))); }
@@ -1448,7 +1784,11 @@ constexpr size_t kMaxTextureBytes = 32u << 20;
 // to 32 blocks) can run past it when the texture sits at its very end: mace2 ended twice reading 0x20029000 and
 // 0x20038000 past it. Every texture read stops there.
 constexpr size_t kPhysicalBytes = 0x20000000u;
-size_t PhysicalRoom(size_t physical) { return physical < kPhysicalBytes ? kPhysicalBytes - physical : 0; }
+size_t PhysicalRoom(size_t physical) {
+  if (physical < kPhysicalBytes) return kPhysicalBytes - physical;
+  // [acct2-decomp] stage 5: a name in the moved streaming pool (TexturePage, below) reads up to the pool's end
+  return physical <= 0xFFFFFFFFu ? cod3::native_memory::GpuRoom(static_cast<uint32_t>(physical)) : 0;
+}
 constexpr size_t kMaxText = 1024;
 constexpr int kListedQuads = 48;  // quads and strings listed by the first big dump
 // the generic surface node and what it points to (see the top)
@@ -1472,8 +1812,74 @@ bool Pointer(uint32_t p) { return p >= 0x10000 && (p & 3) == 0; }
 // A physical address (as fetch constants hold them) as the guest sees it; others are already guest addresses.
 uint32_t GuestAddress(uint32_t address) { return address < 0x20000000u ? (0xA0000000u | address) : address; }
 
-// Inside the guest's views of physical memory (0xA0000000 and up), which are mapped whole, so reading is safe.
-bool Physical(uint32_t address) { return address >= 0xA0000000u && address < 0xFFF00000u; }
+// [acct2-decomp] 2026-11-12, memory-360's stage 5 (cod3_native_memory_move_pool, off by default, native renderer
+// only): the game's streaming pool, the level's textures and meshes (240 MB), in guest virtual memory outside the
+// console's 512 MB. A resource header of the game's holds its data's CPU address whole (a texture's fetch words 1
+// and 5, a buffer's word at +0x18); this file cut that to the console's 29 bits, which for data in the moved pool
+// names another place: the world's surfaces were refused ("a buffer outside physical memory") and textures were read
+// from the wrong memory (forest 11-12 19:13: a fifth of the picture differed).
+// TexturePage / BufferData: the name this file keeps for such data (its keys, its logs, GuestAddress, PhysicalRoom):
+// the physical address as before, or, in the moved pool, the address as it is (0x50000000 and up: no physical address
+// is that high, so the two kinds never meet). While the pool isn't moved InMovedPool is false and these are the masks
+// they replace.
+// [acct2-bro] 2026-11-13 rn72a: a header word in the guest's 0xE0000000 view (memory with 4 KB pages) names physical
+// memory 4 KB further on than its low 29 bits. Direct3D adds ((address >> 20) + 0x200) & 0x1000 when the game binds
+// (D3DDevice_SetTexture: stage 5's README saw texture header E5FC3097 against the device's 05FC4097), and the
+// console's kernel maps that view so (MmIsAddressValid in xkrnl-decomp: physical = address - 0xE0000000 + 0x1000).
+// The device's own fetch words have it added already (their top bits are 0, so EViewExtra is 0 for them); the game's
+// headers don't, so before rn72a this file read such data 4 KB early from a header, and kept it under another key
+// than the device's. cod3_debug_ngl_side_e_view_page adds it as Direct3D does. With cod3_debug_ngl_side on, the
+// distinct words seen in that view are counted and logged (the first 16, then at each power of two), so a run says how
+// many textures and buffers the view holds.
+uint32_t EViewExtra(uint32_t word) { return ((word >> 20) + 0x200u) & 0x1000u; }
+
+void NoteEViewWord(uint32_t word, bool buffer) {
+  if (!REXCVAR_GET(cod3_debug_ngl_side)) return;
+  const uint32_t page = word & 0xFFFFF000u;
+  thread_local uint32_t last = 0;  // the same texture asked for again and again: no lock
+  if (page == last) return;
+  last = page;
+  static std::mutex lock;
+  static std::unordered_set<uint32_t> seen;
+  static uint32_t textures = 0, buffers = 0;
+  std::lock_guard<std::mutex> hold(lock);
+  if (seen.size() >= 4096 || !seen.insert(page | (buffer ? 1u : 0u)).second) return;
+  const uint32_t n = buffer ? ++buffers : ++textures;
+  const size_t all = seen.size();
+  if (all <= 16 || (all & (all - 1)) == 0) {
+    REXLOG_INFO("cod3: ngl side: rn72a: header words in the 0xE0000000 view so far: {} textures, {} buffers (newest a "
+                "{} {:08X}: physical {:08X} by Direct3D's rule, {:08X} by the low 29 bits; e_view_page {}; {} of "
+                "its kind)",
+                textures, buffers, buffer ? "buffer" : "texture", word, ((word & 0x1FFFF000u) + 0x1000u) & 0x1FFFF000u,
+                word & 0x1FFFF000u, REXCVAR_GET(cod3_debug_ngl_side_e_view_page) ? "on" : "off", n);
+  }
+}
+
+uint32_t TexturePage(uint32_t word) {  // [acct2-decomp] stage 5
+  if (cod3::native_memory::InMovedPool(word)) return word & 0xFFFFF000u;
+  const uint32_t extra = EViewExtra(word);  // rn72a
+  if (extra != 0) {
+    NoteEViewWord(word, false);
+    if (REXCVAR_GET(cod3_debug_ngl_side_e_view_page)) return ((word & 0x1FFFF000u) + extra) & 0x1FFFF000u;
+  }
+  return word & 0x1FFFF000u;
+}
+uint32_t BufferData(uint32_t word) {  // [acct2-decomp] stage 5
+  if (cod3::native_memory::InMovedPool(word)) return word & 0xFFFFFFFCu;
+  const uint32_t extra = EViewExtra(word);  // rn72a
+  if (extra != 0) {
+    NoteEViewWord(word, true);
+    if (REXCVAR_GET(cod3_debug_ngl_side_e_view_page)) return ((word & 0x1FFFFFFCu) + extra) & 0x1FFFFFFCu;
+  }
+  return word & 0x1FFFFFFCu;
+}
+
+// Inside the guest's views of physical memory (0xA0000000 and up), which are mapped whole, so reading is safe;
+// [acct2-decomp] stage 5: or in the moved streaming pool (one block of the move's memory, mapped whole too). The
+// checks still made with this guard GPU data (the game's own data went to GameData and Readable, 11-11).
+bool Physical(uint32_t address) {
+  return (address >= 0xA0000000u && address < 0xFFF00000u) || cod3::native_memory::InMovedPool(address);
+}
 
 // [rexglue-native-mem] 2026-11-11: memory-360's stage 3 (cod3_native_memory_move, off by default, native renderer
 // only) moves some of the game's CPU-only blocks (Sys_Main's list buffers, the particle pools, the sound banks; with
@@ -1840,16 +2246,17 @@ void UnpackTexel(uint32_t word, const PackedFields& fields, uint8_t texel[4]) {
 // One surface's texels as BGRA8 rows: width x height texels in blocks of format f from `source` (`bytes` long), tiled
 // or not with pitch_blocks blocks a row, the first block at (offset_x, offset_y) in blocks (a level inside a packed
 // surface); each texel's channels picked by the fetch constant's swizzle.
-void DecodeSurface(const uint8_t* source, size_t bytes, const Format& f, uint32_t format, uint32_t endian,
-                   uint32_t swizzle, bool tiled, uint32_t pitch_blocks, uint32_t offset_x, uint32_t offset_y,
-                   uint32_t width, uint32_t height, std::vector<uint8_t>& bgra) {
-  const uint32_t blocks_x = (width + f.block - 1) / f.block, blocks_y = (height + f.block - 1) / f.block;
-  bgra.assign(static_cast<size_t>(width) * height * 4, 0);
+// [acct2-bro] 2026-11-14 rn89a: block rows by_first to by_end - 1 of such a surface into bgra (width x height x 4
+// bytes, made by the caller), with buffers of its own, so that bands of one surface can be decoded on several threads.
+void DecodeSurfaceRows(const uint8_t* source, size_t bytes, const Format& f, uint32_t format, uint32_t endian,
+                       uint32_t swizzle, bool tiled, uint32_t pitch_blocks, uint32_t offset_x, uint32_t offset_y,
+                       uint32_t width, uint32_t height, uint32_t by_first, uint32_t by_end, uint8_t* bgra) {
+  const uint32_t blocks_x = (width + f.block - 1) / f.block;
   uint8_t block[16];
   uint8_t texels[16][4];
   PackedFields packed{};
   const bool is_packed = PackedFormat(format, &packed);  // side198
-  for (uint32_t by = 0; by < blocks_y; ++by) {
+  for (uint32_t by = by_first; by < by_end; ++by) {
     const int32_t sy = static_cast<int32_t>(by + offset_y);
     const int32_t row = tiled ? TiledRow(sy, static_cast<int32_t>(pitch_blocks), f.log2_bytes) : 0;
     for (uint32_t bx = 0; bx < blocks_x; ++bx) {
@@ -1910,6 +2317,43 @@ void DecodeSurface(const uint8_t* source, size_t bytes, const Format& f, uint32_
   }
 }
 
+// The whole surface (DecodeSurfaceRows over all its block rows).
+// [acct2-bro] 2026-11-14 rn89a (owner 14:53, frame pacing): a new texture is decoded in the frame that first draws
+// it; t106 (mace2, uncapped) had a 28-35 ms frame each time a few came at once (2-11 ms a texture). A surface of
+// kBandTexels texels or more is decoded in up to kDecodeBands bands of block rows at once (at most half the CPUs, at
+// least kMinBandRows rows a band), the last band on this thread. The pixels are the same as one pass's.
+constexpr size_t kBandTexels = 256 * 256;
+constexpr uint32_t kDecodeBands = 8, kMinBandRows = 8;
+void DecodeSurface(const uint8_t* source, size_t bytes, const Format& f, uint32_t format, uint32_t endian,
+                   uint32_t swizzle, bool tiled, uint32_t pitch_blocks, uint32_t offset_x, uint32_t offset_y,
+                   uint32_t width, uint32_t height, std::vector<uint8_t>& bgra) {
+  const uint32_t blocks_y = (height + f.block - 1) / f.block;
+  bgra.assign(static_cast<size_t>(width) * height * 4, 0);
+  uint32_t bands = 1;
+  if (static_cast<size_t>(width) * height >= kBandTexels) {
+    static const uint32_t cpus = std::max(1u, std::thread::hardware_concurrency());
+    bands = std::min({kDecodeBands, std::max(1u, cpus / 2), std::max(1u, blocks_y / kMinBandRows)});
+  }
+  const uint32_t step = (blocks_y + bands - 1) / bands;
+  std::vector<std::thread> helpers;
+  uint32_t first = 0;
+  for (uint32_t b = 0; b + 1 < bands && first < blocks_y; ++b, first += step) {
+    const uint32_t end = std::min(blocks_y, first + step);
+    try {
+      helpers.emplace_back(DecodeSurfaceRows, source, bytes, f, format, endian, swizzle, tiled, pitch_blocks,
+                           offset_x, offset_y, width, height, first, end, bgra.data());
+    } catch (const std::system_error&) {  // no thread to be had: this band here
+      DecodeSurfaceRows(source, bytes, f, format, endian, swizzle, tiled, pitch_blocks, offset_x, offset_y, width,
+                        height, first, end, bgra.data());
+    }
+  }
+  if (first < blocks_y) {
+    DecodeSurfaceRows(source, bytes, f, format, endian, swizzle, tiled, pitch_blocks, offset_x, offset_y, width,
+                      height, first, blocks_y, bgra.data());
+  }
+  for (std::thread& helper : helpers) helper.join();
+}
+
 // A Direct3D texture's top level as BGRA8 rows; false (and the reason) when it can't be read.
 // A Direct3D texture's fetch constant: the six words the GPU takes it by (+0x1C in the texture object, or a fetch
 // constant of the device's for a draw's textures, side85).
@@ -1937,7 +2381,7 @@ void NoteFetchKind(const uint32_t* fetch, uint32_t width, uint32_t height) {
   if (shown.fetch_add(1, std::memory_order_relaxed) < 12) {
     REXLOG_INFO("cod3: ngl side: texture {}x{} format {} at {:08X}: fetch signs x {} y {} z {} w {}, exponent {} (so "
                 "far {} plain, {} gamma, {} other)",
-                width, height, fetch[1] & 0x3F, fetch[1] & 0x1FFFF000, signs & 3, (signs >> 2) & 3, (signs >> 4) & 3,
+                width, height, fetch[1] & 0x3F, TexturePage(fetch[1]), signs & 3, (signs >> 2) & 3, (signs >> 4) & 3,
                 signs >> 6, exponent, plain.load(), gamma.load(), other.load());
   }
 }
@@ -1947,7 +2391,7 @@ bool DecodeFetch(uint8_t* base, const uint32_t* fetch, std::vector<uint8_t>& bgr
   const bool tiled = (fetch[0] >> 31) != 0;
   const uint32_t pitch = ((fetch[0] >> 22) & 0x1FF) * 32;
   const uint32_t format = fetch[1] & 0x3F, endian = (fetch[1] >> 6) & 3;
-  const uint32_t physical = fetch[1] & 0x1FFFF000;
+  const uint32_t physical = TexturePage(fetch[1]);
   width = (fetch[2] & 0x1FFF) + 1;
   height = ((fetch[2] >> 13) & 0x1FFF) + 1;
   const uint32_t swizzle = (fetch[3] >> 1) & 0xFFF;
@@ -1976,7 +2420,7 @@ bool DecodeFetch(uint8_t* base, const uint32_t* fetch, std::vector<uint8_t>& bgr
     why = "size or address out of range";
     return false;
   }
-  DecodeSurface(GpuPointer(base, 0xA0000000u | physical), std::min(bytes, PhysicalRoom(physical)), f, format, endian,
+  DecodeSurface(GpuPointer(base, GuestAddress(physical)), std::min(bytes, PhysicalRoom(physical)), f, format, endian,
                 swizzle, tiled, pitch_blocks, offset_x, offset_y, width, height, bgra);
   return true;
 }
@@ -1989,7 +2433,7 @@ bool DecodeFetchAt(uint8_t* base, const uint32_t* fetch, uint32_t offset_x, uint
   const bool tiled = (fetch[0] >> 31) != 0;
   const uint32_t pitch = ((fetch[0] >> 22) & 0x1FF) * 32;
   const uint32_t format = fetch[1] & 0x3F, endian = (fetch[1] >> 6) & 3;
-  const uint32_t physical = fetch[1] & 0x1FFFF000;
+  const uint32_t physical = TexturePage(fetch[1]);
   const uint32_t swizzle = (fetch[3] >> 1) & 0xFFF;
   Format f;
   if (!FormatOf(format, &f) || physical == 0) return false;
@@ -1999,7 +2443,7 @@ bool DecodeFetchAt(uint8_t* base, const uint32_t* fetch, uint32_t offset_x, uint
   const uint32_t rows = tiled ? (blocks_y + offset_y + 31) & ~31u : blocks_y + offset_y;
   const size_t bytes = static_cast<size_t>(pitch_blocks) * rows * f.bytes;
   if (bytes > kMaxTextureBytes) return false;
-  DecodeSurface(GpuPointer(base, 0xA0000000u | physical), std::min(bytes, PhysicalRoom(physical)), f, format, endian,
+  DecodeSurface(GpuPointer(base, GuestAddress(physical)), std::min(bytes, PhysicalRoom(physical)), f, format, endian,
                 swizzle, tiled, pitch_blocks, offset_x, offset_y, width, height, bgra);
   return true;
 }
@@ -2025,11 +2469,11 @@ bool Decode(uint8_t* base, uint32_t d3d, std::vector<uint8_t>& bgra, uint32_t& w
 void DecodeLevelsFetch(uint8_t* base, const uint32_t* fetch, std::vector<std::vector<uint8_t>>& levels) {
   levels.clear();
   const uint32_t format = fetch[1] & 0x3F, endian = (fetch[1] >> 6) & 3;
-  const uint32_t physical = fetch[1] & 0x1FFFF000;
+  const uint32_t physical = TexturePage(fetch[1]);
   const uint32_t width = (fetch[2] & 0x1FFF) + 1, height = ((fetch[2] >> 13) & 0x1FFF) + 1;
   const uint32_t swizzle = (fetch[3] >> 1) & 0xFFF;
   const uint32_t last = (fetch[4] >> 6) & 0xF;
-  const uint32_t mip_address = fetch[5] & 0x1FFFF000;
+  const uint32_t mip_address = TexturePage(fetch[5]);
   const bool tiled = (fetch[0] >> 31) != 0, packed = ((fetch[5] >> 11) & 1) != 0;
   Format f;
   if (!tiled || !last || !physical || !FormatOf(format, &f) || (width & (width - 1)) || (height & (height - 1))) return;
@@ -2086,7 +2530,7 @@ void DecodeLevelsFetch(uint8_t* base, const uint32_t* fetch, std::vector<std::ve
                   physical, width, height, format, last + 1, mip_address, physical + static_cast<uint32_t>(top_bytes));
     }
     levels.emplace_back();
-    DecodeSurface(GpuPointer(base, 0xA0000000u | start) + from,
+    DecodeSurface(GpuPointer(base, GuestAddress(start)) + from,
                   std::min(bytes, PhysicalRoom(static_cast<size_t>(start) + from)), f, format, endian, swizzle, true, pitch,
                   x / f.block, y / f.block, w, h, levels.back());
   }
@@ -2207,7 +2651,7 @@ bool TextureKeyFetch(uint8_t* base, const uint32_t* fetch, uint64_t& key, uint32
   const bool tiled = (fetch[0] >> 31) != 0;
   const uint32_t pitch = ((fetch[0] >> 22) & 0x1FF) * 32;
   const uint32_t format = fetch[1] & 0x3F, endian = (fetch[1] >> 6) & 3;
-  const uint32_t physical = fetch[1] & 0x1FFFF000;
+  const uint32_t physical = TexturePage(fetch[1]);
   const uint32_t width = (fetch[2] & 0x1FFF) + 1, height = ((fetch[2] >> 13) & 0x1FFF) + 1;
   const bool packed = ((fetch[5] >> 11) & 1) != 0;
   Format f;
@@ -2222,7 +2666,7 @@ bool TextureKeyFetch(uint8_t* base, const uint32_t* fetch, uint64_t& key, uint32
   const size_t span = std::min(static_cast<size_t>(pitch_blocks) * (((blocks_y + offset_y) + 31) & ~31u) * f.bytes,
                                PhysicalRoom(physical));
   if (span > kMaxTextureBytes) return false;
-  const uint8_t* source = GpuPointer(base, 0xA0000000u | physical);
+  const uint8_t* source = GpuPointer(base, GuestAddress(physical));
   std::vector<uint8_t> gathered(static_cast<size_t>(blocks_x) * blocks_y * f.bytes);
   uint8_t* out = gathered.data();
   for (uint32_t by = 0; by < blocks_y; ++by) {
@@ -2270,7 +2714,12 @@ bool PlainPackFile(const std::string& name) {
 
 void ReadPack(const std::filesystem::path& folder, bool user) {
   std::error_code error;
-  if (std::filesystem::file_size(folder / "index.tsv", error) > (size_t(64) << 20) || error) return;
+  if (std::filesystem::file_size(folder / "index.tsv", error) > (size_t(64) << 20) || error) {
+    // [acct2-main] 2026-11-14: said, not silent (a pack in use whose index can't be read is a fault)
+    REXLOG_WARN("cod3: ngl side: {} pack not read: {} ({})", user ? "user" : "HD", (folder / "index.tsv").string(),
+                error ? error.message() : std::string("larger than 64 MB"));
+    return;
+  }
   std::ifstream index(folder / "index.tsv");
   std::string line;
   int taken = 0;
@@ -2311,11 +2760,15 @@ const char* DescribeUserTextures(HdTextures state) {
 void ReadPacks() {
   if (g_pack_read) return;
   g_pack_read = true;
-  const std::filesystem::path root = ScreenshotFolder().parent_path().parent_path().parent_path();
-  if (GetHdTextures() == HdTextures::kOn) ReadPack(root / "data" / "cod3" / "hd_textures", false);
-  if (GetHdTextures() == HdTextures::kCommandLine) ReadChosenPack("texture_replacement_path", false);  // rn48h
-  if (hd::GetUserTextures() == HdTextures::kOn) ReadPack(root / "data" / "cod3" / "user_textures", true);
-  if (hd::GetUserTextures() == HdTextures::kCommandLine) {  // rn48h
+  // [acct2-main] 2026-11-14: a pack in use is read where hd_textures.cpp found it. It sets the SDK's
+  // texture_replacement_path / texture_replacement_user_path to that folder (state kOn), as the command line does
+  // for a test (kCommandLine, rn48h), so the native side and the GPU emulation always take the same packs (this
+  // read data/cod3/... beside the folder ScreenshotFolder guessed, which from the AppImage wasn't the game's).
+  const HdTextures hd_state = GetHdTextures(), user_state = hd::GetUserTextures();
+  if (hd_state == HdTextures::kOn || hd_state == HdTextures::kCommandLine) {
+    ReadChosenPack("texture_replacement_path", false);
+  }
+  if (user_state == HdTextures::kOn || user_state == HdTextures::kCommandLine) {
     ReadChosenPack("texture_replacement_user_path", true);
   }
   if (g_pack.empty()) {
@@ -2576,6 +3029,15 @@ constexpr size_t kMaxMovingLights = 16;
 // of the frame being built, by its index in the frame's draw list; [3] is 1 when it was read. Written (SolidDraws)
 // and read (Dump) on the one thread that builds the frame.
 std::vector<std::array<float, 4>> g_draw_places;
+// [acct2-bro] 2026-11-13 rn84a: the frame's draws that take no moving point light (cod3_debug_ngl_side_moving_lights_
+// skip: the foliage shader's, the trees' parts), by their index in the frame's draw list, with their mesh and color
+// map (a draw found at that index with another mesh or map is not the one noted). Written and read on the one thread
+// that builds the frame, as g_draw_places.
+struct PlantDraw {
+  uint32_t mesh = 0, texture = 0;
+  bool plant = false;
+};
+std::vector<PlantDraw> g_draw_plants;
 constexpr uint64_t kMovingLightFrames = 1;  // how many game frames back a light may have been seen last
 std::mutex g_moving_light_mutex;
 std::vector<MovingLight> g_moving_lights;
@@ -2598,6 +3060,38 @@ uint64_t KeptLightCellKey(int64_t x, int64_t y, int64_t z) {
          (static_cast<uint64_t>(z) & 0x1FFFFF);
 }
 int64_t KeptLightCellOf(float v) { return static_cast<int64_t>(std::floor(v / kKeptLightCell)); }
+// [acct2-bro] 2026-11-13 rn77a: how far v lies outside the cell's span on one axis (0 inside it)
+float KeptLightAxisGap(float v, int64_t cell) {
+  const float low = static_cast<float>(cell) * kKeptLightCell, high = low + kKeptLightCell;
+  return v < low ? low - v : v > high ? v - high : 0.0f;
+}
+// rn77a: visit(x, y, z) for each cell that can hold a place within kKeptLightNear of at, in the order the 3 x 3 x 3
+// cells around at's own were looked in before (x, then y, then z, each upward). On each axis the span at +-
+// kKeptLightNear touches two cells or three (kKeptLightNear is under kKeptLightCell); a cell whose nearest point is
+// farther than kKeptLightNear (a corner of the box) is left out. The places found are the same: a place within reach
+// lies in one of the cells visited (the 2% margin keeps a place right at the edge). t80's q52: the 27 hash lookups of
+// each by-place search were most of FindKeptLight's 1.1 to 1.6 ms a frame.
+template <typename Visit>
+void ForNearKeptLightCells(const float* at, Visit&& visit) {
+  constexpr float kReach = kKeptLightNear * kKeptLightNear * 1.02f;
+  int64_t low[3], high[3];
+  for (int i = 0; i < 3; ++i) {
+    low[i] = KeptLightCellOf(at[i] - kKeptLightNear);
+    high[i] = KeptLightCellOf(at[i] + kKeptLightNear);
+  }
+  for (int64_t x = low[0]; x <= high[0]; ++x) {
+    const float gx = KeptLightAxisGap(at[0], x);
+    for (int64_t y = low[1]; y <= high[1]; ++y) {
+      const float gy = KeptLightAxisGap(at[1], y);
+      if (gx * gx + gy * gy > kReach) continue;
+      for (int64_t z = low[2]; z <= high[2]; ++z) {
+        const float gz = KeptLightAxisGap(at[2], z);
+        if (gx * gx + gy * gy + gz * gz > kReach) continue;
+        visit(x, y, z);
+      }
+    }
+  }
+}
 // [rexglue-native] 2026-11-10 rn43a: a pass's values as the game drew an object (cod3_debug_ngl_side_drawn_values).
 // For each value block (a shader state's +0x1C), the offsets the native side has read from it (ReadBound notes them,
 // up to kDrawnOffsets a block); at each lit draw (KeepModelLight) the block's values at those offsets, four floats each,
@@ -3006,7 +3500,7 @@ void LogPassBinding(uint8_t* base, uint32_t node, const char* what) {
       char item[160];
       std::snprintf(item, sizeof item, "texture %08X %ux%u at %08X/%u flags %X \"%s\"", texture,
                     DataU32(base, texture + kTextureWidth), DataU32(base, texture + kTextureHeight),
-                    word1 & 0x1FFFF000u, word1 & 0x3F, DataU32(base, texture + kTextureFlags),
+                    TexturePage(word1), word1 & 0x3F, DataU32(base, texture + kTextureFlags),
                     Pointer(name) && Readable(name) ? InlineName(base, name + 4).c_str() : "-");
       return std::string(item);
     };
@@ -3072,7 +3566,7 @@ void LogPassBinding(uint8_t* base, uint32_t node, const char* what) {
       auto d3d_text = [base](uint32_t d3d) {
         const uint32_t word1 = DataU32(base, d3d + kFetchConstant + 4);  // [rexglue-native-mem]
         char item[64];
-        std::snprintf(item, sizeof item, "d3d %08X at %08X/%u", d3d, word1 & 0x1FFFF000u, word1 & 0x3F);
+        std::snprintf(item, sizeof item, "d3d %08X at %08X/%u", d3d, TexturePage(word1), word1 & 0x3F);
         return std::string(item);
       };
       const uint32_t head = safe(block, 0x0C) ? DataU32(base, block) : 0;  // [rexglue-native-mem]
@@ -3126,7 +3620,7 @@ void LogPassBinding(uint8_t* base, uint32_t node, const char* what) {
       auto d3d_line = [base](uint32_t d3d) {
         const uint32_t word1 = DataU32(base, d3d + kFetchConstant + 4);  // [rexglue-native-mem]
         char item[64];
-        std::snprintf(item, sizeof item, "d3d %08X at %08X/%u", d3d, word1 & 0x1FFFF000u, word1 & 0x3F);
+        std::snprintf(item, sizeof item, "d3d %08X at %08X/%u", d3d, TexturePage(word1), word1 & 0x3F);
         return std::string(item);
       };
       for (uint32_t p = 0; p < passes; ++p) {
@@ -4198,7 +4692,16 @@ void LogLitPass(uint8_t* base, uint32_t node, uint32_t color_map, const char* ki
 // Forest. One St-Bert material with a foliage map ("hedgerows_di", which has a lightmap too) has another pass (c24
 // the light block's +0x30, c28 the value block's +0x6F0, not a color): another shader, not this one.
 // rn46j: so the pass is this shader's only when c24 is bound to the light block's +0x110 as well.
-bool FoliageDiffuse(uint8_t* base, uint32_t node, float* into) {
+// [acct2-bro] 2026-11-13 rn63d: FoliageSun is what the same pass binds right before the factor: the sun's color (c27,
+// the twin's c25) and before that the sun's place (c26, the twin's c24), each read only when its register is filled
+// from the state's value block (slot 1) and the floats are sane; as the game drew the object when that was kept
+// (DrawnValue, as ReadBound), else as the block holds them now. FoliageDiffuse fills it when asked to.
+struct FoliageSun {
+  bool color_read = false, place_read = false;
+  float color[3] = {}, place[3] = {};
+};
+
+bool FoliageDiffuse(uint8_t* base, uint32_t node, float* into, FoliageSun* sun = nullptr) {
   const uint32_t technique = GrassReadable(node) ? g::ReadU32(base, node + 0x1C) : 0;
   const uint32_t pass = GrassReadable(technique) ? g::ReadU32(base, technique + 0x0C) : 0;
   const uint32_t compiled = GrassReadable(pass) ? g::ReadU32(base, pass + 0xDC) : 0;
@@ -4208,21 +4711,52 @@ bool FoliageDiffuse(uint8_t* base, uint32_t node, float* into) {
   const uint32_t at = compiled + 0x80;
   const uint32_t count = g::ReadU32(base, at + 0x08), rows = g::ReadU32(base, at + 0x20);
   const uint32_t first = (g::ReadU32(base, at + 0x1C) & 0x7FF) / 4;
-  constexpr uint32_t kAmbient = 24, kDiffuse = 28;
-  if (count > 64 || kAmbient < first || kDiffuse >= first + count) return false;
-  const uint32_t ambient_row = rows + 8 * (kAmbient - first);
-  if (!GrassReadable(ambient_row) || !GrassReadable(ambient_row + 4)) return false;
-  if (g::ReadU32(base, ambient_row) / 4 != 4 || g::ReadU32(base, ambient_row + 4) != 0x110) return false;  // rn46j
-  const uint32_t row = rows + 8 * (kDiffuse - first);
-  if (!GrassReadable(row) || !GrassReadable(row + 4)) return false;
-  const uint32_t slot = g::ReadU32(base, row) / 4, offset = g::ReadU32(base, row + 4);
-  const uint32_t from = values + offset;
-  if (slot != 1 || offset > 0x4000 || !GrassReadable(from) || !GrassReadable(from + 8)) return false;
-  for (uint32_t i = 0; i < 3; ++i) {
-    into[i] = g::ReadF32(base, from + 4 * i);
-    if (!std::isfinite(into[i]) || into[i] < 0.0f || into[i] > 4.0f) return false;
+  // [acct2-bro] 2026-11-13 rn63c: the shader has a twin without the wind's two registers (vertex shader
+  // 022E6861F1D75173, The Mace's bare trees; t47's host-draw lines: c22 the ambient, c24 the sun's place, c25 its
+  // color, c26 the factor), taken as bound the same way two registers lower. Each layout: the ambient's register,
+  // then the factor's. into is written only when a layout fits.
+  constexpr uint32_t kLayouts[2][2] = {{24, 28}, {22, 26}};
+  if (count > 64) return false;
+  for (const auto& layout : kLayouts) {
+    const uint32_t ambient = layout[0], factor = layout[1];
+    if (ambient < first || factor >= first + count) continue;
+    const uint32_t ambient_row = rows + 8 * (ambient - first);
+    if (!GrassReadable(ambient_row) || !GrassReadable(ambient_row + 4)) continue;
+    if (g::ReadU32(base, ambient_row) / 4 != 4 || g::ReadU32(base, ambient_row + 4) != 0x110) continue;  // rn46j
+    const uint32_t row = rows + 8 * (factor - first);
+    if (!GrassReadable(row) || !GrassReadable(row + 4)) continue;
+    const uint32_t slot = g::ReadU32(base, row) / 4, offset = g::ReadU32(base, row + 4);
+    const uint32_t from = values + offset;
+    if (slot != 1 || offset > 0x4000 || !GrassReadable(from) || !GrassReadable(from + 8)) continue;
+    float read[3];
+    bool sane = true;
+    for (uint32_t i = 0; i < 3; ++i) {
+      read[i] = g::ReadF32(base, from + 4 * i);
+      sane = sane && std::isfinite(read[i]) && read[i] >= 0.0f && read[i] <= 4.0f;
+    }
+    if (!sane) continue;
+    for (uint32_t i = 0; i < 3; ++i) into[i] = read[i];
+    if (sun) {  // rn63d: the two registers before the factor's
+      auto bound = [&](uint32_t reg, float* held, float low, float high) {
+        if (reg < first) return false;
+        const uint32_t reg_row = rows + 8 * (reg - first);
+        if (!GrassReadable(reg_row) || !GrassReadable(reg_row + 4)) return false;
+        const uint32_t where = g::ReadU32(base, reg_row + 4), at_value = values + where;
+        if (g::ReadU32(base, reg_row) / 4 != 1 || where > 0x4000) return false;
+        if (!GrassReadable(at_value) || !GrassReadable(at_value + 8)) return false;
+        const bool drawn = DrawnValue(base, values, where, held, 3);
+        for (uint32_t i = 0; i < 3; ++i) {
+          if (!drawn) held[i] = g::ReadF32(base, at_value + 4 * i);
+          if (!std::isfinite(held[i]) || held[i] < low || held[i] > high) return false;
+        }
+        return true;
+      };
+      sun->color_read = bound(factor - 1, sun->color, 0.0f, 16.0f);
+      sun->place_read = bound(factor - 2, sun->place, -1e9f, 1e9f);
+    }
+    return true;
   }
-  return true;
+  return false;
 }
 
 // [rexglue-native] 2026-11-10 rn41q: the effect a node's first pass was compiled from, by the pass's own text
@@ -5573,6 +6107,56 @@ bool StateSun(uint8_t* base, uint32_t state, Sun& sun) {
   return sun.ok;
 }
 
+// [acct2-bro] 2026-11-13 rn85a: StateSun held against one-frame reads (cod3_debug_ngl_side_sun_hold). Per shader
+// state: the sun its draws take, and a different one read lately. A different sun is taken on the state's next frame
+// when that frame's first read gives it again; a frame whose first read gives the one in use forgets it. On the
+// thread that builds the frame (the game's own, or the worker), one frame at a time, so the table needs no lock;
+// ForgetEverything empties it at a new level.
+struct HeldSun {
+  Sun used;                 // the sun the state's draws take
+  Sun pending;              // a different one read on pending_frame
+  bool pending_ok = false;
+  uint64_t pending_frame = 0;
+  uint64_t frame = 0;       // the last frame the state was read on
+};
+std::unordered_map<uint32_t, HeldSun> g_held_suns;  // shader state -> its held sun
+constexpr size_t kHeldSunsMost = 8192;               // more states than a level has: start again
+
+bool SameSun(const Sun& a, const Sun& b) { return a.ok == b.ok && SunKey(a) == SunKey(b); }
+
+// held: set when the sun read was not the one handed back (the one in use was)
+bool HeldStateSun(uint8_t* base, uint32_t state, uint64_t frame, Sun& sun, bool* held) {
+  *held = false;
+  if (!StateSun(base, state, sun)) return false;
+  if (!REXCVAR_GET(cod3_debug_ngl_side_sun_hold)) return true;
+  if (g_held_suns.size() >= kHeldSunsMost && !g_held_suns.count(state)) g_held_suns.clear();
+  HeldSun& h = g_held_suns[state];
+  const bool first_read = h.frame != frame;  // this state's first read in this frame
+  const uint64_t last_frame = h.frame;
+  h.frame = frame;
+  if (!h.used.ok) {  // the state's first sun: as read
+    h.used = sun;
+    return true;
+  }
+  if (SameSun(sun, h.used)) {
+    if (first_read) h.pending_ok = false;  // the different one was one frame's
+    return true;
+  }
+  if (first_read && h.pending_ok && h.pending_frame == last_frame && SameSun(sun, h.pending)) {
+    h.used = sun;  // read again on the state's next frame: a real change
+    h.pending_ok = false;
+    return true;
+  }
+  if (!h.pending_ok || h.pending_frame != frame) {
+    h.pending = sun;
+    h.pending_ok = true;
+    h.pending_frame = frame;
+  }
+  sun = h.used;
+  *held = true;
+  return true;
+}
+
 // side89: a surface's own lights. Like Big Red One's nglListAddMesh, a surface's render parameters (object +0x84) can
 // hold a light set (the light-set parameter, its number at 0x8290F2B0; cod3mp 0x82A8C1C4): the soldiers' (0x82427D18
 // passes theirs, made from the lighting where they stand) and the instanced props' (0x820D27E0, Big Red One's
@@ -5814,6 +6398,21 @@ void NoteDrawPlace(uint8_t* base, size_t index, uint32_t surface, const ngl_vk_m
   g_draw_places[index] = place;
 }
 
+// [acct2-bro] 2026-11-13 rn84a: notes whether the draw about to be appended at `index` is a plant's, one the frame's
+// moving point lights leave out (the caller weighs cod3_debug_ngl_side_moving_lights_skip)
+void NotePlantDraw(size_t index, const ngl_vk_mesh_draw& d, bool plant) {
+  if (!plant && g_draw_plants.size() <= index) return;  // (past the end: not a plant anyway)
+  if (g_draw_plants.size() <= index) g_draw_plants.resize(index + 1);
+  g_draw_plants[index] = PlantDraw{d.mesh, d.texture, plant};
+}
+
+// rn84a: whether the frame's draw at `index` is the plant's draw noted there
+bool IsPlantDraw(size_t index, const ngl_vk_mesh_draw& d) {
+  if (index >= g_draw_plants.size()) return false;
+  const PlantDraw& p = g_draw_plants[index];
+  return p.plant && p.mesh == d.mesh && p.texture == d.texture;
+}
+
 // side183: a lightmapped world draw's two nearby lights, from its object's light set: the first two lit point lights
 // (kind 0; data row 0 the place in the world, row 1 the color, row 2 .y the range), as the game's lighting
 // (0x82142360) hands them to the shaders' LIGHT_POSITION1/2, LIGHT_COLOR1/2 and LIGHT_INVFAR1/2 (1 / the range);
@@ -5875,11 +6474,123 @@ void NearbyLights(uint8_t* base, uint32_t object, ngl_vk_mesh_draw& d) {
 // the whole light taken (its main light for cod3_debug_ngl_side_model_sun).
 // rn43a: the light kept for an object standing at `at` (its own, else by place as below; at null: its own only), as
 // GameLightFor takes it; false when there is none. Takes g_model_light_mutex.
-bool FindKeptLight(uint8_t* base, uint32_t object, uint64_t frame, const float* at, GameModelLight& light,
-                   bool* by_place, bool* own_none) {
+// [acct2-bro] 2026-11-13 rn76a (debug, with cod3_debug_ngl_side_solid_laps): the time spent in two helpers the
+// native solids call from several of their steps, and how many calls: 0 DrawnValue (a pass's value as the game drew it;
+// its first call for an object includes a FindKeptLight), 1 FindKeptLight (the light kept for a model: by its object,
+// else by place, 27 cells). Both take g_model_light_mutex, which the game's thread takes while it keeps the models'
+// light. LogSolidLaps adds them to its line.
+// [acct2-bro] 2026-11-13 rn78b: and 2 SkinnedCorners (a skinned solid's corners posed by its bones), with the corners
+// it made (g_skinned_corners)
+constexpr int kHelpers = 4;  // [acct2-bro] 2026-11-13 rn81b: and 3 KeepModelLight (the game's thread), whole
+std::atomic<uint64_t> g_helper_ns[kHelpers], g_helper_calls[kHelpers];
+std::atomic<uint64_t> g_skinned_corners{0};
+struct HelperLap {
+  int which;
+  bool on;
+  std::chrono::steady_clock::time_point at;
+  explicit HelperLap(int which_) : which(which_), on(REXCVAR_GET(cod3_debug_ngl_side_solid_laps)) {
+    if (on) at = std::chrono::steady_clock::now();
+  }
+  ~HelperLap() {
+    if (!on) return;
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - at).count();
+    g_helper_ns[which].fetch_add(static_cast<uint64_t>(ns), std::memory_order_relaxed);
+    g_helper_calls[which].fetch_add(1, std::memory_order_relaxed);
+  }
+  HelperLap(const HelperLap&) = delete;
+  HelperLap& operator=(const HelperLap&) = delete;
+};
+
+// [acct2-bro] 2026-11-13 rn78a (debug, with cod3_debug_ngl_side_solid_laps): b53 halved FindKeptLight's time but not
+// the solids': whether the two threads wait for each other at g_model_light_mutex. The worker's DrawnValue (0) and
+// FindKeptLight (1) and the game's thread keeping a model's light (2) take it through ModelLightLock, which counts the
+// takes, the takes that had to wait (the other thread held it), the time waited and the time held. With the laps off
+// it only locks, as the lock_guard it replaces.
+constexpr int kLockTakers = 3;
+std::atomic<uint64_t> g_lock_takes[kLockTakers], g_lock_waits[kLockTakers], g_lock_wait_ns[kLockTakers],
+    g_lock_hold_ns[kLockTakers];
+// [acct2-bro] 2026-11-13 rn79a: t84's q54 (The Mace): 6 to 7 % of the worker's takes found the lock held and each
+// waited about 7 microseconds, the time the OS takes to put a thread to sleep and wake it, while a holder keeps it 0.1
+// to 1 microsecond: 1.2 ms of the worker's frame, 0.1 to 0.2 ms of the game's thread's. So a taker that finds it held
+// tries again, a pause between tries, for up to kLockSpinNs before it sleeps on it. g_lock_spun counts the waits that
+// ended spinning (with the laps).
+constexpr int kLockSpinTries = 4096;    // at most (the time below ends it first)
+constexpr int64_t kLockSpinNs = 4000;  // 4 microseconds
+std::atomic<uint64_t> g_lock_spun[kLockTakers];
+// [acct2-bro] 2026-11-13 rn80b (debug, with the laps): the holds of more than kLongHoldNs, and their time
+constexpr uint64_t kLongHoldNs = 20000;
+// [acct2-bro] 2026-11-13 rn80a (debug, with the laps): TrimKeptLights' time, and the list sends it trimmed at
+std::atomic<uint64_t> g_trim_ns{0}, g_trims{0};
+// [acct2-bro] 2026-11-13 rn83b (debug, with the laps): ApplyPendingKeeps' time at the list sends, and the keeps it
+// took in
+std::atomic<uint64_t> g_apply_keeps_ns{0}, g_applied_keeps{0};
+std::atomic<uint64_t> g_lock_long_holds[kLockTakers], g_lock_long_hold_ns[kLockTakers];
+inline void SpinPause() {  // tells the CPU this is a spin (frees the core's other thread a moment)
+#if defined(_WIN32)
+  YieldProcessor();
+#elif defined(__x86_64__) || defined(__i386__)
+  __builtin_ia32_pause();
+#else
+  std::this_thread::yield();
+#endif
+}
+class ModelLightLock {
+ public:
+  explicit ModelLightLock(int taker)
+      : taker_(taker), on_(REXCVAR_GET(cod3_debug_ngl_side_solid_laps)), lock_(g_model_light_mutex, std::defer_lock) {
+    if (!on_) {
+      if (!lock_.try_lock()) Take();  // [acct2-bro] 2026-11-13 rn79a (was lock_.lock())
+      return;
+    }
+    if (!lock_.try_lock()) {  // held by the other thread (or a rare spurious failure): wait, timed
+      const auto from = std::chrono::steady_clock::now();
+      if (Take()) g_lock_spun[taker_].fetch_add(1, std::memory_order_relaxed);  // rn79a (was lock_.lock())
+      g_lock_wait_ns[taker_].fetch_add(NsSince(from), std::memory_order_relaxed);
+      g_lock_waits[taker_].fetch_add(1, std::memory_order_relaxed);
+    }
+    g_lock_takes[taker_].fetch_add(1, std::memory_order_relaxed);
+    held_from_ = std::chrono::steady_clock::now();
+  }
+  ~ModelLightLock() {  // (lock_ unlocks after this body)
+    if (!on_) return;
+    const uint64_t held = NsSince(held_from_);
+    g_lock_hold_ns[taker_].fetch_add(held, std::memory_order_relaxed);
+    if (held > kLongHoldNs) {  // [acct2-bro] 2026-11-13 rn80b
+      g_lock_long_holds[taker_].fetch_add(1, std::memory_order_relaxed);
+      g_lock_long_hold_ns[taker_].fetch_add(held, std::memory_order_relaxed);
+    }
+  }
+  ModelLightLock(const ModelLightLock&) = delete;
+  ModelLightLock& operator=(const ModelLightLock&) = delete;
+
+ private:
+  static uint64_t NsSince(std::chrono::steady_clock::time_point from) {
+    const auto ns = std::chrono::steady_clock::now() - from;
+    return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(ns).count());
+  }
+  // [acct2-bro] 2026-11-13 rn79a: the lock was held: try again, a pause between tries, for up to kLockSpinNs (the
+  // clock read every eighth try), then sleep on it as before. True when a try got it.
+  bool Take() {
+    const auto from = std::chrono::steady_clock::now();
+    for (int i = 1; i <= kLockSpinTries; ++i) {
+      SpinPause();
+      if (lock_.try_lock()) return true;
+      if (i % 8 == 0 && std::chrono::steady_clock::now() - from > std::chrono::nanoseconds(kLockSpinNs)) break;
+    }
+    lock_.lock();
+    return false;
+  }
+  int taker_;
+  bool on_;
+  std::chrono::steady_clock::time_point held_from_;
+  std::unique_lock<std::mutex> lock_;
+};
+
+bool FindKeptLightNow(uint8_t* base, uint32_t object, uint64_t frame, const float* at, GameModelLight& light,
+                      bool* by_place, bool* own_none) {
   if (by_place) *by_place = false;
   if (own_none) *own_none = false;
-  std::lock_guard<std::mutex> lock(g_model_light_mutex);
+  const ModelLightLock lock(1);  // [acct2-bro] 2026-11-13 rn78a (was a lock_guard)
   const auto it = g_model_lights.find(object);
   // rn43c: and kept where the model stands now. Objects are made anew each frame and their addresses come round again
   // every few frames, so the light kept at its address may be another model's: rn43a's The Mace, a soldier's own
@@ -5906,32 +6617,80 @@ bool FindKeptLight(uint8_t* base, uint32_t object, uint64_t frame, const float* 
   const GameModelLight* best = nullptr;
   bool best_same_set = false;
   float best_distance = kKeptLightNear * kKeptLightNear;
-  const int64_t cx = KeptLightCellOf(at[0]), cy = KeptLightCellOf(at[1]), cz = KeptLightCellOf(at[2]);
-  for (int64_t x = cx - 1; x <= cx + 1; ++x) {
-    for (int64_t y = cy - 1; y <= cy + 1; ++y) {
-      for (int64_t z = cz - 1; z <= cz + 1; ++z) {
-        const auto cell = g_kept_light_cells.find(KeptLightCellKey(x, y, z));
-        if (cell == g_kept_light_cells.end()) continue;
-        for (int k = 0; k < kKeptLightsPerCell; ++k) {
-          const GameModelLight& kept = cell->second.lights[k];
-          if (!cell->second.objects[k] || !kept.placed || frame > kept.frame + kModelLightFrames) continue;
-          float distance = 0.0f;
-          for (int i = 0; i < 3; ++i) distance += (kept.at[i] - at[i]) * (kept.at[i] - at[i]);
-          if (!(distance <= kKeptLightNear * kKeptLightNear)) continue;
-          const bool same_set = set != 0 && kept.set == set;
-          if (best && (best_same_set && !same_set)) continue;
-          if (best && best_same_set == same_set && distance >= best_distance) continue;
-          best = &kept;
-          best_same_set = same_set;
-          best_distance = distance;
-        }
-      }
+  // [acct2-bro] 2026-11-13 rn77a: only the cells that can hold a place within reach (was the 27 around at's own)
+  ForNearKeptLightCells(at, [&](int64_t x, int64_t y, int64_t z) {
+    const auto cell = g_kept_light_cells.find(KeptLightCellKey(x, y, z));
+    if (cell == g_kept_light_cells.end()) return;
+    for (int k = 0; k < kKeptLightsPerCell; ++k) {
+      const GameModelLight& kept = cell->second.lights[k];
+      if (!cell->second.objects[k] || !kept.placed || frame > kept.frame + kModelLightFrames) continue;
+      float distance = 0.0f;
+      for (int i = 0; i < 3; ++i) distance += (kept.at[i] - at[i]) * (kept.at[i] - at[i]);
+      if (!(distance <= kKeptLightNear * kKeptLightNear)) continue;
+      const bool same_set = set != 0 && kept.set == set;
+      if (best && (best_same_set && !same_set)) continue;
+      if (best && best_same_set == same_set && distance >= best_distance) continue;
+      best = &kept;
+      best_same_set = same_set;
+      best_distance = distance;
     }
-  }
+  });
   if (!best) return false;
   light = *best;
   if (by_place) *by_place = true;
   return true;
+}
+
+// [acct2-bro] 2026-11-13 rn77c: FindKeptLightNow's answer for an object and a place (or none), kept for the rest of
+// the frame on the thread that asked: a model's parts ask for the same object at the same place, each at its first
+// pass value (DrawnValue) and again for its light (GameLightFor). A new frame starts the table again.
+struct KeptLightAnswer {
+  uint32_t object = 0;  // what it was asked for (checked: two keys could meet)
+  bool has_at = false;
+  float at[3] = {};
+  bool found = false, by_place = false, own_none = false;
+  GameModelLight light;
+};
+struct KeptLightAnswers {
+  uint64_t frame = ~uint64_t{0};
+  std::unordered_map<uint64_t, KeptLightAnswer> answers;
+};
+thread_local KeptLightAnswers t_kept_light_answers;
+uint64_t KeptLightAnswerKey(uint32_t object, const float* at) {
+  uint64_t key = uint64_t{object} * 0x9E3779B97F4A7C15ull;
+  for (int i = 0; at && i < 3; ++i) {
+    uint32_t bits;
+    std::memcpy(&bits, &at[i], sizeof bits);
+    key = (key ^ bits) * 0x100000001B3ull;
+  }
+  return at ? key : key ^ 0xA5A5A5A5u;
+}
+bool FindKeptLight(uint8_t* base, uint32_t object, uint64_t frame, const float* at, GameModelLight& light,
+                   bool* by_place, bool* own_none) {
+  const HelperLap helper_lap(1);  // [acct2-bro] 2026-11-13 rn76a (debug)
+  KeptLightAnswers& kept = t_kept_light_answers;
+  if (kept.frame != frame) {
+    kept.frame = frame;
+    kept.answers.clear();
+  }
+  const uint64_t key = KeptLightAnswerKey(object, at);
+  auto found = kept.answers.find(key);
+  const bool same = found != kept.answers.end() && found->second.object == object &&
+                    found->second.has_at == (at != nullptr) &&
+                    (!at || std::memcmp(found->second.at, at, sizeof found->second.at) == 0);
+  if (!same) {
+    KeptLightAnswer answer;
+    answer.object = object;
+    answer.has_at = at != nullptr;
+    if (at) std::memcpy(answer.at, at, sizeof answer.at);
+    answer.found = FindKeptLightNow(base, object, frame, at, answer.light, &answer.by_place, &answer.own_none);
+    found = kept.answers.insert_or_assign(key, answer).first;
+  }
+  const KeptLightAnswer& answer = found->second;
+  if (by_place) *by_place = answer.by_place;
+  if (own_none) *own_none = answer.own_none;
+  if (answer.found) light = answer.light;
+  return answer.found;
 }
 
 bool GameLightFor(uint8_t* base, uint32_t object, uint64_t frame, ngl_vk_mesh_draw& d, bool* by_place,
@@ -6000,6 +6759,12 @@ struct DrawnLookup {
   float at[3] = {};     // rn43c: where the model stands, when placed
   bool placed = false;
   int used = 0, late = 0, by_place = 0;
+  // [acct2-bro] 2026-11-13 rn77b: where the by-place search found this model's values for block (cell key and slot,
+  // and the object they were kept for), or that it found none; the block's next value looks there first
+  uint32_t found_block = 0;
+  uint64_t found_cell = 0;
+  int found_slot = -1;
+  uint32_t found_object = 0;
 };
 thread_local DrawnLookup t_drawn;
 class DrawnScope {
@@ -6014,6 +6779,7 @@ class DrawnScope {
   DrawnScope& operator=(const DrawnScope&) = delete;
 };
 bool DrawnValue(uint8_t* base, uint32_t block, uint32_t offset, float* into, uint32_t floats) {
+  const HelperLap helper_lap(0);  // [acct2-bro] 2026-11-13 rn76a (debug)
   if (!t_drawn.object || !block || floats > 4 || !REXCVAR_GET(cod3_debug_ngl_side_drawn_values)) return false;
   if (!t_drawn.looked) {
     t_drawn.looked = true;
@@ -6027,7 +6793,7 @@ bool DrawnValue(uint8_t* base, uint32_t block, uint32_t offset, float* into, uin
   float kept[4] = {};
   bool found = false;
   {
-    std::lock_guard<std::mutex> lock(g_model_light_mutex);
+    const ModelLightLock lock(0);  // [acct2-bro] 2026-11-13 rn78a (was a lock_guard)
     // the offset, noted for the block, so the lit draws from now on keep it
     auto noted = g_drawn_offsets.find(block);
     if (noted == g_drawn_offsets.end()) {
@@ -6058,30 +6824,55 @@ bool DrawnValue(uint8_t* base, uint32_t block, uint32_t offset, float* into, uin
     if (values != g_drawn_values.end() && t_drawn.frame <= values->second.frame + kModelLightFrames) {
       taken = &values->second;
     } else if (t_drawn.placed && REXCVAR_GET(cod3_debug_ngl_side_light_by_place)) {  // rn43c: by place
-      float best_distance = kKeptLightNear * kKeptLightNear;
-      const int64_t cx = KeptLightCellOf(t_drawn.at[0]), cy = KeptLightCellOf(t_drawn.at[1]),
-                    cz = KeptLightCellOf(t_drawn.at[2]);
-      for (int64_t x = cx - 1; x <= cx + 1; ++x) {
-        for (int64_t y = cy - 1; y <= cy + 1; ++y) {
-          for (int64_t z = cz - 1; z <= cz + 1; ++z) {
-            const auto cell = g_drawn_cells.find(DrawnCellKey(block, x, y, z));
-            if (cell == g_drawn_cells.end()) continue;
-            for (int k = 0; k < kKeptLightsPerCell; ++k) {
-              const DrawnValues& kept_here = cell->second.values[k];
-              if (!cell->second.objects[k] || kept_here.block != block || !kept_here.placed ||
-                  t_drawn.frame > kept_here.frame + kModelLightFrames)
-                continue;
-              float distance = 0.0f;
-              for (int i = 0; i < 3; ++i) {
-                const float apart = kept_here.at[i] - t_drawn.at[i];
-                distance += apart * apart;
-              }
-              if (!(distance <= best_distance)) continue;
-              taken = &kept_here;
-              best_distance = distance;
-            }
+      // [acct2-bro] 2026-11-13 rn77b: the block's earlier value for this model found them here (checked: the same
+      // object's values for this block, still fresh), or found none
+      bool searched = false;
+      if (t_drawn.found_block == block) {
+        searched = true;
+        if (t_drawn.found_slot >= 0) {
+          const auto cell = g_drawn_cells.find(t_drawn.found_cell);
+          const int k = t_drawn.found_slot;
+          if (cell != g_drawn_cells.end() && cell->second.objects[k] == t_drawn.found_object &&
+              cell->second.values[k].block == block && cell->second.values[k].placed &&
+              t_drawn.frame <= cell->second.values[k].frame + kModelLightFrames) {
+            taken = &cell->second.values[k];
+          } else {
+            searched = false;  // gone since: searched again
           }
         }
+      }
+      if (!searched) {
+        float best_distance = kKeptLightNear * kKeptLightNear;
+        uint64_t best_cell = 0;
+        int best_slot = -1;
+        uint32_t best_object = 0;
+        // rn77a: only the cells that can hold a place within reach (was the 27 around the model's own)
+        ForNearKeptLightCells(t_drawn.at, [&](int64_t x, int64_t y, int64_t z) {
+          const uint64_t key = DrawnCellKey(block, x, y, z);
+          const auto cell = g_drawn_cells.find(key);
+          if (cell == g_drawn_cells.end()) return;
+          for (int k = 0; k < kKeptLightsPerCell; ++k) {
+            const DrawnValues& kept_here = cell->second.values[k];
+            if (!cell->second.objects[k] || kept_here.block != block || !kept_here.placed ||
+                t_drawn.frame > kept_here.frame + kModelLightFrames)
+              continue;
+            float distance = 0.0f;
+            for (int i = 0; i < 3; ++i) {
+              const float apart = kept_here.at[i] - t_drawn.at[i];
+              distance += apart * apart;
+            }
+            if (!(distance <= best_distance)) continue;
+            taken = &kept_here;
+            best_distance = distance;
+            best_cell = key;
+            best_slot = k;
+            best_object = cell->second.objects[k];
+          }
+        });
+        t_drawn.found_block = block;  // rn77b
+        t_drawn.found_cell = best_cell;
+        t_drawn.found_slot = best_slot;
+        t_drawn.found_object = best_object;
       }
       if (taken) ++t_drawn.by_place;
     }
@@ -7015,8 +7806,29 @@ std::filesystem::path ScreenshotFolder() {
 #else
   const std::filesystem::path exe = std::filesystem::read_symlink("/proc/self/exe", error);
 #endif
-  std::filesystem::path folder = (error ? std::filesystem::current_path() : exe.parent_path().parent_path()) /
-                                 "userdata" / "logs" / "screenshots";
+  // [acct2-main] 2026-11-14 (owner 12:12 "The censorship with pre-made flags don't show in-game", 12:25 "those
+  // errors need fixing as well"): the game folder as cod3_app.cpp's OnConfigurePaths finds it. An AppImage's own
+  // folder comes first (APPIMAGE): /proc/self/exe is inside its read-only mount, so from the AppImage the native
+  // side read no texture pack at all ("no texture pack in use") and its pictures and dumps went nowhere. Then the
+  // program's folder and the one above it (bin/, bin-windows/); the first that has assets/default.xex wins, else
+  // the first of them, as there.
+  std::vector<std::filesystem::path> roots;
+  if (const char* appimage = std::getenv("APPIMAGE"); appimage && *appimage) {
+    roots.push_back(std::filesystem::path(appimage).parent_path());
+  }
+  if (!error) {
+    roots.push_back(exe.parent_path());
+    roots.push_back(exe.parent_path().parent_path());
+  }
+  std::filesystem::path root = roots.empty() ? std::filesystem::current_path() : roots.front();
+  for (const std::filesystem::path& candidate : roots) {
+    std::error_code missing;
+    if (std::filesystem::exists(candidate / "assets" / "default.xex", missing)) {
+      root = candidate;
+      break;
+    }
+  }
+  std::filesystem::path folder = root / "userdata" / "logs" / "screenshots";
   std::filesystem::create_directories(folder, error);
   return folder;
 }
@@ -7226,7 +8038,7 @@ uint32_t MakeTexture(uint8_t* base, const uint32_t* fetch, uint32_t label, std::
   std::vector<uint8_t> hd;
   uint32_t hd_width = 0, hd_height = 0;
   // the smaller levels: the game's own, or made from a pack's picture (owner: far textures shimmered with the top
-  // level alone); a cut-out's keep its coverage
+  // level alone); rn63a: a cut-out's are the game's own too (they kept the top level's coverage before)
   std::vector<std::vector<uint8_t>> levels;
   if (PackPicture(base, fetch, bgra, width, height, hd, hd_width, hd_height)) {
     bgra.swap(hd);
@@ -7245,7 +8057,7 @@ uint32_t MakeTexture(uint8_t* base, const uint32_t* fetch, uint32_t label, std::
   }
   if (cut_out && t_tree_cut > 0) {  // [rexglue-native-world] 2026-11-11 w1: a tree's leaf map, cut as the game's
     CutLikeTheGame(bgra, levels, t_tree_cut);
-  } else if (cut_out) {
+  } else if (cut_out && REXCVAR_GET(cod3_debug_ngl_side_keep_coverage)) {  // [acct2-bro] 2026-11-13 rn63a
     KeepCoverage(bgra, levels);
   }
   std::vector<const void*> pictures{bgra.data()};
@@ -7316,7 +8128,7 @@ bool DecodeCubeFaces(uint8_t* base, const uint32_t* fetch, std::vector<uint8_t> 
   const bool tiled = (fetch[0] >> 31) != 0;
   const uint32_t pitch = ((fetch[0] >> 22) & 0x1FF) * 32;
   const uint32_t format = fetch[1] & 0x3F, endian = (fetch[1] >> 6) & 3;
-  const uint32_t physical = fetch[1] & 0x1FFFF000;
+  const uint32_t physical = TexturePage(fetch[1]);
   const uint32_t width = (fetch[2] & 0x1FFF) + 1, height = ((fetch[2] >> 13) & 0x1FFF) + 1;
   const uint32_t swizzle = (fetch[3] >> 1) & 0xFFF;
   const bool packed = ((fetch[5] >> 11) & 1) != 0;
@@ -7345,7 +8157,7 @@ bool DecodeCubeFaces(uint8_t* base, const uint32_t* fetch, std::vector<uint8_t> 
   }
   for (uint32_t face = 0; face < 6; ++face) {
     const uint32_t at = physical + static_cast<uint32_t>(stride * face);
-    DecodeSurface(GpuPointer(base, 0xA0000000u | at), std::min(face_bytes, PhysicalRoom(at)), f, format, endian,
+    DecodeSurface(GpuPointer(base, GuestAddress(at)), std::min(face_bytes, PhysicalRoom(at)), f, format, endian,
                   swizzle, tiled, pitch_blocks, 0, 0, width, height, faces[face]);
   }
   size = width;
@@ -7535,6 +8347,168 @@ bool SceneCamera(uint8_t* base, uint32_t scene, float view_projection[16], bool*
   }
   return true;
 }
+
+// [acct2-bro] 2026-11-14 rn90a: cod3_native_rebase. The first-person gun and arms stand where the camera is, far from
+// the world's origin (mp_merv's arms at -548.7 -2661.8 31.5), and their scene's near plane is 0.05 (its far 128).
+// ngl_vk folds a draw's world matrix into its view-projection in floats (push_mesh_draw), and SceneCamera turns the
+// game's backward depth over (w - z) in floats: both round numbers in the thousands, to about 0.0002, and they do it
+// apart in the depth's column and in w's. What the depth keeps of the scene, z / w = 1 - (the near plane's share) / w,
+// then carries an error of that 0.0002 against the near plane's 0.05: a hand and the gun's side within a few
+// hundredths of a unit of each other (the BAR's charging handle; the owner, 2026-11-14 15:43) take turns in front as
+// the camera moves. The game's own depth stays backward (z / w, z the near plane's share, exact), so its only error is
+// w's, the same for the whole object. With this on, such a draw is drawn about the camera's place: its world matrix's
+// place, its point lights' and its lens sun's places less the camera's, and its view-projection moved by the camera's
+// place, turned over and squeezed in doubles from the scene's own, so every big number cancels before it is rounded.
+// The same picture otherwise, ngl_vk unchanged; undone once ngl_vk_set_meshes has copied the draws.
+namespace rebase {
+
+struct Camera {
+  float absolute[16];  // the view-projection as the draws carry it (SceneCamera's; squeezed for a front scene)
+  float around[16];    // the same about the camera's place
+  float raw[16];       // the scene's own, as read
+  double place[3];     // the camera's place in the world
+  bool reversed, front;
+};
+thread_local std::vector<Camera> t_cameras;  // this frame's (cleared as a frame starts; a few at most)
+constexpr size_t kMostCameras = 32;
+
+struct Kept {  // what Apply changed in one draw, for Restore
+  size_t index;
+  float world[3], lights[2][3], sun[3], view_projection[16];
+};
+thread_local std::vector<Kept> t_kept;
+std::atomic<int> g_lines{0};
+
+int Mode() { return REXCVAR_GET(cod3_native_rebase); }
+
+// The scene's camera, read again, when SceneCamera (and the front squeeze, `front`) made `absolute` of it: what it is
+// about the camera's place, for Apply
+void Note(uint8_t* base, uint32_t scene, const float absolute[16], bool reversed, bool front) {
+  Camera c{};
+  float check[16];
+  double raw[16];
+  for (uint32_t k = 0; k < 16; ++k) {
+    c.raw[k] = check[k] = g::ReadF32(base, scene + kSceneViewProjection + 4 * k);
+    raw[k] = c.raw[k];
+  }
+  for (int row = 0; row < 4; ++row) {  // the same steps in floats: the draws must carry exactly this
+    if (reversed) check[4 * row + 2] = check[4 * row + 3] - check[4 * row + 2];
+    if (front) check[4 * row + 2] *= kFrontDepth;
+  }
+  if (std::memcmp(check, absolute, sizeof check) != 0) return;  // the scene changed since: left as it is
+  for (const Camera& known : t_cameras) {
+    if (std::memcmp(known.absolute, absolute, sizeof known.absolute) == 0) return;
+  }
+  // the camera's place p: where x, y and w are 0; p a = b, a rows 0-2 of columns 0, 1 and 3, b row 3's less
+  const double a[3][3] = {{raw[0], raw[1], raw[3]}, {raw[4], raw[5], raw[7]}, {raw[8], raw[9], raw[11]}};
+  const double b[3] = {-raw[12], -raw[13], -raw[15]};
+  double co[3][3], scale = 0.0;  // the cofactors (the cyclic form carries their signs)
+  for (int i = 0; i < 3; ++i) {
+    for (int j = 0; j < 3; ++j) {
+      const int i1 = (i + 1) % 3, i2 = (i + 2) % 3, j1 = (j + 1) % 3, j2 = (j + 2) % 3;
+      co[i][j] = a[i1][j1] * a[i2][j2] - a[i1][j2] * a[i2][j1];
+      scale = std::max(scale, std::fabs(a[i][j]));
+    }
+  }
+  const double det = a[0][0] * co[0][0] + a[0][1] * co[0][1] + a[0][2] * co[0][2];
+  if (!(std::fabs(det) > 1e-9 * scale * scale * scale)) return;  // no perspective: no place to move about
+  for (int j = 0; j < 3; ++j) c.place[j] = (b[0] * co[j][0] + b[1] * co[j][1] + b[2] * co[j][2]) / det;
+  double around[16];  // moved by the place: row 3 becomes p x rows 0-2 + row 3
+  for (int k = 0; k < 12; ++k) around[k] = raw[k];
+  for (int column = 0; column < 4; ++column) {
+    around[12 + column] = raw[12 + column];
+    for (int k = 0; k < 3; ++k) around[12 + column] += c.place[k] * raw[4 * k + column];
+  }
+  for (int row = 0; row < 4; ++row) {  // then as SceneCamera and the squeeze, in doubles
+    if (reversed) around[4 * row + 2] = around[4 * row + 3] - around[4 * row + 2];
+    if (front) around[4 * row + 2] *= static_cast<double>(kFrontDepth);
+  }
+  for (int k = 0; k < 16; ++k) c.around[k] = static_cast<float>(around[k]);
+  std::memcpy(c.absolute, absolute, sizeof c.absolute);
+  c.reversed = reversed;
+  c.front = front;
+  if (t_cameras.size() >= kMostCameras) t_cameras.erase(t_cameras.begin());
+  t_cameras.push_back(c);
+}
+
+// The near plane's share ngl_vk's matrix keeps at a draw's place: w - z (/ the squeeze), row 3 as push_mesh_draw sums
+// it in floats (rn90a's log: how far the matrices as they were and about the camera are from the exact one)
+float NearShare(const float* world, const float* vp, bool front) {
+  float z = vp[14], w = vp[15];
+  for (int k = 0; k < 3; ++k) {
+    z += world[12 + k] * vp[4 * k + 2];
+    w += world[12 + k] * vp[4 * k + 3];
+  }
+  return front ? w - z / kFrontDepth : w - z;
+}
+
+// Each draw whose view-projection is a noted camera's, drawn about that camera's place; Restore undoes it
+template <typename Draws>
+void Apply(Draws& draws, uint64_t frame) {
+  t_kept.clear();
+  if (t_cameras.empty()) return;
+  const Camera* last = nullptr;
+  for (size_t i = 0; i < draws.size(); ++i) {
+    ngl_vk_mesh_draw& d = draws[i];
+    const Camera* c = nullptr;
+    if (last && d.view_projection[15] == last->absolute[15] &&
+        std::memcmp(d.view_projection, last->absolute, sizeof d.view_projection) == 0) {
+      c = last;
+    } else {
+      for (const Camera& e : t_cameras) {
+        if (d.view_projection[15] == e.absolute[15] && d.view_projection[14] == e.absolute[14] &&
+            std::memcmp(d.view_projection, e.absolute, sizeof d.view_projection) == 0) {
+          c = &e;
+          break;
+        }
+      }
+    }
+    if (!c) continue;
+    last = c;
+    Kept k{};
+    k.index = i;
+    std::memcpy(k.world, d.world + 12, sizeof k.world);
+    for (int l = 0; l < 2; ++l) std::memcpy(k.lights[l], d.point_light[l], sizeof k.lights[l]);
+    std::memcpy(k.sun, d.lens_sun_place, sizeof k.sun);
+    std::memcpy(k.view_projection, d.view_projection, sizeof k.view_projection);
+    for (int j = 0; j < 3; ++j) {
+      d.world[12 + j] = static_cast<float>(d.world[12 + j] - c->place[j]);
+      for (int l = 0; l < 2; ++l) d.point_light[l][j] = static_cast<float>(d.point_light[l][j] - c->place[j]);
+      d.lens_sun_place[j] = static_cast<float>(d.lens_sun_place[j] - c->place[j]);
+    }
+    std::memcpy(d.view_projection, c->around, sizeof d.view_projection);
+    if (t_kept.empty() && c->reversed && g_lines.load(std::memory_order_relaxed) < 6) {
+      g_lines.fetch_add(1, std::memory_order_relaxed);
+      double exact = c->raw[14];  // the game's own z at the draw's place (backward: the near plane's share)
+      for (int j = 0; j < 3; ++j) exact += static_cast<double>(k.world[j]) * c->raw[4 * j + 2];
+      float before[16];
+      std::memcpy(before, d.world, sizeof before);
+      std::memcpy(before + 12, k.world, sizeof k.world);
+      REXLOG_INFO("cod3: ngl side: rn90a frame {}: drawn about the camera at {:.2f} {:.2f} {:.2f} ({} scene); the "
+                  "first draw at {:.2f} {:.2f} {:.2f}: the near plane's share in its matrix {:.7f} as before, {:.7f} "
+                  "about the camera, {:.7f} exact",
+                  frame, c->place[0], c->place[1], c->place[2], c->front ? "the front" : "a", k.world[0],
+                  k.world[1], k.world[2], NearShare(before, k.view_projection, c->front),
+                  NearShare(d.world, d.view_projection, c->front), exact);
+    }
+    t_kept.push_back(k);
+  }
+}
+
+// The draws Apply moved, as they were
+template <typename Draws>
+void Restore(Draws& draws) {
+  for (const Kept& k : t_kept) {
+    ngl_vk_mesh_draw& d = draws[k.index];
+    std::memcpy(d.world + 12, k.world, sizeof k.world);
+    for (int l = 0; l < 2; ++l) std::memcpy(d.point_light[l], k.lights[l], sizeof k.lights[l]);
+    std::memcpy(d.lens_sun_place, k.sun, sizeof k.sun);
+    std::memcpy(d.view_projection, k.view_projection, sizeof k.view_projection);
+  }
+  t_kept.clear();
+}
+
+}  // namespace rebase
 
 // [rexglue-native] 2026-11-09: split screen (cod3mp's 2 to 4 local players). Each player's scene has its own
 // projection, and it already puts that player's view in its part of the screen: its row 2's x and y (the scene's
@@ -7814,9 +8788,13 @@ uint32_t SecondLayerWeight(uint8_t* base, uint32_t at, const Geometry& geo) {
 
 // The surface's mesh, made once; 0 (and why) when it can't be. side195: second_layer, the same corners with the
 // terrain's second layer's coordinates in the base texture's place and its weight in the color's alpha.
-uint32_t MeshFor(uint8_t* base, uint32_t surface, std::string& why, bool second_layer = false) {
+// [acct2-bro] 2026-11-13 rn75a: geo_out, when given, gets the Geometry read here (SolidDraws read it a second time)
+uint32_t MeshFor(uint8_t* base, uint32_t surface, std::string& why, bool second_layer = false,
+                 Geometry* geo_out = nullptr) {
   Geometry geo;
-  if (!ReadGeometry(base, surface, geo, why)) return 0;
+  const bool read = ReadGeometry(base, surface, geo, why);
+  if (geo_out) *geo_out = geo;  // rn75a
+  if (!read) return 0;
   if (second_layer && (geo.uv[2] < 0 || geo.color < 0)) {
     why = "no third texture coordinates or color for its second layer";
     return 0;
@@ -7979,6 +8957,7 @@ bool SkinPosition(uint8_t* base, uint32_t surface, uint32_t object, const Geomet
 class SurfaceSkin {
  public:
   SurfaceSkin(uint8_t* base, uint32_t surface, uint32_t object) : base_(base), surface_(surface) {
+    slot_bones_.fill(kSlotUnread);  // [acct2-bro] 2026-11-13 rn79b
     const uint32_t posed = g::ReadU32(base, object + kObjectBoneCount), bones = g::ReadU32(base, object + kObjectBones);
     if (!GameData(bones) || posed == 0 || posed > 512) return;  // [rexglue-native-mem] 2026-11-11: the AnimHeap
     const uint32_t model = g::ReadU32(base, object + kObjectModel);
@@ -8010,7 +8989,7 @@ class SurfaceSkin {
       const float weight = static_cast<float>((weights >> (8 * k)) & 255u);
       if (weight == 0.0f) continue;
       const uint32_t slot = (slots >> (8 * k)) & 255u;
-      const uint32_t bone = U16(base_, surface_ + kSurfaceBones + 2 * slot);
+      const uint32_t bone = BoneOfSlot(slot);  // [acct2-bro] 2026-11-13 rn79b (was read here every time)
       if (bone >= count_) continue;
       const Matrix& m = MatrixOf(bone);
       for (int c = 0; c < 3; ++c) {
@@ -8052,11 +9031,22 @@ class SurfaceSkin {
     return out;
   }
 
+  // [acct2-bro] 2026-11-13 rn79b: the bone a corner's slot names, from the surface's table (+kSurfaceBones, 16 bits
+  // a slot), read the first time the slot is asked for (it was read for every corner's every bone: about 45,000
+  // corners a frame on The Mace)
+  uint32_t BoneOfSlot(uint32_t slot) {
+    uint16_t& bone = slot_bones_[slot & 255u];
+    if (bone == kSlotUnread) bone = static_cast<uint16_t>(U16(base_, surface_ + kSurfaceBones + 2 * slot));
+    return bone;
+  }
+  static constexpr uint16_t kSlotUnread = 0xFFFF;  // (a slot that reads 0xFFFF is read again: past count_ anyway)
+
   uint8_t* base_;
   uint32_t surface_;
   uint32_t bones_ = 0, records_ = 0, count_ = 0;
   std::vector<Matrix> matrices_;
   std::vector<uint8_t> ready_;
+  std::array<uint16_t, 256> slot_bones_;  // rn79b
 };
 
 // side218 [acct2-bro] 2026-11-07: what a skinned surface's corners hold that the bones don't change (the bind-pose
@@ -8119,13 +9109,28 @@ const SkinSource& SkinSourceFor(uint8_t* base, uint32_t surface, const Geometry&
 // coordinates as the mesh's.
 thread_local bool t_skin_watch = false;  // rn40o: the caller's draw is a watched helmet (debug only)
 
+// [acct2-bro] 2026-11-13 rn63b (debug only): cod3_debug_ngl_side_watch may hold several texts with commas between
+// them ("dead_tree,deciduous,bushtree"), so one run watches a level's kinds of trees together. watch: the setting in
+// lower case; lowered: a texture's name in lower case. True when the name holds one of the texts.
+bool WatchHolds(const std::string& watch, const std::string& lowered) {
+  size_t from = 0;
+  while (from <= watch.size()) {
+    const size_t comma = watch.find(',', from);
+    const std::string part = watch.substr(from, comma == std::string::npos ? std::string::npos : comma - from);
+    if (!part.empty() && lowered.find(part) != std::string::npos) return true;
+    if (comma == std::string::npos) break;
+    from = comma + 1;
+  }
+  return false;
+}
+
 // rn40p: whether a texture's own name holds cod3_debug_ngl_side_watch (as WatchDraw matches; debug only)
 bool WatchedTextureName(uint8_t* base, uint32_t texture) {
   const std::string watch = Lower(REXCVAR_GET(cod3_debug_ngl_side_watch));
   if (watch.empty() || !texture || !IsTexture(base, texture)) return false;
   const uint32_t name_at = g::ReadU32(base, texture + kTextureName);
   if (!Pointer(name_at) || !Readable(name_at)) return false;
-  return Lower(InlineName(base, name_at + 4)).find(watch) != std::string::npos;
+  return WatchHolds(watch, Lower(InlineName(base, name_at + 4)));  // rn63b
 }
 
 // rn42a: what the last SkinnedCorners call made (debug only, read by LogNearSkinned): whether the object's bones were
@@ -8443,12 +9448,13 @@ void WatchPose(uint8_t* base, uint32_t surface, uint32_t object, uint64_t frame)
               before.low[2], middle.low[0], middle.low[1], middle.low[2], now.low[0], now.low[1], now.low[2]);
 }
 
-uint32_t SkinnedCorners(uint8_t* base, uint32_t surface, uint32_t object, uint64_t frame) {
+// [acct2-bro] 2026-11-13 rn78c: given the solid's geometry as MeshFor read it (SolidDraws skips its draws when that
+// read fails; read here a second time before)
+uint32_t SkinnedCorners(uint8_t* base, uint32_t surface, uint32_t object, uint64_t frame, const Geometry& geo) {
+  const HelperLap helper_lap(2);  // rn78b (debug)
   t_skin_made = {};
-  Geometry geo;
-  std::string why;
-  if (!ReadGeometry(base, surface, geo, why) || geo.blend_indices < 0 || geo.blend_weights < 0 ||
-      geo.vertex_count > kMaxSkinnedCorners) {
+  const std::string why;  // rn78c: (the read succeeded)
+  if (geo.blend_indices < 0 || geo.blend_weights < 0 || geo.vertex_count > kMaxSkinnedCorners) {
     if (t_skin_watch) {  // rn40o
       static std::atomic<int> said{0};
       if (said.fetch_add(1, std::memory_order_relaxed) < 4) {
@@ -8460,7 +9466,11 @@ uint32_t SkinnedCorners(uint8_t* base, uint32_t surface, uint32_t object, uint64
     return 0;
   }
   static int probes = 0;
-  std::vector<float> corners(static_cast<size_t>(geo.vertex_count) * NGL_VK_CORNER_FLOATS, 0.0f);
+  // [acct2-bro] 2026-11-13 rn78d: one buffer for the thread, kept (each skinned surface allocated, cleared and freed
+  // its own; ngl_vk_frame_corners copies it)
+  thread_local std::vector<float> t_corners;
+  std::vector<float>& corners = t_corners;
+  corners.assign(static_cast<size_t>(geo.vertex_count) * NGL_VK_CORNER_FLOATS, 0.0f);
   const uint32_t white = 0xFFFFFFFFu;
   const bool normals = REXCVAR_GET(cod3_debug_ngl_side_normals);
   SurfaceSkin skin(base, surface, object);  // side216
@@ -8537,6 +9547,7 @@ uint32_t SkinnedCorners(uint8_t* base, uint32_t surface, uint32_t object, uint64
   }
   t_skin_made.ok = skin.ok();  // rn42a
   t_skin_made.corners = geo.vertex_count;
+  if (helper_lap.on) g_skinned_corners.fetch_add(geo.vertex_count, std::memory_order_relaxed);  // rn78b (debug)
   return ngl_vk_frame_corners(corners.data(), geo.vertex_count);
 }
 
@@ -9186,6 +10197,9 @@ int g_grass_mesh = 0;  // 0 not tried, 1 made, -1 couldn't be
 // (ngl-side-grass-vb95.bin) on the PC: side71's blades came out 5-10 times wider than grass.vert's math on the game's
 // buffers says.
 void SaveHostBytes(const void* data, size_t bytes, const std::string& name) {
+  // [acct2-bro] 2026-11-14 rn89b: a diagnostic file, only with cod3_debug_ngl_side (t106: 47 of them were written in
+  // a plain run, from the worker, while the level's first frames were drawn)
+  if (!REXCVAR_GET(cod3_debug_ngl_side)) return;
   const std::filesystem::path path = ScreenshotFolder() / name;
   std::ofstream out(path, std::ios::binary);
   out.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
@@ -9194,6 +10208,9 @@ void SaveHostBytes(const void* data, size_t bytes, const std::string& name) {
 
 // The picture a grass texture is decoded to here (width, height, then BGRA), for the same comparison.
 void SaveGrassPicture(uint8_t* base, uint32_t texture, const std::string& name) {
+  // [acct2-bro] 2026-11-14 rn89b: a diagnostic file, only with cod3_debug_ngl_side (t106: 47 of them were written in
+  // a plain run, from the worker, while the level's first frames were drawn)
+  if (!REXCVAR_GET(cod3_debug_ngl_side)) return;
   std::vector<uint8_t> bgra;
   uint32_t size[2] = {0, 0};
   std::string why;
@@ -9223,7 +10240,7 @@ void MakeGrassMesh(uint8_t* base, uint32_t manager) {
     return;
   }
   const uint32_t fetch = static_cast<uint32_t>(drawn >> 32), size = static_cast<uint32_t>(drawn);
-  const uint32_t vertex_data = GuestAddress(fetch & 0x1FFFFFFCu);
+  const uint32_t vertex_data = GuestAddress(BufferData(fetch));
   const uint32_t index_data = GuestAddress(g::ReadU32(base, index_buffer + 0x18));
   REXLOG_INFO("cod3: ngl side: grass: vertices at {:08X}, as the game's draw fetches them; the manager's vertex buffer "
               "object {:08X}: {}",
@@ -9567,7 +10584,58 @@ void WatchTreeLight(uint32_t tree, const TreePart& part, const ngl_vk_mesh_draw&
               leaf.color1[2], leaf.color1[3]);
 }
 
+// [acct2-bro] 2026-11-13 rn82a: the leaves' ambient as their own pass sets it. The SpeedTree effect's ambient (c17,
+// read by ReadLeafLight) is one value the game sets for each tree and pass (sub_823EF260): the scene's ambient, and
+// for the leaves (sub_823F5028 calls it with its second argument set) plus k times the tree's sun (tree +0x350),
+// whose fourth float carries k's share too: the ambient's w is 1 + k x the sun's w (c58's w), 1 for the branches and
+// fronds. The native side reads it at the list send, while the game's render job may be between a tree's fronds and
+// its leaves; then the leaves took the fronds' ambient for that frame, every tree at once (t88's l88b, the island,
+// frame 9778: 0.440 0.457 0.459 w 1.166 -> 0.300 0.300 0.300 w 1.000, and back at 9779; the owner, 14:10: "The leaves
+// are flickering"). So k is kept from the reads that carry it (w over 1), for each tree, with the sun it came with and
+// the TreeDraws call it was read in, and added back to a read without it while that sun is the same and the k is
+// fresh (kLeafKFrames; a new level's trees at the same addresses read their own first). True when it added k back.
+// TreeDraws' alone (the frame's builder: the worker, or the game's thread with the worker idle).
+struct KeptLeafK {
+  float k = 0.0f;
+  float sun[3] = {};
+  uint64_t call = 0;  // g_tree_draws_calls when read
+  float diffuse[3] = {1.0f, 1.0f, 1.0f};  // [acct2-bro] 2026-11-13 rn82b: the leaves' own diffuse (c45) with it
+};
+std::unordered_map<uint32_t, KeptLeafK> g_leaf_k;
+uint64_t g_tree_draws_calls = 0;
+constexpr uint64_t kLeafKFrames = 30;
+constexpr size_t kMaxLeafK = 4096;
+constexpr float kLeafKFloor = 1e-3f;  // a k under this is no share of the sun
+
+bool LeavesOwnAmbient(uint32_t tree, LeafLight& leaf) {
+  const float sun_w = leaf.color0[3];
+  if (!(sun_w > 1e-3f)) return false;  // no sun to share
+  const float k = (leaf.ambient[3] - 1.0f) / sun_w;
+  if (k > kLeafKFloor) {  // the leaves' own pass: keep its k
+    if (g_leaf_k.size() >= kMaxLeafK && !g_leaf_k.count(tree)) g_leaf_k.clear();
+    KeptLeafK& kept = g_leaf_k[tree];
+    kept.k = k;
+    for (int i = 0; i < 3; ++i) kept.sun[i] = leaf.color0[i];
+    for (int i = 0; i < 3; ++i) kept.diffuse[i] = leaf.diffuse[i];  // rn82b
+    kept.call = g_tree_draws_calls;
+    return false;
+  }
+  const auto it = g_leaf_k.find(tree);
+  if (it == g_leaf_k.end() || it->second.call + kLeafKFrames < g_tree_draws_calls) return false;
+  for (int i = 0; i < 3; ++i) {
+    if (std::fabs(it->second.sun[i] - leaf.color0[i]) > 1e-3f) return false;  // another sun: another scene
+  }
+  for (int i = 0; i < 4; ++i) leaf.ambient[i] += it->second.k * leaf.color0[i];
+  // [acct2-bro] 2026-11-13 rn82b: and the leaves' diffuse (c45, set in the same pass): lb86's forest burst had one
+  // tree's leaves at its fronds' 0.4 for that frame (light 0.434 -> 0.174)
+  for (int i = 0; i < 3; ++i) leaf.diffuse[i] = it->second.diffuse[i];
+  return true;
+}
+
 void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw>& draws, Reasons& left_out) {
+  // [acct2-bro] 2026-11-13 rn84a: the trees' parts take no moving point light (bit 2)
+  const bool trees_unflashed = (REXCVAR_GET(cod3_debug_ngl_side_moving_lights_skip) & 2) != 0;
+  ++g_tree_draws_calls;  // [acct2-bro] 2026-11-13 rn82a
   // a tree's part is drawn once a frame, all its instances; [rexglue-native] 2026-11-09: once in each split-screen
   // player's view, so each gets its trees (it was once a frame in all: only the first view had them); every
   // whole-screen scene shares view 0, so one player and the campaign stay as they were
@@ -9632,7 +10700,7 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
         const uint32_t word = g::ReadU32(base, tree + part->texture);
         uint32_t fetch[6];
         if (ReadFetch(base, IsTexture(base, word) ? g::ReadU32(base, word + kTextureDirect3D) : word, fetch)) {
-          KeepTreeMap(fetch[1] & 0x1FFFF000u);
+          KeepTreeMap(TexturePage(fetch[1]));
         }
       }
       static std::unordered_set<uint32_t> shown;
@@ -9662,6 +10730,11 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
     bool leaf_sun_place = false;
     if (kind == kTreeLeaves && d.texture && REXCVAR_GET(cod3_debug_ngl_side_leaf_light)) {
       const bool read = ReadLeafLight(base, tree, leaf);
+      // [acct2-bro] 2026-11-13 rn82a: the leaves' own ambient when the effect held the fronds' (counted on the frames
+      // that log the census)
+      if (read && REXCVAR_GET(cod3_debug_ngl_side_leaf_own_ambient) && LeavesOwnAmbient(tree, leaf)) {
+        left_out["(trees: rn82a leaves given back their own ambient)"]++;
+      }
       if (read || g_sun.ok) {
         LightWith(d, g_sun);  // the way, and the colors when the game's aren't read
         d.lit = 1;
@@ -9761,6 +10834,7 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
           for (int i = 0; i < 3; ++i) d.light_direction[i] = way[i] / length;
         }
       }
+      NotePlantDraw(draws.size(), d, trees_unflashed);  // [acct2-bro] 2026-11-13 rn84a
       draws.push_back(d);
       left_out[kind == kTreeBranches ? "(trees: branches drawn)"
                : kind == kTreeFronds ? "(trees: fronds drawn)"
@@ -9972,7 +11046,7 @@ void TextureCensus(uint8_t* base, uint64_t frame, uint32_t material, uint32_t ob
     // textures in their slots by it)
     std::snprintf(item, sizeof item, "%s[%u %s \"%s\" format %u at %08X role %s -> %s |%s]",
                   text.empty() ? "" : " ", k, variable.c_str(), TextureOwnName(base, texture).c_str(),
-                  g::ReadU32(base, entry + 12) & 0x3F, g::ReadU32(base, entry + 12) & 0x1FFFF000u, role,
+                  g::ReadU32(base, entry + 12) & 0x3F, TexturePage(g::ReadU32(base, entry + 12)), role,
                   field ? field : made ? "UNBOUND (made, not on this draw)" : "UNBOUND (never made)",
                   SamplerStateText(base, parameter).c_str());
     text += item;
@@ -9982,15 +11056,385 @@ void TextureCensus(uint8_t* base, uint64_t frame, uint32_t material, uint32_t ob
               d.shading, maps.empty() ? "none" : maps, count, unbound, text);
 }
 
+// [acct2-bro] 2026-11-13 rn66a: the lights cdSimple's own draw hands its vertex shader (see
+// cod3_debug_ngl_side_simple_light): the set's ambient and the first four lights of the object's list, as 0x82150F18
+// and 0x82150498 make them. The game puts each light it takes in front of its list, so the first four are the
+// group's last four.
+// rn66b: the positional lights too. 0x82150F18 lists a kind 0 only when its place is within its reach plus the
+// model's radius of the model's middle (model +0x20 the middle, +0x2C the radius, through the object's rows), a
+// kind 5 always (kinds 6 and 7 never). 0x82150108 makes each a light that travels from its place to that middle,
+// its color (data +0x10) times saturate(1 - (the distance - data +0x20) / (data +0x24 - data +0x20)); closer than
+// a thousandth of a unit: straight along y at its full color.
+constexpr uint32_t kSceneLightSet = 0x36C;  // the scene's own light set, for an object without one
+constexpr uint32_t kSimpleCull = 0x14;      // rn67a: in cdSimple's material: 2 both sides drawn, else one side
+constexpr uint32_t kModelMiddle = 0x20;     // in the object's model (object +0x80): its middle, then its radius
+struct SimpleLights {
+  float ambient[3] = {};
+  uint32_t count = 0;        // the lights taken, four at most
+  float way[4][3] = {};      // the way each travels, in the world
+  float color[4][3] = {};
+  uint32_t listed = 0;       // the lights of the model's group in the set
+  uint32_t positional = 0;   // of the lights the game would list, the positional ones
+  uint32_t out_of_reach = 0; // kind 0 lights the game leaves out: the model is beyond their reach
+  uint32_t set = 0;          // the set read
+  bool own_set = false;      // it is the object's own (else the scene's)
+  int group = -1;            // the model's light group (-1: none, the list stays empty)
+  std::string kinds;         // rn66c (debug, filled when asked for): each listed light's kind and data
+};
+
+// [acct2-bro] 2026-11-13 rn68a: the cull mode a node's technique's first pass asks for: the pass's word at +0x30,
+// as 0x82141180 reads it (2: D3DCULL_CW, 6: D3DCULL_CCW, anything else none). kCullUnread: the node's technique or
+// pass can't be read.
+// rn69b: and as 0x82141180 sets it: nothing while the scene being drawn has a word at +0x328 (kCullKept: the state
+// stays as it was), and 2 and 6 swapped while the scene's +0x364 is 6. b44 took the word as it is and dropped the
+// faces the game shows (m44a). The scene's two words are logged once per scene (LogSceneCull).
+constexpr uint32_t kCullUnread = 0xFFFFFFFFu;
+constexpr uint32_t kCullKept = 0xFFFFFFFEu;
+constexpr uint32_t kSceneCullOff = 0x328;   // rn69b: 0x82141180 sets no cull mode while this is not 0
+constexpr uint32_t kSceneCullSwap = 0x364;  // rn69b: and swaps 2 and 6 while this is 6
+// rn70a: and what the GPU really gets in such a scene (every scene, t66): a pass's register writes are compiled once
+// (its +0xDC, by 0x82155A90) and copied into the command stream as the pass starts (0x821563A8), before its draw. The
+// block at +0x40 writes PA_SU_SC_MODE_CNTL alone (header 0x2205), its value at +0x44: the low three bits are the
+// mode (bit 0 drops the front faces, bit 1 the back ones, bit 2 makes the clockwise winding the front). viewmodel_
+// flip.cpp found the block (claude-9b, 2026-10-27); rd35 (the GPU's own states, rn44q) has 2 on most of The Mace's
+// draws, which b44's inside-out picture (it dropped the other side) agrees with. The view model's scene, marked by
+// viewmodel_flip.cpp while the gun is mirrored, gets bit 2 turned, as that file turns the game's copy. kCullKept: the
+// pass has no compiled block yet (0x82143F70 makes it at the pass's first draw), or the block doesn't set the mode.
+constexpr uint32_t kPassCompiled = 0xDC;
+constexpr uint32_t kCompiledCullHeader = 0x40, kCompiledCull = 0x44;
+constexpr uint32_t kCullRegisterHeader = 0x2205;  // a PM4 type-0 header: the one register PA_SU_SC_MODE_CNTL
+constexpr uint32_t kSceneNameWord = 0x428;        // the scene's name (viewmodel_flip.cpp's kSceneName)
+#if defined(COD3_MP)
+constexpr uint32_t kMirroredViewModels = 0x8207994C + 6;  // viewmodel_flip.cpp's mark: "ViewModels" in the name
+#else
+constexpr uint32_t kMirroredViewModels = 0x8207A154 + 6;
+#endif
+void LogSceneCull(uint32_t scene, uint32_t off, uint32_t swap);  // (below)
+uint32_t PassCullMode(uint8_t* base, uint32_t node, uint32_t scene = 0) {
+  const uint32_t technique = GrassReadable(node + 0x1C) ? g::ReadU32(base, node + 0x1C) : 0;
+  const uint32_t pass = GrassReadable(technique + 0x0C) ? g::ReadU32(base, technique + 0x0C) : 0;
+  if (!Pointer(technique) || !Pointer(pass) || !GrassReadable(pass + 0x30)) return kCullUnread;
+  const uint32_t word = g::ReadU32(base, pass + 0x30);
+  const uint32_t cull = word == 2 || word == 6 ? word : 0;
+  if (!scene) return cull;  // rn68a's count: the word as it is
+  if (!Pointer(scene) || !GrassReadable(scene + kSceneCullSwap)) return kCullUnread;
+  const uint32_t off = g::ReadU32(base, scene + kSceneCullOff), swap = g::ReadU32(base, scene + kSceneCullSwap);
+  LogSceneCull(scene, off, swap);
+  if (off != 0) {  // rn70a: the pass's compiled mode
+    const uint32_t compiled = GrassReadable(pass + kPassCompiled) ? g::ReadU32(base, pass + kPassCompiled) : 0;
+    if (!Pointer(compiled) || !GrassReadable(compiled + kCompiledCull) ||
+        g::ReadU32(base, compiled + kCompiledCullHeader) != kCullRegisterHeader) {
+      return kCullKept;
+    }
+    const uint32_t mode = g::ReadU32(base, compiled + kCompiledCull) & 7;
+    const bool turned =
+        GrassReadable(scene + kSceneNameWord) && g::ReadU32(base, scene + kSceneNameWord) == kMirroredViewModels;
+    if (!turned) {
+      // [acct2-bro] 2026-11-14 rn87b: whether a pass outside the mirrored scene sets the facing bit itself (rn87b
+      // takes the materials' own as 0 in the mirrored scene); said once
+      static std::atomic<bool> said_own_face{false};
+      if ((mode & 4) && !said_own_face.exchange(true)) {
+        REXLOG_INFO("cod3: ngl side: rn87b pass {:08X} sets the facing bit itself (compiled mode {}) outside the "
+                    "mirrored view model's scene",
+                    pass, mode);
+      }
+      return mode;
+    }
+    // [acct2-bro] 2026-11-14 rn87b (the owner, 13:00: "with the left handed model it flckers"): while the game's own
+    // back end copies a pass in the mirrored scene, viewmodel_flip.cpp turns the facing bit in the pass's block and
+    // puts it back right after. The native worker reads the same block meanwhile, now and then took the bit turned
+    // already, turned it again here and dropped the gun's outside faces for that frame. On: the cull bits as read and
+    // the facing turned from the materials' own (0; rn87b's first line says when a pass sets it itself).
+    if (REXCVAR_GET(cod3_debug_ngl_side_flip_face_steady)) {
+      static std::atomic<uint32_t> reads{0}, read_turned{0};
+      const uint32_t n = reads.fetch_add(1, std::memory_order_relaxed) + 1;
+      const uint32_t turned_now = (mode & 4) ? 1u : 0u;
+      const uint32_t t = read_turned.fetch_add(turned_now, std::memory_order_relaxed) + turned_now;
+      if (n == 2000 || n % 20000 == 0) {
+        REXLOG_INFO("cod3: ngl side: rn87b mirrored scene: {} pass reads, {} of them with the facing bit turned "
+                    "already (viewmodel_flip.cpp's copy in progress)",
+                    n, t);
+      }
+      return (mode & 3) | 4;
+    }
+    return mode ^ 4;
+  }
+  return swap == 6 && cull ? 8 - cull : cull;  // 2 <-> 6
+}
+
+// rn70a: the faces a mode drops, as ngl_vk names them: bit 1 drops the back faces, bit 0 the front ones, and bit 2
+// makes the clockwise winding the front, so 2 drops the faces winding clockwise on the screen (the mesh pipeline's
+// front, rn67a's oak) and 6 the others; both or neither (and kCullKept / kCullUnread): none dropped here.
+uint32_t VkCull(uint32_t mode) {
+  if (mode > 7) return NGL_VK_CULL_NONE;
+  const bool drop_front = mode & 1, drop_back = mode & 2, front_clockwise = mode & 4;
+  if (drop_front == drop_back) return NGL_VK_CULL_NONE;
+  return (drop_back != front_clockwise) ? NGL_VK_CULL_CW : NGL_VK_CULL_CCW;
+}
+
+// rn70a (debug): a line once per effect and mode (the first 40): the pass's word beside its compiled mode
+void LogCompiledCull(const std::string& effect, uint32_t word, uint32_t mode, const char* kind, uint64_t frame) {
+  static std::mutex mutex;
+  static std::unordered_set<std::string> said;
+  const std::string key = effect + "/" + std::to_string(mode);
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (said.size() >= 40 || !said.insert(key).second) return;
+  }
+  REXLOG_INFO("cod3: ngl side: rn70a effect \"{}\" ({} draw): its pass's word {}, its compiled cull mode {} (frame {})",
+              effect, kind, word == kCullUnread ? std::string("unread") : std::to_string(word),
+              mode > 7 ? std::string("unread") : std::to_string(mode), frame);
+}
+
+// rn69b (debug, with cod3_debug_ngl_side): the first 8 scenes' two words, once each
+void LogSceneCull(uint32_t scene, uint32_t off, uint32_t swap) {
+  if (!REXCVAR_GET(cod3_debug_ngl_side)) return;
+  static std::mutex mutex;
+  static std::unordered_set<uint32_t> said;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (said.size() >= 8 || !said.insert(scene).second) return;
+  }
+  REXLOG_INFO("cod3: ngl side: rn69b scene {:08X}: its +0x328 {:08X} (0x82141180 sets no cull mode unless 0), +0x364 "
+              "{:08X} (6: the passes' 2 and 6 swapped)",
+              scene, off, swap);
+}
+
+// rn68a (debug): a line once per effect and cull mode (the first 32), with the kind of draw that asked
+void LogPassCull(const std::string& effect, uint32_t cull, const char* kind, bool alpha_tested, uint64_t frame) {
+  static std::mutex mutex;
+  static std::unordered_set<std::string> said;
+  const std::string key = effect + "/" + std::to_string(cull) + "/" + kind;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (said.size() >= 32 || !said.insert(key).second) return;
+  }
+  REXLOG_INFO("cod3: ngl side: rn68a pass cull {} ({}) asked by effect \"{}\" for a {} draw{} (frame {})", cull,
+              cull == 2 ? "the faces winding clockwise on the screen dropped" : "the others dropped", effect, kind,
+              alpha_tested ? ", alpha-tested" : "", frame);
+}
+
+// rn67b: whether a world matrix mirrors: its 3x3's determinant below 0 (ngl_vk.c's own test, push_mesh_draw)
+bool Mirroring(const float w[16]) {
+  return w[0] * (w[5] * w[10] - w[6] * w[9]) + w[1] * (w[6] * w[8] - w[4] * w[10]) +
+             w[2] * (w[4] * w[9] - w[5] * w[8]) < -1e-12f;
+}
+
+// rn66d: a set light's data, readable. A kind 1's is in the frame's own memory (the physical views). MappedGuest
+// asks the guest's page table for anything else, asked each time (the page can go with the level).
+// [acct2-bro] 2026-11-13 rn66e: the scene's sun, kind 3, has its data in the program's own globals (The Mace:
+// 0x82A9ED50; b41's log), past kImageEnd (the campaign's 0x82A00000, which Readable keeps), and MappedGuest says no
+// for the image's pages (their page-table entries carry no protection here). The decompile names globals to
+// 0x82BEAAF8 in the campaign (results/acct2-bro-1112/gp/rd30.txt), so the image is there, mapped, to the end of
+// that page; cod3mp's runs to 0x82DD6000 (kImageEnd's note). rn66d had taken the address for the heap's unread.
+#if defined(COD3_MP)
+constexpr uint32_t kImageGlobalsEnd = 0x82DD6000;  // rn66e
+#else
+constexpr uint32_t kImageGlobalsEnd = 0x82BEB000;  // rn66e: the page past 0x82BEAAF8, the last global named
+#endif
+bool SetLightReadable(uint32_t address) {
+  return !(address & 3) && (ReadableHere(address) || (address >= 0x82000000u && address < kImageGlobalsEnd) ||
+                            MappedGuest(address));
+}
+
+// rn66c (debug): one listed light for SimpleLights::kinds: its kind, and for any but a kind 0 the floats its data
+// holds where 0x821502F8 reads a way and a color (+0x00, +0x10 for kind 1; +0x40, +0x50 for kinds 3 and 4)
+std::string DescribeSetLight(uint8_t* base, uint32_t kind, uint32_t data) {
+  char item[64];
+  std::snprintf(item, sizeof item, " | kind %u", kind);
+  std::string text = item;
+  if (kind == 0) return text;
+  std::snprintf(item, sizeof item, " data %08X", data);
+  text += item;
+  if (!Pointer(data)) return text;
+  for (const uint32_t at : {0x00u, 0x10u, 0x40u, 0x50u}) {
+    if (!SetLightReadable(data + at) || !SetLightReadable(data + at + 12)) {  // rn66d
+      std::snprintf(item, sizeof item, " +%02X not readable", at);
+    } else {
+      std::snprintf(item, sizeof item, " +%02X (%.5g %.5g %.5g %.5g)", at, g::ReadF32(base, data + at),
+                    g::ReadF32(base, data + at + 4), g::ReadF32(base, data + at + 8),
+                    g::ReadF32(base, data + at + 12));
+    }
+    text += item;
+  }
+  return text;
+}
+
+bool SimpleNodeLights(uint8_t* base, uint32_t scene, uint32_t object, const float world[16], SimpleLights& out,
+                      bool describe = false) {
+  uint32_t set = ObjectLightSet(base, object);
+  out.own_set = set != 0;
+#if !defined(COD3_MP)  // (scene +0x36C is the campaign's 0x82150F18; cod3mp's twin isn't read yet)
+  if (!set && Pointer(scene) && Readable(scene + kSceneLightSet)) set = g::ReadU32(base, scene + kSceneLightSet);
+#endif
+  if (!Pointer(set) || !Readable(set + kLightSetAmbient + 12)) return false;
+  const uint32_t model = Readable(object + kObjectModel) ? g::ReadU32(base, object + kObjectModel) : 0;
+  if (!Pointer(model) || !Readable(model + 4) || !Readable(model + kModelMiddle + 12)) return false;
+  out.set = set;
+  for (uint32_t i = 0; i < 3; ++i) {
+    out.ambient[i] = g::ReadF32(base, set + kLightSetAmbient + 4 * i);
+    if (!std::isfinite(out.ambient[i]) || out.ambient[i] < 0.0f || out.ambient[i] > 4.0f) return false;
+  }
+  out.group = static_cast<int>(g::ReadU32(base, model + 4) >> 24) - 1;  // the byte at model +4, less one
+  if (out.group < 0 || out.group >= static_cast<int>(kLightGroups)) {
+    out.group = -1;
+    return true;  // the game's list stays empty: the ambient alone
+  }
+  // the model's middle in the world (row vectors: the fourth row is the move) and its radius
+  float middle[3], in_model[3];
+  for (uint32_t i = 0; i < 3; ++i) in_model[i] = g::ReadF32(base, model + kModelMiddle + 4 * i);
+  for (uint32_t i = 0; i < 3; ++i) {
+    middle[i] = in_model[0] * world[i] + in_model[1] * world[4 + i] + in_model[2] * world[8 + i] + world[12 + i];
+  }
+  const float radius = g::ReadF32(base, model + kModelMiddle + 12);
+  const bool placed = std::isfinite(middle[0] + middle[1] + middle[2] + radius);
+  const uint32_t next = 4 * static_cast<uint32_t>(out.group);
+  struct One {
+    float way[3], color[3];
+  } all[kMaxSetLights];
+  uint32_t taken = 0;
+  uint32_t light = g::ReadU32(base, set + next);
+  for (uint32_t n = 0; light != set && Pointer(light) && Readable(light + kLightData) && n < kMaxSetLights;
+       light = g::ReadU32(base, light + next), ++n) {
+    ++out.listed;
+    const uint32_t kind = g::ReadU32(base, light + kLightKind);
+    const uint32_t data = g::ReadU32(base, light + kLightData);
+    if (describe) out.kinds += DescribeSetLight(base, kind, data);  // rn66c
+    One one{};
+    bool sane = Pointer(data);
+    if (kind == kLightDirectional || kind == 3 || kind == 4) {
+      const uint32_t way_at = kind == kLightDirectional ? data : data + 0x40;
+      const uint32_t color_at = kind == kLightDirectional ? data + 0x10 : data + 0x50;
+      sane = sane && SetLightReadable(way_at) && SetLightReadable(way_at + 8) && SetLightReadable(color_at) &&
+             SetLightReadable(color_at + 8);  // rn66d
+      for (uint32_t i = 0; sane && i < 3; ++i) {
+        one.way[i] = g::ReadF32(base, way_at + 4 * i);
+        one.color[i] = g::ReadF32(base, color_at + 4 * i);
+        sane = std::isfinite(one.way[i]) && std::fabs(one.way[i]) <= 2.0f;
+      }
+    } else if (kind == 0 || kind == 5) {  // rn66b: positional
+      sane = sane && placed && Readable(data) && Readable(data + 0x24);
+      if (!sane) continue;
+      float apart[3], squared = 0.0f;
+      for (uint32_t i = 0; i < 3; ++i) {
+        apart[i] = middle[i] - g::ReadF32(base, data + 4 * i);
+        squared += apart[i] * apart[i];
+      }
+      const float start = g::ReadF32(base, data + 0x20), end = g::ReadF32(base, data + 0x24);
+      const float reach = end + radius;
+      if (!std::isfinite(squared)) continue;
+      if (kind == 0 && !(squared <= reach * reach)) {  // 0x82150F18 leaves it out of the list
+        ++out.out_of_reach;
+        continue;
+      }
+      ++out.positional;
+      float share = 1.0f;
+      if (squared < 1e-6f) {
+        one.way[1] = 1.0f;
+      } else {
+        const float distance = std::sqrt(squared);
+        share = 1.0f - (distance - start) / (end - start);
+        share = share >= 0.0f ? std::min(share, 1.0f) : 0.0f;  // (not a number: 0, as the game's compare has it)
+        for (uint32_t i = 0; i < 3; ++i) one.way[i] = apart[i] / distance;
+      }
+      for (uint32_t i = 0; i < 3; ++i) one.color[i] = g::ReadF32(base, data + 0x10 + 4 * i) * share;
+    } else {
+      continue;  // kind 8 (the rows) and the others give this draw no light
+    }
+    for (uint32_t i = 0; sane && i < 3; ++i) {
+      sane = std::isfinite(one.color[i]) && one.color[i] >= 0.0f && one.color[i] <= 16.0f;
+    }
+    if (sane && taken < kMaxSetLights) all[taken++] = one;
+  }
+  for (uint32_t k = taken > 4 ? taken - 4 : 0; k < taken; ++k) {
+    std::memcpy(out.way[out.count], all[k].way, sizeof all[k].way);
+    std::memcpy(out.color[out.count], all[k].color, sizeof all[k].color);
+    ++out.count;
+  }
+  return true;
+}
+
+// rn66a: those lights on a native draw. Lights that travel the same way are one light (their colors added: the
+// shader's sum is the same). None of them is the draw's first light: ShadowFor dims a lit draw's first light by
+// the sun's shadow map, and this class's shader reads no shadow. So up to three go in as the extra lights, a
+// fourth (none seen yet) as the first after all; the sum is held to 1 as the shader's add_sat holds it.
+void LightSimpleNode(ngl_vk_mesh_draw& d, const SimpleLights& simple) {
+  float way[4][3] = {}, color[4][3] = {};
+  uint32_t count = 0;
+  for (uint32_t k = 0; k < simple.count; ++k) {
+    uint32_t same = count;
+    for (uint32_t j = 0; j < count && same == count; ++j) {
+      const float dot = way[j][0] * simple.way[k][0] + way[j][1] * simple.way[k][1] + way[j][2] * simple.way[k][2];
+      const float lengths =
+          std::sqrt((way[j][0] * way[j][0] + way[j][1] * way[j][1] + way[j][2] * way[j][2]) *
+                    (simple.way[k][0] * simple.way[k][0] + simple.way[k][1] * simple.way[k][1] +
+                     simple.way[k][2] * simple.way[k][2]));
+      if (lengths > 0.0f && dot >= 0.9999f * lengths) same = j;
+    }
+    if (same == count) {
+      std::memcpy(way[count], simple.way[k], sizeof way[count]);
+      ++count;
+    }
+    for (int i = 0; i < 3; ++i) color[same][i] += simple.color[k][i];
+  }
+  d.lit = 1;
+  std::memcpy(d.ambient, simple.ambient, sizeof d.ambient);
+  for (float& c : d.light_color) c = 0.0f;
+  d.extra_light_count = std::min<uint32_t>(count, 3);
+  for (uint32_t k = 0; k < d.extra_light_count; ++k) {
+    std::memcpy(d.extra_light_direction[k], way[k], sizeof way[k]);
+    std::memcpy(d.extra_light_color[k], color[k], sizeof color[k]);
+  }
+  if (count == 4) {
+    std::memcpy(d.light_direction, way[3], sizeof way[3]);
+    std::memcpy(d.light_color, color[3], sizeof color[3]);
+  }
+  d.light_saturate = 1;
+  d.irradiance_rows = 0;
+  d.point_light_count = 0;
+}
+
+// rn66a (debug): what was read for the first objects, with the light the draw had before
+void LogSimpleNode(uint32_t object, const SimpleLights& simple, const ngl_vk_mesh_draw& before, uint64_t frame) {
+  static std::mutex mutex;
+  static std::unordered_set<uint32_t> said;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (said.size() >= 12 || !said.insert(object).second) return;
+  }
+  std::string lights;
+  char item[112];
+  for (uint32_t k = 0; k < simple.count; ++k) {
+    std::snprintf(item, sizeof item, " | travels %.3f %.3f %.3f, color %.3f %.3f %.3f", simple.way[k][0],
+                  simple.way[k][1], simple.way[k][2], simple.color[k][0], simple.color[k][1], simple.color[k][2]);
+    lights += item;
+  }
+  REXLOG_INFO("cod3: ngl side: rn66c that node's listed lights (object {:08X}):{}", object, simple.kinds);
+  REXLOG_INFO("cod3: ngl side: rn66a an old class's simple node (frame {}), object {:08X}: light set {:08X} ({}), "
+              "group {}, {} lights listed ({} positional ones taken, {} out of reach), ambient {:.3f} {:.3f} {:.3f}, "
+              "{} taken:{}; it had: ambient {:.3f} {:.3f} {:.3f}, light {:.3f} {:.3f} {:.3f}, {} extra, saturate {}",
+              frame, object, simple.set, simple.own_set ? "its own" : "the scene's", simple.group, simple.listed,
+              simple.positional, simple.out_of_reach, simple.ambient[0], simple.ambient[1], simple.ambient[2],
+              simple.count, lights,
+              before.ambient[0], before.ambient[1], before.ambient[2], before.light_color[0], before.light_color[1],
+              before.light_color[2], static_cast<int>(before.extra_light_count),
+              static_cast<int>(before.light_saturate));
+}
+
 // [rexglue-native] 2026-11-09 rn35: a watched color map's native draw (cod3_debug_ngl_side_watch), once per color map
 // from frame 2900: its material's maps as SurveyMaterial lists them, how the native side draws it, the light it gives
 // it (before the sun's shadow is set for the frame, ShadowFor), and its pass's binding (LogPassBinding). Its physical
 // base is kept for the host-draw log's rn35 lines. Debug only.
-constexpr uint64_t kWatchFrom = 2900;
+// [acct2-bro] 2026-11-14 rn88a: from cod3_debug_ngl_side_watch_from (was the constant 2900)
+uint64_t WatchFrom() { return static_cast<uint64_t>(REXCVAR_GET(cod3_debug_ngl_side_watch_from)); }
+#define kWatchFrom WatchFrom()  // [acct2-bro] 2026-11-14 rn88a: the old name kept for its ten uses
 // rn40d: a color map whose name doesn't hold the text (or that has none, as the Polish infantry's helmets) is watched
 // by its normal map's name instead: that map's base is kept, so the host-draw log gives every draw that reads it.
+// [acct2-bro] 2026-11-13 rn65c: old_class: the node is an old material class's (cdSimple's, cdWorld's, cdDecal's).
+// Its color is then its material's first texture (the caller's MaterialTexture), its material has no sampler list
+// and the node no technique of its own (rn57k), so neither is read; a line gives the node's own words instead.
 void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material, uint32_t color, uint32_t normal,
-               bool skinned, bool front, const ngl_vk_mesh_draw& d, uint64_t frame) {
+               bool skinned, bool front, const ngl_vk_mesh_draw& d, uint64_t frame, bool old_class = false) {
   std::string watch;
   {
     static std::mutex mutex;
@@ -10011,11 +11455,11 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
   };
   std::string name = own_name(color);
   uint32_t watched = color;
-  if (name.empty() || Lower(name).find(watch) == std::string::npos) {
+  if (name.empty() || !WatchHolds(watch, Lower(name))) {  // rn63b
     name = own_name(normal);
     watched = normal;
   }
-  if (name.empty() || Lower(name).find(watch) == std::string::npos) return;
+  if (name.empty() || !WatchHolds(watch, Lower(name))) return;
   // [rexglue-native] 2026-11-10 rn40i: a watched helmet (5931940F174EA055): its object and the light kept for it, and
   // the object watched for the game's passes and draws (WatchLightObject)
   if (d.lens_cube && d.lens_opaque && REXCVAR_GET(cod3_debug_ngl_side) && Readable(object + 0x38)) {
@@ -10065,7 +11509,7 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
   }
   // [rexglue-native] 2026-11-10 rn40q: every watched draw of frames 2900-2903, not only the first of each map (the
   // helmet's own draw may share the head's maps): its object and place, rigid or skinned, how it is drawn, its rows
-  if (frame >= 2900 && frame <= 2903 && REXCVAR_GET(cod3_debug_ngl_side)) {
+  if (frame >= kWatchFrom && frame <= kWatchFrom + 3 && REXCVAR_GET(cod3_debug_ngl_side)) {  // rn88a
     static std::atomic<int> said{0};
     if (said.fetch_add(1, std::memory_order_relaxed) < 40) {
       const char* kind = d.metal_cube     ? "metal"
@@ -10088,10 +11532,10 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
   }
   uint32_t fetch[6];
   if (!ReadFetch(base, g::ReadU32(base, watched + kTextureDirect3D), fetch)) return;
-  const uint32_t at = fetch[1] & 0x1FFFF000u;
+  const uint32_t at = TexturePage(fetch[1]);
   if (!KeepWatchedDiffuse(at)) return;
   std::string maps;
-  const uint32_t list = Pointer(material) ? g::ReadU32(base, material + kMaterialSamplers) : 0;
+  const uint32_t list = Pointer(material) && !old_class ? g::ReadU32(base, material + kMaterialSamplers) : 0;  // rn65c
   for (uint32_t k = 0; Readable(list) && k < kMaxSamplers; ++k) {
     const uint32_t entry = list + kSamplerFirst + kSamplerBytes * k;
     const uint32_t parameter = g::ReadU32(base, entry), texture = g::ReadU32(base, entry + 4);
@@ -10107,6 +11551,7 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
                   own.c_str(), g::ReadU32(base, entry + 12) & ~0xFFFu);
     maps += item;
   }
+  if (old_class) maps = "an old class's material: no sampler list, its first texture";  // rn65c
   const char* how = d.metal_cube     ? "metal"
                     : d.lens_cube    ? (d.lens_opaque ? "the eyes with a cube" : "glass with a cube")
                     : d.env_texture  ? "shiny"
@@ -10141,7 +11586,113 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
               "{:.6f}; world at {:.1f} {:.1f} {:.1f} (in the picture at {:.3f} {:.3f}); fog {:.0f} to {:.0f} ({:.3f})",
               name, d.point_light_count, d.point_light[0][4], d.point_light[0][5], d.point_light[0][6],
               d.point_light[0][3], d.world[12], d.world[13], d.world[14], across, down, d.fog[0], d.fog[1], d.fog[2]);
+  // [acct2-bro] 2026-11-14 rn88a: how the native side draws it (ngl_vk.h's numbers)
+  REXLOG_INFO("cod3: ngl side: rn88a watched draw of \"{}\": alpha {}, cut out {}, blend {}, corner alpha {}, cull "
+              "{}, texture {}, mesh {}, normal map {}, specular map {}",
+              name, static_cast<int>(d.alpha), g_cut_out.count(d.texture) ? 1 : 0, static_cast<int>(d.blend),
+              static_cast<int>(d.corner_alpha), static_cast<int>(d.cull), d.texture, d.mesh, d.normal_map,
+              d.specular_map);
+  if (old_class) {  // rn65c: the node's and the material's own words; its class's draw picks a vertex shader by
+    // the node's byte at +0x18 (cdSimple's 0x820E0AB8) and reads the material's texture at +0x10
+    REXLOG_INFO("cod3: ngl side: rn65c watched \"{}\" is an old class's node {:08X}: node +0x10 {}; material {:08X} "
+                "{}", name, node, Words(base, node + 0x10, 4), material, Words(base, material, 8));
+    return;
+  }
   LogPassBinding(base, node, ("watched " + name).c_str());
+}
+
+// [acct2-bro] 2026-11-13 rn65b (debug): cod3_debug_ngl_side_pick (see the setting). A draw covers the point when its
+// surface's sphere does: the surface's first float4 (the middle in the object's space, then the radius:
+// NoteDrawPlace, rn48e), through the draw's world rows and the camera's (row vectors, the fourth row the move: the
+// top of this file). The camera's clip space has x to the right and y up, -1 to 1 (SplitScissor); the lengths of
+// its x and y columns are the projection's two scales, so the sphere's half size in the picture is its radius
+// times the scale over twice its distance (clip w). A sphere the eye is inside of covers every point.
+struct PickedDraw {
+  bool covered = false;
+  float at[2] = {};       // the sphere's middle in the picture, fractions from its top-left corner
+  float radius = 0.0f;    // its radius as a fraction of the picture's height (99: the eye is inside it)
+  float distance = 0.0f;  // the middle's clip w
+};
+constexpr float kPickMarkRadius = 0.34f;  // part_mark's bit 4 paints only spheres smaller than this
+
+// the picked point, read once a frame (a hot-reload setting); false when none is given
+bool PickPoint(uint64_t frame, float point[2]) {
+  static std::mutex mutex;
+  static uint64_t read_at = ~uint64_t{0};
+  static bool given = false;
+  static float kept[2] = {};
+  std::lock_guard<std::mutex> lock(mutex);
+  if (read_at != frame) {
+    read_at = frame;
+    const std::string text = REXCVAR_GET(cod3_debug_ngl_side_pick);
+    float x = 0.0f, y = 0.0f;
+    given = !text.empty() && std::sscanf(text.c_str(), "%f,%f", &x, &y) == 2 && x >= 0.0f && x <= 1.0f &&
+            y >= 0.0f && y <= 1.0f;
+    kept[0] = x;
+    kept[1] = y;
+  }
+  point[0] = kept[0];
+  point[1] = kept[1];
+  return given;
+}
+
+PickedDraw PickSphere(uint8_t* base, uint32_t surface, const ngl_vk_mesh_draw& d, const float point[2]) {
+  PickedDraw picked;
+  if (!Pointer(surface) || !Readable(surface) || !Readable(surface + 12)) return picked;
+  const float middle[3] = {g::ReadF32(base, surface), g::ReadF32(base, surface + 4), g::ReadF32(base, surface + 8)};
+  const float radius = g::ReadF32(base, surface + 12);
+  float place[3], clip[4];
+  for (int i = 0; i < 3; ++i) {
+    place[i] = middle[0] * d.world[i] + middle[1] * d.world[4 + i] + middle[2] * d.world[8 + i] + d.world[12 + i];
+  }
+  const float* vp = d.view_projection;
+  for (int i = 0; i < 4; ++i) clip[i] = place[0] * vp[i] + place[1] * vp[4 + i] + place[2] * vp[8 + i] + vp[12 + i];
+  // the radius in the world: times the object's own scale (its first row's length)
+  const float grown =
+      radius * std::sqrt(d.world[0] * d.world[0] + d.world[1] * d.world[1] + d.world[2] * d.world[2]);
+  if (!std::isfinite(clip[0] + clip[1] + clip[3] + grown) || grown <= 0.0f) return picked;
+  picked.distance = clip[3];
+  if (clip[3] <= grown) {  // the eye is inside the sphere, or the sphere is behind it
+    picked.covered = clip[3] > -grown;
+    picked.radius = 99.0f;
+    return picked;
+  }
+  const float scale_x = std::sqrt(vp[0] * vp[0] + vp[4] * vp[4] + vp[8] * vp[8]);
+  const float scale_y = std::sqrt(vp[1] * vp[1] + vp[5] * vp[5] + vp[9] * vp[9]);
+  const float wide = grown * scale_x / clip[3] * 0.5f, high = grown * scale_y / clip[3] * 0.5f;
+  picked.at[0] = clip[0] / clip[3] * 0.5f + 0.5f;
+  picked.at[1] = 0.5f - clip[1] / clip[3] * 0.5f;
+  picked.radius = high;
+  if (wide <= 0.0f || high <= 0.0f) return picked;
+  const float dx = (point[0] - picked.at[0]) / wide, dy = (point[1] - picked.at[1]) / high;
+  picked.covered = dx * dx + dy * dy <= 1.0f;
+  return picked;
+}
+
+// one line for each (color map, surface) picked, 160 at most; the light is the draw's before any mark and before
+// the frame's sun shadow is set (ShadowFor)
+void LogPickedDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t surface, uint32_t color,
+                   const ngl_vk_mesh_draw& d, const PickedDraw& picked, const char* kind, bool old_class,
+                   uint64_t frame) {
+  static std::mutex mutex;
+  static std::unordered_set<uint64_t> logged;
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    if (logged.size() >= 160 || !logged.insert(static_cast<uint64_t>(color) << 32 | surface).second) return;
+  }
+  const uint32_t name_at = IsTexture(base, color) ? g::ReadU32(base, color + kTextureName) : 0;
+  const std::string name = Pointer(name_at) && Readable(name_at) ? InlineName(base, name_at + 4) : "-";
+  REXLOG_INFO("cod3: ngl side: rn65b picked draw (frame {}) of \"{}\", object {:08X}, surface {:08X}, effect \"{}\", "
+              "{}{}: its sphere at {:.3f} {:.3f} of the picture, radius {:.3f} of its height, {:.0f} away; alpha {}, "
+              "shading {}, lit {}, ambient {:.3f} {:.3f} {:.3f}, sun {:.3f} {:.3f} {:.3f}, rows {} (zz {:.3f} {:.3f} "
+              "{:.3f}), lightmap {}, normal map {}, sun shadowed {}, tint {:06X}",
+              frame, name, object, surface, old_class ? std::string() : PassEffect(base, node), kind,
+              old_class ? ", an old class's node" : "", picked.at[0], picked.at[1], picked.radius, picked.distance,
+              static_cast<int>(d.alpha), static_cast<int>(d.shading), static_cast<int>(d.lit), d.ambient[0],
+              d.ambient[1], d.ambient[2], d.light_color[0], d.light_color[1], d.light_color[2],
+              static_cast<int>(d.irradiance_rows), d.irradiance[2][0], d.irradiance[2][1], d.irradiance[2][2],
+              static_cast<unsigned>(d.lightmap), static_cast<unsigned>(d.normal_map),
+              static_cast<int>(d.sun_shadowed), static_cast<unsigned>(d.tint & 0xFFFFFFu));
 }
 
 // [rexglue-native] 2026-11-10 rn42t: the lit models' light on the live frames saved (owner 10:29: the grass, bushes
@@ -10199,8 +11750,289 @@ void LogLiveLight(uint64_t frame, uint32_t object, const ngl_vk_mesh_draw& d, co
 // The frame's generic surfaces as ngl_vk draws, scene by scene; the reasons any are left out, counted.
 // side213: appended to draws (the sky's are there already), so the frame's list isn't copied again
 void ProbePassShaders(uint8_t* base, uint32_t node, const char* what);  // [rexglue-native-guns] 2026-11-11 rn49b
+// [acct2-bro] 2026-11-13 rn73b (debug): where the native solids' time goes. The native frame on its worker took 4.1
+// ms on The Mace and 5.0 on St-Bert (t68's p46w), the solids 3.5 and 4.0 of it, for about 1,000 and 1,900 draws: 3 to
+// 3.5 microseconds a draw. With cod3_debug_ngl_side_solid_laps on, each solid of the loop below times its steps:
+// 0 its scene's camera (made once a scene), 1 its object, surface and mesh (MeshFor), 2 its geometry (ReadGeometry) and
+// the logging hunts after it (ShowSamplers, ShowShaderState, HuntFog, HuntLights), 3 its material's samplers and
+// textures (FrameFor, MaterialSamplers, TextureFor), 4 its light, fog, cull and everything after. A step ends where the
+// next begins or where the solid is left out. LogSolidLaps puts each step's ms a frame beside the live lines.
+// [acct2-bro] 2026-11-13 rn76a: step 4 took 3.2 to 3.4 ms of The Mace's 3.6 (t77's q49), so it is split: 4 the
+// material's kind (metal, lens, shiny), 5 the bumped kinds' passes (from the start of their branch), 6 the sun and the
+// light set (SurveyMaterial, StateSun, WorldLight, NearbyLights, ObjectSun, the front light, the pass's sun), 7 the
+// fog and the checks after it, 8 the game's model light (GameLightFor), 9 decals, split screen, probes and skinning, 10
+// the unlit effects, the shadow and the foliage, 11 the cull, mirroring, marks and watches, 12 the push and after.
+constexpr int kSolidSteps = 13;
+const char* const kSolidStepNames[kSolidSteps] = {
+    "camera", "object and mesh", "geometry and hunts", "samplers and textures", "material kind",
+    "bumped passes", "sun and light set", "fog and checks", "game model light", "decal, split, probes, skin",
+    "unlit, shadow, foliage", "cull, marks, watches", "push and after"};
+std::atomic<uint64_t> g_solid_step_ns[kSolidSteps];  // summed between two live lines
+std::atomic<uint64_t> g_solid_lap_count{0};           // the solids timed
+struct SolidLap {
+  bool on;
+  int step = 0;
+  std::chrono::steady_clock::time_point at;
+  explicit SolidLap(bool on_) : on(on_) {
+    if (on) at = std::chrono::steady_clock::now();
+  }
+  void To(int next) {  // ends the step being timed; next begins
+    if (!on) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now - at).count();
+    g_solid_step_ns[step].fetch_add(static_cast<uint64_t>(ns), std::memory_order_relaxed);
+    step = next;
+    at = now;
+  }
+  ~SolidLap() {
+    if (!on) return;
+    To(step);
+    g_solid_lap_count.fetch_add(1, std::memory_order_relaxed);
+  }
+};
+
+void LogSolidLaps(double frames) {  // rn73b: with the live lines (frames: the frames since the last ones)
+  if (!REXCVAR_GET(cod3_debug_ngl_side_solid_laps) || frames <= 0.0) return;
+  double ms[kSolidSteps];
+  for (int k = 0; k < kSolidSteps; ++k) {
+    ms[k] = static_cast<double>(g_solid_step_ns[k].exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+  }
+  const double solids = static_cast<double>(g_solid_lap_count.exchange(0, std::memory_order_relaxed)) / frames;
+  // [acct2-bro] 2026-11-13 rn76a: every step by name, then the two helpers (ms a frame and calls a frame)
+  std::string text;
+  char item[128];  // [acct2-bro] 2026-11-13 rn78a: (was 96)
+  for (int k = 0; k < kSolidSteps; ++k) {
+    std::snprintf(item, sizeof item, "%s%s %.3f", k ? ", " : "", kSolidStepNames[k], ms[k]);
+    text += item;
+  }
+  const char* const helper_names[kHelpers] = {"DrawnValue", "FindKeptLight", "SkinnedCorners",  // rn78b
+                                              "the game's KeepModelLight"};                     // rn81b
+  for (int k = 0; k < kHelpers; ++k) {
+    const double helper_ms =
+        static_cast<double>(g_helper_ns[k].exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+    const double calls = static_cast<double>(g_helper_calls[k].exchange(0, std::memory_order_relaxed)) / frames;
+    std::snprintf(item, sizeof item, "%s%s %.3f (%.0f calls)", k ? ", " : "; of which ", helper_names[k], helper_ms,
+                  calls);
+    text += item;
+  }
+  // [acct2-bro] 2026-11-13 rn78b: SkinnedCorners' corners a frame; rn78a: for each of the lock's takers, the ms a frame
+  // it waited, the takes that waited and all its takes a frame, and the ms a frame it held the lock
+  std::snprintf(item, sizeof item, " (%.0f corners)",
+                static_cast<double>(g_skinned_corners.exchange(0, std::memory_order_relaxed)) / frames);
+  text += item;
+  const char* const taker_names[kLockTakers] = {"DrawnValue", "FindKeptLight", "the game's KeepModelLight"};
+  std::string locks;
+  for (int k = 0; k < kLockTakers; ++k) {
+    const double waited = static_cast<double>(g_lock_wait_ns[k].exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+    const double waits = static_cast<double>(g_lock_waits[k].exchange(0, std::memory_order_relaxed)) / frames;
+    const double takes = static_cast<double>(g_lock_takes[k].exchange(0, std::memory_order_relaxed)) / frames;
+    const double held = static_cast<double>(g_lock_hold_ns[k].exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+    const double spun = static_cast<double>(g_lock_spun[k].exchange(0, std::memory_order_relaxed)) / frames;  // rn79a
+    std::snprintf(item, sizeof item, "%s%s waited %.3f (%.0f of %.0f takes, %.0f of those spinning), held %.3f",
+                  k ? ", " : "", taker_names[k], waited, waits, takes, spun, held);
+    locks += item;
+    // [acct2-bro] 2026-11-13 rn80b: of the time held, the holds over 20 microseconds
+    const double long_holds = static_cast<double>(g_lock_long_holds[k].exchange(0, std::memory_order_relaxed)) / frames;
+    const double long_ms =
+        static_cast<double>(g_lock_long_hold_ns[k].exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+    std::snprintf(item, sizeof item, " (%.3f in %.1f holds over 20 us)", long_ms, long_holds);
+    locks += item;
+  }
+  // [acct2-bro] 2026-11-13 rn80a: TrimKeptLights at the list sends: its ms a frame and the trims a frame
+  const double trim_ms = static_cast<double>(g_trim_ns.exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+  const double trims = static_cast<double>(g_trims.exchange(0, std::memory_order_relaxed)) / frames;
+  std::snprintf(item, sizeof item, "; rn80a the list sends' trims %.3f (%.2f a frame)", trim_ms, trims);
+  locks += item;
+  // [acct2-bro] 2026-11-13 rn83b: the deferred keeps taken in at the list sends: ms a frame, keeps a frame
+  const double apply_ms = static_cast<double>(g_apply_keeps_ns.exchange(0, std::memory_order_relaxed)) / 1e6 / frames;
+  const double applied = static_cast<double>(g_applied_keeps.exchange(0, std::memory_order_relaxed)) / frames;
+  std::snprintf(item, sizeof item, "; rn83b the deferred keeps %.3f (%.0f a frame)", apply_ms, applied);
+  locks += item;
+  REXLOG_INFO("cod3: ngl side: live: rn76a the solids' steps in ms a frame: {} ({:.0f} solids a frame); rn78a the "
+              "models' light lock in ms a frame: {}",
+              text, solids, locks);
+}
+
+#if defined(NGL_VK_COD3_WATER)
+// [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water as its pixel shader 99861CE203379D5B draws it (side189 left it
+// out natively). That shader reads its ripple normal map (tf4) twice, at (uv + c20.x x c21.xy) x c22.x and at
+// (uv + c20.x x c23.xy) x c24.x (instructions 16-27; c20.x the time), bends the normal by c25.x, reads the environment
+// cube (tf3, c16.x its bias), the lightmap (tf2) and the sun's shadow (tf1, four taps), mixes by a Fresnel-like term
+// (c26.x the material's eta, c29), colors the reflection by c27 and the water by c28, is blended SRC_ALPHA /
+// INV_SRC_ALPHA (07060706) and is softened where it meets the ground by the depth buffer (tf5: not done here yet).
+// The registers are read as the draw's pass binds them (ReadBound); for one it doesn't bind, the material's parameter
+// of that name when there is one (Diffuse_Color, Opacity, eta), else a default. What was read is logged once a
+// material (cod3_debug_ngl_side_water_log). False when the ripple map or the cube can't be had (then left out).
+// [acct2-bro] 2026-11-13 rn86c: the water pass's vertex constants as it binds them (the list at compiled +0x80, as
+// FoliageDiffuse reads it): each register's slot and offset, and for slot 1 (the state's value block) its four floats
+// as the block holds them now. For the log only.
+std::string WaterVertexBindings(uint8_t* base, uint32_t node) {
+  const uint32_t technique = GrassReadable(node) ? g::ReadU32(base, node + 0x1C) : 0;
+  const uint32_t pass = GrassReadable(technique) ? g::ReadU32(base, technique + 0x0C) : 0;
+  const uint32_t compiled = GrassReadable(pass) ? g::ReadU32(base, pass + 0xDC) : 0;
+  const uint32_t state = GrassReadable(node) ? g::ReadU32(base, node + kNodeShaderState) : 0;
+  const uint32_t values = GrassReadable(state) ? g::ReadU32(base, state + 0x1C) : 0;
+  if (!GrassReadable(compiled) || !GrassReadable(compiled + 0xA0)) return " (no pass)";
+  const uint32_t at = compiled + 0x80;
+  const uint32_t count = g::ReadU32(base, at + 0x08), rows = g::ReadU32(base, at + 0x20);
+  const uint32_t first = (g::ReadU32(base, at + 0x1C) & 0x7FF) / 4;
+  std::string out;
+  char item[128];
+  std::snprintf(item, sizeof item, " from c%u, %u rows:", first, count);
+  out += item;
+  for (uint32_t k = 0; k < count && k < 48 && GrassReadable(rows + 8 * k + 4); ++k) {
+    const uint32_t slot = g::ReadU32(base, rows + 8 * k) / 4, offset = g::ReadU32(base, rows + 8 * k + 4);
+    std::snprintf(item, sizeof item, " c%u=%u:%X", first + k, slot, offset);
+    out += item;
+    if (slot == 1 && offset < 0x4000 && GrassReadable(values) && GrassReadable(values + offset + 12)) {
+      float v[4];
+      for (int i = 0; i < 4; ++i) v[i] = g::ReadF32(base, values + offset + 4 * i);
+      std::snprintf(item, sizeof item, "(%.4g %.4g %.4g %.4g)", v[0], v[1], v[2], v[3]);
+      out += item;
+    }
+  }
+  return out;
+}
+struct Cod3WaterParameters {  // the material's parameters of the names the water's shader takes
+  bool color_ok = false, opacity_ok = false, eta_ok = false;
+  float color[3] = {}, opacity = 0.0f, eta = 0.0f;
+  std::string names;  // every parameter, for the log
+};
+Cod3WaterParameters Cod3WaterMaterial(uint8_t* base, uint32_t material) {
+  Cod3WaterParameters out;
+  auto safe = [](uint32_t a, uint32_t span) { return Readable(a) && Readable(a + span); };
+  auto f32 = [base](uint32_t a) {
+    const uint32_t bits = DataU32(base, a);
+    float v;
+    std::memcpy(&v, &bits, 4);
+    return v;
+  };
+  if (!safe(material, 0x30)) return out;
+  const uint32_t count = DataU32(base, material + 0x24), table = DataU32(base, material + 0x28);
+  char item[128];
+  for (uint32_t k = 0; k < count && k < 24 && safe(table + 0x24 * k, 0x24); ++k) {
+    const uint32_t entry = table + 0x24 * k;
+    const uint32_t name_at = DataU32(base, entry), type = DataU32(base, entry + 0x10);
+    const uint32_t value = DataU32(base, entry + 0x14);
+    const std::string name = safe(name_at, 8) ? InlineName(base, name_at + 4) : std::string("-");
+    const bool floats = safe(value, 0x10);
+    float v[4] = {};
+    for (int i = 0; floats && i < 4; ++i) v[i] = f32(value + 4 * i);
+    std::snprintf(item, sizeof item, " | %s type %u", name.c_str(), type);
+    out.names += item;
+    if (floats) {
+      std::snprintf(item, sizeof item, ": %.4g %.4g %.4g %.4g", v[0], v[1], v[2], v[3]);
+      out.names += item;
+    }
+    const std::string lower = Lower(name);
+    const bool finite = std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]);
+    if (!floats || !finite) continue;
+    if (lower == "diffuse_color") {
+      std::memcpy(out.color, v, sizeof out.color);
+      out.color_ok = true;
+    } else if (lower == "opacity") {
+      out.opacity = v[0];
+      out.opacity_ok = true;
+    } else if (lower == "eta") {
+      out.eta = v[0];
+      out.eta_ok = true;
+    }
+  }
+  return out;
+}
+bool Cod3Water(uint8_t* base, uint32_t node, uint32_t scene, uint32_t material, const Samplers& samplers,
+               ngl_vk_mesh_draw& d) {
+  const uint32_t ripples = TextureFor(base, samplers.normal);
+  const uint32_t sky = IsCubeTexture(base, samplers.env) ? CubeFor(base, samplers.env) : 0;
+  if (!ripples || !sky) return false;
+  const PassBinding binding = ReadPassBinding(base, node);
+  float c[30][4] = {};
+  bool bound[30] = {};
+  for (uint32_t r = 16; r < 30; ++r) bound[r] = ReadBound(base, binding, r, c[r], 4);
+  const Cod3WaterParameters own = Cod3WaterMaterial(base, material);
+  // the time: c20.x, else the scene's (+0x420, as the flames' c16 in rn41q)
+  const float seconds = bound[20] ? c[20][0]
+               : Pointer(scene) && GrassReadable(scene + 0x420) ? g::ReadF32(base, scene + 0x420) : 0.0f;
+  // the two layers: (uv + time x speed) x scale = uv x scale + time x speed x scale, the offset kept within 0..1
+  const float speed[2][2] = {{bound[21] ? c[21][0] : 0.02f, bound[21] ? c[21][1] : 0.013f},
+                             {bound[23] ? c[23][0] : -0.017f, bound[23] ? c[23][1] : 0.011f}};
+  const float scale[2] = {bound[22] ? c[22][0] : 1.0f, bound[24] ? c[24][0] : 0.63f};
+  for (int k = 0; k < 2; ++k) {
+    d.cod3_water_ripple[k][0] = scale[k];
+    for (int axis = 0; axis < 2; ++axis) {
+      const double offset = double{seconds} * speed[k][axis] * scale[k];
+      d.cod3_water_ripple[k][1 + axis] = static_cast<float>(offset - std::floor(offset));
+    }
+  }
+  d.cod3_water_bump = bound[25] ? c[25][0] : 0.35f;
+  d.cod3_water_cube_bias = bound[16] ? c[16][0] : 0.0f;
+  // the Fresnel term: Schlick's, its floor from eta (c26.x, else the material's, else water's 1.333)
+  const float eta = bound[26] && c[26][0] > 1.0f ? c[26][0] : own.eta_ok && own.eta > 1.0f ? own.eta : 1.333f;
+  const float f0 = ((eta - 1.0f) / (eta + 1.0f)) * ((eta - 1.0f) / (eta + 1.0f));
+  d.cod3_water_fresnel[0] = f0;
+  d.cod3_water_fresnel[1] = 1.0f - f0;
+  d.cod3_water_fresnel[2] = 5.0f;
+  for (int part = 0; part < 3; ++part) {
+    d.cod3_water_reflection[part] = bound[27] ? c[27][part] : 1.0f;
+    d.cod3_water_color[part] = bound[28] ? c[28][part] : own.color_ok ? own.color[part] : 0.12f;
+  }
+  d.cod3_water_opacity = own.opacity_ok ? std::clamp(own.opacity, 0.0f, 1.0f) : 0.5f;
+  // [acct2-bro] 2026-11-13 rn86e: mesh.frag forms the game's alpha, 1 - (1 - opacity) x f; a negative opacity asks it
+  // for rn86a's, opacity + (1 - opacity) x f (cod3_debug_ngl_side_water_alpha 1)
+  if (REXCVAR_GET(cod3_debug_ngl_side_water_alpha) == 1) d.cod3_water_opacity = -d.cod3_water_opacity;
+  d.cod3_water_power = 64.0f;
+  d.cod3_water = 1;
+  d.water_cube = sky;
+  d.texture = ripples;
+  d.alpha = NGL_VK_ALPHA_BLEND;
+  d.blend = NGL_VK_BLEND_ALPHA;
+  if (REXCVAR_GET(cod3_debug_ngl_side_water_log)) {
+    static std::mutex mutex;
+    static std::unordered_set<uint32_t> seen;
+    bool show = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      show = seen.size() < 24 && seen.insert(material).second;
+    }
+    if (show) {
+      std::string registers;
+      char item[96];
+      for (uint32_t r = 16; r < 30; ++r) {
+        if (r > 16 && r < 20) continue;
+        if (bound[r]) {
+          std::snprintf(item, sizeof item, " c%u=(%.4g %.4g %.4g %.4g)", r, c[r][0], c[r][1], c[r][2], c[r][3]);
+        } else {
+          std::snprintf(item, sizeof item, " c%u not bound (slot %u)", r, binding.slot[r]);
+        }
+        registers += item;
+      }
+      REXLOG_INFO("cod3: ngl side: rn86a water: material {:08X} node {:08X}: ripples {:08X} cube {:08X}, time {:.3f};"
+                  "{}; taken: color {:.3f} {:.3f} {:.3f}, opacity {:.3f}, eta {:.3f}, bump {:.3f}, scales {:.3f} "
+                  "{:.3f}; parameters{}; rn86c vertex constants{}", material, node, samplers.normal, samplers.env,
+                  seconds, registers, d.cod3_water_color[0], d.cod3_water_color[1], d.cod3_water_color[2],
+                  d.cod3_water_opacity, eta, d.cod3_water_bump, scale[0], scale[1], own.names,
+                  WaterVertexBindings(base, node));
+    }
+  }
+  return true;
+}
+#endif
+
+#if defined(NGL_VK_COD3_WATER)
+// [acct2-bro] 2026-11-13 rn86b: a water draw held until the frame's other solid draws are in the list, with what the
+// index-keyed notes take when it is appended (NoteDrawPlace's surface, the flicker log's FlickerFrom)
+struct LateWater {
+  ngl_vk_mesh_draw draw;
+  uint32_t surface;
+  FlickerFrom from;
+};
+#endif
+
 void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector<ngl_vk_mesh_draw>& draws) {
   const size_t first = draws.size();
+#if defined(NGL_VK_COD3_WATER)
+  std::vector<LateWater> late_water;  // [acct2-bro] 2026-11-13 rn86b
+#endif
   draws.reserve(first + census.solids.size() + census.trees.size());
   // [acct2-bro] 2026-11-12 rn57d: and with the flicker log on, for its lines (the frame's own line stays as it was)
   const bool flicker_log = REXCVAR_GET(cod3_debug_ngl_side_flicker) > 0;
@@ -10252,7 +12084,10 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
   }
   g_world_depth = WorldDepthOf(base, world_scene);  // side125: for the depth of field's distances
   if (g_world_depth.ok) g_world_depth.reversed = DepthAt(g_world_depth, 1000.0f) < DepthAt(g_world_depth, 10.0f);
+  const bool laps_on = REXCVAR_GET(cod3_debug_ngl_side_solid_laps);  // rn73b
   for (const Solid& s : census.solids) {
+    SolidLap lap(laps_on);  // rn73b: step 0, the camera
+    bool water_draw = false;  // [acct2-bro] 2026-11-13 rn86d: this surface is water (in any water mode)
     auto camera = cameras.find(s.scene);
     if (camera == cameras.end()) {
       Camera c{};
@@ -10275,6 +12110,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       if (near_as_front && target_as_front) {
         for (int row = 0; row < 4; ++row) c.view_projection[4 * row + 2] *= kFrontDepth;
         c.front = true;
+        if (rebase::Mode() >= 1) rebase::Note(base, s.scene, c.view_projection, c.reversed, true);  // rn90a
         left_out["(scenes in front of the world)"]++;
       } else if (c.ok && s.scene != world_scene && c.split && std::fabs(near_plane - world_near) <= 0.05f * world_near) {
         // [rexglue-native] 2026-11-09: another split-screen player's view of the world (the world's near plane, its
@@ -10284,6 +12120,9 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         left_out["(split screen: another player's view)"]++;
       } else if (c.ok && s.scene != world_scene) {
         c.other = true;  // side83: neither the world nor the gun's (the third scene of side43-45)
+      }
+      if (rebase::Mode() >= 2 && c.ok && !c.front) {  // [acct2-bro] 2026-11-14 rn90a: every scene's
+        rebase::Note(base, s.scene, c.view_projection, c.reversed, false);
       }
       camera = cameras.emplace(s.scene, c).first;
       {  // [rexglue-native] 2026-11-09 rn6: each split view's part of the picture, with the pictures (rn4's p4side drew
@@ -10319,6 +12158,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       left_out["(side83: the third perspective scene)"]++;
       continue;
     }
+    lap.To(1);  // rn73b: the object, surface and mesh
     const uint32_t object = g::ReadU32(base, s.node + kNodeObject);
     const uint32_t surface = g::ReadU32(base, s.node + kNodeSurface);
     if (!Pointer(object) || !Pointer(surface)) {
@@ -10332,7 +12172,8 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       continue;
     }
     std::string why;
-    const uint32_t mesh = MeshFor(base, surface, why);
+    Geometry geo;  // [acct2-bro] 2026-11-13 rn75a: as MeshFor read it (not read a second time)
+    const uint32_t mesh = MeshFor(base, surface, why, false, &geo);
     if (!mesh) {
       left_out[why]++;
       continue;
@@ -10341,16 +12182,16 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     d.mesh = mesh;
     const uint32_t material = g::ReadU32(base, s.node + kNodeMaterial);
     d.tint = 0x404040u | (((material * 2654435761u) >> 8) & 0xBFBFBFu);
-    Geometry geo;
-    std::string unused;
-    ReadGeometry(base, surface, geo, unused);
+    lap.To(2);  // rn73b: the geometry and the hunts
     const bool skinned = geo.blend_weights >= 0 && geo.blend_indices >= 0;
-    if (!s.old_class) {  // an old class's node has no shader state and its material no sampler list
+    // [acct2-bro] 2026-11-13 rn75b: the logging helpers on picture frames only (g_quiet: a live frame)
+    if (!s.old_class && !g_quiet) {  // an old class's node has no shader state and its material no sampler list
       ShowSamplers(base, material, geo.stride, skinned);
       ShowShaderState(base, g::ReadU32(base, s.node + kNodeShaderState));
       HuntFog(base, g::ReadU32(base, s.node + kNodeShaderState));
       HuntLights(base, g::ReadU32(base, s.node + kNodeShaderState));  // side181
     }
+    lap.To(3);  // rn73b: the samplers and textures
     const TextureFrame look_frame = FrameFor(base, s.scene, object);
     Samplers samplers = s.old_class ? Samplers{} : MaterialSamplers(base, material, skinned, look_frame.value);
     if (s.old_class) {
@@ -10428,6 +12269,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     }
     d.texture = TextureFor(base, samplers.color ? samplers.color : MaterialTexture(base, material));
     d.lightmap = TextureFor(base, samplers.lightmap);
+    lap.To(4);  // rn73b: the light, fog and the rest
     d.shading = d.lightmap ? NGL_VK_SHADE_LIGHTMAP : NGL_VK_SHADE_LIGHT;
     // side165: lit as the game's lightmapped shaders do (not the old classes': cdWorld's own draw, side90)
     const bool world_lit = d.lightmap && !s.old_class && REXCVAR_GET(cod3_debug_ngl_side_world_light);
@@ -10436,11 +12278,24 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         std::lock_guard<std::mutex> lock(g_water_mutex);
         if (g_water_objects.size() < 64) g_water_objects.insert(object);
       }
-      if (REXCVAR_GET(cod3_debug_ngl_side_water) == 0) {  // side189
+      water_draw = true;  // [acct2-bro] 2026-11-13 rn86d
+      // [acct2-bro] 2026-11-13 rn86a: 2 (the default) draws it as the game's water shader (Cod3Water); without
+      // ngl_vk's cod3_water, as 0
+      int water_mode = REXCVAR_GET(cod3_debug_ngl_side_water);
+#if defined(NGL_VK_COD3_WATER)
+      if (water_mode == 2 && !Cod3Water(base, s.node, s.scene, material, samplers, d)) {
+        left_out["water: rn86a found no ripple map or no cube for it"]++;
+        continue;
+      }
+#else
+      if (water_mode == 2) water_mode = 0;
+#endif
+      if (water_mode == 0) {  // side189
         left_out["water (no color map, an environment and a normal map): its shader isn't drawn natively yet"]++;
         continue;
       }
-      left_out["(of those, water: no color map, an environment and a normal map)"]++;
+      left_out[water_mode == 2 ? "(of those, rn86a: water drawn as the game's water shader)"
+                               : "(of those, water: no color map, an environment and a normal map)"]++;
     }
     FabricPass fabric_pass_read;  // rn31: kept for the light below
     bool fabric_read = false;
@@ -10634,6 +12489,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       }
     } else if (samplers.normal && !d.lightmap && REXCVAR_GET(cod3_debug_ngl_side_bumped)) {  // side117: per-pixel
                                                                                             // lit (CDBAC602): bumped
+      lap.To(5);  // [acct2-bro] 2026-11-13 rn76a: the bumped kinds' passes
       // rn40e: an eyes cube that wasn't taken as 5931940F174EA055's, with cod3_debug_ngl_side, to see why
       if (REXCVAR_GET(cod3_debug_ngl_side) && eyes_like && lens_pass.why[0]) {
         static std::atomic<int> said{0};
@@ -10913,7 +12769,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
           const std::string name = Pointer(name_at) && Readable(name_at) ? InlineName(base, name_at + 4) : "";
           const std::string watch = Lower(REXCVAR_GET(cod3_debug_ngl_side_watch));
           bool say = false;
-          if (!watch.empty() && Lower(name).find(watch) != std::string::npos) {
+          if (!watch.empty() && WatchHolds(watch, Lower(name))) {  // rn63b
             std::lock_guard<std::mutex> lock(mutex);
             if (seen.size() < 16 && std::find(seen.begin(), seen.end(), object) == seen.end()) {
               seen.push_back(object);
@@ -11030,6 +12886,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         }
       }
     }
+    lap.To(6);  // [acct2-bro] 2026-11-13 rn76a: the sun and the light set
     if (!s.old_class) {
       SurveyMaterial(base, material, object, skinned,
                      d.env_texture ? "shiny" : d.normal_map ? "bumped" : d.lightmap ? "lightmapped" : "plain", frame);
@@ -11037,7 +12894,9 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     const char* sun_source = "none";  // rn42y: where the sun handed to ngl_vk came from, for LogLiveLight (debug only)
     {
       Sun sun;
-      if (!s.old_class && StateSun(base, g::ReadU32(base, s.node + kNodeShaderState), sun)) {
+      bool sun_held = false;  // [acct2-bro] 2026-11-13 rn85a: held, not as read (cod3_debug_ngl_side_sun_hold)
+      if (!s.old_class && HeldStateSun(base, g::ReadU32(base, s.node + kNodeShaderState), frame, sun, &sun_held)) {
+        if (sun_held) left_out["(rn85a: the sun its state held, read differently this frame)"]++;
         static bool said = false;
         if (!said) {
           said = true;
@@ -11211,6 +13070,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         }
       }
     }
+    lap.To(7);  // [acct2-bro] 2026-11-13 rn76a: the fog and the checks
     FogWith(base, s.scene, d);
     if (d.fog[1] > d.fog[0]) left_out["(of those, fogged)"]++;
     if (t_drawn.used || t_drawn.late) {  // rn43a: its pass's values (cod3_debug_ngl_side_drawn_values)
@@ -11223,6 +13083,9 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     d.alpha = !skinned && g_cut_out.count(d.texture) ? NGL_VK_ALPHA_TEST : NGL_VK_ALPHA_OPAQUE;
     // rn40: the game blends the glass by its alpha (blend 07060706); rn40e: not the helmets (00010001)
     if (d.lens_cube && !d.lens_opaque) d.alpha = NGL_VK_ALPHA_BLEND;
+#if defined(NGL_VK_COD3_WATER)
+    if (d.cod3_water) d.alpha = NGL_VK_ALPHA_BLEND;  // [acct2-bro] 2026-11-13 rn86a: the water too (07060706)
+#endif
     left_out[d.texture ? (d.lightmap ? "(drawn with color map and lightmap)" : "(drawn with a color map)")
                        : "(drawn untextured)"]++;
     if (d.alpha == NGL_VK_ALPHA_TEST) left_out["(of those, alpha-tested)"]++;
@@ -11263,6 +13126,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     }
     d.world[3] = d.world[7] = d.world[11] = 0.0f;
     d.world[15] = 1.0f;
+    lap.To(8);  // [acct2-bro] 2026-11-13 rn76a: the game's model light
     const char* light_source = "the light set's (not asked)";  // rn42t: for LogLiveLight (debug only)
     uint64_t light_kept = 0;
     float block_sun[3] = {-1.0f, -1.0f, -1.0f};  // rn42y: the light block's main light taken, -1 for none (debug)
@@ -11389,7 +13253,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
               diffuse_at = fetch[1] & ~0xFFFu;
             }
           }
-          KeepFabricDiffuse(diffuse_at & 0x1FFFF000u);  // rn28
+          KeepFabricDiffuse(TexturePage(diffuse_at));  // rn28
           const int64_t signature = int64_t{diffuse_at} * 1000003 + static_cast<int64_t>(frame / 300);
           if (seen.size() < 32 && std::find(seen.begin(), seen.end(), signature) == seen.end()) {
             seen.push_back(signature);
@@ -11420,6 +13284,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         }
       }
     }
+    lap.To(9);  // [acct2-bro] 2026-11-13 rn76a: decals, split screen, probes and skinning
     std::memcpy(d.view_projection, camera->second.view_projection, sizeof d.view_projection);
     // [rexglue-native-render] 2026-11-11 rn48e (from rexglue-native-mp): cdDecal (campaign 0x820DCDF8, cod3mp
     // 0x820EEE90) as the game draws it: its own texture (material +0x10), blended by its alpha over the wall it lies on
@@ -11492,7 +13357,13 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // rn40o: (rn40p: only the watched ones from frame 2900, rn40o's lines went to the ulans' small cube-lit part)
     t_skin_watch = d.lens_cube && d.lens_opaque && REXCVAR_GET(cod3_debug_ngl_side) && frame >= 2900 &&
                    WatchedTextureName(base, samplers.color);
-    if (kSkin) d.corners = SkinnedCorners(base, surface, object, frame);
+    // [acct2-bro] 2026-11-13 rn78c: with the geometry read above; a rigid solid's corners aren't posed (SkinnedCorners
+    // returned 0 for it), so it is asked only for a skinned one, or a watched helmet (its rn40o line says why not)
+    if (kSkin && (skinned || t_skin_watch)) {
+      d.corners = SkinnedCorners(base, surface, object, frame, geo);
+    } else if (kSkin) {
+      t_skin_made = {};  // as SkinnedCorners left it for a rigid solid
+    }
     if (kSkin && skinned && !g_quiet) {  // rn42a (debug only)
       LogNearSkinned(base, object, surface, samplers.color, d, camera->second.view_projection, frame);
     }
@@ -11538,6 +13409,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // A8B0.... on the others), so it was drawn as a lantern's flame on those. Such a node is asked for no
     // technique: not for an unlit effect, nor for the shadow rows or the foliage values its pass would bind
     // (with cod3_debug_ngl_side_unlit_blended_only, the default; off, the picture as it was).
+    lap.To(10);  // [acct2-bro] 2026-11-13 rn76a: the unlit effects, the shadow and the foliage
     const bool no_technique = blended_only && s.old_class != kNotOld;
     if (no_technique) left_out["(rn57k: old-class nodes asked for no technique)"]++;
     // [rexglue-native] 2026-11-10 rn41q: the game's unlit effects (cod3_debug_ngl_side_unlit_effects; rn41i-p, The
@@ -11610,23 +13482,47 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         }
       }
     }
-    const bool foliage_map =
+    // [acct2-bro] 2026-11-13 rn63c: foliage_named is rn46g's test (the color map's own name); with
+    // cod3_debug_ngl_side_foliage_by_pass the pass alone decides (FoliageDiffuse), whatever the map is called
+    const bool foliage_kind =
         REXCVAR_GET(cod3_debug_ngl_side_foliage_light) && d.texture && d.lit && d.shading == NGL_VK_SHADE_LIGHT &&
         !skinned && !d.lightmap && !d.normal_map && !d.env_texture && !d.lens_cube && !d.metal_cube &&
-        !d.fabric_mask && !d.blend_texture && FoliageMap(base, samplers.color);
+        !d.fabric_mask && !d.blend_texture;
+    const bool foliage_named = foliage_kind && FoliageMap(base, samplers.color);
+    const bool foliage_map =
+        foliage_named || (foliage_kind && REXCVAR_GET(cod3_debug_ngl_side_foliage_by_pass));
     // The vertex shader's c28: 0.39 at every foliage draw of the Forest and St-Bert, 0.3 at Saint-Lo's (rn46f);
     // rn46i: read as the object's pass binds it. rn46j: a foliage map under another shader's pass (St-Bert's
     // "hedgerows_di") is left as it was, lit as a plain object (counted).
     float diffuse[3] = {0.39f, 0.39f, 0.39f};
-    const bool foliage = foliage_map && !no_technique && FoliageDiffuse(base, s.node, diffuse);  // rn57k
-    if (foliage_map && REXCVAR_GET(cod3_debug_ngl_side_foliage_probe)) {
+    FoliageSun pass_sun;  // [acct2-bro] 2026-11-13 rn63d
+    const bool foliage = foliage_map && !no_technique && FoliageDiffuse(base, s.node, diffuse, &pass_sun);  // rn57k
+    if (foliage_named && REXCVAR_GET(cod3_debug_ngl_side_foliage_probe)) {
       LogFoliageMaterial(base, s.node, object, material);
     }
-    if (foliage_map && !foliage) {
+    if (foliage_named && !foliage) {
       left_out["(of those, a foliage map under another shader's pass: lit as a plain object)"]++;
+    }
+    if (foliage && !foliage_named) {  // rn63c
+      left_out["(of those, rn63c foliage by its pass: its map isn't named foliage_masked$)"]++;
     }
     if (foliage) {
       const float up = std::clamp(-d.light_direction[2], 0.0f, 1.0f);  // the height of the way toward the sun
+      // [acct2-bro] 2026-11-13 rn63d: the sun's color as the pass itself binds it
+      // (cod3_debug_ngl_side_foliage_pass_sun). The height stays the object's sun's; the height of the pass's own
+      // place for the sun is logged beside it (-2: not read).
+      const bool own_sun = pass_sun.color_read && REXCVAR_GET(cod3_debug_ngl_side_foliage_pass_sun);
+      const float* sun_color = own_sun ? pass_sun.color : d.light_color;
+      const float place_length = std::sqrt(pass_sun.place[0] * pass_sun.place[0] +
+                                           pass_sun.place[1] * pass_sun.place[1] +
+                                           pass_sun.place[2] * pass_sun.place[2]);
+      const float place_up = pass_sun.place_read && place_length > 1.0f ? pass_sun.place[2] / place_length : -2.0f;
+      bool another_sun = false;  // the pass's color is not the object's sun's (2% of the larger, or more)
+      for (int i = 0; own_sun && i < 3; ++i) {
+        const float larger = std::max(std::fabs(sun_color[i]), std::fabs(d.light_color[i]));
+        another_sun = another_sun || std::fabs(sun_color[i] - d.light_color[i]) > 0.02f * larger;
+      }
+      if (another_sun) left_out["(of those, rn63d the pass's sun color is not the object's sun's)"]++;
       // The object's own ambient (the game's c24): with the light set's nine rows (against xx yy zz xy yz zx x y z of
       // the normal, in the mesh's own space) it is taken for a normal straight up, the zz row plus the z row, as the
       // shader treats the sun; c24 differs a little from object to object, below the common 0.226 0.226 0.258 too,
@@ -11642,11 +13538,16 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                     d.irradiance[2][2], d.irradiance[8][0], d.irradiance[8][1], d.irradiance[8][2], d.light_color[0],
                     d.light_color[1], d.light_color[2], d.light_direction[0], d.light_direction[1],
                     d.light_direction[2], d.extra_light_count, d.point_light_count);
+        REXLOG_INFO("cod3: ngl side: rn63d foliage object {:08X}: the pass's sun {:.4f} {:.4f} {:.4f} ({}), factor "
+                    "{:.4f} {:.4f} {:.4f}, the sun's height {:.3f} (by the pass's place for it {:.3f})",
+                    object, pass_sun.color[0], pass_sun.color[1], pass_sun.color[2],
+                    own_sun ? "taken" : pass_sun.color_read ? "read, not taken" : "not read", diffuse[0], diffuse[1],
+                    diffuse[2], up, place_up);
       }
       for (int i = 0; i < 3; ++i) {
         const float own = d.irradiance_rows == 9 ? std::max(d.irradiance[2][i] + d.irradiance[8][i], 0.0f)
                                                  : d.ambient[i];
-        d.ambient[i] = own + d.light_color[i] * diffuse[i] * up;
+        d.ambient[i] = own + sun_color[i] * diffuse[i] * up;  // rn63d: sun_color (it was d.light_color)
         d.light_color[i] = 0.0f;
       }
       d.irradiance_rows = 0;
@@ -11655,6 +13556,186 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       d.light_saturate = 0;
       d.sun_shadowed = 0;
       left_out["(of those, rn46g foliage by the sun's height)"]++;
+    }
+    // [acct2-bro] 2026-11-13 rn66a: an old class's simple node lit as its own draw lights it
+    // (cod3_debug_ngl_side_simple_light; see the setting). Not the front scene's (the gun has its own light).
+    if (s.old_class == kOldSimple && d.lit && d.shading == NGL_VK_SHADE_LIGHT && !skinned && !foliage &&
+        !camera->second.front && REXCVAR_GET(cod3_debug_ngl_side_simple_light)) {
+      SimpleLights simple;
+      const bool describe = REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom && frame < kWatchFrom + 8;
+      if (SimpleNodeLights(base, s.scene, object, d.world, simple, describe)) {
+        if (REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom) LogSimpleNode(object, simple, d, frame);
+        LightSimpleNode(d, simple);
+        left_out["(of those, rn66a: an old class's simple nodes lit as their own draw lights them)"]++;
+        if (simple.positional) left_out["(of those, rn66b: with a positional light among their lights)"]++;
+      } else {
+        left_out["(of those, rn66a: an old class's simple node whose light set isn't read)"]++;
+      }
+    }
+    // [acct2-bro] 2026-11-13 rn67a: and seen from one side, where its material asks for that
+    // (cod3_debug_ngl_side_simple_sides; see the setting). The flag rides in a textured lit draw's tint, whose
+    // color is not used; a lightmapped or untextured node of the class keeps both sides (none seen yet).
+    if (s.old_class == kOldSimple && Pointer(material) && Readable(material + kSimpleCull) &&
+        g::ReadU32(base, material + kSimpleCull) != 2 && REXCVAR_GET(cod3_debug_ngl_side_simple_sides) > 0) {
+      if (d.texture && d.shading == NGL_VK_SHADE_LIGHT) {
+        d.tint = NGL_VK_TINT_ONE_SIDED |
+                 (REXCVAR_GET(cod3_debug_ngl_side_simple_sides) == 2 ? NGL_VK_TINT_OTHER_SIDE : 0u);
+        left_out["(of those, rn67a: an old class's simple nodes seen from one side)"]++;
+      } else {
+        left_out["(of those, rn67a: an old class's one-sided simple node that keeps both sides)"]++;
+      }
+    }
+    // [acct2-bro] 2026-11-13 rn68a (a count): the cull mode the draw's pass asks for (PassCullMode), by the draw's
+    // kind, and its effect's name once per mode from frame 2900. Nothing is culled natively yet.
+    lap.To(11);  // [acct2-bro] 2026-11-13 rn76a: the cull, mirroring, marks and watches
+    const bool log_cull = REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom;
+    if (!s.old_class && !no_technique && (left_out.on() || log_cull)) {
+      const uint32_t cull = PassCullMode(base, s.node);
+      const char* kind = skinned                                  ? "skinned"
+                         : foliage                                ? "the foliage shader's"
+                         : d.shading == NGL_VK_SHADE_LIGHTMAP     ? "lightmapped"
+                         : d.shading == NGL_VK_SHADE_UNLIT        ? "unlit"
+                         : d.shading == NGL_VK_SHADE_VERTEX_COLOR ? "vertex colors"
+                                                                  : "lit";
+      if (left_out.on()) {
+        char key[112];
+        std::snprintf(key, sizeof key, "(of those, rn68a: a pass asks for cull %s: %s%s)",
+                      cull == 2 ? "2, CW" : cull == 6 ? "6, CCW" : cull == kCullUnread ? "unread" : "none", kind,
+                      d.alpha == NGL_VK_ALPHA_TEST ? ", alpha-tested" : "");
+        left_out[key]++;
+      }
+      if (log_cull && (cull == 2 || cull == 6)) {
+        LogPassCull(PassEffect(base, s.node), cull, kind, d.alpha == NGL_VK_ALPHA_TEST, frame);
+      }
+    }
+    // [acct2-bro] 2026-11-13 rn69a: and the faces the pass drops, dropped (cod3_debug_ngl_side_pass_cull; see it)
+    const bool cull_now = REXCVAR_GET(cod3_debug_ngl_side_pass_cull_alternate)  // rn71b
+                              ? frame % 2 == 0
+                              : REXCVAR_GET(cod3_debug_ngl_side_pass_cull);
+    if (!s.old_class && !no_technique && d.alpha != NGL_VK_ALPHA_BLEND && cull_now) {
+      const uint32_t cull = PassCullMode(base, s.node, s.scene);  // rn70a: as the GPU gets it in this scene
+      d.cull = VkCull(cull);
+      if (left_out.on()) {  // rn70a: the modes counted
+        char key[80];
+        std::snprintf(key, sizeof key, "(of those, rn70a: compiled cull mode %s)",
+                      cull <= 7 ? std::to_string(cull).c_str() : "unread");
+        left_out[key]++;
+      }
+      if (log_cull) {
+        LogCompiledCull(PassEffect(base, s.node), PassCullMode(base, s.node), cull,
+                        d.alpha == NGL_VK_ALPHA_TEST ? "an alpha-tested" : "an opaque", frame);
+      }
+      if (d.cull && left_out.on()) {
+        left_out[d.cull == NGL_VK_CULL_CCW ? "(of those, rn69a: back faces culled as the pass asks)"
+                                           : "(of those, rn69a: front faces culled as the pass asks)"]++;
+        if (Mirroring(d.world)) left_out["(of those, rn69a: culled under a mirroring world matrix)"]++;
+      }
+    }
+    // [acct2-bro] 2026-11-13 rn67b: a lit draw under a mirroring world matrix (cod3_debug_ngl_side_mirror_light)
+    if (d.lit && d.shading == NGL_VK_SHADE_LIGHT && Mirroring(d.world)) {
+      left_out["(of those, rn67b: lit draws under a mirroring world matrix)"]++;
+      if (s.old_class == kOldSimple) left_out["(of those, rn67b: an old class's simple nodes among them)"]++;
+      if (!REXCVAR_GET(cod3_debug_ngl_side_mirror_light)) {  // as before: every light turned around
+        for (float& way : d.light_direction) way = -way;
+        for (auto& extra : d.extra_light_direction) {
+          for (float& way : extra) way = -way;
+        }
+      }
+    }
+    bool pick_marked = false;  // [acct2-bro] 2026-11-13 rn65b (debug): cod3_debug_ngl_side_pick
+    float pick_point[2];
+    if (REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom && PickPoint(frame, pick_point)) {
+      const PickedDraw picked = PickSphere(base, surface, d, pick_point);
+      if (picked.covered) {
+        const char* pick_kind = "plain, not lit";
+        if (skinned) {
+          pick_kind = "skinned";
+        } else if (foliage) {
+          pick_kind = "the foliage shader's";
+        } else if (d.shading == NGL_VK_SHADE_LIGHTMAP) {
+          pick_kind = "lightmapped";
+        } else if (d.normal_map) {
+          pick_kind = "bumped";
+        } else if (d.lit && d.shading == NGL_VK_SHADE_LIGHT) {
+          pick_kind = "plain, lit";
+        }
+        // an old class's node has no sampler list: its color map is its material's first texture
+        LogPickedDraw(base, s.node, object, surface,
+                      samplers.color ? samplers.color : MaterialTexture(base, material), d, picked, pick_kind,
+                      s.old_class != kNotOld, frame);
+        left_out["(rn65b: draws whose sphere covers the picked point)"]++;
+        pick_marked = (REXCVAR_GET(cod3_debug_ngl_side_part_mark) & 4) != 0 && picked.radius < kPickMarkRadius;
+      }
+    }
+    if (pick_marked) {  // flat yellow
+      if (d.lit && d.shading == NGL_VK_SHADE_LIGHT) {  // as rn65a's marks, the map's cut kept
+        const float yellow[3] = {8.0f, 8.0f, 0.0f};
+        for (int i = 0; i < 3; ++i) {
+          d.ambient[i] = yellow[i];
+          d.light_color[i] = 0.0f;
+          for (int row = 0; row < 9; ++row) d.irradiance[row][i] = row < 3 ? yellow[i] : 0.0f;
+        }
+        d.irradiance_rows = d.normal_map ? 9 : 0;
+        d.extra_light_count = 0;
+        d.point_light_count = 0;
+        d.light_saturate = 0;
+        d.sun_shadowed = 0;
+      } else {  // as rn46d's: no map, its tint alone
+        d.texture = d.lightmap = d.normal_map = d.specular_map = 0;
+        d.lit = 0;
+        d.shading = NGL_VK_SHADE_UNLIT;
+        d.tint = 0xFFFF00u;
+        if (d.alpha == NGL_VK_ALPHA_TEST) d.alpha = NGL_VK_ALPHA_OPAQUE;
+      }
+      left_out["(rn65b: picked draws marked yellow)"]++;
+    }
+    if (!pick_marked) {  // [acct2-bro] 2026-11-13 rn65a (debug): cod3_debug_ngl_side_part_mark
+      const int part_mark = REXCVAR_GET(cod3_debug_ngl_side_part_mark);
+      const bool mark_foliage = (part_mark & 1) != 0 && foliage;
+      const bool mark_bumped = (part_mark & 2) != 0 && !foliage && d.lit && d.normal_map &&
+                               WatchedTextureName(base, samplers.color);
+      if (mark_foliage || mark_bumped) {
+        if (frame >= kWatchFrom) {  // its light before the mark, once for each (color map, kind), 24 lines at most
+          static std::mutex mutex;
+          static std::vector<std::pair<uint32_t, bool>> logged;
+          const std::pair<uint32_t, bool> key{samplers.color, mark_foliage};
+          bool fresh = false;
+          {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (logged.size() < 24 && std::find(logged.begin(), logged.end(), key) == logged.end()) {
+              logged.push_back(key);
+              fresh = true;
+            }
+          }
+          if (fresh) {
+            const uint32_t name_at = IsTexture(base, samplers.color) ? g::ReadU32(base, samplers.color + kTextureName)
+                                                                     : 0;
+            const std::string name = Pointer(name_at) && Readable(name_at) ? InlineName(base, name_at + 4) : "-";
+            REXLOG_INFO("cod3: ngl side: rn65a marked {} draw (frame {}) of \"{}\", object {:08X}, effect \"{}\": "
+                        "ambient {:.3f} {:.3f} {:.3f}, sun {:.3f} {:.3f} {:.3f}, rows {} (zz {:.3f} {:.3f} {:.3f}), "
+                        "sun shadowed {}, fog {:.0f} to {:.0f} ({:.3f})",
+                        mark_foliage ? "foliage" : "bumped", frame, name, object, PassEffect(base, s.node),
+                        d.ambient[0], d.ambient[1], d.ambient[2], d.light_color[0], d.light_color[1],
+                        d.light_color[2], static_cast<int>(d.irradiance_rows), d.irradiance[2][0], d.irradiance[2][1],
+                        d.irradiance[2][2], static_cast<int>(d.sun_shadowed), d.fog[0], d.fog[1], d.fog[2]);
+          }
+        }
+        // flat: no sun, no other light, the color as a constant in the rows' squares (x^2 + y^2 + z^2 = 1) and as
+        // the ambient, eight times over so any texture comes out as the pure color
+        const float color[3] = {mark_foliage ? 8.0f : 0.0f, mark_foliage ? 0.0f : 8.0f, 8.0f};
+        for (int i = 0; i < 3; ++i) {
+          d.ambient[i] = color[i];
+          d.light_color[i] = 0.0f;
+          for (int row = 0; row < 9; ++row) d.irradiance[row][i] = row < 3 ? color[i] : 0.0f;
+        }
+        d.irradiance_rows = mark_foliage ? 0 : 9;
+        d.extra_light_count = 0;
+        d.point_light_count = 0;
+        d.light_saturate = 0;
+        d.sun_shadowed = 0;
+        left_out[mark_foliage ? "(rn65a: foliage draws marked magenta)"
+                              : "(rn65a: watched bumped draws marked cyan)"]++;
+      }
     }
     if (REXCVAR_GET(cod3_debug_ngl_side_pass_probe) && d.lit && d.shading == NGL_VK_SHADE_LIGHT && !skinned) {  // rn46k
       char light[224];
@@ -11667,10 +13748,14 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                     static_cast<int>(d.extra_light_count), static_cast<int>(d.sun_shadowed));
       LogLitPass(base, s.node, samplers.color, foliage ? "foliage" : d.normal_map ? "bumped" : "plain", light);
     }
-    if (REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom && (samplers.color || samplers.normal)) {  // rn35
+    // [acct2-bro] 2026-11-13 rn65c: an old class's node has no sampler list; it is watched by its material's first
+    // texture (The Mace's oaks, "wood$oak_grn_single", are cdSimple's: p38c)
+    const bool watch_old = s.old_class != kNotOld && !samplers.color;
+    const uint32_t watch_color = watch_old ? MaterialTexture(base, material) : samplers.color;
+    if (REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom && (watch_color || samplers.normal)) {  // rn35
       // rn40d: or by its normal map's name, for a color map with none (the Polish infantry's helmets)
-      WatchDraw(base, s.node, object, material, samplers.color, samplers.normal, skinned, camera->second.front, d,
-                frame);
+      WatchDraw(base, s.node, object, material, watch_color, samplers.normal, skinned, camera->second.front, d,
+                frame, watch_old);
     }
     // [rexglue-native] 2026-11-10 rn40r: a check (cod3_debug_ngl_side_eyes_show 4): the watched maps' generic bumped
     // draws with a specular map (rn40q: the likely helmet, mesh 421 of the soldier whose eyes are mesh 414) drawn flat
@@ -11717,6 +13802,8 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                     skinned, samplers, d);
     }
     NoteDrawPlace(base, draws.size(), surface, d);  // rn47z
+    // [acct2-bro] 2026-11-13 rn84a: the foliage shader's draws take no moving point light (bit 1)
+    NotePlantDraw(draws.size(), d, foliage && (REXCVAR_GET(cod3_debug_ngl_side_moving_lights_skip) & 1) != 0);
     // [acct2-bro] 2026-11-12 rn59c (debug: the flicker log with cod3_debug_ngl_side_watch): a skinned draw whose
     // color map is watched and whose model no object had the frame before (a soldier's other model set, which the
     // game takes for single frames at a hitch): how the native side draws it, its material's maps by name and its
@@ -11782,6 +13869,21 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                                 s.old_class ? 0 : g::ReadU32(base, s.node + 0x1C), light_source, sun_source,
                                 s.old_class != kNotOld});
     }
+    lap.To(12);  // [acct2-bro] 2026-11-13 rn76a: the push and after
+#if defined(NGL_VK_COD3_WATER)
+    // [acct2-bro] 2026-11-13 rn86b: the water is appended after the loop (cod3_debug_ngl_side_water_late). The notes
+    // made above at this index (NoteDrawPlace, NotePlantDraw, the flicker log's) are taken by the next draw appended
+    // here and made again for the water when it is appended.
+    if (water_draw) {  // [acct2-bro] 2026-11-13 rn86c/rn86d: the test lift in world z (the translation's z)
+      d.world[14] += 0.1f * static_cast<float>(REXCVAR_GET(cod3_debug_ngl_side_water_lift));
+    }
+    if (water_draw && REXCVAR_GET(cod3_debug_ngl_side_water_late)) {  // rn86d: any water mode
+      late_water.push_back(
+          LateWater{d, surface, flicker_log && !g_flicker_from.empty() ? g_flicker_from.back() : FlickerFrom{}});
+      left_out["(of those, rn86b: water held to be drawn after the other solids)"]++;
+      continue;
+    }
+#endif
     draws.push_back(d);
     if (left_out.on()) {
       char in_scene[96];  // which scenes the draws come from, in what order, to which target
@@ -11833,6 +13935,18 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     }
     if (draws.size() >= kMaxDraws) break;
   }
+#if defined(NGL_VK_COD3_WATER)
+  for (const LateWater& w : late_water) {  // [acct2-bro] 2026-11-13 rn86b: the held water, after the other solids
+    if (draws.size() >= kMaxDraws) break;
+    NoteDrawPlace(base, draws.size(), w.surface, w.draw);
+    NotePlantDraw(draws.size(), w.draw, false);
+    if (flicker_log) {
+      g_flicker_from.resize(draws.size());
+      g_flicker_from.push_back(w.from);
+    }
+    draws.push_back(w.draw);
+  }
+#endif
   TreeDraws(base, census, draws, left_out);
   PickCommonSun();  // rn57k: for the next frame's draws
   if (census.far_solids) left_out["(of the surfaces, from the far lists)"] = census.far_solids;
@@ -12253,7 +14367,11 @@ class Painter {
     return busy_;
   }
   // Runs tail on the painting thread (started the first time)
-  void Run(rex::ui::Presenter::GuestOutputRefreshTail tail) {
+  // [acct2-bro] 2026-11-14 rn92a: seq (non-zero: the picture's number in cod3_debug_ngl_side_present_trace) and
+  // hand_us (when it was handed over) are logged with the painting's start and end
+  // [acct2-bro] 2026-11-14 rn92e: target_us (non-zero): the painting waits until then (cod3_native_present_pacing)
+  void Run(rex::ui::Presenter::GuestOutputRefreshTail tail, uint64_t seq = 0, int64_t hand_us = 0,
+           int64_t clock_us = 0, int64_t target_us = 0) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       if (!started_) {
@@ -12261,6 +14379,10 @@ class Painter {
         started_ = true;
       }
       tail_ = std::move(tail);
+      seq_ = seq;
+      hand_us_ = hand_us;
+      clock_us_ = clock_us;  // rn92c
+      target_us_ = target_us;  // rn92e
       busy_ = true;
     }
     wake_.notify_one();
@@ -12278,15 +14400,43 @@ class Painter {
   void Loop() {
     for (;;) {
       rex::ui::Presenter::GuestOutputRefreshTail tail;
+      uint64_t seq = 0;  // [acct2-bro] 2026-11-14 rn92a
+      int64_t hand_us = 0, clock_us = 0, target_us = 0;
       {
         std::unique_lock<std::mutex> lock(mutex_);
         wake_.wait(lock, [this] { return static_cast<bool>(tail_); });
         tail = std::move(tail_);
         tail_ = nullptr;
+        seq = seq_;
+        hand_us = hand_us_;
+        clock_us = clock_us_;
+        target_us = target_us_;
+      }
+      // [acct2-bro] 2026-11-14 rn92e: hold the painting (the picture reaching the window) until its target, here on
+      // the painter's own thread, so neither the worker nor the game's thread waits (rn92d held the worker, and the
+      // game's thread then waited for it at its next list send: 190 fps fell to 127). At most 20 ms.
+      if (target_us > 0) {
+        using Clock = std::chrono::steady_clock;
+        const int64_t now_us =
+            std::chrono::duration_cast<std::chrono::microseconds>(Clock::now().time_since_epoch()).count();
+        const int64_t wait = std::min<int64_t>(target_us - now_us, 20000);
+        if (wait > 0) {
+          const Clock::time_point until = Clock::now() + std::chrono::microseconds(wait);
+          if (wait > 1500) std::this_thread::sleep_until(until - std::chrono::microseconds(1000));  // wakes late
+          while (Clock::now() < until) std::this_thread::yield();
+        }
       }
       const auto start = std::chrono::steady_clock::now();
       tail();
-      const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      const auto end = std::chrono::steady_clock::now();
+      const double ms = std::chrono::duration<double, std::milli>(end - start).count();
+      if (seq) {  // [acct2-bro] 2026-11-14 rn92a: cod3_debug_ngl_side_present_trace
+        const auto us = [](std::chrono::steady_clock::time_point t) {
+          return std::chrono::duration_cast<std::chrono::microseconds>(t.time_since_epoch()).count();
+        };
+        REXLOG_INFO("cod3: ngl side: rn92a present {} hand {} paint {} {} clock {}", seq, hand_us, us(start), us(end),
+                    clock_us);  // rn92c: the frame's own clock
+      }
       std::lock_guard<std::mutex> lock(mutex_);
       paint_ms_ += ms;
       ++paints_;
@@ -12300,8 +14450,78 @@ class Painter {
   bool busy_ = false, started_ = false;
   double paint_ms_ = 0.0;
   uint64_t paints_ = 0;
+  uint64_t seq_ = 0;  // [acct2-bro] 2026-11-14 rn92a
+  int64_t hand_us_ = 0, clock_us_ = 0, target_us_ = 0;
 };
 Painter* g_painter = new Painter;  // never destroyed: its thread may still be painting when the program ends
+
+// [acct2-bro] 2026-11-14 rn92a: cod3_debug_ngl_side_present_trace. Pictures traced so far (handed over or dropped),
+// and the next hand-over's number and time for the painter (set on the game's thread before RefreshGuestOutput hands
+// its tail over, which the tail's callback, a plain function, passes on).
+uint64_t g_present_traced = 0;
+uint64_t g_present_next_seq = 0;
+int64_t g_present_next_hand_us = 0;
+int64_t SteadyUs(std::chrono::steady_clock::time_point t) {
+  return std::chrono::duration_cast<std::chrono::microseconds>(t.time_since_epoch()).count();
+}
+// [acct2-bro] 2026-11-14 rn92c: the clock of the frame being drawn (server_step's FrameClockMicroseconds), set on the
+// game's main thread at the list send before the frame is drawn or posted to the worker; read where it is shown (the
+// worker is idle when it is set: OnListSend waits for it first). 0: none (cod3mp, or no frame yet).
+int64_t g_live_clock_us = 0;
+int64_t FrameClockNow() {
+#if !defined(COD3_MP)
+  return cod3::server_step::FrameClockMicroseconds();
+#else
+  return 0;
+#endif
+}
+// [acct2-bro] 2026-11-14 rn92d / rn92e: cod3_native_present_pacing. When a picture is handed to the window: the moment
+// it should reach it, its frame's clock plus the delay (fixed, or the 90th percentile of the last 64 pictures' gaps
+// from their clocks to here, those over 20 ms left out); 0 when off. rn92e: the painter waits for it (Painter::Run).
+int64_t PaceTarget() {
+  const int32_t mode = REXCVAR_GET(cod3_native_present_pacing);
+  if (mode <= 0 || g_live_clock_us <= 0) return 0;
+  using Clock = std::chrono::steady_clock;
+  constexpr int64_t kMostUs = 20000;
+  static int64_t gaps[64] = {};
+  static size_t count = 0, next = 0;
+  static bool said = false;
+  const int64_t gap = SteadyUs(Clock::now()) - g_live_clock_us;
+  if (gap >= 0 && gap <= kMostUs) {
+    gaps[next] = gap;
+    next = (next + 1) % 64;
+    count = std::min<size_t>(count + 1, 64);
+  }
+  int64_t delay = mode;
+  if (mode == 1) {
+    if (count < 16) return 0;  // not enough pictures yet to know the frames' gaps
+    int64_t sorted[64];
+    std::copy(gaps, gaps + count, sorted);
+    std::nth_element(sorted, sorted + count * 9 / 10, sorted + count);
+    delay = sorted[count * 9 / 10];
+  }
+  if (!said) {
+    said = true;
+    REXLOG_INFO("cod3: ngl side: rn92d each picture shown {} after its frame's clock (cod3_native_present_pacing)",
+                mode == 1 ? std::string("the recent frames' 90th percentile")
+                          : std::to_string(mode) + " microseconds");
+  }
+  return delay > gap ? g_live_clock_us + delay : 0;  // already that late: at once
+}
+int64_t g_present_next_target_us = 0;  // rn92e: the next hand-over's target, for the painter
+// Before a hand-over at time t: its number in the trace (0: not traced)
+void PresentTraceHand(std::chrono::steady_clock::time_point t) {
+  const int32_t most = REXCVAR_GET(cod3_debug_ngl_side_present_trace);
+  g_present_next_seq = most > 0 && g_present_traced < uint64_t(most) ? ++g_present_traced : 0;
+  g_present_next_hand_us = SteadyUs(t);
+}
+// A picture not handed over (the last one still being painted)
+void PresentTraceDropped() {
+  const int32_t most = REXCVAR_GET(cod3_debug_ngl_side_present_trace);
+  if (most <= 0 || g_present_traced >= uint64_t(most)) return;
+  ++g_present_traced;
+  REXLOG_INFO("cod3: ngl side: rn92a present dropped at {}", SteadyUs(std::chrono::steady_clock::now()));
+}
 
 // The upload buffer and the rest, made once for the presenter's device (false: they couldn't be)
 bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
@@ -12357,9 +14577,12 @@ void Show(uint8_t* base, const uint8_t* rgba, uint32_t width, uint32_t height) {
   if (g_feed.failed || !rgba || !width || !height) return;
   if (g_painter->Busy()) {  // side121: the last picture is still being painted
     ++g_feed.dropped;
+    PresentTraceDropped();  // [acct2-bro] 2026-11-14 rn92a
     return;
   }
   const auto show_start = std::chrono::steady_clock::now();
+  PresentTraceHand(show_start);  // [acct2-bro] 2026-11-14 rn92a
+  g_present_next_target_us = PaceTarget();  // rn92e (0: off)
   const rex::ui::vulkan::VulkanDevice* device = nullptr;
   rex::ui::Presenter* presenter = WindowPresenter(device);
   const VkDeviceSize bytes = VkDeviceSize{width} * height * 4;
@@ -12447,7 +14670,10 @@ void Show(uint8_t* base, const uint8_t* rgba, uint32_t width, uint32_t height) {
         copy_end = Clock::now();
         return true;
       },
-      [](rex::ui::Presenter::GuestOutputRefreshTail tail) { g_painter->Run(std::move(tail)); });
+      [](rex::ui::Presenter::GuestOutputRefreshTail tail) {
+        g_painter->Run(std::move(tail), g_present_next_seq, g_present_next_hand_us, g_live_clock_us,
+                       g_present_next_target_us);  // rn92a/c/e
+      });
   ++g_feed.handed;
   const Clock::time_point t3 = Clock::now();
   g_feed.show_ms += ms(show_start, t3);
@@ -12527,9 +14753,26 @@ void ChooseTargetSize() {
     width = 640;
     height = 360;
   }
-  g_target_width = width;
-  g_target_height = height;
-  REXLOG_INFO("cod3: ngl side: the native picture is drawn at {}x{} ({})", width, height, from);
+  // [acct2-bro] 2026-11-12 rn61a: width x height is the shown size; the target is that times the setting's step
+  g_shown_width = width;
+  g_shown_height = height;
+  g_target_scale = 1;
+#if defined(NGL_VK_OUTPUT_BOX)
+  const uint32_t samples = static_cast<uint32_t>(std::clamp(REXCVAR_GET(cod3_native_antialiasing), 1, 16));
+  uint32_t each_way = 1;  // the largest whole number whose square is within the setting
+  while ((each_way + 1) * (each_way + 1) <= samples) ++each_way;
+  g_target_scale = each_way;
+  while (g_target_scale > 1 && (width * g_target_scale > 7680 || height * g_target_scale > 4320)) --g_target_scale;
+  if (each_way > 1) {
+    REXLOG_INFO("cod3: ngl side: rn61a anti-aliasing: {} x {} samples a pixel (cod3_native_antialiasing {}{}), "
+                "shown at {}x{}", g_target_scale, g_target_scale, samples,
+                g_target_scale < each_way ? "; fewer than asked, the drawn size stays within 7680x4320" : "", width,
+                height);
+  }
+#endif
+  g_target_width = width * g_target_scale;
+  g_target_height = height * g_target_scale;
+  REXLOG_INFO("cod3: ngl side: the native picture is drawn at {}x{} ({})", g_target_width, g_target_height, from);
 }
 
 // [acct2-bro] 2026-11-12 rn52a: the most samples the Anisotropic filtering setting asks for (1: none). The setting is
@@ -12558,7 +14801,12 @@ int StartNglVk() {
   const float anisotropy = AnisotropyAsked();  // [acct2-bro] 2026-11-12 rn52a
   ngl_vk_set_anisotropy(anisotropy, 0);
 #endif
-  if (g_native.load(std::memory_order_relaxed) && REXCVAR_GET(cod3_native_shared_device)) {
+#if defined(NGL_VK_OUTPUT_BOX)
+  ngl_vk_set_shown_scale(g_target_scale);  // [acct2-bro] 2026-11-12 rn61a
+#endif
+  // [acct2-bro] 2026-11-12 rn61b: anti-aliasing (g_target_scale above 1) asks for the hand-over on the GPU too
+  if (g_native.load(std::memory_order_relaxed) &&
+      (REXCVAR_GET(cod3_native_shared_device) || g_target_scale > 1)) {
     const rex::ui::vulkan::VulkanDevice* device = nullptr;
     WindowPresenter(device);
 #if defined(NGL_VK_ANISOTROPY)
@@ -12580,6 +14828,17 @@ int StartNglVk() {
     REXLOG_WARN("cod3: ngl side: ngl_vk can't draw on the window's Vulkan device ({}); it uses one of its own",
                 device ? "ngl_vk_init_on_device failed" : "the window isn't drawn by Vulkan");
   }
+  if (g_target_scale > 1) {  // [acct2-bro] 2026-11-12 rn61a: the averaging is ngl_vk_output's, on the GPU hand-over
+    REXLOG_WARN("cod3: ngl side: rn61a cod3_native_antialiasing needs the hand-over on the GPU (cod3_native_vulkan "
+                "and a window drawn by Vulkan), which this start doesn't have; the picture is drawn at {}x{} without "
+                "it", g_shown_width, g_shown_height);
+    g_target_scale = 1;
+    g_target_width = g_shown_width;
+    g_target_height = g_shown_height;
+#if defined(NGL_VK_OUTPUT_BOX)
+    ngl_vk_set_shown_scale(1);
+#endif
+  }
   const int started = ngl_vk_init(g_target_width, g_target_height);
 #if defined(NGL_VK_ANISOTROPY)
   if (started == 0) {  // [acct2-bro] 2026-11-12 rn52a
@@ -12597,11 +14856,14 @@ void ShowOnGpu(uint8_t* base) {
   if (g_feed.failed) return;
   if (g_painter->Busy()) {  // as in Show: the last picture is still being painted
     ++g_feed.dropped;
+    PresentTraceDropped();  // [acct2-bro] 2026-11-14 rn92a
     return;
   }
   using Clock = std::chrono::steady_clock;
   using VulkanPresenter = rex::ui::vulkan::VulkanPresenter;
   const Clock::time_point show_start = Clock::now();
+  PresentTraceHand(show_start);  // [acct2-bro] 2026-11-14 rn92a
+  g_present_next_target_us = PaceTarget();  // rn92e (0: off)
   const rex::ui::vulkan::VulkanDevice* device = nullptr;
   rex::ui::Presenter* presenter = WindowPresenter(device);
   if (!presenter || !device) {
@@ -12617,8 +14879,9 @@ void ShowOnGpu(uint8_t* base) {
                0xFF000000u;
   }
   bool called = false, drawn = false;
+  // [acct2-bro] 2026-11-12 rn61a: the window's image has the shown size; ngl_vk_output averages the target into it
   const bool refreshed = presenter->RefreshGuestOutput(
-      g_target_width, g_target_height, 16, 9, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+      g_shown_width, g_shown_height, 16, 9, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {
         auto& vulkan_context = static_cast<VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
         called = true;
         context.SetIs8bpc(true);
@@ -12626,13 +14889,16 @@ void ShowOnGpu(uint8_t* base) {
                                    ? uint32_t{VulkanPresenter::kGuestOutputInternalStageMask}
                                    : 0u;  // never used: nothing to wait for
         drawn = ngl_vk_output(HandleBits(vulkan_context.image()), HandleBits(vulkan_context.image_view()),
-                              VulkanPresenter::kGuestOutputFormat, g_target_width, g_target_height, after,
+                              VulkanPresenter::kGuestOutputFormat, g_shown_width, g_shown_height, after,
                               VulkanPresenter::kGuestOutputInternalLayout,
                               VulkanPresenter::kGuestOutputInternalStageMask,
                               VulkanPresenter::kGuestOutputInternalAccessMask, table) == 0;
         return drawn;
       },
-      [](rex::ui::Presenter::GuestOutputRefreshTail tail) { g_painter->Run(std::move(tail)); });
+      [](rex::ui::Presenter::GuestOutputRefreshTail tail) {
+        g_painter->Run(std::move(tail), g_present_next_seq, g_present_next_hand_us, g_live_clock_us,
+                       g_present_next_target_us);  // rn92a/c/e
+      });
   ++g_feed.handed;
   if (called && !drawn && ++g_gpu_hand_over_failures == 3) {  // then through the CPU, as before (Show), from the next frame
     g_shared_device = false;
@@ -12647,7 +14913,7 @@ void ShowOnGpu(uint8_t* base) {
   if (++g_feed.shown == 1 || (!refreshed && g_feed.shown < 5)) {
     REXLOG_INFO("cod3: ngl side: the native picture {} in the window ({}x{}, handed over on the GPU, through the "
                 "game's gamma table)",
-                refreshed ? "shown" : "not taken by the presenter", g_target_width, g_target_height);
+                refreshed ? "shown" : "not taken by the presenter", g_shown_width, g_shown_height);
   }
 }
 #endif
@@ -12669,12 +14935,24 @@ void ShowOnGpu(uint8_t* base) {
 constexpr uint32_t kDofOn = 0x82A8F7D4, kDofNear = 0x825C3410, kDofFar = 0x825C3414;
 constexpr uint32_t kLocalPlayers = 0x82BCC878;
 constexpr uint32_t kMenuBlurState = 0x82BCC8C0, kMenuBlurAmount = 0x82BCC8B0;  // + 4 x the view's player (0 here)
+// [acct2-bro] 2026-11-14 rn91a: each local player's in-match menu system (+ 4 x the player;
+// test_autojoin_mp.cpp's), its + 0x1C the open page's id, -1 (0xFFFFFFFF) while none is
+constexpr uint32_t kMenuSystems = 0x82C6B2CC, kMenuCurrent = 0x1C;
 #else
 constexpr uint32_t kDofOn = 0x829128C4, kDofNear = 0x825B3070, kDofFar = 0x825B3074;
+// [acct2-bro] 2026-11-13 rn64a (debug): the near and far planes the pass builds its c0 from (0x82149C80)
+constexpr uint32_t kDofNearPlane = 0x825A29B4, kDofFarPlane = 0x825A307C;
 constexpr uint32_t kEntityList = 0x82A2AB40, kEntityClient = 0x210, kSightsFraction = 0x8C;
 constexpr float kAimedFraction = 0.95f;
 constexpr uint32_t kMenuBlurState = 0x82A2ABE4, kMenuBlurAmount = 0x82A2ABE0;
 #endif
+
+// [acct2-bro] 2026-11-13 rn64a: the game's mix shader's own numbers (cod3_debug_ngl_side_dof_bands). kDofBandScale
+// is its c255.y, the blur's growth per unit of depth outside the two distances; kDofFrontAmount its c255.x, the blur
+// of what is nearer than kDofFrontDistance (10 units: the pass's c0.y). Both read from the GPU's registers at the
+// game's own draw (rn64b; r37, The Mace, aiming): c255 = (0, 100, 1, 0), and c0 = (6, 0.400172, -inf, 0.958744)
+// with a far distance of 144 units: the same depths the native side has on that frame (a37b: 0.400172, 0.958744).
+constexpr float kDofBandScale = 100.0f, kDofFrontAmount = 0.0f, kDofFrontDistance = 10.0f;
 
 // Whether the game draws its depth of field pass this frame (before its own on/off): the campaign while aimed down
 // the sights (as post_effects.cpp reads it), cod3mp while one player has the screen.
@@ -12731,6 +15009,20 @@ void KeepMenuBlur(float amount) {
   std::memcpy(&bits, &amount, sizeof bits);
   g_menu_blur_amount.store(bits, std::memory_order_relaxed);
   g_menu_blur_calls.fetch_add(1, std::memory_order_release);
+}
+
+// [acct2-bro] 2026-11-14 rn89c (debug): what post effect 10 is called with besides its amount, and the four players'
+// menus' blur states then (m107: in cod3mp the native picture took an amount of 1.00 for about 2 s after the spawn,
+// while the game's own picture shows no blur). With cod3_debug_ngl_side: the first 40 calls with an amount.
+void NoteMenuBlurCall(uint8_t* base, uint32_t r3, uint32_t r4, uint32_t r5, float amount) {
+  static std::atomic<int> said{0};
+  if (!(amount > 0.0f) || !REXCVAR_GET(cod3_debug_ngl_side) || said.fetch_add(1, std::memory_order_relaxed) >= 40) {
+    return;
+  }
+  REXLOG_INFO("cod3: ngl side: rn89c post effect 10: amount {:.3f}, r3 {:08X} r4 {:08X} r5 {:08X}; the menus' blur "
+              "states {} {} {} {} (frame {})",
+              amount, r3, r4, r5, g::ReadU32(base, kMenuBlurState), g::ReadU32(base, kMenuBlurState + 4),
+              g::ReadU32(base, kMenuBlurState + 8), g::ReadU32(base, kMenuBlurState + 12), g_frames);
 }
 
 namespace {
@@ -13306,7 +15598,17 @@ void DepthOfField(uint8_t* base, uint64_t frame, bool pictures) {
 #else
   const bool shared_screen = false;
 #endif
-  const float asked = shared_screen ? 0.0f : MenuBlurThisFrame(frame);
+#if defined(COD3_MP)
+  // [acct2-bro] 2026-11-14 rn91a: and only while the view's player has an in-match page open. After the class page
+  // closes the game goes on calling post effect 10 with 1.00 for about 7 s (m109: frames 860-1300, the page -1, the
+  // menus' blur states 0 4 4 4), and its picture shows no blur; the native one was blurred all over (the gun sharp).
+  // A menu system not there yet keeps the blur as asked.
+  const uint32_t menus = g::ReadU32(base, kMenuSystems);
+  const bool page_open = !Pointer(menus) || g::ReadU32(base, menus + kMenuCurrent) != 0xFFFFFFFFu;
+#else
+  const bool page_open = true;
+#endif
+  const float asked = shared_screen || !page_open ? 0.0f : MenuBlurThisFrame(frame);
   Tint(frame);  // side132: drawn after the depth of field, as the end of the game's scene does
   Brightness(frame, asked);
   Glow(base, frame);  // rn45d: after the tint's draw (ngl_vk orders it)
@@ -13331,16 +15633,42 @@ void DepthOfField(uint8_t* base, uint64_t frame, bool pictures) {
   const uint32_t menu_state = g::ReadU32(base, kMenuBlurState);
   const float blanket = std::max(asked, 0.01f * static_cast<float>(REXCVAR_GET(cod3_debug_ngl_side_blur)));
   float near_depth = 2.0f, far_depth = 2.0f;  // above 1: no depth of field (the blanket alone)
+  // [acct2-bro] 2026-11-13 rn64a: the game's own mix (cod3_debug_ngl_side_dof_bands): the blur's growth per unit of
+  // depth outside the two depths (0: side125's ramp between them), and the depth under which front_amount is taken
+  float band_scale = 0.0f, front_depth = 0.0f, front_amount = 0.0f;
   if (dof) {
     auto forward = [](float d) { return g_world_depth.reversed ? 1.0f - d : d; };
     near_depth = std::clamp(forward(DepthAt(g_world_depth, std::max(near_distance, 0.001f))), 0.0f, 1.0f);
     far_depth = std::clamp(forward(DepthAt(g_world_depth, std::max(far_distance, near_distance + 1.0f))), 0.0f,
                            1.0f);
+#if defined(NGL_VK_DOF_BANDS)
+    if (REXCVAR_GET(cod3_debug_ngl_side_dof_bands)) {
+      band_scale = kDofBandScale;
+      front_amount = kDofFrontAmount;
+      const std::string tried = REXCVAR_GET(cod3_debug_ngl_side_dof_try);  // (a check)
+      float tried_scale = 0.0f, tried_front = 0.0f;
+      if (!tried.empty() && std::sscanf(tried.c_str(), "%f,%f", &tried_scale, &tried_front) == 2 &&
+          std::isfinite(tried_scale) && std::isfinite(tried_front) && tried_scale > 0.0f) {
+        band_scale = tried_scale;
+        front_amount = std::clamp(tried_front, 0.0f, 1.0f);
+      }
+      front_depth = std::clamp(forward(DepthAt(g_world_depth, kDofFrontDistance)), 0.0f, 1.0f);
+    }
+#endif
   }
   // rn48f: with no scene in front drawn this frame (no gun: the death screen, the pause menu), every pixel is blurred
   const bool front_drawn = g_front_drawn_frame.load(std::memory_order_relaxed) == frame;
   const float keep_depth = front_drawn || !REXCVAR_GET(cod3_debug_ngl_side_menu_blur_game) ? kFrontDepth : -1.0f;
+#if defined(NGL_VK_DOF_BANDS)
+  if (band_scale > 0.0f) {  // rn64a
+    ngl_vk_set_depth_of_field_bands(near_depth, far_depth, keep_depth, blanket, band_scale, front_depth,
+                                    front_amount);
+  } else if (dof || blanket > 0.0f) {
+    ngl_vk_set_depth_of_field(near_depth, far_depth, keep_depth, blanket);
+  }
+#else
   if (dof || blanket > 0.0f) ngl_vk_set_depth_of_field(near_depth, far_depth, keep_depth, blanket);
+#endif
   if (asked > 0.0f && Watching()) {  // rn48f: a line now and then while the menus' blur is up
     static uint64_t said_blur = 0;
     if (frame >= said_blur + 120 || frame < said_blur) {
@@ -13363,6 +15691,19 @@ void DepthOfField(uint8_t* base, uint64_t frame, bool pictures) {
     if (dof && pictures)
       REXLOG_INFO("cod3: ngl side: frame {}: depth of field depths {:.5f} to {:.5f}, kept under {:.3f}", frame,
                   near_depth, far_depth, kFrontDepth);
+    if (dof) {  // [acct2-bro] 2026-11-13 rn64a: the mix, and (the campaign) the c0 the game's pass builds
+      REXLOG_INFO("cod3: ngl side: frame {}: rn64a depth of field {}: depths {:.6f} to {:.6f}, growth {:.4g} per unit "
+                  "of depth, {:.2f} under depth {:.6f} (10 units)", frame, band_scale > 0.0f ? "bands" : "ramp",
+                  near_depth, far_depth, band_scale, front_amount, front_depth);
+#if !defined(COD3_MP)
+      const float plane_near = g::ReadF32(base, kDofNearPlane), plane_far = g::ReadF32(base, kDofFarPlane);
+      const float k = plane_far / (plane_far - plane_near);
+      REXLOG_INFO("cod3: ngl side: frame {}: rn64a the game's c0 would be {:.6g} {:.6f} {:.6f} {:.6f} (its planes "
+                  "{:.6g} and {:.6g})", frame, plane_near, (10.0f - plane_near) * k * 0.1f,
+                  (near_distance - plane_near) / near_distance * k, (far_distance - plane_near) / far_distance * k,
+                  plane_near, plane_far);
+#endif
+    }
 #if defined(COD3_MP)
     // side127: the other post effects' switches the end of cod3mp's scene reads (0x824311E0), for what the
     // side-selection blur is: depth of field on, local players, tint, color grading (3), motion blur, film
@@ -14156,6 +16497,7 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
   lap(g_parts.scene);
   const std::string name = "ngl-side-" + std::to_string(frame);
   g_quiet = !pictures;
+  rebase::t_cameras.clear();  // [acct2-bro] 2026-11-14 rn90a: this frame's cameras are noted anew
   g_live_shot = !pictures && LiveShotFrame(frame);  // rn42j
   if (pictures)
     REXLOG_INFO("cod3: ngl side: frame {}: {} scenes ({} drawn off screen), {} quads, {} strings ({} glyphs), {} other "
@@ -14177,6 +16519,7 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
   // for the pictures saved on dump frames
   ngl_vk_set_readback(!g_shared_device || pictures || g_live_shot);  // rn42j: and the live frames saved
   g_draw_places.clear();  // rn47z
+  g_draw_plants.clear();  // [acct2-bro] 2026-11-13 rn84a
   std::vector<ngl_vk_mesh_draw> draws = SkyDraws(base, frame);  // the sky first, under everything (side85)
   lap(g_parts.sky);
   const size_t first_solid = draws.size();
@@ -14575,12 +16918,17 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
     // rn47z: to each lightmapped world draw and each lit model, as the game chooses (see the setting's comment)
     int world_given = 0, models_given = 0, lightning_world = 0, lightning_models = 0, world_draws = 0, model_draws = 0;
     int places_read = 0;
+    int plants_left = 0;  // [acct2-bro] 2026-11-13 rn84a: the plants' draws a light reached that took none
     const auto lightning = [](const float* l) { return l[3] < 1.0e-5f; };  // a light that does not fall off
     for (size_t at = 0; at < draws.size() && count; ++at) {
       ngl_vk_mesh_draw& d = draws[at];
       const bool world = d.lightmap && d.lightmap_scale > 0.0f;
       const bool model = d.lit && !d.lightmap;
       if (!world && !model) continue;
+      if (IsPlantDraw(at, d)) {  // [acct2-bro] 2026-11-13 rn84a: a plant's draw takes none (see the setting)
+        ++plants_left;
+        continue;
+      }
       float place[3] = {d.world[12], d.world[13], d.world[14]};
       if (at < g_draw_places.size() && g_draw_places[at][3] > 0.0f) {
         for (int i = 0; i < 3; ++i) place[i] = g_draw_places[at][i];
@@ -14657,13 +17005,15 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
       REXLOG_INFO("cod3: ngl side: rn47z frame {}: {} moving point light(s) ({} from the scenes' light sets, sets "
                   "read {}; {} kept from the game's last draws), the strongest at {:.0f} {:.0f} {:.0f}, 1 / radius "
                   "{:.6f}, color {:.2f} {:.2f} {:.2f}: {} slots of lightmapped world draws and {} lit models take "
-                  "one of them",
+                  "one of them; rn84a: {} plants' draws left without",
                   frame, count, from_sets, sets_read ? 1 : 0, kept_now, lights[0].light[0], lights[0].light[1],
                   lights[0].light[2], lights[0].light[3], lights[0].light[4], lights[0].light[5], lights[0].light[6],
-                  world_given, models_given);
+                  world_given, models_given, plants_left);  // rn84a
     }
   }
+  rebase::Apply(draws, frame);  // [acct2-bro] 2026-11-14 rn90a: about the camera's place while ngl_vk copies them
   ngl_vk_set_meshes(draws.data(), static_cast<uint32_t>(draws.size()));
+  rebase::Restore(draws);  // rn90a: as they were, for what reads them next
   limits::NoteDraws(draws, frame);  // [rexglue-native-limits] 2026-11-11
   flicker::Note(base, draws, frame);  // [acct2-bro] 2026-11-12 rn57a (debug, off by default)
   ngl_vk_set_sun_shadow(shadow.ok ? shadow.light : nullptr, shadow.ok ? shadow.camera : nullptr);
@@ -14795,6 +17145,9 @@ std::atomic<int> g_grass_draws{0};
 
 // Saves bytes of guest memory at address, as they are, to name in the screenshot folder.
 void SaveGuestBytes(uint8_t* base, uint32_t address, uint32_t bytes, const std::string& name) {
+  // [acct2-bro] 2026-11-14 rn89b: a diagnostic file, only with cod3_debug_ngl_side (t106: 47 of them were written in
+  // a plain run, from the worker, while the level's first frames were drawn)
+  if (!REXCVAR_GET(cod3_debug_ngl_side)) return;
 #if defined(COD3_NGL_VK)
   const std::filesystem::path path = ScreenshotFolder() / name;
   std::ofstream out(path, std::ios::binary);
@@ -14841,6 +17194,93 @@ void SaveShader(uint8_t* base, uint32_t shader, uint32_t header_at, uint32_t blo
   }
 }
 
+// [acct2-decomp] 2026-11-12 stage 5: Direct3D's own copies of what is bound (the device's fetch constants) are cut to
+// the console's 29 bits when the game binds (D3DDevice_SetTexture 0x822EBE40, SetStreamSource 0x822E9208), so for
+// data in the moved streaming pool they name another place. The device also keeps the bound objects themselves (the
+// textures from +0x2FF0, 4 bytes a sampler; stream 0's vertex buffer at +0x2F9C: docs/COD3_D3D.md, memory-360's
+// notes), and their headers hold the address whole.
+// DeviceTextureWhole: a sampler's six fetch words as read from the device, with the address words (1 and 5) made
+// whole again when the bound texture's header is in the moved pool and cuts to what the device has. DeviceVertexWord:
+// the same for stream 0's vertex fetch word (the device's has the stream's offset added). Anything else, and
+// everything while the pool isn't moved, stays as the device has it. Counted for the log: how often a bound header
+// agreed with the device, how often it was in the pool, and how often none agreed although the device's address
+// could be the pool's (the first of those are logged: they would be drawn from the wrong memory).
+constexpr uint32_t kDeviceTextures = 0x2FF0, kDeviceStreams = 0x2F9C;
+// textures, vertex words: made whole / agreeing with a header elsewhere / no agreeing header, and the device's
+// address can't be the pool's / no agreeing header, and it could be (the case that would be drawn wrong)
+std::atomic<uint64_t> g_device_names[2][4];
+
+void NoteDeviceName(int kind, int what) {
+  g_device_names[kind][what].fetch_add(1, std::memory_order_relaxed);
+  static std::atomic<uint64_t> noted{0};
+  const uint64_t n = noted.fetch_add(1, std::memory_order_relaxed) + 1;
+  if (n == 1000 || n % 200000 == 0) {
+    const auto count = [](int k, int i) { return g_device_names[k][i].load(std::memory_order_relaxed); };
+    REXLOG_INFO("cod3: ngl side: stage 5: device fetch constants read so far: textures {} made whole from the bound "
+                "header (in the moved pool), {} agreeing with it elsewhere, {} with no agreeing header and not the "
+                "pool's, {} with none that could be the pool's; vertex words {} / {} / {} / {}",
+                count(0, 0), count(0, 1), count(0, 2), count(0, 3), count(1, 0), count(1, 1), count(1, 2),
+                count(1, 3));
+  }
+}
+
+// Whether a physical address as the device has it (cut to 29 bits) is what some address in the moved pool cuts to.
+bool CouldBeMovedPool(uint32_t physical, const cod3::native_memory::PoolStats& pool) {
+  uint32_t address = (pool.start & 0xE0000000u) | (physical & 0x1FFFFFFFu);
+  if (address < pool.start) address += 0x20000000u;
+  return address >= pool.start && address < pool.end;
+}
+
+void DeviceTextureWhole(uint8_t* base, uint32_t device, uint32_t sampler, uint32_t fetch[6]) {
+  const cod3::native_memory::PoolStats pool = cod3::native_memory::Pool();
+  if (!pool.moved || (fetch[0] & 3) != 2) return;
+  const uint32_t texture = sampler < 26 ? g::ReadU32(base, device + kDeviceTextures + 4 * sampler) : 0;
+  uint32_t header[6] = {};
+  bool agreed = DeviceReadable(texture) && ReadFetch(base, texture, header), whole = false;
+  // a header's address as Direct3D makes the device's from it when the game binds (D3DDevice_SetTexture): the low 29
+  // bits, and 4 KB more for an address in the 0xE0000000 view
+  const auto cut = [](uint32_t word) {
+    return ((word & 0x1FFFF000u) + (((word >> 20) + 0x200u) & 0x1000u)) & 0x1FFFF000u;
+  };
+  for (int word : {1, 5}) {
+    if (cut(header[word]) != (fetch[word] & 0x1FFFF000u)) agreed = false;
+  }
+  if (agreed) {
+    for (int word : {1, 5}) {
+      if (!cod3::native_memory::InMovedPool(header[word])) continue;
+      fetch[word] = (fetch[word] & 0x1FFFFFFFu) | (header[word] & 0xE0000000u);
+      whole = true;
+    }
+    NoteDeviceName(0, whole ? 0 : 1);
+    return;
+  }
+  const bool could = CouldBeMovedPool(fetch[1] & 0x1FFFF000u, pool);
+  NoteDeviceName(0, could ? 3 : 2);
+  static std::atomic<int> shown{0};
+  if (could && shown.fetch_add(1, std::memory_order_relaxed) < 8) {
+    REXLOG_INFO("cod3: ngl side: stage 5: sampler {}: the device's fetch words {:08X} {:08X} could name the moved "
+                "pool, and its bound texture {:08X}'s {:08X} {:08X} don't agree (left as the device has them)",
+                sampler, fetch[1], fetch[5], texture, header[1], header[5]);
+  }
+}
+
+uint32_t DeviceVertexWord(uint8_t* base, uint32_t device, uint32_t word0) {
+  const cod3::native_memory::PoolStats pool = cod3::native_memory::Pool();
+  if (!pool.moved || (word0 & 3) != 3) return word0;
+  const uint32_t buffer = g::ReadU32(base, device + kDeviceStreams);
+  uint32_t header = 0, bytes = 0;
+  if (DeviceReadable(buffer)) {
+    header = g::ReadU32(base, buffer + kBufferFetch);
+    bytes = ((g::ReadU32(base, buffer + kBufferFetch + 4) >> 2) & 0xFFFFFF) * 4;
+  }
+  // the device's word is the buffer's address plus the stream's offset, cut: the offset is what is left
+  const uint32_t offset = ((word0 & 0x1FFFFFFCu) - (header & 0x1FFFFFFCu)) & 0x1FFFFFFCu;
+  const bool agreed = (header & 3) == 3 && offset < bytes;
+  const bool whole = agreed && cod3::native_memory::InMovedPool(header);
+  NoteDeviceName(1, whole ? 0 : agreed ? 1 : CouldBeMovedPool(word0 & 0x1FFFFFFCu, pool) ? 3 : 2);
+  return whole ? ((header & ~3u) + offset) | 3u : word0;
+}
+
 // The fetch constants in use, and the vertex buffers they point at (type 3: the address in dwords in bits 2-31 of the
 // first word, the size in dwords in bits 2-25 of the second).
 void SaveFetches(uint8_t* base, uint32_t device) {
@@ -14856,7 +17296,7 @@ void SaveFetches(uint8_t* base, uint32_t device) {
       const uint32_t word0 = g::ReadU32(base, at + 8 * v), word1 = g::ReadU32(base, at + 8 * v + 4);
       const uint32_t bytes = ((word1 >> 2) & 0xFFFFFF) * 4;
       if ((word0 & 3) != 3 || bytes == 0 || bytes > kMaxVertexBufferBytes || saved >= 4) continue;
-      const uint32_t address = GuestAddress(word0 & 0x1FFFFFFC);
+      const uint32_t address = GuestAddress(BufferData(word0));
       SaveGuestBytes(base, address, bytes, "ngl-side-grass-vb" + std::to_string(3 * f + static_cast<int>(v)) + ".bin");
       ++saved;
     }
@@ -14931,7 +17371,7 @@ void ProbeMeshSection(uint8_t* base, uint32_t call_site, int index) {
     if ((g::ReadU32(base, at) & 3) != 2) {  // vertex fetches (type 3), three to a constant: each buffer's first words
       for (uint32_t v = 0; v < 3; ++v) {
         const uint32_t word0 = g::ReadU32(base, at + 8 * v);
-        const uint32_t address = GuestAddress(word0 & 0x1FFFFFFC);
+        const uint32_t address = GuestAddress(BufferData(word0));
         if ((word0 & 3) == 3 && Physical(address)) {
           buffers += " | buffer " + std::to_string(3 * f + static_cast<int>(v)) + ": " + Words(base, address, 12);
         }
@@ -15014,9 +17454,11 @@ void KeepSkyDraw(uint8_t* base) {
   if (!DeviceReadable(device)) return;
   SkyDraw s;
   for (uint32_t i = 0; i < 6; ++i) s.texture[i] = g::ReadU32(base, device + kDeviceFetchConstants + 4 * i);
+  DeviceTextureWhole(base, device, 0, s.texture);  // [acct2-decomp] stage 5
   const uint32_t vertex_at = device + kDeviceFetchConstants + 8 * kSkyVertexFetch;
-  const uint32_t word0 = g::ReadU32(base, vertex_at), word1 = g::ReadU32(base, vertex_at + 4);
-  s.vertices = GuestAddress(word0 & 0x1FFFFFFC);
+  const uint32_t word0 = DeviceVertexWord(base, device, g::ReadU32(base, vertex_at));  // [acct2-decomp] stage 5
+  const uint32_t word1 = g::ReadU32(base, vertex_at + 4);
+  s.vertices = GuestAddress(BufferData(word0));
   s.vertex_words = (word1 >> 2) & 0xFFFFFF;
   s.vertex_endian = word1 & 3;
   const uint32_t buffer = g::ReadU32(base, device + kDeviceIndexBuffer);
@@ -15066,7 +17508,7 @@ void KeepSkyDraw(uint8_t* base) {
                     "{:08X}, {} corners at {:08X} (byte order {}), {} index bytes; view-projection row 3 ({:.3g} "
                     "{:.3g} {:.3g} {:.3g}); pixel c0 ({:.3f} {:.3f} {:.3f} {:.3f}) c1 ({:.3f} {:.3f} {:.3f} {:.3f})",
                     g_frames, (s.texture[2] & 0x1FFF) + 1, ((s.texture[2] >> 13) & 0x1FFF) + 1, s.texture[1] & 0x3F,
-                    s.texture[1] & 0x1FFFF000, s.blend_control, s.vertex_words / kSkyVertexWords, s.vertices,
+                    TexturePage(s.texture[1]), s.blend_control, s.vertex_words / kSkyVertexWords, s.vertices,
                     s.vertex_endian, s.index_bytes, s.columns[3], s.columns[7], s.columns[11], s.columns[15],
                     s.pixel[0], s.pixel[1], s.pixel[2], s.pixel[3], s.pixel[4], s.pixel[5], s.pixel[6], s.pixel[7]);
       }
@@ -15111,7 +17553,7 @@ void KeepSkyDraw(uint8_t* base) {
       REXLOG_INFO("cod3: ngl side: sky draw of list {} (frame {}): corners {:08X} x{}, indices {:08X}, texture "
                   "{:08X} format {}, blend {:08X}, uv drift {:.4f} {:.4f}",
                   s.list, g_frames, s.vertices, s.vertex_words / kSkyVertexWords, s.indices,
-                  s.texture[1] & 0x1FFFF000, s.texture[1] & 0x3F, s.blend_control, s.drift[0], s.drift[1]);
+                  TexturePage(s.texture[1]), s.texture[1] & 0x3F, s.blend_control, s.drift[0], s.drift[1]);
     }
   }
   std::lock_guard<std::mutex> lock(g_sky_mutex);
@@ -15131,14 +17573,14 @@ void KeepSkyDraw(uint8_t* base) {
                 "field {}); {} corners at {:08X} (byte order {}); {} index bytes at {:08X}; near {:.3f}; blend {:08X}; "
                 "pixel c0 ({:.3f} {:.3f} {:.3f} {:.3f}) c1 ({:.3f} {:.3f} {:.3f} {:.3f})",
                 g_sky.size(), (s.texture[2] & 0x1FFF) + 1, ((s.texture[2] >> 13) & 0x1FFF) + 1, s.texture[1] & 0x3F,
-                s.texture[1] & 0x1FFFF000, (s.texture[0] >> 2) & 0xFF, (s.texture[3] >> 13) & 0x3F,
+                TexturePage(s.texture[1]), (s.texture[0] >> 2) & 0xFF, (s.texture[3] >> 13) & 0x3F,
                 s.vertex_words / kSkyVertexWords, s.vertices, s.vertex_endian, s.index_bytes, s.indices,
                 s.columns[11], s.blend_control, s.pixel[0], s.pixel[1], s.pixel[2], s.pixel[3], s.pixel[4],
                 s.pixel[5], s.pixel[6], s.pixel[7]);
     // side171: what the layer brings: its first, middle and last corners' colors (word 5, 0xAARRGGBB as stored) and
     // the first 16 bytes of its texture (two blocks of a DXT texture), to tell a black layer from a blank one
     const uint32_t corners = s.vertex_words / kSkyVertexWords;
-    const uint32_t texture = 0xA0000000u | (s.texture[1] & 0x1FFFF000u);
+    const uint32_t texture = GuestAddress(TexturePage(s.texture[1]));  // [acct2-decomp] stage 5
     if (corners > 0) {
       auto color = [&](uint32_t i) { return GpuU32(base, s.vertices + 4 * kSkyVertexWords * i + 20); };
       REXLOG_INFO("cod3: ngl side: sky layer {}: corner colors {:08X} {:08X} {:08X} (byte order {}); texture "
@@ -15521,8 +17963,9 @@ void KeepEffectDraw(uint8_t* base) {
   const uint32_t first_index = g::ReadU32(base, kEffectFirstIndex) & 0x7FFFFFFF;
   const uint32_t first_corner = first_index / 6 * 4;
   const uint32_t vertex_at = device + kDeviceFetchConstants + 8 * kSkyVertexFetch;
-  const uint32_t word0 = g::ReadU32(base, vertex_at), word1 = g::ReadU32(base, vertex_at + 4);
-  const uint32_t vertices = GuestAddress(word0 & 0x1FFFFFFC);
+  const uint32_t word0 = DeviceVertexWord(base, device, g::ReadU32(base, vertex_at));  // [acct2-decomp] stage 5
+  const uint32_t word1 = g::ReadU32(base, vertex_at + 4);
+  const uint32_t vertices = GuestAddress(BufferData(word0));
   const uint32_t words = (word1 >> 2) & 0xFFFFFF, endian = word1 & 3;
   const char* why = nullptr;
   if (!quads || quads > kEffectMaxQuads) {
@@ -15611,6 +18054,7 @@ void KeepEffectDraw(uint8_t* base) {
     }
   }
   for (uint32_t i = 0; i < 6; ++i) e.texture[i] = g::ReadU32(base, device + kDeviceFetchConstants + 4 * i);
+  DeviceTextureWhole(base, device, 0, e.texture);  // [acct2-decomp] stage 5
   e.blend_control = g::ReadU32(base, device + kDeviceBlendControl0);
   for (uint32_t i = 0; i < 16; ++i) e.columns[i] = g::ReadF32(base, device + kDeviceVertexConstants + 4 * i);
   // side114: the pixel shader (8356D96B) writes texture x color x c0.w + c0.xyz, the alpha untouched: the flush's own
@@ -15768,7 +18212,7 @@ void KeepEffectDraw(uint8_t* base) {
   // meant (debug only). rn42g: and the color mask, with any flush that writes no color, and the first 8 other textures'
   // flushes from frame 1800 (once per texture), to check that the mask reads F for them.
   if (REXCVAR_GET(cod3_debug_ngl_side) && g_frames >= 600 && quads) {
-    const uint32_t texture_at = e.texture[1] & 0x1FFFF000;
+    const uint32_t texture_at = TexturePage(e.texture[1]);
     const bool square_kind = std::fabs(c14[0] + 0.0005882f) < 0.00002f;
     static std::mutex rn42f_lock;
     static std::vector<uint64_t> rn42f_seen;
@@ -15818,7 +18262,7 @@ void KeepEffectDraw(uint8_t* base) {
     static std::unordered_set<uint64_t> seen;        // pair number << 32 | texture
     const uint32_t vs = g::ReadU32(base, device + kDeviceVertexShader);
     const uint32_t ps = g::ReadU32(base, device + kDevicePixelShader);
-    const uint32_t texture_at = e.texture[1] & 0x1FFFF000;
+    const uint32_t texture_at = TexturePage(e.texture[1]);
     std::lock_guard<std::mutex> hold(pairs_lock);
     const auto pair = pairs.emplace(uint64_t{vs} << 32 | ps, static_cast<int>(pairs.size()));
     if (pair.second && pair.first->second < 16) {
@@ -15942,8 +18386,9 @@ void KeepHeatHaze(uint8_t* base) {
   const uint32_t device = g::ReadU32(base, kDevicePointer);
   if (!DeviceReadable(device)) return;
   const uint32_t vertex_at = device + kDeviceFetchConstants + 8 * kSkyVertexFetch;
-  const uint32_t word0 = g::ReadU32(base, vertex_at), word1 = g::ReadU32(base, vertex_at + 4);
-  const uint32_t vertices = GuestAddress(word0 & 0x1FFFFFFC);
+  const uint32_t word0 = DeviceVertexWord(base, device, g::ReadU32(base, vertex_at));  // [acct2-decomp] stage 5
+  const uint32_t word1 = g::ReadU32(base, vertex_at + 4);
+  const uint32_t vertices = GuestAddress(BufferData(word0));
   const uint32_t words = (word1 >> 2) & 0xFFFFFF, endian = word1 & 3;
   if ((word0 & 3) != 3 || !Physical(vertices) || words < kHeatHazeCorners * kHeatHazeCornerBytes / 4) {
     if (refused.fetch_add(1, std::memory_order_relaxed) < 4)
@@ -16064,8 +18509,9 @@ void KeepRainDraw(uint8_t* base) {
     return;
   }
   const uint32_t vertex_at = device + kDeviceFetchConstants + 8 * kSkyVertexFetch;
-  const uint32_t word0 = g::ReadU32(base, vertex_at), word1 = g::ReadU32(base, vertex_at + 4);
-  const uint32_t vertices = GuestAddress(word0 & 0x1FFFFFFC);
+  const uint32_t word0 = DeviceVertexWord(base, device, g::ReadU32(base, vertex_at));  // [acct2-decomp] stage 5
+  const uint32_t word1 = g::ReadU32(base, vertex_at + 4);
+  const uint32_t vertices = GuestAddress(BufferData(word0));
   const uint32_t count = ((word1 >> 2) & 0xFFFFFF) / 4, endian = word1 & 3;
   static std::atomic<int> refused{0}, shown{0};
   if ((word0 & 3) != 3 || !Physical(vertices) || count < 4 || count > kRainMaxCorners ||
@@ -16093,6 +18539,7 @@ void KeepRainDraw(uint8_t* base) {
   r.depth_range = g::ReadF32(base, device + kDevicePixelConstants + 32);
   r.depth_offset = g::ReadF32(base, device + kDevicePixelConstants + 36);  // rn17
   for (uint32_t i = 0; i < 6; ++i) r.texture[i] = g::ReadU32(base, device + kDeviceFetchConstants + 4 * i);
+  DeviceTextureWhole(base, device, 0, r.texture);  // [acct2-decomp] stage 5
   {  // as KeepEffectDraw's reversed_screen: two points along the view (w 10 and 1000) and their depths z / w
     const float* z_row = &r.columns[8];
     const float* w_row = &r.columns[12];
@@ -16120,7 +18567,7 @@ void KeepRainDraw(uint8_t* base) {
                 "{:.4g}, offset {:.4g}, density {:.4g}, depth range {:.4g} {:.4g}, texture {:08X}{}; corner 1 ({:.3f} "
                 "{:.3f} {:.3f} {:.3f})",
                 count, r.stretch, r.thickness, r.cross, r.color, r.offset, r.density, r.depth_range, r.depth_offset,
-                r.texture[1] & 0x1FFFF000, r.reversed ? ", depth backward" : "", r.corners[4], r.corners[5],
+                TexturePage(r.texture[1]), r.reversed ? ", depth backward" : "", r.corners[4], r.corners[5],
                 r.corners[6], r.corners[7]);
   }
   std::lock_guard<std::mutex> lock(g_rain_mutex);
@@ -16165,11 +18612,12 @@ void ProbePlainDraw(uint8_t* base) {
   const std::string prefix = "ngl-side-plain" + std::to_string(number);
   const auto heap = [](uint32_t a) { return !(a & 3) && a >= 0x40000000u && a < 0x80000000u; };
   const uint32_t vertex_at = device + kDeviceFetchConstants + 8 * kSkyVertexFetch;
-  const uint32_t word0 = g::ReadU32(base, vertex_at), word1 = g::ReadU32(base, vertex_at + 4);
-  const uint32_t vertices = (word0 & 3) == 3 ? GuestAddress(word0 & 0x1FFFFFFC) : 0;
+  const uint32_t word0 = DeviceVertexWord(base, device, g::ReadU32(base, vertex_at));  // [acct2-decomp] stage 5
+  const uint32_t word1 = g::ReadU32(base, vertex_at + 4);
+  const uint32_t vertices = (word0 & 3) == 3 ? GuestAddress(BufferData(word0)) : 0;
   const uint32_t buffer = g::ReadU32(base, kRainBuffer);
   const uint32_t rain_vertices =  // [rexglue-native-mem] 2026-11-11: ReadableHere (the heap is let through here)
-      ReadableHere(buffer) || heap(buffer) ? GuestAddress(g::ReadU32(base, buffer + kBufferFetch) & 0x1FFFFFFC) : 0;
+      ReadableHere(buffer) || heap(buffer) ? GuestAddress(BufferData(g::ReadU32(base, buffer + kBufferFetch))) : 0;
   const uint32_t declaration = g::ReadU32(base, kRainFormat + 8);
   REXLOG_INFO("cod3: ngl side: {}: plain draw (vertex shader {:08X}, pixel {:08X}); vertex fetch 95 {:08X} {:08X} "
               "({:08X}, {} words, byte order {}); {} the rain's buffer {:08X} ({:08X}); the rain's count {}, format {}, "
@@ -16193,6 +18641,7 @@ void ProbePlainDraw(uint8_t* base) {
     for (uint32_t i = 0; i < 6; ++i) {
       fetch[i] = g::ReadU32(base, device + kDeviceFetchConstants + kFetchConstantBytes * slot + 4 * i);
     }
+    DeviceTextureWhole(base, device, slot, fetch);  // [acct2-decomp] stage 5
     if ((fetch[0] & 3) != 2) continue;
     std::vector<uint8_t> bgra;
     uint32_t width = 0, height = 0;
@@ -16393,15 +18842,15 @@ std::vector<ngl_vk_mesh_draw> SkyDraws(uint8_t* base, uint64_t frame) {
     }
     std::string why;
     const uint32_t mesh = SkyMesh(base, s, why);
-    const uint64_t texture_key = uint64_t{s.texture[1] & 0x1FFFF000} << 32 | s.texture[2];
+    const uint64_t texture_key = uint64_t{TexturePage(s.texture[1])} << 32 | s.texture[2];
     auto texture = g_sky_textures.find(texture_key);
     if (texture == g_sky_textures.end()) {
       std::string texture_why;
       t_sky_texture = true;  // side192
       // rn10: the layers are drawn opaque or blended, never alpha-tested: the game's own levels
-      const uint32_t id = MakeTexture(base, s.texture, s.texture[1] & 0x1FFFF000, texture_why, true);
+      const uint32_t id = MakeTexture(base, s.texture, TexturePage(s.texture[1]), texture_why, true);
       t_sky_texture = false;
-      if (!id) REXLOG_INFO("cod3: ngl side: sky texture {:08X} not drawn: {}", s.texture[1] & 0x1FFFF000, texture_why);
+      if (!id) REXLOG_INFO("cod3: ngl side: sky texture {:08X} not drawn: {}", TexturePage(s.texture[1]), texture_why);
       texture = g_sky_textures.emplace(texture_key, id).first;
     }
     if (!mesh || !texture->second) {
@@ -16487,7 +18936,7 @@ void SaveEffectTexture(uint8_t* base, const EffectDraw& e, uint32_t id) {
   std::string why;
   if (!DecodeFetch(base, e.texture, bgra, width, height, why) || bgra.size() < 4) return;
   ++saved;
-  const uint32_t address = e.texture[1] & 0x1FFFF000;
+  const uint32_t address = TexturePage(e.texture[1]);
   std::vector<uint8_t> color(bgra.size()), alpha(bgra.size());
   uint64_t sum[4] = {};
   size_t clear = 0, solid = 0;
@@ -16550,6 +18999,29 @@ std::vector<ngl_vk_mesh_draw> EffectDraws(uint8_t* base, uint64_t frame, const n
     }
   }
   std::vector<ngl_vk_mesh_draw> draws;
+  if (REXCVAR_GET(cod3_debug_ngl_side)) {
+    // [acct2-bro] 2026-11-12 rn62a: how many frames are drawn without their list's effects while the game has some
+    // (kept with the list sent now or later: they came after this list was counted). One thread draws a frame.
+    static uint32_t frames = 0, with = 0, late = 0, none = 0, late_in_a_row = 0, longest = 0;
+    ++frames;
+    if (!effects.empty()) {
+      ++with;
+      late_in_a_row = 0;
+    } else if (newer) {
+      ++late;
+      longest = std::max(longest, ++late_in_a_row);
+    } else {
+      ++none;
+      late_in_a_row = 0;
+    }
+    if (frames == 600) {
+      REXLOG_INFO("cod3: ngl side: rn62a effects over 600 frames (to frame {}): {} drawn with their list's, {} with "
+                  "none though later ones were kept (the longest row {}), {} with none kept at all; "
+                  "cod3_native_effects_whole_list {}", frame, with, late, longest, none,
+                  REXCVAR_GET(cod3_native_effects_whole_list) ? "on" : "off");
+      frames = with = late = none = late_in_a_row = longest = 0;
+    }
+  }
   if (effects.empty()) {
     if (g_live_shot)  // rn42j: a live frame saved with no effects of the last list
       REXLOG_INFO("cod3: ngl side: frame {}: effects: none of list {} kept ({} of the list sent now or later, {} "
@@ -16585,12 +19057,12 @@ std::vector<ngl_vk_mesh_draw> EffectDraws(uint8_t* base, uint64_t frame, const n
   float probe_camera[16] = {}, probe_corner[3] = {};
   std::map<uint32_t, uint32_t> texture_counts;  // rn42m: the drawn flushes by texture, on the live frames saved
   for (const EffectDraw& e : effects) {
-    const uint64_t texture_key = uint64_t{e.texture[1] & 0x1FFFF000} << 32 | e.texture[2];
+    const uint64_t texture_key = uint64_t{TexturePage(e.texture[1])} << 32 | e.texture[2];
     auto texture = g_effect_textures.find(texture_key);
     if (texture == g_effect_textures.end()) {
       std::string why;
-      const uint32_t id = MakeTexture(base, e.texture, e.texture[1] & 0x1FFFF000, why, true);  // rn10: blended
-      if (!id) REXLOG_INFO("cod3: ngl side: effect texture {:08X} not drawn: {}", e.texture[1] & 0x1FFFF000, why);
+      const uint32_t id = MakeTexture(base, e.texture, TexturePage(e.texture[1]), why, true);  // rn10: blended
+      if (!id) REXLOG_INFO("cod3: ngl side: effect texture {:08X} not drawn: {}", TexturePage(e.texture[1]), why);
       SaveEffectTexture(base, e, id);  // rn42c (debug only)
       texture = g_effect_textures.emplace(texture_key, id).first;
     }
@@ -16728,7 +19200,7 @@ std::vector<ngl_vk_mesh_draw> EffectDraws(uint8_t* base, uint64_t frame, const n
                         "screen {:.3f} {:.3f} to {:.3f} {:.3f}; flush {} quad {}; color {:08X}, uv {:.3f} {:.3f}, fade "
                         "c14 {:.4g} {:.4g}, fog c0 {:.3f} {:.3f} {:.3f} {:.3f}",
                         place.name, frame, middle[3], middle[2] / middle[3], alpha_low, alpha_high,
-                        e.soft ? "soft" : "plain", e.texture[1] & 0x1FFFF000, e.blend_control, e.read_push, first[5],
+                        e.soft ? "soft" : "plain", TexturePage(e.texture[1]), e.blend_control, e.read_push, first[5],
                         quad_near, quad_far, left, top, right, bottom, draws.size(), q, first_color, first[3],
                         first[4], e.read_fade[0], e.read_fade[1], e.pixel_c0[0], e.pixel_c0[1], e.pixel_c0[2],
                         e.pixel_c0[3]);
@@ -16751,7 +19223,7 @@ std::vector<ngl_vk_mesh_draw> EffectDraws(uint8_t* base, uint64_t frame, const n
                     "{:08X}, c12.x {:.4g}, fade c14 {:.4g} {:.4g}; corners {:.1f} to {:.1f} deep; in the window {} "
                     "quads, their middles {:.1f} to {:.1f} deep, depth {:.6f} to {:.6f}, corner alpha {:.0f} to {:.0f}",
                     frame, draws.size(), e.quads, e.soft ? "soft" : "plain", e.blend_control,
-                    e.texture[1] & 0x1FFFF000, e.read_push, e.read_fade[0], e.read_fade[1], nearest, farthest, inside,
+                    TexturePage(e.texture[1]), e.read_push, e.read_fade[0], e.read_fade[1], nearest, farthest, inside,
                     in_nearest, in_farthest, in_depth[0], in_depth[1], in_alpha[0], in_alpha[1]);
       }
     }
@@ -16816,14 +19288,14 @@ std::vector<ngl_vk_mesh_draw> EffectDraws(uint8_t* base, uint64_t frame, const n
     }
     {  // rn11: cod3_debug_ngl_side_effect_mark, a flat magenta in place of the texture (as the sky's flat layers)
       const int32_t mark = REXCVAR_GET(cod3_debug_ngl_side_effect_mark);
-      if (mark != 0 && static_cast<uint32_t>(mark) == (e.texture[1] & 0x1FFFF000)) {
+      if (mark != 0 && static_cast<uint32_t>(mark) == TexturePage(e.texture[1])) {
         d.texture = 0;
         d.tint = 0xFF00FFu;
       }
     }
     quads += e.quads;
     draws.push_back(d);
-    if (g_live_shot) ++texture_counts[e.texture[1] & 0x1FFFF000u];  // rn42m
+    if (g_live_shot) ++texture_counts[TexturePage(e.texture[1])];  // rn42m
   }
   if (g_live_shot) {  // rn42m: beside the GPU's own (CountEffectFrame)
     std::string list;
@@ -16923,12 +19395,12 @@ std::vector<ngl_vk_mesh_draw> RainDraws(uint8_t* base, uint64_t frame) {
         continue;
       }
     }
-    const uint64_t texture_key = uint64_t{r.texture[1] & 0x1FFFF000} << 32 | r.texture[2];
+    const uint64_t texture_key = uint64_t{TexturePage(r.texture[1])} << 32 | r.texture[2];
     auto texture = g_rain_textures.find(texture_key);
     if (texture == g_rain_textures.end()) {
       std::string why;
-      const uint32_t id = MakeTexture(base, r.texture, r.texture[1] & 0x1FFFF000, why, true);  // blended
-      if (!id) REXLOG_INFO("cod3: ngl side: rain texture {:08X} not drawn: {}", r.texture[1] & 0x1FFFF000, why);
+      const uint32_t id = MakeTexture(base, r.texture, TexturePage(r.texture[1]), why, true);  // blended
+      if (!id) REXLOG_INFO("cod3: ngl side: rain texture {:08X} not drawn: {}", TexturePage(r.texture[1]), why);
       texture = g_rain_textures.emplace(texture_key, id).first;
     }
     if (!texture->second) continue;
@@ -17017,6 +19489,7 @@ void ForgetEverything() {
   g_common_sun = Sun();  // rn57k: nor the common one
   g_common_sun_key = 0;
   g_sun_counts.clear();
+  g_held_suns.clear();  // [acct2-bro] 2026-11-13 rn85a
   ++g_forgets;
 }
 #endif
@@ -17136,6 +19609,7 @@ void LiveFrame(uint8_t* base, uint32_t root, uint64_t frame, Taken* taken = null
                 g_parts.scene / n, g_parts.sky / n, g_parts.solids / n, g_parts.effects / n,
                 g_parts.shadow_and_grass / n, g_parts.quads / n, g_parts.drawing / n, gpu_wait_ms / n,
                 g_parts.hand_over / n, waited_ms / n, staged_mb / n, staging_flushes);
+    LogSolidLaps(n);  // [acct2-bro] 2026-11-13 rn73b (debug)
 #if defined(COD3_NGL_VK)
     {  // side229 [acct2-bro] 2026-11-08: f231 (cod3mp, one process) saw the solids' time grow 11 % in 80 s on mp_merv
        // and stay up after a level change while the data staged started over: does the scene or a cache grow?
@@ -17491,11 +19965,14 @@ void LogFabricTextureDraws(const RexHostDraw* draw) {
 // the fetch slot, the render target's format, exponent bias and blend, the pixel constants c16-c40 and c252-c255 (the
 // shader's literals), and the first eight fetch slots' bases, formats and exponents. From frame 2900 (debug only, host
 // draws).
+// [acct2-bro] 2026-11-13 rn65c: and the pixel constants c0-c7 and the vertex constants from c0 (it was from c16):
+// an old class's draw hands its shaders everything below c16 (cdSimple's 0x820E0AB8: c0-c11 the object's rows, up
+// to four lights' ways and colors, c12-c13 from 0x82157470).
 constexpr int kWatchedShadersLogged = 32;
 constexpr int kAfterWatchedLogged = 2, kAfterWatchedTimes = 4;  // rn41k (LogAfterWatched)
 int g_after_watched = 0, g_after_watched_times = 0;              // (the GPU thread only)
 void LogWatchedTextureDraws(const RexHostDraw* draw) {
-  if (g_register_count < kFetchConstants + 32 * 6 || g_frames < 2900) return;
+  if (g_register_count < kFetchConstants + 32 * 6 || g_frames < kWatchFrom) return;  // rn88a
   static int logged = 0;  // (the GPU thread only)
   static std::vector<std::pair<uint64_t, uint32_t>> seen;
   if (logged >= kWatchedShadersLogged) return;
@@ -17513,7 +19990,7 @@ void LogWatchedTextureDraws(const RexHostDraw* draw) {
     ++logged;
     std::string constants, fetches;
     char item[112];
-    for (int c = 16; c <= 255; c = c == 40 ? 252 : c + 1) {
+    for (int c = 0; c <= 255; c = c == 7 ? 16 : c == 40 ? 252 : c + 1) {  // rn65c: from c0 (it was from c16)
       float v[4];
       std::memcpy(v, g_registers + kPixelConstants + 4 * c, sizeof v);
       std::snprintf(item, sizeof item, " c%d=(%.6g %.6g %.6g %.6g)", c, v[0], v[1], v[2], v[3]);
@@ -17532,16 +20009,20 @@ void LogWatchedTextureDraws(const RexHostDraw* draw) {
     // 958A306F47544AEF, light in the vertex shader: c24 + c25, c27 x c28 by the sun's height from c26, a nearby
     // light c21-c23)
     std::string vertex_constants;
-    for (int c = 16; c <= 31; ++c) {
+    for (int c = 0; c <= 31; ++c) {  // rn65c: from c0 (it was from c16)
       float v[4];
       std::memcpy(v, g_registers + 0x4000 + 4 * c, sizeof v);
       std::snprintf(item, sizeof item, " c%d=(%.6g %.6g %.6g %.6g)", c, v[0], v[1], v[2], v[3]);
       vertex_constants += item;
     }
+    float watched_ref;  // [acct2-bro] 2026-11-14 rn88a: RB_ALPHA_REF
+    std::memcpy(&watched_ref, g_registers + 0x210E, sizeof watched_ref);
     REXLOG_INFO("cod3: host draws: rn35 watched {:08X} in tf{} of vs {:016X} ps {:016X} (draw {}): target format {} "
-                "bias {:+d} blend {:08X}; key {:.4g} {:.4g} {:.4g}; pixel{}; fetch{}; vertex{}", at, slot,
+                "bias {:+d} blend {:08X} colorcontrol {:08X} alpha ref {:.4g} depthcontrol {:08X}; key {:.4g} {:.4g} "
+                "{:.4g}; pixel{}; fetch{}; vertex{}", at, slot,
                 draw->vertex_shader, draw->pixel_shader, g_draws, Format(g_registers[kColorInfo]),
-                ExpBias(g_registers[kColorInfo]), g_registers[kBlend0], key[0], key[1], key[2], constants, fetches,
+                ExpBias(g_registers[kColorInfo]), g_registers[kBlend0], g_registers[0x2202], watched_ref,  // rn88a
+                g_registers[0x2200], key[0], key[1], key[2], constants, fetches,
                 vertex_constants);
     if (g_after_watched_times < kAfterWatchedTimes) {  // rn41k
       ++g_after_watched_times;
@@ -17632,6 +20113,42 @@ void LogLeafDraws(const RexHostDraw* draw) {
   REXLOG_INFO("cod3: host draws: rn41t leaves: vs {:016X} ps {:016X} (draw {}, frame {}): leaf map {:08X}/{}; "
               "blend {:08X}; pixel{}; vertex{}", draw->vertex_shader, draw->pixel_shader, g_draws, g_frames,
               map[1] & 0x1FFFF000u, map[1] & 0x3F, g_registers[kBlend0], pixel, vertex);
+}
+
+// [acct2-bro] 2026-11-13 rn64b (the owner, 11-13 01:18: the depth of field while aiming): the game's depth of field
+// mix (pixel shader 257C1107399A3162, drawn by the pass 0x82149C80) with the constants the GPU has at its draw: c0
+// (the near plane, then the depths at 10 units, at the near distance and at the far one) and c252 to c255, the
+// shader's own literals (c255: x the blur of what is nearer than 10 units, y the blur's growth per unit of depth, z
+// what the depth is taken from), with the three textures' bases and formats. Up to kDofDrawsLogged lines, one every 60
+// frames at most (debug only, host draws).
+constexpr uint64_t kDofMixShader = 0x257C1107399A3162ull;
+constexpr int kDofDrawsLogged = 12;
+void LogDepthOfFieldDraws(const RexHostDraw* draw) {
+  if (draw->pixel_shader != kDofMixShader || g_register_count < kFetchConstants + 32 * 6 ||
+      !REXCVAR_GET(cod3_debug_ngl_side))
+    return;
+  static int logged = 0;  // (the GPU thread only)
+  static uint64_t last_frame = 0;
+  if (logged >= kDofDrawsLogged || (logged && g_frames < last_frame + 60)) return;
+  last_frame = g_frames;
+  ++logged;
+  constexpr int kRegisters[] = {0, 252, 253, 254, 255};
+  std::string pixel, fetches;
+  char item[112];
+  for (int c : kRegisters) {
+    float v[4];
+    std::memcpy(v, g_registers + kPixelConstants + 4 * c, sizeof v);
+    std::snprintf(item, sizeof item, " c%d=(%.9g %.9g %.9g %.9g)", c, v[0], v[1], v[2], v[3]);
+    pixel += item;
+  }
+  for (int f = 0; f < 3; ++f) {
+    const uint32_t* w = g_registers + kFetchConstants + 6 * f;
+    std::snprintf(item, sizeof item, " tf%d %08X/%u %ux%u", f, w[1] & 0x1FFFF000u, w[1] & 0x3F, (w[2] & 0x1FFF) + 1,
+                  ((w[2] >> 13) & 0x1FFF) + 1);
+    fetches += item;
+  }
+  REXLOG_INFO("cod3: host draws: rn64b the depth of field's mix: vs {:016X} (draw {}, frame {}): blend {:08X}; "
+              "pixel{}; fetch{}", draw->vertex_shader, g_draws, g_frames, g_registers[kBlend0], pixel, fetches);
 }
 
 // [rexglue-native] 2026-11-10 rn42d: the game's effect draws (the quad batcher's vertex shaders: the plain pair's
@@ -18568,8 +21085,35 @@ void CountKinds(const RexHostDraw* draw) {
   }
 }
 
+// [acct2-bro] 2026-11-13 rn74a (debug, host draws): which of the game's draws use the alpha test or alpha to mask.
+// RB_COLORCONTROL (0x2202): bits 0-2 the alpha function, bit 3 the alpha test, bit 4 alpha to mask, bits 24-31 the
+// mask's four dither offsets (two bits each); RB_ALPHA_REF (0x210E) the test's float. The forest's grass is fuller
+// natively than in the game's picture (t75's f47a, frame 4000: the game's shows the ground between thinner blades), and
+// ngl_vk's grass pipeline writes the blades' fade into alpha with nothing reading it. Each new pair of pixel shader and
+// state (bits 0-4 and the offsets) is logged once (the first 96) with its vertex shader, triangles, blend and the
+// frame's count of draws with alpha to mask so far. The GPU thread only.
+void LogAlphaStates(const RexHostDraw* draw) {
+  const uint32_t control = g_registers[0x2202];
+  if (!(control & 0x18u)) return;  // neither the alpha test nor alpha to mask
+  static std::map<std::pair<uint64_t, uint32_t>, int> seen;
+  static uint64_t masked = 0, tested = 0;
+  if (control & 0x10u) ++masked;
+  if (control & 0x08u) ++tested;
+  const uint32_t state = control & 0xFF00001Fu;
+  if (seen.size() >= 96 || !seen.emplace(std::make_pair(draw->pixel_shader, state), 1).second) return;
+  float alpha_ref;
+  std::memcpy(&alpha_ref, g_registers + 0x210E, sizeof alpha_ref);
+  REXLOG_INFO("cod3: ngl side: rn74a alpha state {:016X} / {:016X}: colorcontrol {:08X} (function {}, test {}, to mask "
+              "{}, offsets {} {} {} {}), alpha ref {:.4f}, blend {:08X}, {} triangles; draws so far with alpha to mask "
+              "{}, with the test {} (draw {})",
+              draw->vertex_shader, draw->pixel_shader, control, control & 7u, (control >> 3) & 1u, (control >> 4) & 1u,
+              (control >> 24) & 3u, (control >> 26) & 3u, (control >> 28) & 3u, (control >> 30) & 3u, alpha_ref,
+              g_registers[kBlend0], KindTriangles(draw), masked, tested, g_draws);
+}
+
 void Draw(void*, const RexHostDraw* draw) {
   ++g_draws;
+  LogAlphaStates(draw);  // [acct2-bro] 2026-11-13 rn74a (debug)
   CountKinds(draw);  // [acct2-bro] 2026-11-12 rn55a
   TraceDraw(draw);  // [rexglue-native] rn42i
   LogLitEffectDraws(draw);  // [rexglue-native] rn44s
@@ -18579,6 +21123,7 @@ void Draw(void*, const RexHostDraw* draw) {
   LogAfterWatched(draw);         // [rexglue-native] rn41k: before, so the watched draw itself isn't one of them
   LogWatchedTextureDraws(draw);  // [rexglue-native] rn35
   LogLeafDraws(draw);            // [rexglue-native] rn41t
+  LogDepthOfFieldDraws(draw);    // [acct2-bro] 2026-11-13 rn64b
   LogTreeDraws(draw);            // [rexglue-native] rn46a
   LogSamplerKinds(draw);         // [rexglue-native-guns] 2026-11-11 rn49a
   LogCubeShaders(draw);          // [rexglue-native-guns] 2026-11-11 rn49a
@@ -18670,10 +21215,61 @@ void TakeMatchedShot(uint8_t* base) {
 #endif
 }
 
+// [acct2-bro] 2026-11-13 rn80a: the kept lights' and values' maps trimmed here, at the list send, where the worker has
+// finished its frame and the next isn't posted yet (OnListSend, after WaitForWorker), instead of in KeepModelLight
+// as the game's thread draws, under g_model_light_mutex, while the worker waits for it (t84's q54 on the island: the
+// worker waited 3.8 to 4.1 ms a frame, the game's thread held the lock 2.2 to 2.5). The rules are KeepModelLight's
+// own: a map at its size has the entries too old to be used (kModelLightFrames) dropped, and all of them if that
+// isn't enough; a cell map at its size is cleared. KeepModelLight now clears a map only past kKeptHardFactor times
+// its size (a last resort: a frame that keeps more than three sizes' worth).
+constexpr size_t kKeptHardFactor = 4;
+void TrimKeptLights() {
+  const bool timed = REXCVAR_GET(cod3_debug_ngl_side_solid_laps);
+  const auto from = std::chrono::steady_clock::now();
+  const auto stale = [](uint64_t frame) { return frame + kModelLightFrames < g_frames; };
+  bool trimmed = false;
+  {
+    std::lock_guard<std::mutex> lock(g_model_light_mutex);  // (the worker is idle here: no wait on either side)
+    if (g_drawn_values.size() >= kMaxDrawnValues) {
+      trimmed = true;
+      for (auto it = g_drawn_values.begin(); it != g_drawn_values.end();) {
+        it = stale(it->second.frame) ? g_drawn_values.erase(it) : std::next(it);
+      }
+      if (g_drawn_values.size() >= kMaxDrawnValues) g_drawn_values.clear();
+    }
+    if (g_drawn_cells.size() >= kMaxDrawnCells) {
+      trimmed = true;
+      g_drawn_cells.clear();
+    }
+    if (g_model_lights.size() >= kMaxModelLights) {  // rn42w
+      trimmed = true;
+      for (auto it = g_model_lights.begin(); it != g_model_lights.end();) {
+        it = stale(it->second.frame) ? g_model_lights.erase(it) : std::next(it);
+      }
+      if (g_model_lights.size() >= kMaxModelLights) g_model_lights.clear();
+    }
+    if (g_kept_light_cells.size() >= kMaxKeptLightCells) {
+      trimmed = true;
+      g_kept_light_cells.clear();
+    }
+  }
+  if (timed && trimmed) {
+    const auto ns = std::chrono::steady_clock::now() - from;
+    g_trim_ns.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(ns).count()),
+                        std::memory_order_relaxed);
+    g_trims.fetch_add(1, std::memory_order_relaxed);
+  }
+}
+
 }  // namespace
+
+// [acct2-bro] 2026-11-13 rn83a: defined below, beside KeepModelLight (g61's syntax check: undeclared here)
+void ApplyPendingKeeps();
 
 void OnListSend(uint8_t* base) {
   WaitForWorker();  // side212: the last frame is drawn before this one counts as sent
+  ApplyPendingKeeps();  // [acct2-bro] 2026-11-13 rn83a: the keeps filed since the last send (the worker idle)
+  TrimKeptLights();  // [acct2-bro] 2026-11-13 rn80a: (the worker idle)
   TakeMatchedShot(base);  // [rexglue-native-render] 2026-11-11 rn48s (debug, off): the last dump's game picture
   {  // rn47h: the game's draws between the last list send and this one (see g_game_draws_since_send)
     const uint32_t draws = g_game_draws_since_send.exchange(0, std::memory_order_relaxed);
@@ -18702,11 +21298,16 @@ void OnListSend(uint8_t* base) {
     Taken now;
     TakeScene(base, root, 0, now.quads, now.census);
     const auto at = std::chrono::steady_clock::now();
-    if (have && at - held_at < std::chrono::milliseconds(250)) LiveFrame(base, root, held_frame, &held);
+    static int64_t held_clock = 0;  // [acct2-bro] 2026-11-14 rn92c: the held list's frame's clock
+    if (have && at - held_at < std::chrono::milliseconds(250)) {
+      g_live_clock_us = held_clock;
+      LiveFrame(base, root, held_frame, &held);
+    }
     held = std::move(now);
     have = true;
     held_frame = g_frames;
     held_at = at;
+    held_clock = FrameClockNow();
     return;
   }
   // rn42m: cod3_debug_ngl_side_shot_burst frames in a row at each moment (1: the moment alone, as before)
@@ -18717,6 +21318,7 @@ void OnListSend(uint8_t* base) {
     return;
   }
   if (!live) return;
+  g_live_clock_us = FrameClockNow();  // [acct2-bro] 2026-11-14 rn92c (the worker is idle: WaitForWorker above)
   if (REXCVAR_GET(cod3_native_worker)) {
     PostToWorker(base, root, g_frames);
     return;
@@ -18952,7 +21554,158 @@ void KeepMovingLights(uint8_t* base) {
 }
 
 // side184: the light the game hands a lit model's draw (kModelLights, kModelLightRows), kept for its native draw
+// [acct2-bro] 2026-11-13 rn81a: kept values copied with only the entries read (DrawnValue, their one reader, stops at
+// count): the header, then count offsets and count values (a whole copy is 1 KB)
+void CopyDrawnValues(DrawnValues& to, const DrawnValues& from) {
+  to.frame = from.frame;
+  to.block = from.block;
+  std::memcpy(to.at, from.at, sizeof to.at);
+  to.placed = from.placed;
+  to.count = from.count;
+  std::memcpy(to.offsets, from.offsets, from.count * sizeof from.offsets[0]);
+  std::memcpy(to.values, from.values, from.count * sizeof from.values[0]);
+}
+
+// [acct2-bro] 2026-11-13 rn83a: what KeepModelLight did under g_model_light_mutex, as a function (the caller holds
+// it): the model's light by its object (and by place), and when offsets were wanted its pass's values by object and
+// block (and by place for the block). drawn's header and first count entries are set when wanted.
+void StoreKept(const GameModelLight& light, uint32_t object, uint32_t block, bool by_place, bool wanted,
+               const DrawnValues& drawn) {
+  if (wanted) {
+    const uint64_t key = DrawnValuesKey(object, block);
+    // [acct2-bro] 2026-11-13 rn80a: trimmed at the list send (TrimKeptLights); here only past kKeptHardFactor times
+    // the size, a last resort (was: the old ones dropped, else all, at the size, as the worker drew)
+    const size_t values_hard = kKeptHardFactor * kMaxDrawnValues;
+    if (g_drawn_values.size() >= values_hard && !g_drawn_values.count(key)) g_drawn_values.clear();
+    if (drawn.count) CopyDrawnValues(g_drawn_values[key], drawn);  // rn81a (was a whole copy)
+    if (drawn.count && drawn.placed) {  // rn43c: and by where the model stood, for its block
+      if (g_drawn_cells.size() >= kKeptHardFactor * kMaxDrawnCells) g_drawn_cells.clear();  // rn80a (was at the size)
+      DrawnCell& cell = g_drawn_cells[DrawnCellKey(block, KeptLightCellOf(drawn.at[0]), KeptLightCellOf(drawn.at[1]),
+                                                   KeptLightCellOf(drawn.at[2]))];
+      int slot = 0;  // its own entry, else an empty one, else the oldest (as the lights' cells)
+      for (int k = 0; k < kKeptLightsPerCell; ++k) {
+        if (cell.objects[k] == object && cell.values[k].block == block) {
+          slot = k;
+          break;
+        }
+        if (!cell.objects[slot]) continue;
+        if (!cell.objects[k] || cell.values[k].frame < cell.values[slot].frame) slot = k;
+      }
+      cell.objects[slot] = object;
+      CopyDrawnValues(cell.values[slot], drawn);  // rn81a (was a whole copy)
+    }
+  }
+  // [acct2-bro] 2026-11-13 rn80a: rn42w's trim (the old ones dropped, and all only if that isn't enough) is at the list
+  // send now (TrimKeptLights); here only past kKeptHardFactor times the size, a last resort
+  if (g_model_lights.size() >= kKeptHardFactor * kMaxModelLights && !g_model_lights.count(object)) {
+    g_model_lights.clear();
+  }
+  g_model_lights[object] = light;
+  if (!by_place || !light.placed) return;
+  if (g_kept_light_cells.size() >= kKeptHardFactor * kMaxKeptLightCells) g_kept_light_cells.clear();  // rn80a
+  KeptLightCell& cell = g_kept_light_cells[KeptLightCellKey(KeptLightCellOf(light.at[0]), KeptLightCellOf(light.at[1]),
+                                                            KeptLightCellOf(light.at[2]))];
+  int slot = 0;  // its own entry, else an empty one, else the oldest
+  for (int k = 0; k < kKeptLightsPerCell; ++k) {
+    if (cell.objects[k] == object) {
+      slot = k;
+      break;
+    }
+    if (!cell.objects[slot]) continue;
+    if (!cell.objects[k] || cell.lights[k].frame < cell.lights[slot].frame) slot = k;
+  }
+  cell.objects[slot] = object;
+  cell.lights[slot] = light;
+}
+
+// [acct2-bro] 2026-11-13 rn83a: a keep filed for the next list send (cod3_native_deferred_keeps): the light, where it
+// goes, drawn's header, and its count entries in the two lists beside (g_pending_offsets, g_pending_values). The game
+// keeps 1,400 a frame on the island; the lists keep their room from frame to frame.
+struct PendingKeep {
+  GameModelLight light;
+  uint32_t object = 0, block = 0;
+  bool by_place = false, wanted = false;
+  uint64_t frame = 0;  // drawn's header (set when wanted)
+  float at[3] = {};
+  bool placed = false;
+  uint32_t first = 0, count = 0;  // its entries
+};
+constexpr size_t kMaxPendingKeeps = 32768;  // (dropped all at once past this: list sends that stopped coming)
+std::mutex g_pending_mutex;  // the game's threads that keep, against the list send that takes them in
+std::vector<PendingKeep> g_pending_keeps;
+std::vector<uint32_t> g_pending_offsets;
+std::vector<std::array<float, 4>> g_pending_values;
+
+void DeferKeep(const GameModelLight& light, uint32_t object, uint32_t block, bool by_place, bool wanted,
+               const DrawnValues& drawn) {
+  std::lock_guard<std::mutex> lock(g_pending_mutex);
+  if (g_pending_keeps.size() >= kMaxPendingKeeps) {
+    g_pending_keeps.clear();
+    g_pending_offsets.clear();
+    g_pending_values.clear();
+  }
+  PendingKeep& p = g_pending_keeps.emplace_back();
+  p.light = light;
+  p.object = object;
+  p.block = block;
+  p.by_place = by_place;
+  p.wanted = wanted;
+  p.first = static_cast<uint32_t>(g_pending_offsets.size());
+  if (!wanted) return;
+  p.frame = drawn.frame;
+  std::memcpy(p.at, drawn.at, sizeof p.at);
+  p.placed = drawn.placed;
+  p.count = drawn.count;
+  for (uint32_t k = 0; k < drawn.count; ++k) {
+    g_pending_offsets.push_back(drawn.offsets[k]);
+    g_pending_values.push_back({drawn.values[k][0], drawn.values[k][1], drawn.values[k][2], drawn.values[k][3]});
+  }
+}
+
+// rn83a: the filed keeps taken in, in the order filed, at the list send (OnListSend, right after WaitForWorker: the
+// worker idle). The list send's alone (one thread), so its lists are its own and keep their room.
+void ApplyPendingKeeps() {
+  static std::vector<PendingKeep> keeps;
+  static std::vector<uint32_t> offsets;
+  static std::vector<std::array<float, 4>> values;
+  {
+    std::lock_guard<std::mutex> lock(g_pending_mutex);
+    keeps.swap(g_pending_keeps);
+    offsets.swap(g_pending_offsets);
+    values.swap(g_pending_values);
+  }
+  if (keeps.empty()) return;
+  const bool timed = REXCVAR_GET(cod3_debug_ngl_side_solid_laps);
+  const auto from = std::chrono::steady_clock::now();
+  thread_local DrawnValues drawn;
+  {
+    std::lock_guard<std::mutex> lock(g_model_light_mutex);  // (the worker is idle here: no wait on either side)
+    for (const PendingKeep& p : keeps) {
+      drawn.frame = p.frame;
+      drawn.block = p.block;
+      std::memcpy(drawn.at, p.at, sizeof drawn.at);
+      drawn.placed = p.placed;
+      drawn.count = std::min<uint32_t>(p.count, kDrawnOffsets);
+      for (uint32_t k = 0; k < drawn.count && p.first + k < offsets.size(); ++k) {
+        drawn.offsets[k] = offsets[p.first + k];
+        std::memcpy(drawn.values[k], values[p.first + k].data(), sizeof drawn.values[k]);
+      }
+      StoreKept(p.light, p.object, p.block, p.by_place, p.wanted, drawn);
+    }
+  }
+  if (timed) {
+    const auto ns = std::chrono::steady_clock::now() - from;
+    g_apply_keeps_ns.fetch_add(static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(ns).count()),
+                               std::memory_order_relaxed);
+    g_applied_keeps.fetch_add(keeps.size(), std::memory_order_relaxed);
+  }
+  keeps.clear();
+  offsets.clear();
+  values.clear();
+}
+
 void KeepModelLight(uint8_t* base, uint32_t object) {
+  const HelperLap helper_lap(3);  // [acct2-bro] 2026-11-13 rn81b (debug)
   GameModelLight light;
   bool any = false;
   for (uint32_t r = 0; r < 9; ++r) {
@@ -19078,27 +21831,33 @@ void KeepModelLight(uint8_t* base, uint32_t object) {
     light.set = ObjectLightSet(base, object);
   }
   light.object = object;
-  std::lock_guard<std::mutex> lock(g_model_light_mutex);
   // rn43a: this pass's values as the game draws the object (cod3_debug_ngl_side_drawn_values), at the offsets the
   // native side reads from its block
   const uint32_t block = t_lit_values;
-  const auto noted = block && REXCVAR_GET(cod3_debug_ngl_side_drawn_values) ? g_drawn_offsets.find(block)
-                                                                             : g_drawn_offsets.end();
-  // rn43f: its block's own noted offsets first, then those noted for any block (a block not read yet: only those)
+  // [acct2-bro] 2026-11-13 rn81a: the offsets wanted are found under the lock (DrawnValue notes them), the values
+  // read from the block with it released, and what was read kept under it again (one hold of 1.3 to 2 microseconds
+  // before, the worker's waits)
   DrawnOffsets wanted;
-  if (block && REXCVAR_GET(cod3_debug_ngl_side_drawn_values)) {
-    if (noted != g_drawn_offsets.end()) wanted = noted->second;
-    // rn43h: those of any block only while its own are new (or none yet)
-    const bool settled = noted != g_drawn_offsets.end() && noted->second.count &&
-                         g_frames > noted->second.since + kModelLightFrames;
-    for (uint32_t k = 0; !settled && k < g_drawn_offsets_any.count && wanted.count < kDrawnOffsets; ++k) {
-      bool have = false;
-      for (uint32_t j = 0; j < wanted.count; ++j) have = have || wanted.offsets[j] == g_drawn_offsets_any.offsets[k];
-      if (!have) wanted.offsets[wanted.count++] = g_drawn_offsets_any.offsets[k];
+  {
+    const ModelLightLock lock(2);  // [acct2-bro] 2026-11-13 rn78a (was a lock_guard)
+    const auto noted = block && REXCVAR_GET(cod3_debug_ngl_side_drawn_values) ? g_drawn_offsets.find(block)
+                                                                               : g_drawn_offsets.end();
+    // rn43f: its block's own noted offsets first, then those noted for any block (a block not read yet: only those)
+    if (block && REXCVAR_GET(cod3_debug_ngl_side_drawn_values)) {
+      if (noted != g_drawn_offsets.end()) wanted = noted->second;
+      // rn43h: those of any block only while its own are new (or none yet)
+      const bool settled = noted != g_drawn_offsets.end() && noted->second.count &&
+                           g_frames > noted->second.since + kModelLightFrames;
+      for (uint32_t k = 0; !settled && k < g_drawn_offsets_any.count && wanted.count < kDrawnOffsets; ++k) {
+        bool have = false;
+        for (uint32_t j = 0; j < wanted.count; ++j) have = have || wanted.offsets[j] == g_drawn_offsets_any.offsets[k];
+        if (!have) wanted.offsets[wanted.count++] = g_drawn_offsets_any.offsets[k];
+      }
     }
   }
+  thread_local DrawnValues drawn;  // rn81a: the thread's scratch; only its header and the first count entries are set
+  drawn.count = 0;
   if (wanted.count) {
-    DrawnValues drawn;
     drawn.frame = g_frames;
     drawn.block = block;
     drawn.placed = light.placed;  // rn43c
@@ -19110,62 +21869,14 @@ void KeepModelLight(uint8_t* base, uint32_t object) {
       for (uint32_t i = 0; i < 4; ++i) drawn.values[drawn.count][i] = g::ReadF32(base, from + 4 * i);
       ++drawn.count;
     }
-    const uint64_t key = DrawnValuesKey(object, block);
-    if (g_drawn_values.size() >= kMaxDrawnValues && !g_drawn_values.count(key)) {
-      for (auto it = g_drawn_values.begin(); it != g_drawn_values.end();) {  // those too old first, as below
-        if (it->second.frame + kModelLightFrames < g_frames) {
-          it = g_drawn_values.erase(it);
-        } else {
-          ++it;
-        }
-      }
-      if (g_drawn_values.size() >= kMaxDrawnValues) g_drawn_values.clear();
-    }
-    if (drawn.count) g_drawn_values[key] = drawn;
-    if (drawn.count && drawn.placed) {  // rn43c: and by where the model stood, for its block
-      if (g_drawn_cells.size() >= kMaxDrawnCells) g_drawn_cells.clear();
-      DrawnCell& cell = g_drawn_cells[DrawnCellKey(block, KeptLightCellOf(drawn.at[0]), KeptLightCellOf(drawn.at[1]),
-                                                   KeptLightCellOf(drawn.at[2]))];
-      int slot = 0;  // its own entry, else an empty one, else the oldest (as the lights' cells)
-      for (int k = 0; k < kKeptLightsPerCell; ++k) {
-        if (cell.objects[k] == object && cell.values[k].block == block) {
-          slot = k;
-          break;
-        }
-        if (!cell.objects[slot]) continue;
-        if (!cell.objects[k] || cell.values[k].frame < cell.values[slot].frame) slot = k;
-      }
-      cell.objects[slot] = object;
-      cell.values[slot] = drawn;
-    }
   }
-  if (g_model_lights.size() >= kMaxModelLights && !g_model_lights.count(object)) {
-    // rn42w: drop the ones too old to be used, and all only if that isn't enough
-    for (auto it = g_model_lights.begin(); it != g_model_lights.end();) {
-      if (it->second.frame + kModelLightFrames < g_frames) {
-        it = g_model_lights.erase(it);
-      } else {
-        ++it;
-      }
-    }
-    if (g_model_lights.size() >= kMaxModelLights) g_model_lights.clear();
+  // [acct2-bro] 2026-11-13 rn83a: filed for the next list send, or kept now (the second take of the lock, rn81a)
+  if (REXCVAR_GET(cod3_native_deferred_keeps)) {
+    DeferKeep(light, object, block, by_place, wanted.count != 0, drawn);
+    return;
   }
-  g_model_lights[object] = light;
-  if (!by_place || !light.placed) return;
-  if (g_kept_light_cells.size() >= kMaxKeptLightCells) g_kept_light_cells.clear();
-  KeptLightCell& cell = g_kept_light_cells[KeptLightCellKey(KeptLightCellOf(light.at[0]), KeptLightCellOf(light.at[1]),
-                                                            KeptLightCellOf(light.at[2]))];
-  int slot = 0;  // its own entry, else an empty one, else the oldest
-  for (int k = 0; k < kKeptLightsPerCell; ++k) {
-    if (cell.objects[k] == object) {
-      slot = k;
-      break;
-    }
-    if (!cell.objects[slot]) continue;
-    if (!cell.objects[k] || cell.lights[k].frame < cell.lights[slot].frame) slot = k;
-  }
-  cell.objects[slot] = object;
-  cell.lights[slot] = light;
+  const ModelLightLock lock(2);  // rn81a: the second take, to keep them
+  StoreKept(light, object, block, by_place, wanted.count != 0, drawn);
 }
 
 // side116c-d: the order of the front objects' passes and their draws, the first few times they come (side116c's one
@@ -19472,7 +22183,9 @@ void OnDraw(uint8_t* base, uint32_t call_site) {
     const uint32_t device = g::ReadU32(base, kDevicePointer);
     if (DeviceReadable(device)) {  // where this draw fetched the blades from (vertex fetch constant 95)
       const uint32_t at = device + kDeviceFetchConstants + kFetchConstantBytes * 31 + 16;
-      g_grass_fetch.store(uint64_t{g::ReadU32(base, at)} << 32 | g::ReadU32(base, at + 4), std::memory_order_relaxed);
+      g_grass_fetch.store(uint64_t{DeviceVertexWord(base, device, g::ReadU32(base, at))} << 32 |
+                              g::ReadU32(base, at + 4),
+                          std::memory_order_relaxed);  // [acct2-decomp] stage 5
     }
   }
   if (call_site == kGrassDrawReturn && REXCVAR_GET(cod3_debug_ngl_side)) {
@@ -19526,6 +22239,8 @@ REX_HOOK_RAW(sub_8220D4E8) {
 REX_EXTERN(__imp__sub_821627B0);
 REX_HOOK_RAW(sub_821627B0) {
   cod3::ngl_side::KeepMenuBlur(static_cast<float>(ctx.f1.f64));
+  cod3::ngl_side::NoteMenuBlurCall(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32,
+                                   static_cast<float>(ctx.f1.f64));  // [acct2-bro] 2026-11-14 rn89c (debug)
   __imp__sub_821627B0(ctx, base);
 }
 #else

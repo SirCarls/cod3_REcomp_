@@ -43,6 +43,15 @@ int ngl_vk_output(uint64_t image, uint64_t view, uint32_t format, uint32_t width
                   uint32_t after_stages, uint32_t final_layout, uint32_t ready_stages, uint32_t ready_access,
                   const uint32_t *table);
 
+/* [acct2-bro] 2026-11-12 rn61a: supersampling. When the target is N times larger each way than the image
+ * ngl_vk_output draws it into, every pixel of that image is the mean of the N x N target pixels it covers (N from the
+ * two sizes, 1 to 4; 1: the pixel itself, as before). ngl_vk_set_shown_scale(N), before ngl_vk_init or
+ * ngl_vk_init_on_device, says the target (the init's width and height) is N times the shown picture each way, so
+ * that the parts sized from the picture (the depth-of-field blur's quarter, the afterimage's small copy) keep the
+ * shown picture's sizes and the picture keeps its look. A setting: it stays across ngl_vk_shutdown. */
+#define NGL_VK_OUTPUT_BOX 1
+void ngl_vk_set_shown_scale(uint32_t scale);
+
 /* A window to show the target in (Big Red One's own window). Called before ngl_vk_init: instance_extensions are the
  * instance extensions the window system needs (SDL_Vulkan_GetInstanceExtensions' list; the strings must outlive
  * ngl_vk_init), make_surface makes the window's surface once the instance exists (instance is a VkInstance and surface
@@ -59,6 +68,49 @@ void ngl_vk_set_window(const char *const *instance_extensions, uint32_t extensio
 
 /* The window's drawable size changed (0 x 0 while it is minimized: nothing is shown then). */
 void ngl_vk_window_resized(uint32_t width, uint32_t height);
+
+/* [acct2-fh] 2026-11-14 Two window settings for Finest Hour's resolution options (dev/agents/acct2-fh/RESOLUTION.md
+ * stage 5); a port that never calls them shows its frames as before. Both are settings: they stay across
+ * ngl_vk_shutdown, and may be called before ngl_vk_init or while frames are drawn, on the thread that draws.
+ *
+ * ngl_vk_set_present_mode: ngl_vk_set_window's present_mode changed while the game runs (the swapchain is made again
+ * at the next frame): 0 in step with the display (FIFO), 1 the newest frame at each refresh (MAILBOX, else IMMEDIATE),
+ * 2 each frame shown the moment it is done (IMMEDIATE, which may tear, else MAILBOX).
+ *
+ * ngl_vk_set_window_scaling: how the finished target is scaled into the window, centered on black.
+ * NGL_VK_SCALE_SMOOTH (the default, as always: fitted and filtered), NGL_VK_SCALE_SHARP (fitted, each pixel kept
+ * sharp: nearest), NGL_VK_SCALE_INTEGER (the largest whole-number scale that fits, sharp; a target bigger than the
+ * window is shrunk to fit as with SHARP). */
+#define NGL_VK_HAS_PRESENT_MODE 1
+void ngl_vk_set_present_mode(int present_mode);
+#define NGL_VK_HAS_WINDOW_SCALING 1
+#define NGL_VK_SCALE_SMOOTH 0
+#define NGL_VK_SCALE_SHARP 1
+#define NGL_VK_SCALE_INTEGER 2
+void ngl_vk_set_window_scaling(int scaling);
+
+/* [acct2-fh] 2026-11-14 Two more scalings, AMD FidelityFX's, for ngl_vk_set_window_scaling (written again in ngl_vk's
+ * own shaders from AMD's MIT-licensed algorithms; with ngl_vk_set_window_table, after the table):
+ * NGL_VK_SCALE_CAS: Contrast Adaptive Sharpening of the picture as scaled to its place (filtered).
+ * NGL_VK_SCALE_FSR: FidelityFX Super Resolution 1, the picture scaled up by EASU (a pass for each doubling, at most
+ * fsr_passes) then sharpened by RCAS; a picture not smaller than its place goes through CAS.
+ * ngl_vk_set_window_sharpness: CAS's sharpness 0..1 (0, the default, still sharpens a little, as CAS does), the stops
+ * FSR's RCAS is less sharp by 0..2 (default 0.2), FSR's EASU passes at most 1..8 (default 1; the last pass takes the
+ * picture the rest of the way). Settings: they stay across ngl_vk_shutdown. */
+#define NGL_VK_HAS_WINDOW_FILTERS 1
+#define NGL_VK_SCALE_CAS 3
+#define NGL_VK_SCALE_FSR 4
+void ngl_vk_set_window_sharpness(float cas_sharpness, float fsr_sharpness_reduction, int fsr_passes);
+
+/* [acct2-ocr] 2026-11-13: a color table for what the window shows (Big Red One's gamma ramp: the game's brightness,
+ * as the Xbox's display showed it). table is 256 words as ngl_vk_output's (red in the low byte, then green and blue:
+ * a channel's value v becomes that channel of table[v]); it is copied, and each later draw shows the finished target
+ * through it (drawn with ngl_vk_output's pipeline into an image of the target's size, then scaled into the window as
+ * before). NULL, the default: the target as drawn. Only the window's picture changes: the target, its read-back
+ * (ngl_vk_target_pixels) and ngl_vk_output stay as they were. NGL_VK_HAS_WINDOW_TABLE says it is there (acct2-fh's
+ * ask, 17:47: Finest Hour builds against ngl_vk with or without it). */
+#define NGL_VK_HAS_WINDOW_TABLE 1
+void ngl_vk_set_window_table(const uint32_t *table);
 
 /* 1 when draws are being shown in a window, 0 when they are offscreen. */
 int ngl_vk_showing(void);
@@ -165,6 +217,15 @@ enum {
      * as the other flags are. The same number as NGL_VK_TINT_MAP_ALPHA: that one is read on textured
      * NGL_VK_SHADE_UNLIT draws with NGL_VK_TINT_EFFECT only, this one on NGL_VK_SHADE_LIGHT draws only. */
     NGL_VK_TINT_LIGHT_MAPPED = 0x02000000,
+    /* [acct2-bro] 2026-11-13 rn67a: a textured NGL_VK_SHADE_LIGHT draw that is seen from one side only (Call of
+     * Duty 3's old simple class, cdSimple: its draw sets the cull mode from its material, and an oak's leaf cards
+     * show their front alone). No pipeline of ngl_vk culls, so mesh.frag drops the pixels of the faces that wind
+     * clockwise on the screen (the game's D3DCULL_CW); with NGL_VK_TINT_OTHER_SIDE too, those that wind the other
+     * way instead. The same number as NGL_VK_TINT_EFFECT: that one is read on textured NGL_VK_SHADE_UNLIT draws
+     * only, this one on textured NGL_VK_SHADE_LIGHT draws only. NGL_VK_TINT_OTHER_SIDE is the tint color's lowest
+     * bit (a textured draw's color is not used) and is read only with NGL_VK_TINT_ONE_SIDED. */
+    NGL_VK_TINT_ONE_SIDED = 0x04000000,
+    NGL_VK_TINT_OTHER_SIDE = 0x00000001,
 };
 
 /* How a mesh's pixels use its texture's alpha. */
@@ -610,6 +671,50 @@ struct ngl_vk_mesh_draw {
      * NGL_VK_SKIN_TINT tells a caller that this header has the field. */
 #define NGL_VK_SKIN_TINT 1
     float skin_tint[3];
+    /* [acct2-bro] 2026-11-13 rn69a: the faces the game's own state drops for this draw (its cull mode):
+     * NGL_VK_CULL_NONE (0; memset draws: drawn from both sides, as before), NGL_VK_CULL_CW the faces that wind
+     * clockwise on the screen (D3DCULL_CW), NGL_VK_CULL_CCW the others (D3DCULL_CCW, the usual back faces). For
+     * opaque draws (alpha NGL_VK_ALPHA_NONE or NGL_VK_ALPHA_TEST) only; a blended draw is drawn from both sides as
+     * before. NGL_VK_CULL tells a caller that this header has the field. */
+#define NGL_VK_CULL 1
+    uint32_t cull;
+    /* [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (its pixel shader 99861CE203379D5B: the island's sea and
+     * puddles, and Saint-Lo's, Hostage's, Laison's, The Mace's water). With cod3_water 1 on a draw that is drawn as
+     * Call of Duty 2's water (water_cube a cube, the base texture a 2D texture, none of the kinds that rules out),
+     * the base texture is the water's ripple normal map, not a height map (x in its alpha, y in its green, as the
+     * bumped world's), and the draw keeps its shading and lightmap (NGL_VK_SHADE_LIGHTMAP: lit as the world is).
+     * Per pixel, with uv its texture coordinates and e the unit way from the eye to the pixel (the mesh's own space):
+     *   - the map is read twice, at uv x cod3_water_ripple[k][0] + (cod3_water_ripple[k][1], cod3_water_ripple[k][2])
+     *     for k 0 and 1 (the caller moves the offsets with the time), each read's x and y 2t - 1, and the normal is
+     *     n = normalize(the corner's normal + (the two x's added, the two y's added, 0) x cod3_water_bump);
+     *   - the light is the draw's own at n (its lightmap's, as the world's); m = e mirrored about n;
+     *   - f = cod3_water_fresnel[0] + cod3_water_fresnel[1] x (1 - |e . n|)^cod3_water_fresnel[2], held to 0..1;
+     *   - the sky is the cube at m (read at its x, z, y, as the gun metal's), its level of detail biased by
+     *     cod3_water_cube_bias;
+     *   - color = cod3_water_color x the light x (1 - f) + (the sky x f + max(m . the first light's way, 0) ^
+     *     cod3_water_power x the first light's color x how much of the sun reaches) x cod3_water_reflection,
+     *     the sun's reach as the world's (the lightmap's alpha x the sun's shadow);
+     *   - alpha = 1 - (1 - cod3_water_opacity) x f, the game's form (nearly opaque looking down, the opacity at a
+     *     grazing look; [acct2-bro] 2026-11-13 rn86e); a negative cod3_water_opacity o asks for |o| + (1 - |o|) x f
+     *     instead (rn86a's form, for a debug comparison).
+     * cod3_water 0 (memset draws): Call of Duty 2's water, as before. NGL_VK_COD3_WATER tells a caller that this
+     * header has the fields. */
+#define NGL_VK_COD3_WATER 1
+    uint32_t cod3_water;
+    float cod3_water_ripple[2][3];
+    float cod3_water_bump;
+    float cod3_water_color[3];
+    float cod3_water_reflection[3];
+    float cod3_water_opacity;
+    float cod3_water_fresnel[3];
+    float cod3_water_power;
+    float cod3_water_cube_bias;
+};
+/* [acct2-bro] 2026-11-13 rn69a: ngl_vk_mesh_draw's cull */
+enum {
+    NGL_VK_CULL_NONE = 0,
+    NGL_VK_CULL_CW = 1,
+    NGL_VK_CULL_CCW = 2,
 };
 
 /* How a blended mesh draw goes onto what's behind it. */
@@ -640,6 +745,17 @@ void ngl_vk_set_sun_shadow(const float light_view_projection[16], const float ca
  * squeezed into its nearest depths, stays sharp). With a blanket the blur is wider (two rounds). Only in a frame with
  * meshes. near_depth and far_depth above 1: no depth of field, the blanket alone. */
 void ngl_vk_set_depth_of_field(float near_depth, float far_depth, float keep_depth, float blanket);
+
+/* [acct2-bro] 2026-11-13 rn64a: the same for one frame, mixed in two bands as Call of Duty 3's own shader does it
+ * (its pixel shader 257C1107399A3162): the picture stays sharp between near_depth and far_depth and is blurred
+ * outside them, by scale times how far the depth lies outside (so all of it from 1 / scale of the depth range on);
+ * where the depth is under front_depth the amount is front_amount (0 to 1) instead. keep_depth and blanket as above.
+ * scale must be above 0. The blurred copy is that game's as well then (rn64c): the quarter-size picture blurred once
+ * with 13 taps (the texels where |x| + |y| <= 2, weighted exp(-(x^2 + y^2) / 2) over their sum), unless a blanket
+ * asks for the wider blur. NGL_VK_DOF_BANDS says the header has it. */
+#define NGL_VK_DOF_BANDS 1
+void ngl_vk_set_depth_of_field_bands(float near_depth, float far_depth, float keep_depth, float blanket, float scale,
+                                     float front_depth, float front_amount);
 
 /* A color tint for the next ngl_vk_draw_quads (one frame; Call of Duty 3's post effect 1): after the meshes and the depth
  * of field, before the quads, each pixel moves toward its brightness (its red, green and blue times weights, summed)

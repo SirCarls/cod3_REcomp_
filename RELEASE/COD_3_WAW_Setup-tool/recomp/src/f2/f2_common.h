@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "f2/f2_accel.h"  // [f2-menus] f2::accel: Apply, Tick, SetSupported, SetGameSensitivity
+#include "f2/f2_crosshair_cs2.h"  // [acct2-ocr] f2::xhair: the special crosshairs' kinds and Plan
 
 namespace rex::ui {
 class Window;
@@ -219,18 +220,51 @@ void Notify(int view, const float rgba[4], float spread);
 // behaviour of both the actual game and cs2"). The game's hook on its crosshair's sides calls CaptureBegin, then the
 // game's own function, then CaptureEnd. While capturing, the game's hook on ScrPlace_ApplyRect hands each rectangle
 // to CaptureRect (the guest addresses of its x and width, r4 and r6), and the hook on the picture drawing skips
-// the picture (Capturing()). The four side pieces come in the order top, right, bottom, left, so
-// spread = (x of the 2nd - x of the 4th - 1.125 x width) / 2. CaptureEnd returns how many rectangles came (4 when
-// the game drew its crosshair, 0 when it chose not to) and gives the spread.
-void CaptureBegin();
+// the picture (Hiding(); [acct2-ocr] was Capturing()). The four side pieces come in the order top, right, bottom,
+// left, so spread = (x of the 2nd - x of the 4th - 1.125 x width) / 2. CaptureEnd returns how many rectangles came
+// (4 when the game drew its crosshair, 0 when it chose not to) and gives the spread.
+// [acct2-ocr] 2026-11-14 CaptureBegin(true) measures the same way and leaves the game's pieces drawn (Both): the
+// picture hook skips the picture only while Hiding().
+void CaptureBegin(bool keep_game = false);
 bool Capturing();
+bool Hiding();
 void CaptureRect(const uint8_t* base, uint32_t x_address, uint32_t width_address);
 int CaptureEnd(float* spread);
+
+// [acct2-ocr] 2026-11-14 Special crosshairs (owner 17:06: "you will also need to find vehicle crosshairs, and unique
+// ones like the WAW flamethrower"; 17:19: "default should be the game's own"). A port says once, at start (any
+// thread), which kinds its hooks tell apart (1 << xhair::kSpecial*), and the CROSSHAIR page shows a row for each.
+// Its hooks ask PlanFor(kind) (xhair::kHipFire for an ordinary weapon's hip-fire crosshair) whether the game draws
+// its own there and whether the custom crosshair is drawn (Notify). RunSpecial does both for a hook on a whole
+// function: NotifyPlain (white, no spread) when the custom one is drawn, `game` (the game's own function) when the
+// game's is. Player 1's (view 0) for now. The game's thread.
+void OfferSpecial(uint32_t kinds);
+xhair::Plan PlanFor(int kind);
+void NotifyPlain();
+template <typename Game>
+void RunSpecial(int kind, Game&& game) {
+  const xhair::Plan plan = PlanFor(kind);
+  if (plan.mine) NotifyPlain();
+  if (plan.game) game();
+}
+
+// [acct2-ocr] 2026-11-14 A weapon with a crosshair of its own. The IW games (Call of Duty 2, 4, World at War) draw the
+// hip-fire crosshair with each weapon's own two pictures (a center and a side piece, material pointers in its weapon
+// data); most of a level's weapons share one pair, and a weapon such as World at War's flamethrower has its own.
+// `defs`: the game's weapon table (pointers, index 0 unused here); `last_index`: the guest address of its last used
+// index; `center`, `side`: the two pictures' offsets in a weapon. OwnCross is true when `def`'s pair isn't the one
+// most of the level's weapons share (and it has a picture at all). Pointers are compared, nothing is read from the
+// pictures. Worked out again every 2 seconds and when the table changes. The game's thread.
+struct WeaponTable {
+  uint32_t defs, last_index, center, side;
+};
+bool OwnCross(const uint8_t* base, const WeaponTable& table, uint32_t def);
 
 // Once a UI frame, window open or not (Overlay::Options::on_frame): draws the crosshair while the game asks for it.
 void Draw();
 
-// The CROSSHAIR page: the switch, the shape's rows, a preview, the color.
+// The CROSSHAIR page: the switch, the shape's rows, a preview, the color. [acct2-ocr] 2026-11-14 the shared CS2 page
+// now (f2/f2_crosshair_cs2.h): every CS2 option, the preview in a column of its own.
 void DrawPage(PageContext& c);
 
 // Reads four big-endian floats (a color in the game's memory) at guest address `address`; false, and `rgba` left

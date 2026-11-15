@@ -34,14 +34,39 @@
  *   <restarts> restarts)
  * late: decoded a picture or more after it was due; skipped: decoded but not shown; restarts: the clock's new
  * starts within a movie.
+ *
+ * [acct2-bro] 2026-11-14 (the owner, 17:33: "BROs intro movies when above 60fps struggle to draw properly"; 17:52:
+ * the level intros too). A picture takes the decoder about 15 ms of the frame it is decoded in, and it reached the
+ * screen at the end of that frame: when the picture was due, plus up to a frame (the first frame to start after its
+ * due time), plus that decode's own time. At 60 the pictures fall on every other frame, at a steady 33.3 ms; above 60
+ * the frames don't line up with the pictures and a long decode frame moves the frames after it, so the pictures came
+ * unevenly (bm1-bm3: films at 157 fps with a limit of 240, worst frames 18-21 ms). So in the full-screen film loop
+ * (the intros, the chapter films; not a menu's background) the decoder is now called ahead of the picture's time, by
+ * the frame limit's frame plus the recent decodes' 90th percentile plus 2 ms (at most display.movie_lead_ms,
+ * BRO_MOVIE_LEAD_MS, default 30; 0 = never), and it goes on the screen at that time: each
+ * picture reaches the screen when it is due, every 33.3 ms at any frame limit, and in step with the sound. Until then
+ * the frames go on showing the picture before it (a copy taken before the decoder writes over it,
+ * ngl_movie_held_picture, ngl_present.c), and only the last frame before its time waits for it, no longer than the
+ * frame would have taken anyway (ngl_frame_clock.c), so the films keep their frame rate (bb1 held the whole frame:
+ * 90 fps under a limit of 240). A picture decoded late (a busy PC) is shown at once. When that lead doesn't fit in
+ * display.movie_lead_ms (a limit of about 90 or less, a slow decoder) nothing changes: at 60 the pictures already fall
+ * evenly on every other frame, and bt2 found a lead there worse (off even by 20% p90 against 10%), so at low frame
+ * rates the films play exactly as before (the owner, 18:15: no harm at lower fps, project wide). Each
+ * movie's log then gets a second line, how evenly its pictures reached the screen and the decoder's times:
+ *   [movie] 0x<movie>: shown every <ms> ms (p10 <ms>, p90 <ms>, max <ms>; off even by median <%>, p90 <%>), decode
+ *   median <ms> (p90 <ms>, max <ms>), <n> pictures held to their time (lead <ms> ms, the last one used)
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>              /* qsort, realloc */
+#include <string.h>              /* memcpy */
 #include <time.h>
 
 #include "recomp_types.h"
 #include "bro_settings.h"
+#include "xbox_memory_layout.h"     /* XBOX_PTR: guest memory */
 #include "ngl_frame_clock.h"
+#include "ngl_texture.h"            /* the locked picture the decoder writes into */
 #include "ngl_movie.h"
 
 /* The game's code and data (the campaign program). */
@@ -62,10 +87,41 @@
 #define PROGRESS_NS          30000000000ll  /* a movie still running reports every 30 s (menu backgrounds) */
 #define SKIP_PICTURES        2              /* further behind than this many pictures: decode the next ones at once */
 #define MAX_SKIPPED          4              /* the most pictures a call decodes without showing them */
+/* [acct2-bro] 2026-11-14: the full-screen film loop (0x00332230) calls the decoder through the movie's draw
+ * (0x0030FE00), whose indirect call returns here; a menu's background film comes through other callers */
+#define FULL_SCREEN_RETURN   0x0030FE23u
+#define DEFAULT_LEAD_MS      30             /* display.movie_lead_ms: the most a picture is decoded ahead (0: off) */
+#define MAX_LEAD_MS          30             /* less than a picture (33.3 ms), so the one before is shown first */
+#define DECODE_GUESS_NS      20000000ll     /* the decoder's time before RECENT_MIN decodes have been measured */
+#define LEAD_SPARE_NS        2000000ll      /* added to the frame and the decode */
+#define RECENT               32             /* the decodes the lead's 90th percentile is taken over */
+#define RECENT_MIN           8
+#define MAX_TIMES            4096           /* the pictures a movie's evenness numbers are kept for */
 
 static int setting = -1;        /* display.movie_pacing, read on first use */
 static int skip = -1;           /* display.skip_movies, read on first use */
 static int64_t due;             /* host time the next picture is due, 0 before the first */
+static int64_t lead_ns = -1;    /* [acct2-bro] 2026-11-14 display.movie_lead_ms, read on first use */
+static int64_t last_lead;       /* the lead the last early picture got (for the log) */
+static uint32_t recent[RECENT]; /* the last decodes' times (us), all films */
+static unsigned recent_count, recent_next;
+static int64_t show_at;         /* the decoded picture goes on the screen at this host time (0: none waiting) */
+static int picture_new;         /* a picture has been decoded since the last frame was drawn */
+/* the picture before it, copied before the decoder wrote over it, shown until show_at (bb3) */
+static struct {
+    uint8_t *pixels;
+    size_t size;                /* allocated bytes */
+    uint32_t width, height, pitch;
+    int valid;
+} before;
+
+/* [acct2-bro] 2026-11-14: how evenly the current movie's pictures reached the screen (the time from one picture's
+ * frame drawn to the next's, us), and the decoder's times (us), for the movie's second log line */
+static struct {
+    uint32_t gaps[MAX_TIMES], decodes[MAX_TIMES];
+    unsigned gap_count, decode_count, held_to_time;
+    int64_t last_drawn;         /* host time the last new picture's frame was drawn (0: none yet) */
+} times;
 
 static struct {
     uint32_t movie;             /* the movie the pictures are from */
@@ -93,10 +149,60 @@ static void print_movie(const char *so_far)
             shown.restarts);
 }
 
+static int64_t picture_ns(void);    /* below */
+
+static int compare_u32(const void *a, const void *b)
+{
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+
+    return x < y ? -1 : x > y;
+}
+
+/* The p-th percentile (0-100) of n values (sorted here, in place), in ms. */
+static double percentile_ms(uint32_t *values, unsigned n, unsigned p)
+{
+    if (!n)
+        return 0.0;
+    qsort(values, n, sizeof *values, compare_u32);
+    return values[(n - 1) * p / 100] / 1000.0;
+}
+
+/* [acct2-bro] 2026-11-14: the movie's second line: how evenly its pictures reached the screen, and the decoder. */
+static void print_times(void)
+{
+    static uint32_t off[MAX_TIMES];
+    double period_us = (double)picture_ns() / 1000.0;
+    unsigned i;
+
+    if (times.gap_count < 2)
+        return;
+    for (i = 0; i < times.gap_count; i++) {   /* each gap's distance from the picture's time, in 0.1 % */
+        double d = (double)times.gaps[i] - period_us;
+
+        off[i] = (uint32_t)((d < 0.0 ? -d : d) * 1000.0 / period_us);
+    }
+    qsort(off, times.gap_count, sizeof *off, compare_u32);
+    fprintf(stderr, "[movie] 0x%08X: shown every %.1f ms (p10 %.1f, p90 %.1f, max %.1f; off even by median %.1f%%, "
+                    "p90 %.1f%%), decode median %.1f ms (p90 %.1f, max %.1f), %u pictures held to their time "
+                    "(lead %lld ms)\n", shown.movie, percentile_ms(times.gaps, times.gap_count, 50),
+            percentile_ms(times.gaps, times.gap_count, 10), percentile_ms(times.gaps, times.gap_count, 90),
+            percentile_ms(times.gaps, times.gap_count, 100), off[(times.gap_count - 1) / 2] / 10.0,
+            off[(times.gap_count - 1) * 90 / 100] / 10.0, percentile_ms(times.decodes, times.decode_count, 50),
+            percentile_ms(times.decodes, times.decode_count, 90), percentile_ms(times.decodes, times.decode_count, 100),
+            times.held_to_time, (long long)(last_lead / 1000000));
+}
+
 static void report_movie(void)
 {
     print_movie("");
+    print_times();
     shown.pictures = shown.held = shown.late = shown.skipped = shown.restarts = 0;
+    times.gap_count = times.decode_count = times.held_to_time = 0;
+    times.last_drawn = 0;
+    show_at = 0;
+    picture_new = 0;
+    before.valid = 0;
+    last_lead = 0;
 }
 
 /* One picture's time: the game's frame interval in vblanks, at 60 a second. */
@@ -127,6 +233,27 @@ static void count_picture(uint32_t movie, int64_t now, int64_t period)
     }
     shown.pictures++;
     shown.last = now;
+    picture_new = 1;                        /* [acct2-bro] 2026-11-14: for ngl_movie_frame_drawn */
+}
+
+/* [acct2-bro] 2026-11-14: how far ahead of its time the next picture is decoded: the frame limit's frame (the decode
+ * may start that late after the lead), the recent decodes' 90th percentile and LEAD_SPARE_NS, if that fits in
+ * display.movie_lead_ms; 0 if not (at about 90 fps and below, or a slow decoder: as before). */
+static int64_t picture_lead(void)
+{
+    int64_t decode = DECODE_GUESS_NS, want;
+
+    if (lead_ns <= 0)
+        return 0;
+    if (recent_count >= RECENT_MIN) {
+        uint32_t sorted[RECENT];
+
+        memcpy(sorted, recent, recent_count * sizeof *sorted);
+        qsort(sorted, recent_count, sizeof *sorted, compare_u32);
+        decode = (int64_t)sorted[(recent_count - 1) * 90 / 100] * 1000;
+    }
+    want = ngl_frame_clock_limit_ns() + decode + LEAD_SPARE_NS;
+    return want <= lead_ns ? want : 0;
 }
 
 /* The decoder through the gate: thiscall on the movie (ecx), no stack arguments, its answer in eax. */
@@ -136,6 +263,9 @@ static void decode_when_due(void)
     uint32_t movie = g_ecx, back = MEM32(g_esp);   /* the caller's return address */
     int64_t now = now_ns(), period = picture_ns();
     int gated = setting && !ngl_frame_clock_paced(), extra;
+    /* [acct2-bro] 2026-11-14: in the full-screen film loop, with the port pacing the frames, decode ahead of the
+     * picture's time and hold the frame's picture until then (see the top of the file) */
+    int64_t lead = gated && back == FULL_SCREEN_RETURN ? picture_lead() : 0, picture_due, started;
 
     if (skip) {
         static unsigned skipped_calls;
@@ -148,7 +278,7 @@ static void decode_when_due(void)
     }
     if (shown.pictures && movie != shown.movie)
         report_movie();
-    if (gated && due && now < due - EARLY_NS) {
+    if (gated && due && now < due - (lead > EARLY_NS ? lead : EARLY_NS)) {
         g_eax = DECODER_NOTHING_YET;        /* not due: the last picture stays */
         g_esp += 4;                         /* ret: the caller pushed only the return address */
         shown.held++;
@@ -159,9 +289,51 @@ static void decode_when_due(void)
         g_esp += 4;
         return;
     }
+    picture_due = due;                      /* [acct2-bro] 2026-11-14: this picture's time (0: the first) */
+    before.valid = 0;
+    if (lead && picture_due > now) {        /* early: keep the picture on the screen until the new one's time */
+        uint32_t buffer, width, height, pitch;
+
+        if (ngl_texture_last_lock(&buffer, &width, &height, &pitch)) {
+            size_t size = (size_t)pitch * height;
+
+            if (size > before.size) {
+                uint8_t *grown = realloc(before.pixels, size);
+
+                if (grown) {
+                    before.pixels = grown;
+                    before.size = size;
+                }
+            }
+            if (size <= before.size) {
+                memcpy(before.pixels, (const void *)XBOX_PTR(buffer), size);
+                before.width = width;
+                before.height = height;
+                before.pitch = pitch;
+                before.valid = 1;
+            }
+        }
+    }
+    started = now_ns();
     decoder();                              /* pops the return address itself */
     if (g_eax != DECODER_PICTURE)
         return;                             /* nothing yet, or the end: try again next frame */
+    {
+        uint32_t took = (uint32_t)((now_ns() - started) / 1000);
+
+        if (times.decode_count < MAX_TIMES)
+            times.decodes[times.decode_count++] = took;
+        recent[recent_next] = took;         /* for picture_lead */
+        recent_next = (recent_next + 1) % RECENT;
+        if (recent_count < RECENT)
+            recent_count++;
+    }
+    if (lead && picture_due) {
+        show_at = picture_due;              /* the frame shows it at its time (ngl_movie_show_at), if still ahead */
+        last_lead = lead;
+        if (picture_due > now_ns())
+            times.held_to_time++;
+    }
     count_picture(movie, now, period);
     for (extra = 0; gated && extra < MAX_SKIPPED && now - due > SKIP_PICTURES * period; extra++) {
         g_esp -= 4;                         /* the same call again, as the movie's draw makes it */
@@ -174,6 +346,8 @@ static void decode_when_due(void)
             return;                         /* (the end of the movie answers the end) */
         }
         shown.skipped++;                    /* the one before it was decoded but never shown */
+        show_at = 0;                        /* [acct2-bro] 2026-11-14: behind: the last one at once */
+        before.valid = 0;
         now = now_ns();
         count_picture(movie, now, period);
     }
@@ -194,6 +368,18 @@ recomp_func_t ngl_movie_method_for(uint32_t xbox_va)
         if (skip)
             fprintf(stderr, "[movie] movies are skipped (display.skip_movies)\n");
     }
+    if (lead_ns < 0) {      /* [acct2-bro] 2026-11-14 */
+        int ms = bro_setting_int("display.movie_lead_ms", "BRO_MOVIE_LEAD_MS", DEFAULT_LEAD_MS);
+
+        if (ms < 0)
+            ms = 0;
+        if (ms > MAX_LEAD_MS)
+            ms = MAX_LEAD_MS;
+        lead_ns = (int64_t)ms * 1000000;
+        fprintf(stderr, "[movie] %s (display.movie_lead_ms %d)\n", ms ? "full-screen films: each picture decoded "
+                "ahead and shown at its own time when the frame limit leaves room (above about 90 fps)"
+                : "full-screen films: each picture shown as it is decoded", ms);
+    }
     return decode_when_due;         /* off, it only counts the pictures */
 }
 
@@ -205,6 +391,45 @@ void ngl_movie_frame_end(int64_t now)
         report_movie();
     } else if (now - shown.reported > PROGRESS_NS) {
         print_movie(" so far");
+        print_times();                      /* [acct2-bro] 2026-11-14 */
         shown.reported = now;
     }
+}
+
+/* [acct2-bro] 2026-11-14: the host time the decoded picture is to go on the screen (0: none waiting). */
+int64_t ngl_movie_show_at(void)
+{
+    return show_at;
+}
+
+/* [acct2-bro] 2026-11-14: the decoded picture goes on the screen with this frame. */
+void ngl_movie_show_now(void)
+{
+    show_at = 0;
+    before.valid = 0;
+}
+
+/* [acct2-bro] 2026-11-14: while a decoded picture waits for its time, the picture before it (a host copy) for the
+ * frame to show; 0 when the locked picture is the one to show. */
+int ngl_movie_held_picture(const uint8_t **pixels, uint32_t *width, uint32_t *height, uint32_t *pitch)
+{
+    if (!show_at || !before.valid)
+        return 0;
+    *pixels = before.pixels;
+    *width = before.width;
+    *height = before.height;
+    *pitch = before.pitch;
+    return 1;
+}
+
+/* [acct2-bro] 2026-11-14: the frame has been drawn at host time drawn (ns): when it carries a new picture, the time
+ * since the last one's goes to the movie's evenness numbers. */
+void ngl_movie_frame_drawn(int64_t drawn)
+{
+    if (!picture_new || show_at)
+        return;                             /* no new picture, or it is still waiting for its time */
+    picture_new = 0;
+    if (times.last_drawn && times.gap_count < MAX_TIMES)
+        times.gaps[times.gap_count++] = (uint32_t)((drawn - times.last_drawn) / 1000);
+    times.last_drawn = drawn;
 }

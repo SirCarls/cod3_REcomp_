@@ -59,8 +59,9 @@ inline bool IsSixteenByNine(float aspect) {
 // resolution's for kMatchResolution, else the chosen shape.
 float AspectForWindow(uint32_t width, uint32_t height);
 
-// A picture shape as written: "W:H" (24:10, 2.39:1) or a number (2.39),
-// whatever its value. False when the text isn't one.
+// A picture shape as written: "W:H" (24:10, 2.39:1), "WxH" or "W/H" (21x9,
+// 21/9; [acct2-main] 2026-11-13) or a number (2.39), whatever its value.
+// False when the text isn't one.
 bool ParseAspectText(const std::string& text, float* aspect);
 // The same, kept between kMinAspect and kMaxAspect: what the game uses for a
 // shape of the player's own in cod3_aspect_ratio.

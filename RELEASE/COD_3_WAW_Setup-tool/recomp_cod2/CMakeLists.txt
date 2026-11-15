@@ -37,6 +37,8 @@ if(EXISTS "${COD3_RECOMP_SRC}/f2/f2_window.cpp" AND EXISTS "${COD3_RECOMP_SRC}/u
         "${CMAKE_CURRENT_SOURCE_DIR}/src/cod2_f2.cpp"  # Call of Duty 2's pages and colors
         "${COD3_RECOMP_SRC}/f2/f2_common.cpp"          # the shared window (these six)
         "${COD3_RECOMP_SRC}/f2/f2_accel.cpp"           # [f2-menus] 2026-11-11 mouse acceleration, randomizer, scales
+        "${COD3_RECOMP_SRC}/f2/f2_crosshair_cs2.cpp"    # [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
+        "${COD3_RECOMP_SRC}/f2/crosshair_cs2_code.cpp"  # [acct2-decomp] CS2's share codes (copied in by acct2-ocr)
         "${COD3_RECOMP_SRC}/f2/f2_console.cpp"
         "${COD3_RECOMP_SRC}/f2/f2_pad.cpp"
         "${COD3_RECOMP_SRC}/f2/f2_rows.cpp"

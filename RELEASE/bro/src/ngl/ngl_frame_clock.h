@@ -8,6 +8,9 @@
  * them (display.max_fps or BRO_FRAME_PACING=0). */
 int ngl_frame_clock_paced(void);
 
+/* [acct2-bro] 2026-11-14: the port's frame limit's shortest frame in ns (display.max_fps), 0 with no limit. */
+int64_t ngl_frame_clock_limit_ns(void);
+
 /* What nglBeginFrame records about the time: the vblank count and the time stamp counter when the frame began. */
 void ngl_frame_clock_begin_frame(void);
 

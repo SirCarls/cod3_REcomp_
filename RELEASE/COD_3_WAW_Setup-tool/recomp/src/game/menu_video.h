@@ -94,7 +94,9 @@ std::string Note(int row);
 std::string Step(PPCContext& ctx, uint8_t* base, int row, bool right);
 
 // Remembers the settings the running game started with, to tell which rows
-// wait for a restart. Called when the options pages are made (at start).
+// wait for a restart. [acct2-main] 2026-11-14 SetSaveHandler calls it (both
+// apps, in OnPostSetup); the calls when the options pages are made then do
+// nothing.
 void NoteStartValues();
 
 // The game's Localize hook (game/menu_fov.cpp) asks here first: a guest

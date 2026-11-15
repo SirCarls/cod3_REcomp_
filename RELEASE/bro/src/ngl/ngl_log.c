@@ -62,8 +62,9 @@ static void print_summary(void)
  *
  * Off unless BRO_HOST_MXCSR=1 (2026-11-08 12:45, for 2.38.1): with it on, all of the port's float math rounds toward
  * zero, and each frame trims the player's position toward 0, so a player standing still creeps at high frame rates
- * (d243: 1.4 units in 68 s at 20 fps, 4.4 at 60, 45.8 uncapped). The planned fix keeps the truncation inside the
- * fast sine/cosine 0x000110F0 alone (a hand-written version; acct2-bro NOTES 2026-11-08 12:15-12:45). */
+ * (d243: 1.4 units in 68 s at 20 fps, 4.4 at 60, 45.8 uncapped). [acct2-bro] 2026-11-13: the truncation is now kept
+ * inside the fast sine/cosine 0x000110F0 alone (bro/src/runtime/bro_fast_sincos.c), which fixes the camera's fish eye
+ * after a turn (the owner, 16:00) and the soldiers' widths with this left off. */
 #define MXCSR_FOLLOWED      0xE040u     /* RC (bits 13-14), FTZ (15), DAZ (6) */
 #define MXCSR_ALL_MASKED    0x1F80u
 

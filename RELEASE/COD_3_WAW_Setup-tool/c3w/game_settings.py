@@ -381,7 +381,8 @@ SETTINGS: List[Setting] = [
             "How long Use is held to pick up a weapon or ammo, man a gun or get into a vehicle. The game's own is "
             "250 ms; 0 makes it a press, and the hints then say \"Press\" instead of \"Press and hold\". On a "
             "controller Use is also Reload, so at 0 a press near a weapon picks it up instead of reloading. "
-            "Planting a charge or opening a gate keeps its own time. In multiplayer the host's setting counts.",
+            "Planting a charge or opening a gate keeps its own time. In multiplayer each player's own setting "
+            "counts, on their own console (split-screen players 2 to 4: the game's F2 > Prompts).",  # [acct2-main]
             "int", ((-1, "The game's (250 ms)"), (0, "0 (a press)"), (100, "100"), (250, "250")),
             min=-1, max=1000, default=-1),
 ]

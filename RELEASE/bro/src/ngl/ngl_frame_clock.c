@@ -197,7 +197,7 @@ static void read_frame_limit(void)
 }
 
 /* One frame's parts added up; once a second they go to the counter, and every display.fps_log seconds to the log. */
-static void count_frame(int64_t draw_start, int64_t draw_end, int64_t wait_end, int64_t frame_end)
+static void count_frame(int64_t draw_start, int64_t draw_end, int64_t wait_end, int64_t frame_end, int64_t held)
 {
     int64_t frame;
     double seconds;
@@ -210,8 +210,8 @@ static void count_frame(int64_t draw_start, int64_t draw_end, int64_t wait_end, 
     }
     frame = frame_end - parts.frame_end;
     parts.game += draw_start - parts.frame_end;
-    parts.drawing += draw_end - draw_start;
-    parts.wait += wait_end - draw_end;
+    parts.drawing += draw_end - draw_start - held;  /* [acct2-bro] 2026-11-14: a film picture's hold is a wait */
+    parts.wait += wait_end - draw_end + held;
     if (frame > parts.worst)
         parts.worst = frame;
     parts.frames++;
@@ -340,6 +340,12 @@ int ngl_frame_clock_paced(void)
     return pacing;
 }
 
+/* [acct2-bro] 2026-11-14: the port's frame limit's shortest frame (ns), 0 with no limit. */
+int64_t ngl_frame_clock_limit_ns(void)
+{
+    return limit_ns;
+}
+
 void ngl_frame_clock_begin_frame(void)
 {
     uint64_t tsc = xbox_ReadTimeStampCounter();
@@ -351,7 +357,7 @@ void ngl_frame_clock_begin_frame(void)
 
 void ngl_frame_clock_end_frame(void)
 {
-    int64_t now = now_ns(), drawn, waited;
+    int64_t now = now_ns(), drawn, waited, show_at, held = 0;
     uint32_t interval = MEM32(NGL_FRAME_INTERVAL);
     uint64_t vblank, due;
 
@@ -361,7 +367,27 @@ void ngl_frame_clock_end_frame(void)
     }
     if (interval > MAX_INTERVAL)
         interval = MAX_INTERVAL;
+    /* [acct2-bro] 2026-11-14: a full-screen film's decoded picture goes on the screen at its own time (ngl_movie.c,
+     * display.movie_lead_ms). While the next frame could still be drawn before that time, this one shows the picture
+     * before it (ngl_movie_held_picture); otherwise this frame waits for the time and shows it. The wait is never
+     * longer than until the next frame could have started (next_start, the frame limit), so the frame rate stays;
+     * a time far off (a clock that jumped) is not waited for. */
+    show_at = ngl_movie_show_at();
+    if (show_at) {
+        int64_t t = now_ns(), soonest_next = next_start > t ? next_start : t;
+
+        if (show_at - t > 100000000) {
+            ngl_movie_show_now();
+        } else if (show_at <= soonest_next + 300000) {
+            if (show_at > t) {
+                wait_precisely_until(show_at);
+                held = now_ns() - t;
+            }
+            ngl_movie_show_now();
+        }
+    }
     ngl_present_frame();
+    ngl_movie_frame_drawn(now_ns());    /* [acct2-bro] 2026-11-14: for the film's evenness numbers */
     ngl_quad_end_frame();
     ngl_mesh_end_frame();
     ngl_quad_batch_end_frame();
@@ -398,7 +424,7 @@ void ngl_frame_clock_end_frame(void)
     flip_vblank = vblank;
     bro_view_apply();
     bro_game_cvars_frame();     /* [f2-menus] the F2 window's changes to the game's cvars go in at the frame's end */
-    count_frame(now, drawn, waited, now_ns());
+    count_frame(now, drawn, waited, now_ns(), held);
 }
 
 /* nglAdvanceShaderTime (0x00045640): time += seconds, the vector's four words kept at 0x00901EA0, and then, as the

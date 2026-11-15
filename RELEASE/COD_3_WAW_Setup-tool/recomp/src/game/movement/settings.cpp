@@ -69,10 +69,15 @@ const char* PartCvar(int row) {
   return nullptr;
 }
 
-// In a match whose rule isn't "each player's own", the server decides the
-// style and the parts (alternate_movement 0 or 1).
-bool ServerDecidesStyle() {
-  return pd::IsLocked() && pd::Get(pd::Id::kAlternateMovement) != static_cast<int>(MatchMode::kPlayersChoice);
+// The rule in force (alternate_movement 0 or 1, anything but "each player's
+// own") decides the style and the parts: a guest's comes from the match's
+// server, and in the campaign, where you are the host, it is your own rule in
+// F2 > Game > Server.
+// [acct2-main] 2026-11-14 Was the guest's case only (IsLocked), so a campaign
+// rule of 0 or 1 left these rows showing, and changing, a style the movement
+// didn't follow (owner 17:42 review: dev/agents/acct2-main/SETTINGS-REVIEW.md 3.1).
+bool RuleDecidesStyle() {
+  return pd::Get(pd::Id::kAlternateMovement) != static_cast<int>(MatchMode::kPlayersChoice);
 }
 
 bool SetCvar(const char* name, const char* value) {
@@ -139,7 +144,8 @@ const char* RowLabel(int row) {
 const char* RowHelp(int row) {
   switch (row) {
     case kRowSprint:
-      return "Sprint in the campaign: Shift (keyboard), or L3 while pushing the left stick forward. Off is the console game.";
+      return "Sprint in the campaign: the Sprint key (Shift by default), or L3 while pushing the left stick forward. Off is "
+             "the console game.";  // [acct2-main] 2026-11-14 the key can be bound to another
     case kRowSprintButton:
       return "Hold to sprint, or press once: a toggle ends when you stop moving forward, aim, fire or press again.";
     case kRowStyle:
@@ -164,12 +170,12 @@ std::string RowValue(int row) {
     case kRowStyle:
       // Short: "CALL OF DUTY 3" is wider than the menu's value box (rebase run
       // 2026-10-16: it ran into the right arrow).
-      if (ServerDecidesStyle()) return effective.cod4 ? "COD4" : "COD3";
+      if (RuleDecidesStyle()) return effective.cod4 ? "COD4" : "COD3";
       return OwnPreference().cod4 ? "COD4" : "COD3";
     default: break;
   }
   Preference pref = OwnPreference();
-  if (ServerDecidesStyle()) pref = Preference{effective.cod4, effective.parts};
+  if (RuleDecidesStyle()) pref = Preference{effective.cod4, effective.parts};
   bool* on = nullptr;
   if (!PartFlag(row, pref, &on)) return "";
   return *on ? "ON" : "OFF";
@@ -177,7 +183,9 @@ std::string RowValue(int row) {
 
 std::string RowLock(int row) {
   if (row == kRowSprint && !kProgram.sprint_is_a_setting) return "Multiplayer always has sprint.";
-  if (row >= kRowStyle && ServerDecidesStyle()) return "Set by the server in this match.";
+  if (row >= kRowStyle && RuleDecidesStyle())
+    return pd::IsLocked() ? "Set by the server in this match."
+                          : "Set by your movement rule (F2 > Game > Server).";  // [acct2-main] 2026-11-14
   if (row >= kRowCod4Sprint && row <= kRowCod4Jumps && !OwnPreference().cod4)
     return "Only with the Call of Duty 4 movement style.";
   // [claude-9b-think] 2026-11-02 UNTESTED CoD4 sprint is a kind of sprint: with SPRINT off there is none (SprintAllowed),
@@ -289,7 +297,7 @@ bool DrawF2Section() {
     changed |= TwoValueRow(kRowSprint, "Sprint", "Off", "On", SprintSetting());
   changed |= TwoValueRow(kRowSprintButton, "Sprint button", "Hold", "Toggle",
                          SprintButtonMode() == SprintMode::kToggle);
-  const bool show_server = ServerDecidesStyle();
+  const bool show_server = RuleDecidesStyle();
   changed |= TwoValueRow(kRowStyle, "Movement style", "CoD3 (as on the console)", "CoD4",
                          show_server ? effective.cod4 : OwnPreference().cod4);
   ImGui::Indent();

@@ -594,6 +594,16 @@ bool Load(T& fn, const char* name) {
 
 bool LoadVulkan() {
   g_get_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_Vulkan_GetVkGetInstanceProcAddr());
+#if defined(_WIN32)
+  // [acct2-ocr] 2026-11-12: the SDK's Windows SDL3 is built without Vulkan, so it opens no loader (bro/README.md);
+  // ngl_vk has opened vulkan-1.dll itself by now (ngl_vk_functions.h) and the instance is ngl_vk's, so the loader's
+  // own vkGetInstanceProcAddr serves. SDL_LoadObject on a DLL already loaded only adds a reference.
+  if (!g_get_proc) {                                                                              // [acct2-ocr]
+    if (SDL_SharedObject* loader = SDL_LoadObject("vulkan-1.dll"))                               // [acct2-ocr]
+      g_get_proc = reinterpret_cast<PFN_vkGetInstanceProcAddr>(SDL_LoadFunction(loader, "vkGetInstanceProcAddr"));
+    if (g_get_proc) std::fprintf(stderr, "[f2] Vulkan functions from vulkan-1.dll (SDL has no Vulkan loader)\n");
+  }                                                                                               // [acct2-ocr]
+#endif
   if (!g_get_proc) {
     std::fprintf(stderr, "[f2] SDL has no Vulkan loader open (%s): the F2 window is off\n", SDL_GetError());
     return false;

@@ -23,6 +23,7 @@
 #include <rex/logging.h>
 #include <rex/ui/window.h>
 
+#include "f2/f2_crosshair_cs2.h"  // [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
 #include "f2/f2_rows.h"
 #include "f2/f2_theme.h"
 #include "f2/f2_window.h"
@@ -221,6 +222,19 @@ REXCVAR_DEFINE_STRING(f2_crosshair_color_enemy, "255 0 0 255", "f2/Crosshair",
                       "Own crosshair color over an enemy: \"red green blue alpha\", 0-255 each");
 REXCVAR_DEFINE_STRING(f2_crosshair_color_friendly, "64 255 64 255", "f2/Crosshair",
                       "Own crosshair color over a friendly: \"red green blue alpha\", 0-255 each");
+// [acct2-ocr] 2026-11-14 (owner 15:22: "Please copy EVERY option from CS2's crosshair settings and start transfering
+// it to all the f2 menus"; 15:24: "each individual splitscreen player should be able to have their own custom
+// crosshair"): each player's whole crosshair, every CS2 option, as key=value text (f2/f2_crosshair_cs2.h). Player 1's
+// starts from the f2_crosshair_* settings above and is written back to them; players 2 to 4 use player 1's until
+// given their own.
+REXCVAR_DEFINE_STRING(f2_crosshair_p1, "", "f2/Crosshair",
+                      "Player 1's crosshair, every CS2 option (F2 > CROSSHAIR); empty: the f2_crosshair_* settings");
+REXCVAR_DEFINE_STRING(f2_crosshair_p2, "", "f2/Crosshair",
+                      "Split-screen player 2's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
+REXCVAR_DEFINE_STRING(f2_crosshair_p3, "", "f2/Crosshair",
+                      "Split-screen player 3's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
+REXCVAR_DEFINE_STRING(f2_crosshair_p4, "", "f2/Crosshair",
+                      "Split-screen player 4's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
 REXCVAR_DEFINE_BOOL(f2_debug_crosshair, false, "f2",
                     "Debug: log once a second where the custom crosshair is drawn, its color and alpha (tests)");
 
@@ -1763,6 +1777,11 @@ void SendGameNumbers(const std::function<void(std::string)>& push) {
 }
 
 // ------------------------------------------------------------------------------------------------- crosshair
+// [acct2-ocr] 2026-11-14 (owner 15:22, 15:24) The custom crosshair is the shared CS2 one now (f2/f2_crosshair_cs2.h):
+// every CS2 option, the game's own spread for the dynamic styles, each pixel as CS2's shader shades it. The hooks,
+// the capture of the game's own side pieces and the spread are f2-menus' as before. Only player 1's view is drawn
+// yet: the hooks give view 0 (the whole picture's middle); the split-screen players come with each game's view and
+// local client in the hook, and the page shows one player until then.
 namespace crosshair {
 
 namespace {
@@ -1774,6 +1793,7 @@ std::atomic<float> g_asked_spread{0.0f};  // the game's 640 x 480 HUD units
 
 // The capture of the game's own side pieces (the game's thread).
 thread_local bool t_capturing = false;
+thread_local bool t_hiding = false;  // [acct2-ocr] 2026-11-14 false: Both, the game's pieces stay drawn
 thread_local int t_rects = 0;
 thread_local float t_x[4] = {};
 thread_local float t_width[4] = {};
@@ -1790,113 +1810,96 @@ float ReadGuestFloat(const uint8_t* base, uint32_t address) {
 // a cutscene, the sights raised).
 constexpr int64_t kShownNs = 150'000'000;
 
+// [acct2-ocr] 2026-11-14 the special crosshairs this port's hooks tell apart (OfferSpecial, 1 << xhair::kSpecial*).
+std::atomic<uint32_t> g_special_kinds{0};
+
 int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
       .count();
 }
 
-struct Shape {
-  int style;
-  float size, thickness, gap, outline_thickness;
-  bool outline, dot;
-};
-
-Shape CurrentShape() {
-  return {REXCVAR_GET(f2_crosshair_style),
-          float(REXCVAR_GET(f2_crosshair_size)),
-          float(REXCVAR_GET(f2_crosshair_thickness)),
-          float(REXCVAR_GET(f2_crosshair_gap)),
-          float(REXCVAR_GET(f2_crosshair_outline_thickness)),
-          REXCVAR_GET(f2_crosshair_outline),
-          REXCVAR_GET(f2_crosshair_dot)};
+// The shared crosshair on this window's settings, once (the UI thread): the four players' text settings, player 1's
+// old f2_crosshair_* names both ways, and what the hooks give (the spread; one view).
+void BindOnce() {
+  static bool bound = false;
+  if (bound) return;
+  bound = true;
+  xhair::Bind(
+      {"f2_crosshair_p1", "f2_crosshair_p2", "f2_crosshair_p3", "f2_crosshair_p4"},
+      [] {
+        xhair::Legacy l;
+        l.enabled = REXCVAR_GET(f2_crosshair);
+        l.shape = REXCVAR_GET(f2_crosshair_style);
+        l.size = REXCVAR_GET(f2_crosshair_size);
+        l.thickness = REXCVAR_GET(f2_crosshair_thickness);
+        l.gap = REXCVAR_GET(f2_crosshair_gap);
+        l.outline = REXCVAR_GET(f2_crosshair_outline);
+        l.outline_thickness = REXCVAR_GET(f2_crosshair_outline_thickness);
+        l.dot = REXCVAR_GET(f2_crosshair_dot);
+        l.constant_color = REXCVAR_GET(f2_crosshair_constant_color);
+        l.color = REXCVAR_GET(f2_crosshair_color);
+        l.own_colors = REXCVAR_GET(f2_crosshair_own_colors);
+        l.colors[xhair::kCaseNormal] = REXCVAR_GET(f2_crosshair_color_normal);
+        l.colors[xhair::kCaseEnemy] = REXCVAR_GET(f2_crosshair_color_enemy);
+        l.colors[xhair::kCaseFriendly] = REXCVAR_GET(f2_crosshair_color_friendly);
+        l.dynamic = REXCVAR_GET(f2_crosshair_dynamic);
+        l.dynamic_scale = REXCVAR_GET(f2_crosshair_dynamic_scale);
+        l.split_distance = REXCVAR_GET(f2_crosshair_split_distance);
+        l.split_ratio = REXCVAR_GET(f2_crosshair_split_ratio);
+        l.split_alpha_inner = REXCVAR_GET(f2_crosshair_split_alpha_inner);
+        l.split_alpha_outer = REXCVAR_GET(f2_crosshair_split_alpha_outer);
+        return l;
+      },
+      [](const xhair::Legacy& l) {
+        REXCVAR_SET(f2_crosshair, l.enabled);
+        REXCVAR_SET(f2_crosshair_style, std::clamp(l.shape, 0, 4));
+        REXCVAR_SET(f2_crosshair_size, l.size);
+        REXCVAR_SET(f2_crosshair_thickness, l.thickness);
+        REXCVAR_SET(f2_crosshair_gap, l.gap);
+        REXCVAR_SET(f2_crosshair_outline, l.outline);
+        REXCVAR_SET(f2_crosshair_outline_thickness, l.outline_thickness);
+        REXCVAR_SET(f2_crosshair_dot, l.dot);
+        REXCVAR_SET(f2_crosshair_constant_color, l.constant_color);
+        REXCVAR_SET(f2_crosshair_color, l.color);
+        REXCVAR_SET(f2_crosshair_own_colors, l.own_colors);
+        REXCVAR_SET(f2_crosshair_color_normal, l.colors[xhair::kCaseNormal]);
+        REXCVAR_SET(f2_crosshair_color_enemy, l.colors[xhair::kCaseEnemy]);
+        REXCVAR_SET(f2_crosshair_color_friendly, l.colors[xhair::kCaseFriendly]);
+        REXCVAR_SET(f2_crosshair_dynamic, std::clamp(l.dynamic, 0, 2));
+        REXCVAR_SET(f2_crosshair_dynamic_scale, l.dynamic_scale);
+        REXCVAR_SET(f2_crosshair_split_distance, l.split_distance);
+        REXCVAR_SET(f2_crosshair_split_ratio, l.split_ratio);
+        REXCVAR_SET(f2_crosshair_split_alpha_inner, l.split_alpha_inner);
+        REXCVAR_SET(f2_crosshair_split_alpha_outer, l.split_alpha_outer);
+      });
+  xhair::Caps caps;
+  caps.players = 1;     // the hooks give view 0 only, so far
+  caps.spread = true;   // measured from the game's own side pieces (CaptureEnd)
+  caps.special = g_special_kinds.load(std::memory_order_relaxed);  // [acct2-ocr] 2026-11-14
+  xhair::SetCaps(caps);
 }
 
-// "r g b a" (0-255 each) to 0-1 floats; white when it can't be read.
-void ParseColor(const std::string& text, float rgba[4]) {
-  int v[4] = {255, 255, 255, 255};
-  if (std::sscanf(text.c_str(), "%d %d %d %d", &v[0], &v[1], &v[2], &v[3]) < 3) v[0] = v[1] = v[2] = v[3] = 255;
-  for (int i = 0; i < 4; ++i) rgba[i] = float(std::clamp(v[i], 0, 255)) / 255.0f;
+// [acct2-ocr] 2026-11-14 A port that says its special crosshairs after the page was first drawn: its rows appear then.
+void SyncSpecialKinds() {
+  const uint32_t kinds = g_special_kinds.load(std::memory_order_relaxed);
+  if (xhair::GetCaps().special == kinds) return;
+  xhair::Caps caps = xhair::GetCaps();
+  caps.special = kinds;
+  xhair::SetCaps(caps);
 }
 
-// Call of Duty 3's shapes (ui/hud_overlay.cpp DrawCrosshairShape): `extra` widens every bar for the outline.
-// `open` is how far the lines are pushed out (pixels: the dynamic spread). The four lines from `from` to `from + len`
-// out of the middle, `t` thick.
-void DrawArms(ImDrawList* dl, ImVec2 c, bool top, float from, float len, float t, ImU32 col) {
-  if (len <= 0.0f) return;
-  auto bar = [&](float x0, float y0, float x1, float y1) {
-    dl->AddRectFilled(ImVec2(std::floor(x0), std::floor(y0)), ImVec2(std::floor(x1), std::floor(y1)), col);
-  };
-  if (top) bar(c.x - t / 2, c.y - from - len, c.x + t / 2, c.y - from);  // up
-  bar(c.x - t / 2, c.y + from, c.x + t / 2, c.y + from + len);            // down
-  bar(c.x - from - len, c.y - t / 2, c.x - from, c.y + t / 2);            // left
-  bar(c.x + from, c.y - t / 2, c.x + from + len, c.y + t / 2);            // right
+uint32_t ReadGuestU32(const uint8_t* base, uint32_t address) {
+  uint32_t v;
+  std::memcpy(&v, base + address, sizeof(v));
+  return __builtin_bswap32(v);
 }
 
-ImU32 WithAlpha(ImU32 col, float factor) {
-  const ImU32 a = ImU32(float((col >> IM_COL32_A_SHIFT) & 0xFF) * std::clamp(factor, 0.0f, 1.0f) + 0.5f);
-  return (col & ~IM_COL32_A_MASK) | (a << IM_COL32_A_SHIFT);
-}
-
-void DrawShape(ImDrawList* dl, ImVec2 c, const Shape& s, float scale, ImU32 col, float extra, float open = 0.0f) {
-  const float t = s.thickness * scale + extra * 2.0f;
-  const float len = s.size * scale + extra * 2.0f;
-  const float gap = s.gap * scale - extra;
-  auto bar = [&](float x0, float y0, float x1, float y1) {
-    dl->AddRectFilled(ImVec2(std::floor(x0), std::floor(y0)), ImVec2(std::floor(x1), std::floor(y1)), col);
-  };
-  const bool cross = s.style == 0 || s.style == 1 || s.style == 4;
-  if (cross && len > 0.0f) {
-    const int dynamic = REXCVAR_GET(f2_crosshair_dynamic);
-    const float split_at = float(REXCVAR_GET(f2_crosshair_split_distance)) * scale;
-    if (dynamic == 2 && open > split_at) {
-      // CS2's Classic: the inner part of each line stops at the split distance, the outer part goes on with the
-      // spread, each with its own opacity.
-      const float ratio = std::clamp(float(REXCVAR_GET(f2_crosshair_split_ratio)), 0.0f, 1.0f);
-      const float core = s.size * scale;  // without the outline's widening
-      const float inner = core * (1.0f - ratio) + extra * 2.0f;
-      const float outer = core * ratio + extra * 2.0f;
-      DrawArms(dl, c, s.style != 4, gap + split_at, inner, t,
-               WithAlpha(col, float(REXCVAR_GET(f2_crosshair_split_alpha_inner))));
-      DrawArms(dl, c, s.style != 4, gap + open + core * (1.0f - ratio), outer, t,
-               WithAlpha(col, float(REXCVAR_GET(f2_crosshair_split_alpha_outer))));
-    } else {
-      DrawArms(dl, c, s.style != 4, gap + (dynamic != 0 ? open : 0.0f), len, t, col);
-    }
-  }
-  if (s.style == 3)
-    dl->AddCircle(c, std::max(2.0f, s.gap * scale + s.size * scale * 0.5f +
-                                        (REXCVAR_GET(f2_crosshair_dynamic) != 0 ? open : 0.0f)),
-                  col, 48, s.thickness * scale + extra * 2.0f);
-  if (s.dot || s.style == 1 || s.style == 2) {
-    const float d = std::max(1.0f, t);
-    bar(c.x - d / 2, c.y - d / 2, c.x + d / 2, c.y + d / 2);
-  }
-}
-
-void DrawAt(ImDrawList* dl, ImVec2 c, float scale, const float rgba[4], float open) {
-  const Shape s = CurrentShape();
-  if (s.outline)
-    DrawShape(dl, c, s, scale, IM_COL32(0, 0, 0, int(rgba[3] * 255.0f)), s.outline_thickness * scale, open);
-  DrawShape(dl, c, s, scale, ImGui::ColorConvertFloat4ToU32(ImVec4(rgba[0], rgba[1], rgba[2], rgba[3])), 0.0f, open);
-}
-
-// The game's color (white, red over an enemy, green over a friendly: CG_CalcCrosshairColor) replaced by the
-// player's own for that case, keeping the game's alpha (its fades) times the own color's.
-void ApplyOwnColor(float rgba[4]) {
-  const char* setting = "f2_crosshair_color_normal";
-  if (rgba[0] > 0.9f && rgba[1] < 0.6f && rgba[2] < 0.6f) setting = "f2_crosshair_color_enemy";
-  if (rgba[1] > 0.9f && rgba[0] < 0.6f && rgba[2] < 0.6f) setting = "f2_crosshair_color_friendly";
-  float own[4];
-  ParseColor(Get(setting), own);
-  rgba[0] = own[0];
-  rgba[1] = own[1];
-  rgba[2] = own[2];
-  rgba[3] *= own[3];
-}
+// A weapon pointer that can be read: in the game's data or its heap, never a small number or the top of memory.
+bool PlausibleGuest(uint32_t address) { return address >= 0x10000000u && address < 0xF0000000u; }
 
 }  // namespace
 
-bool Enabled() { return REXCVAR_GET(f2_crosshair); }
+bool Enabled() { return xhair::Enabled(0); }
 
 void Notify(int view, const float rgba[4], float spread) {
   if (view != 0) return;
@@ -1905,12 +1908,86 @@ void Notify(int view, const float rgba[4], float spread) {
   g_asked_ns.store(NowNs(), std::memory_order_relaxed);
 }
 
-void CaptureBegin() {
+void CaptureBegin(bool keep_game) {
   t_capturing = true;
+  t_hiding = !keep_game;
   t_rects = 0;
 }
 
 bool Capturing() { return t_capturing; }
+
+bool Hiding() { return t_capturing && t_hiding; }
+
+// [acct2-ocr] 2026-11-14 the special crosshairs (f2_common.h).
+void OfferSpecial(uint32_t kinds) { g_special_kinds.store(kinds, std::memory_order_relaxed); }
+
+xhair::Plan PlanFor(int kind) { return xhair::PlanFor(0, kind); }
+
+void NotifyPlain() {
+  static constexpr float kWhite[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  Notify(0, kWhite, 0.0f);
+}
+
+bool OwnCross(const uint8_t* base, const WeaponTable& t, uint32_t def) {
+  if (!PlausibleGuest(def)) return false;
+  const uint32_t center = ReadGuestU32(base, def + t.center), side = ReadGuestU32(base, def + t.side);
+  if (center == 0 && side == 0) return false;  // no pictures: the game draws nothing there, nor does the port
+  // The pair most of the level's weapons share, from its weapon table: again every 2 seconds, and at once when the
+  // table's size or its first weapon changes (a new level).
+  struct Common {
+    bool scanned = false, known = false;
+    uint32_t last = 0, first = 0, center = 0, side = 0;
+    int weapons = 0, shared = 0;
+    int64_t at = 0;
+  };
+  thread_local Common c;
+  constexpr uint32_t kMaxWeapons = 1024;
+  const uint32_t last = ReadGuestU32(base, t.last_index);
+  const bool sane = last >= 1 && last < kMaxWeapons;
+  const uint32_t first = sane ? ReadGuestU32(base, t.defs + 4) : 0;
+  const int64_t now = NowNs();
+  if (!c.scanned || last != c.last || first != c.first || now - c.at > 2'000'000'000) {
+    const int was_weapons = c.weapons, was_shared = c.shared;
+    c = Common{};
+    c.scanned = true;
+    c.last = last;
+    c.first = first;
+    c.at = now;
+    if (sane) {
+      std::vector<std::pair<uint64_t, int>> pairs;  // (center << 32 | side, how many weapons), in table order
+      for (uint32_t i = 1; i <= last; ++i) {
+        const uint32_t d = ReadGuestU32(base, t.defs + 4 * i);
+        if (!PlausibleGuest(d)) continue;
+        const uint64_t key = (uint64_t(ReadGuestU32(base, d + t.center)) << 32) | ReadGuestU32(base, d + t.side);
+        if (key == 0) continue;
+        ++c.weapons;
+        auto it = std::find_if(pairs.begin(), pairs.end(), [&](const auto& p) { return p.first == key; });
+        if (it == pairs.end())
+          pairs.emplace_back(key, 1);
+        else
+          ++it->second;
+      }
+      for (const auto& p : pairs)
+        if (p.second > c.shared) {  // the first of the most shared, on a tie
+          c.shared = p.second;
+          c.center = uint32_t(p.first >> 32);
+          c.side = uint32_t(p.first);
+        }
+      c.known = c.shared > 0;
+    }
+    if (REXCVAR_GET(f2_debug_crosshair) && (c.weapons != was_weapons || c.shared != was_shared))
+      REXLOG_INFO("f2: crosshair: the level's weapon table: {} weapons with crosshair pictures, {} of them share the "
+                  "commonest pair (the table's last index {})",
+                  c.weapons, c.shared, last);
+  }
+  const bool own = c.known && (center != c.center || side != c.side);
+  thread_local uint32_t told_def = 0;
+  if (def != told_def && REXCVAR_GET(f2_debug_crosshair)) {
+    told_def = def;
+    REXLOG_INFO("f2: crosshair: the weapon in hand changed; its crosshair is {}", own ? "its own" : "the usual one");
+  }
+  return own;
+}
 
 void CaptureRect(const uint8_t* base, uint32_t x_address, uint32_t width_address) {
   if (!t_capturing) return;
@@ -1923,6 +2000,7 @@ void CaptureRect(const uint8_t* base, uint32_t x_address, uint32_t width_address
 
 int CaptureEnd(float* spread) {
   t_capturing = false;
+  t_hiding = false;
   *spread = 0.0f;
   if (t_rects >= 4) *spread = (t_x[1] - t_x[3] - 1.125f * t_width[1]) * 0.5f;
   return t_rects;
@@ -1944,167 +2022,41 @@ bool ReadGuestColor(const uint8_t* base, uint32_t address, float rgba[4]) {
 }
 
 void Draw() {
-  if (!Enabled()) return;
+  BindOnce();
+  SyncSpecialKinds();  // [acct2-ocr] 2026-11-14
+  xhair::Sync();
+  if (!xhair::Enabled(0)) return;
   const int64_t asked = g_asked_ns.load(std::memory_order_relaxed);
   const int64_t now = NowNs();
   if (asked == 0 || now - asked > kShownNs) return;
-  float color[4];
-  if (REXCVAR_GET(f2_crosshair_constant_color)) {
-    ParseColor(REXCVAR_GET(f2_crosshair_color), color);
-    color[3] *= g_asked_color[3].load(std::memory_order_relaxed);  // the game's fade stays
-  } else {
-    for (int i = 0; i < 4; ++i) color[i] = g_asked_color[i].load(std::memory_order_relaxed);
-    if (REXCVAR_GET(f2_crosshair_own_colors)) ApplyOwnColor(color);
-  }
-  if (color[3] <= 0.0f) return;
   const ImGuiIO& io = ImGui::GetIO();
-  const ImVec2 c(std::floor(io.DisplaySize.x * 0.5f), std::floor(io.DisplaySize.y * 0.5f));
-  const float scale = std::max(0.5f, io.DisplaySize.y / 1080.0f);
-  // The game's spread is in its 640 x 480 HUD units, which fill the picture's height.
-  const float spread = g_asked_spread.load(std::memory_order_relaxed);
-  const float open = spread * io.DisplaySize.y / 480.0f * float(REXCVAR_GET(f2_crosshair_dynamic_scale));
-  DrawAt(ImGui::GetBackgroundDrawList(), c, scale, color, open);
+  xhair::View v;
+  v.cx = std::floor(io.DisplaySize.x * 0.5f);
+  v.cy = std::floor(io.DisplaySize.y * 0.5f);
+  v.height = io.DisplaySize.y;
+  for (int i = 0; i < 4; ++i) v.rgba[i] = g_asked_color[i].load(std::memory_order_relaxed);
+  v.spread = g_asked_spread.load(std::memory_order_relaxed);  // the game's 640 x 480 HUD units
+  xhair::DrawView(ImGui::GetBackgroundDrawList(), 0, v);
   if (REXCVAR_GET(f2_debug_crosshair)) {
     static int64_t logged_ns = 0;
     if (now - logged_ns > 1'000'000'000) {
       logged_ns = now;
-      REXLOG_INFO("f2: crosshair drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, scale {:.3f}, color {:.2f} {:.2f} {:.2f}, "
-                  "alpha {:.2f}, the game's spread {:.2f} units = {:.1f} px open (mode {})",
-                  c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, scale, color[0], color[1], color[2], color[3], spread,
-                  open, REXCVAR_GET(f2_crosshair_dynamic));
+      const xhair::Settings& s = xhair::Player(0);
+      REXLOG_INFO("f2: crosshair drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, the game's color {:.2f} {:.2f} {:.2f}, alpha "
+                  "{:.2f}, the game's spread {:.2f} units; player 1's: style {} ({}), length {:.1f}, thickness {:.1f}, "
+                  "gap {:.1f}, outline {}, color from {}",
+                  v.cx, v.cy, io.DisplaySize.x, io.DisplaySize.y, v.rgba[0], v.rgba[1], v.rgba[2], v.rgba[3],
+                  v.spread, s.style, xhair::StyleName(s.style), s.length, s.thickness, s.gap, s.outline,
+                  s.color_from);
     }
   }
 }
 
 void DrawPage(PageContext& c) {
-  static const char* const kSettings[] = {"f2_crosshair",         "f2_crosshair_style",   "f2_crosshair_size",
-                                          "f2_crosshair_thickness", "f2_crosshair_gap",     "f2_crosshair_outline",
-                                          "f2_crosshair_outline_thickness", "f2_crosshair_dot",
-                                          "f2_crosshair_constant_color",    "f2_crosshair_color",
-                                          "f2_crosshair_dynamic",           "f2_crosshair_dynamic_scale",
-                                          "f2_crosshair_split_distance",    "f2_crosshair_split_ratio",
-                                          "f2_crosshair_split_alpha_inner", "f2_crosshair_split_alpha_outer",
-                                          "f2_crosshair_own_colors",        "f2_crosshair_color_normal",
-                                          "f2_crosshair_color_enemy",       "f2_crosshair_color_friendly"};
-  if (ResetButton("reset_crosshair", "crosshair settings")) {
-    for (const char* name : kSettings) c.restart |= ResetSettings({name});
-    c.dirty = true;
-  }
-  Section("Custom crosshair");
-  c.dirty |= Check("Use my own crosshair", "f2_crosshair", Applies::kAtOnce, &c.restart);
-  Help("Replaces the game's hip-fire crosshair with the one below, shown exactly when the game would show its own "
-       "(not in menus or cutscenes, and it goes when you raise the sights). Mounted guns and scopes keep the game's.");
-
-  // The preview: the crosshair at its in-game size for this window, on a dark box.
-  {
-    const float side = ImGui::GetFontSize() * 7.0f;
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const ImVec2 p1(p0.x + side, p0.y + side);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p0, p1, IM_COL32(40, 44, 40, 255));
-    dl->AddRect(p0, p1, IM_COL32(120, 120, 120, 255));
-    float color[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-    if (REXCVAR_GET(f2_crosshair_constant_color)) {
-      ParseColor(REXCVAR_GET(f2_crosshair_color), color);
-    } else if (REXCVAR_GET(f2_crosshair_own_colors)) {
-      ApplyOwnColor(color);
-    }
-    if (!Enabled()) color[3] *= 0.4f;
-    const float scale = std::max(0.5f, ImGui::GetIO().DisplaySize.y / 1080.0f);
-    // The preview breathes in and out so the dynamic setting shows: 0 to 12 units of spread every 3 seconds.
-    const float wave = 0.5f - 0.5f * std::cos(float(ImGui::GetTime()) * 2.0943951f);
-    const float open = REXCVAR_GET(f2_crosshair_dynamic) != 0
-                           ? wave * 12.0f * ImGui::GetIO().DisplaySize.y / 480.0f *
-                                 float(REXCVAR_GET(f2_crosshair_dynamic_scale))
-                           : 0.0f;
-    dl->PushClipRect(p0, p1, true);
-    DrawAt(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)), scale, color, open);
-    dl->PopClipRect();
-    ImGui::Dummy(ImVec2(side, side));
-  }
-
-  Section("Shape");
-  {
-    const char* v[] = {"0", "1", "2", "3", "4"};
-    const char* n[] = {"Cross", "Cross with a dot", "Dot", "Circle", "T (no top line)"};
-    c.dirty |= Choice("Style", "f2_crosshair_style", v, n, 5, Applies::kAtOnce, &c.restart);
-  }
-  c.dirty |= SliderDouble("Length", "f2_crosshair_size", 0.0, 60.0, "%.1f", Applies::kAtOnce, &c.restart);
-  c.dirty |= SliderDouble("Thickness", "f2_crosshair_thickness", 1.0, 12.0, "%.1f", Applies::kAtOnce, &c.restart);
-  c.dirty |= SliderDouble("Gap", "f2_crosshair_gap", 0.0, 40.0, "%.1f", Applies::kAtOnce, &c.restart);
-  c.dirty |= Check("Center dot", "f2_crosshair_dot", Applies::kAtOnce, &c.restart);
-  c.dirty |= Check("Black outline", "f2_crosshair_outline", Applies::kAtOnce, &c.restart);
-  if (REXCVAR_GET(f2_crosshair_outline))
-    c.dirty |= SliderDouble("Outline thickness", "f2_crosshair_outline_thickness", 0.5, 4.0, "%.1f",
-                            Applies::kAtOnce, &c.restart);
-  Help("Sizes are in pixels on a 1080-line picture and grow with the window.");
-
-  Section("Movement");
-  {
-    const char* v[] = {"0", "1", "2"};
-    const char* n[] = {"Static", "Dynamic (the game's spread)", "Dynamic, split lines (CS2's Classic)"};
-    c.dirty |= Choice("Behavior", "f2_crosshair_dynamic", v, n, 3, Applies::kAtOnce, &c.restart);
-    Help("Static never moves (CS2's Classic Static). Dynamic opens and closes exactly as the game's own crosshair "
-         "does: wider when you move or fire, tighter when you crouch or stand still (CS2's Classic Dynamic looks "
-         "the same). Split lines: past the split distance the inner part of each line stays put and the outer "
-         "part goes on, fainter, as CS2's Classic does.");
-  }
-  if (REXCVAR_GET(f2_crosshair_dynamic) != 0) {
-    c.dirty |= SliderDouble("How far it opens", "f2_crosshair_dynamic_scale", 0.0, 3.0, "%.2f x", Applies::kAtOnce,
-                            &c.restart);
-    Help("1 is exactly the game's spread; lower keeps the crosshair tighter.");
-  }
-  if (REXCVAR_GET(f2_crosshair_dynamic) == 2) {
-    c.dirty |= SliderDouble("Split distance", "f2_crosshair_split_distance", 0.0, 40.0, "%.1f", Applies::kAtOnce,
-                            &c.restart);
-    c.dirty |= SliderDouble("Outer share of the line", "f2_crosshair_split_ratio", 0.0, 1.0, "%.2f",
-                            Applies::kAtOnce, &c.restart);
-    c.dirty |= SliderDouble("Inner opacity", "f2_crosshair_split_alpha_inner", 0.0, 1.0, "%.2f", Applies::kAtOnce,
-                            &c.restart);
-    c.dirty |= SliderDouble("Outer opacity", "f2_crosshair_split_alpha_outer", 0.3, 1.0, "%.2f", Applies::kAtOnce,
-                            &c.restart);
-    Help("CS2's cl_crosshair_dynamic_splitdist, _maxdist_splitratio, _splitalpha_innermod and _outermod, with "
-         "CS2's defaults (7, 0.35, 1, 0.5).");
-  }
-
-  Section("Color");
-  c.dirty |= Check("One constant color", "f2_crosshair_constant_color", Applies::kAtOnce, &c.restart);
-  Help("Off: the game's own color for the moment (white; red over an enemy and green over a friendly where the game "
-       "does that). On: always the color below.");
-  if (REXCVAR_GET(f2_crosshair_constant_color)) {
-    float color[4];
-    ParseColor(REXCVAR_GET(f2_crosshair_color), color);
-    if (ImGui::ColorEdit4("Color", color, ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf)) {
-      char text[48];
-      std::snprintf(text, sizeof(text), "%d %d %d %d", int(color[0] * 255.0f + 0.5f), int(color[1] * 255.0f + 0.5f),
-                    int(color[2] * 255.0f + 0.5f), int(color[3] * 255.0f + 0.5f));
-      rex::cvar::SetFlagByName("f2_crosshair_color", text);
-      c.dirty = true;
-    }
-  } else {
-    c.dirty |= Check("My own colors", "f2_crosshair_own_colors", Applies::kAtOnce, &c.restart);
-    Help("Your colors in place of the game's white, red and green. The crosshair still changes when the game's "
-         "does: over nothing, over an enemy, over a friendly.");
-    if (REXCVAR_GET(f2_crosshair_own_colors)) {
-      static const struct {
-        const char* label;
-        const char* setting;
-      } kCases[] = {{"Over nothing", "f2_crosshair_color_normal"},
-                    {"Over an enemy", "f2_crosshair_color_enemy"},
-                    {"Over a friendly", "f2_crosshair_color_friendly"}};
-      for (const auto& k : kCases) {
-        float color[4];
-        ParseColor(Get(k.setting), color);
-        if (ImGui::ColorEdit4(k.label, color, ImGuiColorEditFlags_AlphaBar | ImGuiColorEditFlags_AlphaPreviewHalf)) {
-          char text[48];
-          std::snprintf(text, sizeof(text), "%d %d %d %d", int(color[0] * 255.0f + 0.5f),
-                        int(color[1] * 255.0f + 0.5f), int(color[2] * 255.0f + 0.5f), int(color[3] * 255.0f + 0.5f));
-          rex::cvar::SetFlagByName(k.setting, text);
-          c.dirty = true;
-        }
-      }
-    }
-  }
+  BindOnce();
+  SyncSpecialKinds();  // [acct2-ocr] 2026-11-14
+  static int player = 0;
+  if (xhair::DrawPage(&player)) c.dirty = true;
 }
 
 }  // namespace crosshair

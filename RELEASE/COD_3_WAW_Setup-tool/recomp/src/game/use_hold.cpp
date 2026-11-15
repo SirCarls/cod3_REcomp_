@@ -6,6 +6,8 @@
 #include <atomic>
 #include <cctype>
 #include <string>  // [acct2-ocr]
+#include <mutex>          // [acct2-main] NoteWords
+#include <unordered_set>  // [acct2-main] NoteWords
 
 #include <rex/cvar.h>
 #include <rex/hook.h>  // PPCRegister, for the midasm hook below
@@ -37,9 +39,11 @@ COD3_USE_HOLD_PLAYER(2);
 COD3_USE_HOLD_PLAYER(3);
 COD3_USE_HOLD_PLAYER(4);
 #undef COD3_USE_HOLD_PLAYER
-REXCVAR_DEFINE_BOOL(cod3_debug_use_hold, false, "cod3",
-                    "Log whose Use hold the server's check takes, once per entity and value (game/use_hold.h)");
 #endif
+// [acct2-main] 2026-11-13 in both programs (was cod3mp's only): also each text with a Use word as the prompts show it.
+REXCVAR_DEFINE_BOOL(cod3_debug_use_hold, false, "cod3",
+                    "Log whose Use hold the server's check takes, once per entity and value, and each text with a Use "
+                    "word as the prompts lay it out (game/use_hold.h)");
 
 namespace cod3::use_hold {
 namespace {
@@ -54,22 +58,13 @@ constexpr uint32_t kCvarInteger = 12;
 
 int GameMs(uint8_t* base) { return static_cast<int>(ReadU32(base, kUseHoldTimeCvar + kCvarInteger)); }
 
-// Whether this machine runs the game's server (sv_running): the campaign
-// always does; in cod3mp a match hosted elsewhere uses that host's hold.
-bool ServerHere(uint8_t* base) {
-#if defined(COD3_MP)
-  const uint32_t sv = ReadU32(base, addr::crossref::kSvRunningPtr);
-  return sv >= 0x10000 && sv < 0xC0000000u && ReadU32(base, sv + addr::cvar::kInteger) != 0;
-#else
-  (void)base;
-  return true;
-#endif
-}
+// [acct2-main] 2026-11-13 ServerHere (sv_running) is gone: in system link each console times its own players' Use
+// (CurrentMsFor), so the hints no longer ask whether this console hosts.
 
 // Where `words` + " [USE]" starts in `text` at or after `from` (the first
-// letter in either case), or npos.
-size_t FindWords(const std::string& text, const std::string& words, size_t from) {
-  const std::string target = words + " [USE]";
+// letter in either case), or npos. [acct2-main] 2026-11-13 any action `word` ("USE", "ACTIVATE").
+size_t FindWords(const std::string& text, const std::string& words, const std::string& word, size_t from) {
+  const std::string target = words + " [" + word + "]";
   if (words.empty()) return std::string::npos;
   for (size_t i = from; i + target.size() <= text.size(); ++i) {
     if (text.compare(i + 1, target.size() - 1, target, 1, std::string::npos) != 0) continue;
@@ -87,12 +82,13 @@ std::string SameCase(std::string press, char first) {
   return press;
 }
 
-void Replace(std::string* text, const std::string& press_and_hold, const std::string& press) {
+// [acct2-main] 2026-11-13 `word` the action ("USE", "ACTIVATE").
+void Replace(std::string* text, const std::string& press_and_hold, const std::string& press, const std::string& word) {
   if (press_and_hold.empty() || press.empty() || press_and_hold == press) return;
-  for (size_t at = FindWords(*text, press_and_hold, 0); at != std::string::npos;) {
+  for (size_t at = FindWords(*text, press_and_hold, word, 0); at != std::string::npos;) {
     const std::string now = SameCase(press, (*text)[at]);
     text->replace(at, press_and_hold.size(), now);
-    at = FindWords(*text, press_and_hold, at + now.size());
+    at = FindWords(*text, press_and_hold, word, at + now.size());
   }
 }
 
@@ -126,10 +122,15 @@ const char* SettingName(int player) {
   return cod3::kMultiplayer && player > 0 && player < kPlayers ? kNames[player] : nullptr;
 }
 
+// [acct2-main] 2026-11-13 the player's own setting on every console (was: only where the server runs, else the
+// game's). cod3mp's ClientThink_real (0x82592CD0) calls the Use check (0x8256E678 -> 0x8256B478) for this console's
+// own players only, a joined console's included (MP_MOVEMENT_PLAN.md T2: the host never runs it for the joiner), and
+// the check's hook below takes that player's setting there; so a joined player at 0 read "Press and hold" for a Use
+// that a press already did.
 int CurrentMsFor(uint8_t* base, int player) {
   const int ms = SettingMsFor(player);
   if (!base) return std::max(ms, 0);
-  if (ms >= 0 && ServerHere(base)) return ms;
+  if (ms >= 0) return ms;
   return GameMs(base);
 }
 
@@ -148,12 +149,38 @@ std::string SettingsKey() {
   return key;
 }
 
+// [acct2-main] 2026-11-13 (use_hold.h NoteWords)
+void NoteWords(const std::string& text, const std::string& shown, int ms, const char* how) {
+  if (!REXCVAR_GET(cod3_debug_use_hold)) return;
+  static std::mutex mutex;
+  static std::unordered_set<std::string> seen;
+  std::lock_guard lock(mutex);
+  if (seen.size() >= 200 || !seen.insert(text + '\x01' + shown + '\x01' + how).second) return;
+  REXLOG_INFO("cod3: Use hold words ({}, the hold {} ms): \"{}\" -> \"{}\"", how, ms, text.substr(0, 200),
+              shown.substr(0, 200));
+}
+
+// [acct2-main] 2026-11-13 (owner 11-12 23:51: "KBM ... Also consider QTE events") USE and ACTIVATE: the
+// campaign's levels write their use triggers' hints with [HOLD_ACTIVATE] ("[HOLD_ACTIVATE] to plant charge.", the
+// boosts, "to pick up the M1 Garand", "to enter boat", "to Drive"; Forest's strings: trigger_use, HINT_ACTIVATE,
+// SCRIPT_HINTSTR_PLANTEXPLOSIVES). A trigger's hint is the cursor hint the server's one Use check times
+// (sub_8254A460), so its hold is this setting too, the battle actions that start that way included; their own
+// steps ("Press [BATTLE_ACTION_BUTTON] to insert fuse") are presses already. A plain "Hold [ACTIVATE] ..." (Fuel
+// plant's "Hold [ACTIVATE] to open Main Gates") stays as written: the levels can read the buttons themselves
+// (rexglue-native NOTES, F0), so such a hold may be the level's own time, not this one.
+bool HasUseWord(const std::string& text) {
+  return text.find("USE]") != std::string::npos || text.find("ACTIVATE]") != std::string::npos;
+}
+
 std::string Pressed(const std::string& text, const std::string& press_and_hold, const std::string& press) {
   std::string out = text;
-  for (size_t at = out.find("[HOLD_USE]"); at != std::string::npos; at = out.find("[HOLD_USE]", at + 1))
-    out.replace(at, 10, "[VERB_USE]");
-  Replace(&out, press_and_hold, press);
-  Replace(&out, "Press and hold", "Press");  // English texts, whatever language the words are in
+  for (const char* word : {"USE", "ACTIVATE"}) {  // [acct2-main] ACTIVATE too
+    const std::string w = word, hold = "[HOLD_" + w + "]", verb = "[VERB_" + w + "]";
+    for (size_t at = out.find(hold); at != std::string::npos; at = out.find(hold, at + 1))
+      out.replace(at, hold.size(), verb);
+    Replace(&out, press_and_hold, press, w);
+    Replace(&out, "Press and hold", "Press", w);  // English texts, whatever language the words are in
+  }
   return out;
 }
 

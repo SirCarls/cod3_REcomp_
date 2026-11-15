@@ -177,6 +177,10 @@ std::atomic<int64_t> g_mouse_move_time{0};
 std::atomic<bool> g_mnk_mode{false};   // the SDK's mnk_mode setting
 std::atomic<bool> g_mouse_aim{false};  // cod3_raw_mouse or mnk_mouse
 std::atomic<uint32_t> g_bind_gen{0};   // + 1 whenever a setting the prompts show changes
+// [acct2-main] 2026-11-13 (owner 11-12 23:22: "showing press and hold when it's at 0") + 1 whenever the Use hold's
+// words change ("Press" or "Press and hold", game/use_hold.h): a text is laid out again in every mode, the game's own
+// Xbox pictures too (Refresh), where g_bind_gen alone doesn't lay one out again.
+std::atomic<uint32_t> g_use_gen{0};
 
 // [mp-menus] kAuto: each player's own controller's (PadMode).
 // [claude-9b-think] kPlayStation the PS4/5 style, kPlayStation2 the PS2 style (a choice only: auto can't tell them
@@ -369,10 +373,16 @@ void RefreshSettings() {
   now += REXCVAR_GET(cod3_key_caps) ? "\ncaps" : "\nnames";  // [claude-9b-think] pictures or names: laid out again
   now += "\n" + rex::cvar::GetFlagByName("cod3_key_cap_scale");  // [claude-9b-think] the caps' room: laid out again
   now += "\nuse " + cod3::use_hold::SettingsKey();  // [acct2-decomp] "Press" or "Press and hold"; [acct2-ocr] every player's
+  const std::string use = cod3::use_hold::SettingsKey();  // [acct2-main] g_use_gen
   std::lock_guard lock(mutex);
   if (now != last) {
     last = std::move(now);
     g_bind_gen.fetch_add(1, std::memory_order_relaxed);
+  }
+  static std::string last_use;  // [acct2-main] g_use_gen
+  if (use != last_use) {
+    last_use = use;
+    g_use_gen.fetch_add(1, std::memory_order_relaxed);
   }
 }
 
@@ -965,9 +975,17 @@ std::string GameText(PPCContext& ctx, uint8_t* base, const std::string& key) {
 // "[HOLD_USE]" word "[VERB_USE]", in the game's own words; done before the game's "[ACTION]" pass, so each
 // player's own button or key goes in as before. The text itself when the hold isn't 0.
 std::string UseHoldWording(PPCContext& ctx, uint8_t* base, const std::string& text) {
-  if (text.find("USE]") == std::string::npos || cod3::use_hold::CurrentMs(base) != 0) return text;
-  return cod3::use_hold::Pressed(text, GameText(ctx, base, "INGAME_PRESS_AND_HOLD"),
-                                 GameText(ctx, base, "INGAME_PRESS"));
+  if (!cod3::use_hold::HasUseWord(text)) return text;  // [acct2-main] "[HOLD_ACTIVATE]" too
+  // [acct2-main] 2026-11-13 the hold read once, and each text noted with cod3_debug_use_hold (use_hold.h NoteWords)
+  const int ms = cod3::use_hold::CurrentMs(base);
+  if (ms != 0) {
+    cod3::use_hold::NoteWords(text, text, ms, "held");
+    return text;
+  }
+  const std::string pressed = cod3::use_hold::Pressed(text, GameText(ctx, base, "INGAME_PRESS_AND_HOLD"),
+                                                      GameText(ctx, base, "INGAME_PRESS"));
+  cod3::use_hold::NoteWords(text, pressed, ms, "a press");
+  return pressed;
 }
 
 // [acct2-decomp] A guest copy of a text for one call of the game (a few in turn, so a call made inside another
@@ -1006,6 +1024,7 @@ struct TextCall {
   Mode mode = Mode::kXbox;
   uint32_t gen = 0;         // g_bind_gen it was laid out with
   uint32_t player = 0;      // the local client it was made for
+  uint32_t use_gen = 0;     // [acct2-main] g_use_gen it was laid out with
 };
 std::unordered_map<uint32_t, TextCall> g_texts;
 
@@ -1255,11 +1274,16 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t slot, bool string_arg, F&&
     if (pressed != call.text)
       if (const uint32_t at = CallText(base, pressed)) ctx.r4.u64 = at;
   }
+  // [acct2-main] 2026-11-13 A String's text isn't rewritten above: noted with cod3_debug_use_hold, to see whether a
+  // Use hint ever comes that way.
+  if (string_arg && cod3::use_hold::HasUseWord(call.text))
+    cod3::use_hold::NoteWords(call.text, call.text, cod3::use_hold::CurrentMs(base), "a String, not rewritten");
 #endif
   const Mode outer_mode = t_set_mode;
   call.player = PromptPlayer(base);
   call.mode = t_set_mode = Wanted(base, call.player);
   call.gen = g_bind_gen.load(std::memory_order_relaxed);
+  call.use_gen = g_use_gen.load(std::memory_order_relaxed);  // [acct2-main]
   const uint32_t tokens = t_tokens;
   ++t_set_depth;
   original();
@@ -1281,6 +1305,7 @@ void Refresh(PPCContext& ctx, uint8_t* base, uint32_t obj) {
     if (it == g_texts.end()) return;
     const Mode want = Wanted(base, it->second.player);
     if (it->second.mode == want &&
+        it->second.use_gen == g_use_gen.load(std::memory_order_relaxed) &&  // [acct2-main] in every mode
         (!IsText(want) || it->second.gen == g_bind_gen.load(std::memory_order_relaxed)))
       return;
     call = it->second;

@@ -29,7 +29,11 @@ too).
 
 The stand-ins (`config/stand_in_functions.tsv`) are the NGL, Direct3D and DirectSound functions the port replaces.
 `tools/bro_decomp/ngl_stubs.py` turns the table into C at build time. To replace another of the game's functions,
-add its address and name to the table and write the C function in `src/`.
+add its address and name to the table and write the C function in `src/`. A row whose `stand_in_return` is
+`native NAME` hands the whole function to the C function `NAME`, which reads its own arguments and pops the stack as
+the game's code does; for example `src/runtime/bro_fast_sincos.c`, the game's fast sine and cosine done with the
+rounding the game sets for it (the recompiled code rounds to nearest, which skewed the camera after a turn). A change
+to the table makes the next build recompile the game's code.
 
 ## What you need
 
@@ -60,7 +64,8 @@ The build:
 3. copies xboxrecomp into the work folder and applies `patches/`;
 4. recompiles `default.xbe` with xboxrecomp's steps: `xbe_parser`, `disasm` (seeded with `config/seed_functions.json`),
    `func_id`, `abi_analysis`, then `recomp --all --split 250` with the stand-ins' addresses as `--manual-functions`
-   (about an hour, mostly the disassembly, on one core);
+   (3 to 8 minutes with `patches/xboxrecomp-speed.patch`, mostly the disassembly, on one core; it runs again when the
+   disc, xboxrecomp, `patches/`, the seeds or the stand-in table change);
 5. builds this folder with CMake against the generated C;
 6. installs `output/bro/bin/bro`, `output/bro/play.sh` and `output/bro/saves/`, and deletes the work folder's build
    files (xboxrecomp and its Python stay for the next build).

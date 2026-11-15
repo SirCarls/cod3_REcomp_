@@ -276,6 +276,19 @@ REXCVAR_DEFINE_BOOL(cod3_server_draw_subms, true, "cod3/Game",
                     "rates that aren't a whole number of milliseconds a frame); off: by whole milliseconds")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// [acct2-bro] 2026-11-14 rn92b (owner 16:37: the vehicle and the player jitter together; 14:53: "something seems off
+// at high fps"). The client's part of a frame (after the updates) gets the frame's time block back as Com_Frame set
+// it: whole milliseconds. Turning the view with a stick goes by it: in Falaise's seat (t114, ~330 fps) frames of 2.5 to
+// 2.8 ms turned 2, 3, 3, 2, 3 ms' worth (0.052 / 0.078 degrees), so the turn jolted by a third from frame to frame.
+// On: the block's seconds (+12) are the frame's real time for the client's part (the milliseconds the game counted,
+// plus the change in the part it hasn't counted yet, cod3_server_draw_subms's), so over time they add up to the
+// same; the game's updates and its whole-millisecond clock are unchanged. Off (the default until tested): as before.
+REXCVAR_DEFINE_BOOL(cod3_server_client_subms_dt, false, "cod3/Game",
+                    "The client's frame time (turning the view with a stick, the weapon's sway, effects) by the real "
+                    "time to a fraction of a millisecond instead of whole milliseconds; the game's updates and its "
+                    "clock are unchanged")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 // [claude-9b] 2026-10-27
 REXCVAR_DEFINE_BOOL(cod3_server_client_time, true, "cod3/Game",
                     "Above cod3_server_hz frames a second, the client game's clock runs on between the "
@@ -848,21 +861,41 @@ struct SubMs {
   bool have = false;
   std::chrono::steady_clock::time_point last{};
   double acc = 0.0;  // milliseconds
+  double frame_ms = 0.0;  // [acct2-bro] 2026-11-14 rn92b: this frame's msec plus the change in acc (its real time)
+  int msec = 0;           // rn92b: and its msec
 };
 SubMs g_subms;
 void SubMsFrame(int msec) {
   const auto now = std::chrono::steady_clock::now();
+  const double acc_before = g_subms.acc;  // [acct2-bro] 2026-11-14 rn92b
+  g_subms.frame_ms = double(msec);
+  g_subms.msec = msec;
   if (g_subms.have) {
     const double real_ms = std::chrono::duration<double, std::milli>(now - g_subms.last).count();
-    if (real_ms > 250.0 || msec > 250 || msec < 0)
+    if (real_ms > 250.0 || msec > 250 || msec < 0) {
       g_subms.acc = 0.0;  // a level load, a long hitch: start again
-    else
+    } else {
       g_subms.acc = std::clamp(g_subms.acc + real_ms - double(msec), -0.999, 0.999);
+      g_subms.frame_ms = double(msec) + (g_subms.acc - acc_before);  // rn92b (at or below 0: ClientFrameDt leaves dt)
+    }
   }
   g_subms.last = now;
   g_subms.have = true;
 }
 double SubMsFraction() { return REXCVAR_GET(cod3_server_draw_subms) ? g_subms.acc : 0.0; }
+
+// [acct2-bro] 2026-11-14 rn92b: the client's seconds for the frame time block's +12, given the seconds as Com_Frame
+// set them: scaled by the frame's real time over the milliseconds the game counted for it (a time scale the game put
+// in them stays in them)
+float ClientFrameDt(float frame_dt) {
+  if (!REXCVAR_GET(cod3_server_client_subms_dt) || g_subms.msec <= 0 || g_subms.frame_ms <= 0.0) return frame_dt;
+  static bool said = false;
+  if (!said) {
+    said = true;
+    REXLOG_INFO("cod3: server step: rn92b the client's frame time by the real time (cod3_server_client_subms_dt)");
+  }
+  return float(double(frame_dt) * g_subms.frame_ms / double(g_subms.msec));
+}
 
 float Back() {
   const int hz = g_clock.hz;
@@ -1952,6 +1985,14 @@ void DebugLog(uint8_t* base) {
 
 namespace cod3::server_step {
 
+// [acct2-bro] 2026-11-14 rn92c: when this frame's clock was read (SubMsFrame: the moment its moving things and
+// camera are drawn for), steady-clock microseconds, 0 before the first frame. ngl_side.cpp gives it to each native
+// picture, to time its showing against it (cod3_debug_ngl_side_present_trace, cod3_native_present_pacing).
+int64_t FrameClockMicroseconds() {
+  if (!g_subms.have) return 0;
+  return std::chrono::duration_cast<std::chrono::microseconds>(g_subms.last.time_since_epoch()).count();
+}
+
 // [acct2-cod3-motion] 2026-11-07 (server_step.h)
 float DrawTimeFraction() { return float(SubMsFraction()); }
 
@@ -2187,7 +2228,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
   }
   if (systems) {
     g::WriteU32(base, kFrameTime + 4, frame_msec);
-    g::WriteF32(base, kFrameTime + 12, frame_dt);
+    g::WriteF32(base, kFrameTime + 12, ClientFrameDt(frame_dt));  // [acct2-bro] 2026-11-14 rn92b
     g::WriteF32(base, kFrameTime + 16, frame_inv);
   }
   // [claude-9b] the frame's own time for the client, as SV_Frame left it in the game (see kSvFrameMsec).

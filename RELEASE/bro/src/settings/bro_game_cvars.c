@@ -150,7 +150,7 @@ static uint32_t push_text(const char *text)
     size_t n = strlen(text) + 1;
 
     g_esp -= (uint32_t)((n + 3u) & ~3u);
-    memcpy(XBOX_PTR(g_esp), text, n);
+    memcpy((void *)(uintptr_t)XBOX_PTR(g_esp), text, n);   /* [acct2-ocr] cast: an error in clang 16+ and GCC 14+ */
     return g_esp;
 }
 

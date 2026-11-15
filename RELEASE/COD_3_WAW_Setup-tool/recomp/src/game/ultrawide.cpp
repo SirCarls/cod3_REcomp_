@@ -220,12 +220,17 @@ namespace cod3 {
 
 bool ParseAspectText(const std::string& text, float* aspect) {
   // "W:H" (24:10, 2.39:1) or a plain number (2.39).
+  // [acct2-main] 2026-11-13 Also "WxH" and "W/H" (21x9, 21/9, 2560x1080), as players write shapes too (F2 refused
+  // them; dev/agents/acct2-main/F2-AUDIT.md).
   if (text.empty() || text.size() > 16) return false;
+  std::string colon = text;
+  for (char& ch : colon)
+    if (ch == 'x' || ch == 'X' || ch == '/') ch = ':';
   float w = 0.0f, h = 1.0f;
   char tail = 0;
-  if (std::sscanf(text.c_str(), "%f:%f%c", &w, &h, &tail) != 2) {
+  if (std::sscanf(colon.c_str(), "%f:%f%c", &w, &h, &tail) != 2) {
     h = 1.0f;
-    if (std::sscanf(text.c_str(), "%f%c", &w, &tail) != 1) return false;
+    if (std::sscanf(colon.c_str(), "%f%c", &w, &tail) != 1) return false;
   }
   if (!(w > 0.0f && h > 0.0f && std::isfinite(w / h))) return false;
   *aspect = w / h;

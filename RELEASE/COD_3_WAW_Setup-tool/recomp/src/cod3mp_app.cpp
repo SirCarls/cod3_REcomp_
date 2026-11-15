@@ -55,6 +55,7 @@
 #include "game/menu_video.h"  // [menus-categories]
 #include "game/mouse_look.h"
 #include "game/mp/controls_mp.h"
+#include "game/mp/map_packs_mp.h"  // [acct2-main]
 #include "game/mp/menus_mp.h"
 #include "game/mp/session.h"
 #include "game/pc_menu.h"  // [mp-menus]
@@ -484,6 +485,9 @@ void Cod3MpApp::ApplyRenderResolution() {
 }
 
 void Cod3MpApp::OnPostSetup() {
+  // [acct2-main] 2026-11-13 Map packs copied into userdata by hand get the folder name and the content header the
+  // game needs, before it looks for them (game/mp/map_packs_mp.h).
+  cod3::mppacks::Tidy(user_data_root());
   ApplyGpuDefaults();  // again, in case the runtime loaded the plugin later
   cod3::render::ReportRustRenderer();  // [rust-renderer] linked or not, and its ABI (render/rust_renderer.h)
   // This program's own console config (seta lines): the campaign's FOV,

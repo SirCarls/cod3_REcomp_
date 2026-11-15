@@ -1,0 +1,527 @@
+diff --git a/tools/disasm/__main__.py b/tools/disasm/__main__.py
+index 1f1af1f..89a587d 100644
+--- a/tools/disasm/__main__.py
++++ b/tools/disasm/__main__.py
+@@ -169,4 +169,12 @@ def _load_seed_functions(path, observed=None):
+ 
+ 
+ if __name__ == "__main__":
++    # [Big Red One port, bro/patches/xboxrecomp-speed.patch] Fewer
++    # collections of the cyclic garbage collector. This step makes millions
++    # of small objects (decoded instructions and their operands) that live to
++    # its end; at the default thresholds Python walked them over and over:
++    # 21 s of a 254 s run. At these thresholds its peak memory was the same
++    # as at the defaults, and its output the same byte for byte.
++    import gc
++    gc.set_threshold(100_000, 50, 100)
+     main()
+diff --git a/tools/disasm/engine.py b/tools/disasm/engine.py
+index c533447..7a1aae4 100644
+--- a/tools/disasm/engine.py
++++ b/tools/disasm/engine.py
+@@ -23,6 +23,7 @@ from .loader import BinaryImage, SectionInfo
+ from ..lazy_decode import lazy_disasm
+ 
+ 
++
+ @dataclass
+ class Instruction:
+     """A decoded instruction with metadata."""
+@@ -115,6 +116,9 @@ class DisasmEngine:
+         self.image = image
+         self._cs = Cs(CS_ARCH_X86, CS_MODE_32)
+         self._cs.detail = True
++        # probes_as_callback_body's decoder and decode cache (_cfg_decoder).
++        self._cfg_dec = None
++        self._cfg_cache: Dict[int, object] = {}
+ 
+         # Instruction cache: address -> Instruction
+         self.instructions: Dict[int, Instruction] = {}
+@@ -546,12 +550,19 @@ class DisasmEngine:
+         # Stay inside the section's file bytes: a long bound past the end of
+         # the image would otherwise read nothing at all.
+         data = self.image.get_section_data(section)
+-        data = data[addr - section.virtual_addr:][:max_insns * 8]
++        # [xboxrecomp-speed.patch] The same bytes without first copying
++        # the rest of the section, decoded lazily: cs.disasm decodes the whole
++        # buffer before it hands back the first instruction, and this stops at
++        # the first ret or jmp (lazy_decode.py).
++        offset = addr - section.virtual_addr
++        span = max_insns * 8
++        data = (data[offset:offset + span] if offset >= 0 and span >= 0
++                else data[offset:][:span])
+         if not data:
+             return None
+ 
+         count = 0
+-        for decoded in self._cs.disasm(data, addr):
++        for decoded in lazy_disasm(self._cs, data, addr):
+             count += 1
+             if count > max_insns:
+                 return None
+@@ -674,6 +685,25 @@ class DisasmEngine:
+                     return None, None
+         return None, None
+ 
++    def _cfg_decoder(self):
++        """The translator's CFG decoder that probes_as_callback_body shares,
++        and the decode cache it keeps for this image.
++
++        [Big Red One port, bro/patches/xboxrecomp-speed.patch] Each
++        probe used to build its own decoder and decode its gap from scratch:
++        14 million instruction decodes on Big Red One's default.xbe for 1.3
++        million instructions. The cache holds each address's decode once
++        (recomp.disasm.Disassembler.disassemble_cfg says why that is the same
++        decode). The bytes never change, so neither does a cached decode.
++        It is not trimmed: the probes walk the whole image over and over, so a
++        cache smaller than the image drops each decode before it is asked for
++        again (a cap of 1.5 million entries saved neither time nor memory).
++        """
++        if self._cfg_dec is None:
++            from ..recomp.disasm import Disassembler
++            self._cfg_dec = Disassembler()
++        return self._cfg_dec
++
+     def probes_as_callback_body(self, addr: int, upper: int,
+                                 lower: Optional[int] = None,
+                                 tail_targets=(), *, require_entry_frame=False,
+@@ -697,15 +727,15 @@ class DisasmEngine:
+         A switch arm outside the gap counts as an exit when it is in
+         tail_targets, whether or not escapes is given.
+         """
+-        from ..recomp.disasm import Disassembler
+-
+         section = self.image.get_section_at_va(addr)
+         if section is None or not section.executable:
+             return False
+         data = self.image.get_section_data(section)
+         lower = addr if lower is None else max(lower, section.virtual_addr)
+         upper = min(upper, section.virtual_addr + len(data))
+-        raw = data[lower - section.virtual_addr:upper - section.virtual_addr]
++        # [xboxrecomp-speed.patch] A view, not a copy: the CC-boundary
++        # pass probes up to the end of the section, megabytes, every time.
++        raw = memoryview(data)[lower - section.virtual_addr:upper - section.virtual_addr]
+         if require_entry_frame:
+             # A weak table word may name a suffix after its owner's cmp.
+             # Reject an entry prefix that reads arithmetic flags before
+@@ -724,14 +754,15 @@ class DisasmEngine:
+                         for kind in ("MODIFY", "SET", "RESET", "UNDEFINED"))}
+                 if not pending or insn.mnemonic in ("call", "jmp", "ret", "retn"):
+                     break
+-        decoder = Disassembler()
++        decoder = self._cfg_decoder()
+         entries = {addr}
+         tables = {}
+         indirect_tails = set()
+         while True:
+             decoded = decoder.disassemble_cfg(
+                 raw, lower, upper, entries,
+-                stop_mnemonics=("int3", "int", "ud2", "hlt", "iret", "iretd"))
++                stop_mnemonics=("int3", "int", "ud2", "hlt", "iret", "iretd"),
++                cache=self._cfg_cache)
+             arms = set()
+             for insn in decoded:
+                 if not insn.is_jump or insn.jump_target is not None:
+@@ -1140,8 +1171,27 @@ class DisasmEngine:
+         worklist = list(start_addresses)
+         visited_starts: Set[int] = set()
+ 
+-        def in_bounds(addr: int) -> bool:
+-            return any(s <= addr < e for s, e in section_bounds)
++        # [xboxrecomp-speed.patch] The same test, answered from the
++        # union of the bounds instead of by trying each one: this runs for
++        # every instruction walked, 290 million times on Big Red One.
++        merged = []
++        for s, e in sorted(b for b in section_bounds if b[0] < b[1]):
++            if merged and s <= merged[-1][1]:
++                if e > merged[-1][1]:
++                    merged[-1][1] = e
++            else:
++                merged.append([s, e])
++        if len(merged) == 1:
++            only_lo, only_hi = merged[0]
++
++            def in_bounds(addr: int) -> bool:
++                return only_lo <= addr < only_hi
++        else:
++            merged_starts = [m[0] for m in merged]
++
++            def in_bounds(addr: int) -> bool:
++                i = bisect.bisect_right(merged_starts, addr) - 1
++                return i >= 0 and addr < merged[i][1]
+ 
+         while worklist:
+             addr = worklist.pop()
+diff --git a/tools/disasm/functions.py b/tools/disasm/functions.py
+index 51b58f7..84d286a 100644
+--- a/tools/disasm/functions.py
++++ b/tools/disasm/functions.py
+@@ -20,6 +20,31 @@ from .xrefs import XRefTracker
+ from .labels import LabelManager, Label, LabelType
+ 
+ 
++class _Union:
++    """`x in u` for the union of some containers and the addresses add()ed,
++    without copying the containers. [Big Red One port,
++    bro/patches/xboxrecomp-speed.patch] Only for a caller whose
++    containers do not change while the view is in use, and that only asks
++    membership."""
++
++    __slots__ = ("_parts", "_added")
++
++    def __init__(self, *parts):
++        self._parts = parts
++        self._added = set()
++
++    def __contains__(self, item) -> bool:
++        if item in self._added:
++            return True
++        for part in self._parts:
++            if item in part:
++                return True
++        return False
++
++    def add(self, item) -> None:
++        self._added.add(item)
++
++
+ @dataclass
+ class Function:
+     """A detected function with boundaries and metadata."""
+@@ -685,13 +710,9 @@ class FunctionDetector:
+         """
+         Pass 4: Add destinations of direct call instructions as function starts.
+         """
+-        # Build set of valid code ranges
+-        code_ranges = set()
+-        for sec in sections:
+-            for addr in range(sec.virtual_addr,
+-                              sec.virtual_addr + sec.virtual_size):
+-                code_ranges.add(addr)
+-
++        # [xboxrecomp-speed.patch] A set of every code address used to
++        # be built here (5.6 million on Big Red One, each of the 13 times this
++        # runs) and then never read.
+         call_targets = self.engine.get_call_targets()
+         realigned = unaligned = 0
+         swept = {sec.name for sec in sections}
+@@ -867,8 +888,11 @@ class FunctionDetector:
+                 upper = min(upper, starts[i])
+             lower = bounds[j][1] if j >= 0 else section.virtual_addr
+             escapes = set()
++            # [xboxrecomp-speed.patch] A view of tails | proven, which
++            # the probe only asks membership of: tails can hold a million
++            # addresses.
+             if not self.engine.probes_as_callback_body(
+-                    entry, upper, lower, tail_targets=tails | proven,
++                    entry, upper, lower, tail_targets=_Union(tails, proven),
+                     allow_indirect_tails="mem", escapes=escapes):
+                 return False
+             proven.add(entry)
+@@ -877,7 +901,11 @@ class FunctionDetector:
+ 
+     def _probes_as_tail_body(self, target, starts, sections, *, entry_frame=False) -> bool:
+         """Prove a callback's direct tail dependencies in their bounded gaps."""
+-        proven = set(self.functions) | self._alias_entries.keys()
++        # [xboxrecomp-speed.patch] Membership in the functions, the
++        # aliases or what this call proves, without copying 75,000 addresses
++        # into a new set on each of the 27,000 calls (neither changes while
++        # this runs).
++        proven = _Union(self.functions, self._alias_entries)
+         pending = [target]
+         visiting = set()
+         while pending:
+diff --git a/tools/disasm/loader.py b/tools/disasm/loader.py
+index 0286641..81b6559 100644
+--- a/tools/disasm/loader.py
++++ b/tools/disasm/loader.py
+@@ -137,13 +137,28 @@ class BinaryImage:
+         Code sections get just enough of the fill to finish an instruction
+         that starts in the file bytes (an x86 instruction is at most 15
+         bytes); more would hand the sweeps zeros to decode as code.
++
++        [Big Red One port, bro/patches/xboxrecomp-speed.patch] Built
++        once per section and handed back again after that. The function
++        passes ask for a section's bytes about 440,000 times on Big Red One's
++        default.xbe, and each copy of .text is 3.5 MB: 43 s of the
++        disassembly went to copying. bytes cannot be changed by a caller, so
++        every caller still sees exactly what a fresh copy would hold.
+         """
++        key = (id(self.raw_data), section.raw_addr, section.raw_size,
++               section.virtual_size, section.executable)
++        cache = self.__dict__.setdefault("_section_data_memo", {})
++        data = cache.get(key)
++        if data is not None:
++            return data
+         data = self.raw_data[section.raw_addr:section.raw_addr + section.raw_size]
+         # A BSS-only section (no file bytes) has nothing to finish.
+         if (section.executable and section.raw_size > 0
+                 and section.virtual_size > section.raw_size):
+             data += bytes(min(section.virtual_size - section.raw_size,
+                               MAX_INSN_LEN - 1))
++        if type(data) is bytes:
++            cache[key] = data
+         return data
+ 
+     def get_kernel_import_at_thunk(self, thunk_addr: int) -> Optional[KernelImport]:
+diff --git a/tools/lazy_decode.py b/tools/lazy_decode.py
+index 1058f9a..9b8d49d 100644
+--- a/tools/lazy_decode.py
++++ b/tools/lazy_decode.py
+@@ -22,6 +22,10 @@ def lazy_disasm(cs, code, address, start=0, end=None):
+     offset = start
+     while offset < end:
+         window = code[offset:min(end, offset + (LAZY_CHUNK + 1) * MAX_INSTRUCTION)]
++        if isinstance(window, memoryview):
++            # [xboxrecomp-speed.patch] A probe hands in a view of the
++            # section rather than a copy of it; capstone takes bytes.
++            window = window.tobytes()
+         count = 0
+         last = None
+         for insn in cs.disasm(window, address + (offset - start), LAZY_CHUNK):
+diff --git a/tools/recomp/__main__.py b/tools/recomp/__main__.py
+index 5745271..8ec345f 100644
+--- a/tools/recomp/__main__.py
++++ b/tools/recomp/__main__.py
+@@ -554,4 +554,12 @@ def main():
+ 
+ 
+ if __name__ == "__main__":
++    # [Big Red One port, bro/patches/xboxrecomp-speed.patch] Fewer
++    # collections of the cyclic garbage collector. This step makes millions
++    # of small objects (decoded instructions and their operands) that live to
++    # its end; at the default thresholds Python walked them over and over:
++    # 127 s of a 377 s run. At these thresholds its peak memory was the same
++    # as at the defaults, and its output the same byte for byte.
++    import gc
++    gc.set_threshold(100_000, 50, 100)
+     main()
+diff --git a/tools/recomp/disasm.py b/tools/recomp/disasm.py
+index dbbab97..2acd750 100644
+--- a/tools/recomp/disasm.py
++++ b/tools/recomp/disasm.py
+@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
+ from typing import Optional
+ from capstone import Cs, CS_ARCH_X86, CS_MODE_32, CS_OP_IMM, CS_OP_MEM
+ 
+-from ..lazy_decode import lazy_disasm
++from ..lazy_decode import lazy_disasm, MAX_INSTRUCTION
+ 
+ 
+ # LOOP family: ECX is the counter, not a flag. They branch, so they end a
+@@ -93,6 +93,25 @@ class Operand:
+     mem_seg: str = None
+ 
+ 
++def _copy_instruction(insn):
++    """A copy of a decoded Instruction sharing nothing that can be changed
++    with it: what a fresh decode of the same bytes would give.
++    [xboxrecomp-speed.patch: disassemble_function's cache.]"""
++    new = object.__new__(Instruction)
++    state = insn.__dict__.copy()
++    ops = []
++    for op in insn.operands:
++        copy = object.__new__(Operand)
++        copy.__dict__.update(op.__dict__)
++        ops.append(copy)
++    state["operands"] = ops
++    state["memory_refs"] = list(insn.memory_refs)
++    state["imm_values"] = list(insn.imm_values)
++    state["regs_written"] = list(insn.regs_written)
++    new.__dict__.update(state)
++    return new
++
++
+ @dataclass
+ class BasicBlock:
+     """A sequence of instructions with one entry and one exit."""
+@@ -152,10 +171,37 @@ def _parse_operand(cs, cs_op, insn_obj):
+ class Disassembler:
+     """Capstone-based x86-32 disassembler."""
+ 
+-    def __init__(self):
++    def __init__(self, decode_cache=False):
+         self._cs = Cs(CS_ARCH_X86, CS_MODE_32)
+         self._cs.detail = True
+         _init_reg_names(self._cs)
++        # [Big Red One port, bro/patches/xboxrecomp-speed.patch]
++        # disassemble_function's decodes by address, when asked for: the
++        # translator decodes each function 3 or 4 times over (9.7 million
++        # decodes for Big Red One's 1.2 million instructions, two thirds of
++        # its time). See _decode_cached; each call still gets its own copies.
++        # Not trimmed: each of the translator's passes walks every function,
++        # so a smaller cache drops each decode before it is asked for again
++        # (with a cap of 600 000 the step took 497 s, 311 s with no cache).
++        self._function_cache = {} if decode_cache else None
++
++    def _decode_cached(self, cache, raw_bytes, offset, address):
++        """The Instruction at `address` (raw_bytes[offset]), or None when
++        nothing decodes there, from `cache` when it holds the decode of the
++        same 15 bytes. Only for an address with 15 bytes of raw_bytes after
++        it: capstone reads no more than that for one instruction, so the
++        decode is the one a longer stream would give there."""
++        window = raw_bytes[offset:offset + MAX_INSTRUCTION]
++        if isinstance(window, memoryview):
++            window = window.tobytes()
++        hit = cache.get(address)
++        if hit is not None and hit[0] == window:
++            return hit[1]
++        insn = None
++        for cs_insn in self._cs.disasm(window, address, 1):
++            insn = self._decode_instruction(cs_insn)
++        cache[address] = (window, insn)
++        return insn
+ 
+     def _decode_instruction(self, cs_insn):
+         """Convert one Capstone instruction into the translator model."""
+@@ -224,8 +270,26 @@ class Disassembler:
+             return []
+ 
+         decoded = {}
+-        for cs_insn in self._cs.disasm(raw_bytes[:size], start_va):
+-            decoded[cs_insn.address] = self._decode_instruction(cs_insn)
++        if self._function_cache is None:
++            for cs_insn in self._cs.disasm(raw_bytes[:size], start_va):
++                decoded[cs_insn.address] = self._decode_instruction(cs_insn)
++        else:
++            # The same linear stream, each instruction a copy of the cached
++            # decode; the last 14 bytes are decoded from raw_bytes as above.
++            cache = self._function_cache
++            last_full = end_va - MAX_INSTRUCTION
++            addr = start_va
++            while addr < end_va:
++                if addr > last_full:
++                    for cs_insn in lazy_disasm(self._cs, raw_bytes, addr,
++                                               addr - start_va, size):
++                        decoded[cs_insn.address] = self._decode_instruction(cs_insn)
++                    break
++                insn = self._decode_cached(cache, raw_bytes, addr - start_va, addr)
++                if insn is None:
++                    break               # where cs.disasm stops too
++                decoded[addr] = _copy_instruction(insn)
++                addr = insn.end_address
+ 
+         for point in sorted(resync or ()):
+             if not (start_va <= point < end_va) or point in decoded:
+@@ -252,11 +316,28 @@ class Disassembler:
+         return [decoded[a] for a in sorted(decoded)]
+ 
+     def disassemble_cfg(self, raw_bytes, start_va, end_va, entry_points,
+-                        stop_addresses=None, stop_mnemonics=()):
+-        """Decode reachable instruction streams from an explicit worklist."""
++                        stop_addresses=None, stop_mnemonics=(), cache=None):
++        """Decode reachable instruction streams from an explicit worklist.
++
++        cache: [Big Red One port, bro/patches/xboxrecomp-speed.patch]
++        a dict the caller keeps between calls (_decode_cached fills it). The
++        disassembler's callback probes walk the same code again and again --
++        14 million decodes for 1.3 million instructions on Big Red One's
++        default.xbe, two thirds of the disassembly's time. With a cache, an
++        address whose 15 bytes are the same as last time is not decoded
++        again; an address closer than that to end_va is decoded from
++        raw_bytes as before and not cached, because there the window can cut
++        the bytes it needs. The instructions returned are shared between
++        calls, so a caller that passes a cache must not change them. Without
++        one this is unchanged.
++        """
+         size = end_va - start_va
+         if size <= 0 or size > len(raw_bytes):
+             return []
++        if cache is not None:
++            return self._disassemble_cfg_cached(
++                raw_bytes, start_va, end_va, entry_points,
++                set(stop_addresses or ()), stop_mnemonics, cache)
+ 
+         decoded = {}
+         stop_addresses = set(stop_addresses or ())
+@@ -287,6 +368,75 @@ class Disassembler:
+ 
+         return [decoded[addr] for addr in sorted(decoded)]
+ 
++    def _disassemble_cfg_cached(self, raw_bytes, start_va, end_va, entry_points,
++                                stop_addresses, stop_mnemonics, cache):
++        """disassemble_cfg's walk, each address decoded once per cache.
++
++        The same streams in the same order: a stream ends where the uncached
++        one ends -- at a stop address, an address already decoded, an
++        undecodable address, the end of the bytes, a jmp, a ret or a stop
++        mnemonic -- and pushes the same branch targets. Only where the
++        decode comes from differs, and a full decode reads the same 15 bytes
++        either way.
++        """
++        size = end_va - start_va
++        last_full = end_va - MAX_INSTRUCTION    # the last start with 15 bytes after it
++        cs = self._cs
++        decoded = {}
++        worklist = list(entry_points)
++        while worklist:
++            entry = worklist.pop()
++            if not (start_va <= entry < end_va) or entry in decoded:
++                continue
++            addr = entry
++            tail = None
++            while addr < end_va:
++                if addr != entry and addr in stop_addresses:
++                    break
++                if addr in decoded:
++                    break
++                if addr > last_full:
++                    tail = addr             # the window may cut this one short
++                    break
++                insn = self._decode_cached(cache, raw_bytes, addr - start_va, addr)
++                if insn is None:
++                    break                   # nothing decodes here: the stream ends
++                decoded[addr] = insn
++                if (insn.is_cond_jump and insn.jump_target is not None
++                        and start_va <= insn.jump_target < end_va):
++                    worklist.append(insn.jump_target)
++                if insn.is_jump:
++                    if (insn.jump_target is not None
++                            and start_va <= insn.jump_target < end_va):
++                        worklist.append(insn.jump_target)
++                    break
++                if insn.is_ret or insn.mnemonic in stop_mnemonics:
++                    break
++                addr = insn.end_address
++            if tail is None:
++                continue
++            # The last few bytes before end_va: decoded from the window, as
++            # the uncached walk decodes them, and not cached.
++            for cs_insn in lazy_disasm(cs, raw_bytes, tail, tail - start_va, size):
++                if cs_insn.address != entry and cs_insn.address in stop_addresses:
++                    break
++                if cs_insn.address >= end_va or cs_insn.address in decoded:
++                    break
++                insn = self._decode_instruction(cs_insn)
++                decoded[insn.address] = insn
++                if (insn.is_cond_jump and insn.jump_target is not None
++                        and start_va <= insn.jump_target < end_va):
++                    worklist.append(insn.jump_target)
++                if insn.is_jump:
++                    if (insn.jump_target is not None
++                            and start_va <= insn.jump_target < end_va):
++                        worklist.append(insn.jump_target)
++                    break
++                if insn.is_ret or insn.mnemonic in stop_mnemonics:
++                    break
++
++        return [decoded[addr] for addr in sorted(decoded)]
++
+     def build_basic_blocks(self, instructions, func_start, func_end,
+                            extra_leaders=None, stop_mnemonics=()):
+         """
+diff --git a/tools/recomp/translator.py b/tools/recomp/translator.py
+index 7adc663..4787e77 100644
+--- a/tools/recomp/translator.py
++++ b/tools/recomp/translator.py
+@@ -504,7 +504,9 @@ class FunctionTranslator:
+         self.abi_db = abi_db or {}
+         self.trace_functions = set(trace_functions or ())
+         self.force_returns = dict(force_returns or {})
+-        self.disasm = Disassembler()
++        # [Big Red One port, bro/patches/xboxrecomp-speed.patch] Each
++        # function is decoded once; disassemble_function hands out copies.
++        self.disasm = Disassembler(decode_cache=True)
+         self.lifter = Lifter(func_db=func_db, label_db=label_db, abi_db=abi_db,
+                              xbe_data=xbe_data, seh_prolog=seh_prolog,
+                              setjmp_fn=setjmp_fn, longjmp_fn=longjmp_fn,

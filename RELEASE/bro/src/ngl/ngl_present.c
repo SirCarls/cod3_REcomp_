@@ -47,6 +47,7 @@
 #include "ngl_quad_batch.h"
 #include "ngl_scene.h"
 #include "ngl_fps_counter.h"
+#include "ngl_movie.h"              /* [acct2-bro] 2026-11-14: a film's picture held until its time */
 #if defined(BRO_HAVE_F2)
 #include "bro_f2.h"                  /* [f2-menus] the F2 settings window */
 #endif
@@ -870,6 +871,65 @@ static int game_gamma_ramp(uint8_t ramp[3][256])
     return !empty && !identity;
 }
 
+/* [acct2-ocr] 2026-11-13 gam2: the gamma ramp Big Red One's own nglInit (0x00064BC0) hands Direct3D, once, at
+ * 0x00064D34: SetGammaRamp (0x003E5770) of the table at 0x008A29B0. It is not the identity (a gentle curve: a little
+ * darker in the middle, brighter toward white), and the Xbox showed every frame through it. bro/'s nglInit is native
+ * (ngl_scene_init), so the game's Direct3D device is never made (its pointer at 0x003F8318 stays 0) and
+ * game_gamma_ramp finds no ramp; the table is read from the game's image instead. The game's only other caller of
+ * SetGammaRamp (0x00064540) is never called. 0 when the table changes nothing. */
+#define NGL_INIT_GAMMA_RAMP 0x008A29B0u
+
+static int ngl_init_gamma_ramp(uint8_t ramp[3][256])
+{
+    static int said;
+    uint32_t c, i;
+    int identity = 1, empty = 1;
+
+    memcpy(ramp, (const void *)XBOX_PTR(NGL_INIT_GAMMA_RAMP), D3D_GAMMA_RAMP_BYTES);
+    for (c = 0; c < 3; c++) {
+        for (i = 0; i < 256; i++) {
+            identity &= ramp[c][i] == i;
+            empty &= ramp[c][i] == 0;
+        }
+    }
+    if (!said) {
+        said = 1;
+        fprintf(stderr, "[ngl] no Direct3D gamma ramp: the window takes nglInit's (0x%08X): red 0/32/64/128/192/255 -> "
+                "%u/%u/%u/%u/%u/%u, green 128 -> %u, blue 128 -> %u%s\n", NGL_INIT_GAMMA_RAMP, ramp[0][0], ramp[0][32],
+                ramp[0][64], ramp[0][128], ramp[0][192], ramp[0][255], ramp[1][128], ramp[2][128],
+                empty ? " (empty: colors as drawn)" : identity ? " (changes nothing)" : "");
+    }
+    return !empty && !identity;
+}
+
+/* [acct2-ocr] 2026-11-13: the game's gamma ramp on screen (the audit's #3). Each frame the ramp the game's Direct3D
+ * device holds (game_gamma_ramp), or else nglInit's (ngl_init_gamma_ramp, gam2), goes to ngl_vk as the window's color
+ * table, so the window shows what the Xbox's display showed; NULL (the target as drawn) when neither changes anything.
+ * BRO_GAMMA=0: the target as drawn, as before. The saved pictures (save_target) are as they were: game_gamma_ramp
+ * only. */
+static void window_gamma(void)
+{
+    static int on = -1;
+    static uint32_t words[256];
+    uint8_t ramp[3][256];
+    unsigned i;
+
+    if (on < 0) {
+        const char *setting = getenv("BRO_GAMMA");
+
+        on = !(setting && setting[0] == '0');
+        if (!on)
+            fprintf(stderr, "[ngl] no gamma ramp in the window (BRO_GAMMA=0)\n");
+    }
+    if (!on || !(game_gamma_ramp(ramp) || ngl_init_gamma_ramp(ramp))) {
+        ngl_vk_set_window_table(NULL);
+        return;
+    }
+    for (i = 0; i < 256; i++)
+        words[i] = (uint32_t)ramp[0][i] | (uint32_t)ramp[1][i] << 8 | (uint32_t)ramp[2][i] << 16 | 0xFF000000u;
+    ngl_vk_set_window_table(words);
+}
+
 /* Save the target as a picture (RGBA in, RGB out), and say how far it is from the game's picture it was drawn from
  * when the two are the same size (then each target pixel is one picture pixel). */
 static void save_target(unsigned long frame, const char *path, const uint8_t *picture, uint32_t picture_width,
@@ -880,6 +940,8 @@ static void save_target(unsigned long frame, const char *path, const uint8_t *pi
     uint32_t left = UINT32_MAX, top = UINT32_MAX, right = 0, bottom = 0;   /* where they differ */
     const uint8_t *pixels = ngl_vk_target_pixels(&width, &height);
     unsigned long lit = 0;
+    unsigned long alpha_zero = 0, alpha_full = 0;  /* [acct2-ocr] 2026-11-13: the target's alpha (the glow's mask) */
+    double alpha_sum = 0.0, masked_sum = 0.0;
     FILE *out;
     uint8_t ramp[3][256];
     const int ramped = game_gamma_ramp(ramp);
@@ -894,6 +956,10 @@ static void save_target(unsigned long frame, const char *path, const uint8_t *pi
     fprintf(out, "P6\n%u %u\n255\n", width, height);
     for (i = 0; i < width * height; i++) {
         lit += (pixels[i * 4] | pixels[i * 4 + 1] | pixels[i * 4 + 2]) != 0;
+        alpha_zero += pixels[i * 4 + 3] == 0;
+        alpha_full += pixels[i * 4 + 3] == 255;
+        alpha_sum += pixels[i * 4 + 3];
+        masked_sum += (double)pixels[i * 4 + 3] * (pixels[i * 4] + pixels[i * 4 + 1] + pixels[i * 4 + 2]) / 3.0;
         if (picture_width == width && picture_height == height) {
             const uint8_t *source = picture + (size_t)(i / width) * pitch + (size_t)(i % width) * 4;
             int c;
@@ -926,6 +992,10 @@ static void save_target(unsigned long frame, const char *path, const uint8_t *pi
     fclose(out);
     fprintf(stderr, "[ngl] Vulkan: frame %lu saved to %s, %ux%u (%lu pixels not black)\n", frame, path, width, height,
             lit);
+    if (width && height)        /* [acct2-ocr] 2026-11-13: what the glow (audit #2) would take as its mask */
+        fprintf(stderr, "[ngl] Vulkan: frame %lu alpha: %lu of %lu pixels 0, %lu 255, mean %.1f; color x alpha mean "
+                "%.1f (of 255)\n", frame, alpha_zero, (unsigned long)width * height, alpha_full,
+                alpha_sum / ((double)width * height), masked_sum / (255.0 * width * height));
     if (picture_width == width && picture_height == height)
         fprintf(stderr, "[ngl] Vulkan: frame %lu differs from the game's picture by %.3f on average, %lu at most "
                 "(of 255)\n", frame, (double)difference / ((double)width * height * 3), largest);
@@ -1407,8 +1477,14 @@ void ngl_present_frame(void)
     describing_effects = dump_frame && dump_path && in_list(dump_frame, frames);
     described_frame = frames;
     if (ngl_texture_last_lock(&buffer, &width, &height, &pitch)) {
+        const uint8_t *held;
+
         picture = (const uint8_t *)XBOX_PTR(buffer);
         picture_texture = ngl_texture_last_locked();
+        /* [acct2-bro] 2026-11-14: a film's next picture is decoded ahead of its time; until then the frames show the
+         * one before it (ngl_movie.c, display.movie_lead_ms) */
+        if (ngl_movie_held_picture(&held, &width, &height, &pitch))
+            picture = held;
     } else {
         picture = NULL;             /* nothing locked yet: the quads on black */
         picture_texture = 0;
@@ -1433,6 +1509,7 @@ void ngl_present_frame(void)
      * back to the host only for a frame saved for checks (BRO_VK_DUMP, save_target): the window gets its picture on
      * the GPU, so the copy back was 4.9 MB a frame (at 1280 x 960) for nothing. */
     ngl_vk_set_readback(describing_effects);
+    window_gamma();                 /* [acct2-ocr] 2026-11-13: the game's brightness in the window */
     if (ngl_vk_draw_quads(vertices, count, (float)SCREEN_WIDTH, (float)SCREEN_HEIGHT, meshes ? NULL : picture,
                           width, height, pitch)) {
         fprintf(stderr, "[ngl] Vulkan: drawing frame %lu failed; frames are not drawn from here on\n", frames);

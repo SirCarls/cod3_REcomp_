@@ -73,6 +73,18 @@ foreach(shader heat_warp.vert heat_warp.frag)                                   
         COMMENT "Compiling ${shader} to SPIR-V")                                            # [rexglue-native-fx]
     list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [rexglue-native-fx]
 endforeach()                                                                                # [rexglue-native-fx]
+# [acct2-fh] 2026-11-14 stage 5b: the window's sharpening and upscaling, AMD's FidelityFX CAS and FSR 1 (EASU, RCAS)
+# (ngl_vk.h ngl_vk_set_window_sharpness; src/ngl_vk.c window_fx_record); Finest Hour's display.scaling "cas" and "fsr"
+foreach(shader window_cas.frag window_easu.frag window_rcas.frag)                            # [acct2-fh]
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [acct2-fh]
+    add_custom_command(                                                                     # [acct2-fh]
+        OUTPUT "${spirv}"                                                                   # [acct2-fh]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [acct2-fh]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [acct2-fh]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [acct2-fh]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [acct2-fh]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [acct2-fh]
+endforeach()                                                                                # [acct2-fh]
 
 add_library(ngl_vk STATIC src/ngl_vk.c ${NGL_VK_SHADERS})
 target_include_directories(ngl_vk PUBLIC include PRIVATE "${NGL_VK_SHADER_DIR}")

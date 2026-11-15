@@ -248,12 +248,14 @@ constexpr Listed kMoveList[] = {
     {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D28, 0x82400398}, "particle pool 4 MB"},
     {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D1C, 0x82400398}, "particle pool 2 MB"},
     {{0x820CC21C, 0x820CC570, 0x82418D40, 0x82400398, 0x82344E98, 0}, "particle heap 2 MB"},
-    // The sound library's bank memory (NSL init 0x8211AD98: 0x23D7840 bytes, 35.8 MB). FMOD decodes with the XMA
-    // hardware contexts, which read their buffers physically, but those buffers are in FMOD's own 20 MB (the next
-    // allocation, 0x8211AE2C: the XMA check found them there in mace2 and chambois, so it stays); the sound data is
-    // copied from the bank memory into them by the CPU (0x823B80A8), and the mixed sound goes to the SDK by its
-    // virtual address (sdl_audio_driver.cpp TranslateVirtual).
-    {{0x820CC30C, 0x82522DF4, 0x82127AB8, 0x8211AE04, 0x82117CE0, 0x82492F98}, "sound bank memory 35.8 MB"},
+    // [acct2-decomp] 2026-11-13 the sound library's bank memory (NSL init 0x8211AD98: 0x23D7840 bytes, 35.8 MB;
+    // site 0x820CC30C <- 0x82522DF4 <- 0x82127AB8 <- 0x8211AE04 <- 0x82117CE0 <- 0x82492F98) is OFF the list. Moved,
+    // no campaign run plays an XMA sound (FMOD's float resampler never runs: 0 of 67 runs, every level, Linux and
+    // Wine, against 60 of 60 without the move), and the level scripts that wait on those sounds run differently
+    // (Falaise: the shell shock 3 to 4 s early, and the level, which reloads in 5 of 8 runs without the move, never
+    // does in 14). Kept in arena 0 while the rest of the list moves, the sounds and the level's timing are as without
+    // the move (4 of 4 runs). The move then frees 32 MB of arena 0 instead of 68. dev/agents/acct2-decomp/MEMORY.md,
+    // section 2d; the reason is not known yet (FMOD's codec still starts, with its buffers in arena 0).
 };
 #else
 // cod3mp (shadow: mp_merv, rouen, c4shadowmp; the same roles as the campaign's, at cod3mp's addresses).

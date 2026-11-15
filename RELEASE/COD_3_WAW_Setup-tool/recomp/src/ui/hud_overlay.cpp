@@ -63,6 +63,7 @@
 #include "ui/server_tab.h"  // [claude-9b] F2 > Game > Server, the match's rules, host only
 #include "ui/slider_box.h"  // [claude-9b] sliders with a number box (owner: "sliders + textbox")
 #include "f2/f2_accel.h"  // [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (F2 > Controls > Mouse)
+#include "f2/f2_crosshair_cs2.h"  // [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
 #include "game/ultrawide.h"
 #include "game/voice_language.h"  // [voice]
 #include "game/text_language.h"  // [acct2-ocr]
@@ -140,6 +141,19 @@ REXCVAR_DEFINE_STRING(cod3_crosshair_color_friendly, "64 255 64 255", "cod3/Cros
                       "R G B A over a friendly (the game's green)");
 REXCVAR_DEFINE_STRING(cod3_crosshair_color_dead, "0 0 0 255", "cod3/Crosshair",
                       "R G B A over a dead body (the game's black)");
+// [acct2-ocr] 2026-11-14 (owner 15:22: "Please copy EVERY option from CS2's crosshair settings and start transfering
+// it to all the f2 menus"; 15:24: "each individual splitscreen player should be able to have their own custom
+// crosshair"): each split-screen player's whole crosshair, every CS2 option, as key=value text
+// (f2/f2_crosshair_cs2.h). Player 1's starts from the cod3_crosshair_* settings above and is written back to them,
+// so the in-game AIM page and the console still set it; players 2 to 4 use player 1's until given their own.
+REXCVAR_DEFINE_STRING(cod3_crosshair_p1, "", "cod3/Crosshair",
+                      "Player 1's crosshair, every CS2 option (F2 > CROSSHAIR); empty: the cod3_crosshair_* settings");
+REXCVAR_DEFINE_STRING(cod3_crosshair_p2, "", "cod3/Crosshair",
+                      "Split-screen player 2's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
+REXCVAR_DEFINE_STRING(cod3_crosshair_p3, "", "cod3/Crosshair",
+                      "Split-screen player 3's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
+REXCVAR_DEFINE_STRING(cod3_crosshair_p4, "", "cod3/Crosshair",
+                      "Split-screen player 4's crosshair, every CS2 option (F2 > CROSSHAIR); empty: player 1's");
 
 // [claude-9b-think] 2026-10-27 UNTESTED (owner 13:59: "forgot to add the option to change the color of the glyphs if
 // the user wants", "default button is needed tho"): the colors of our prompt pictures, hex RRGGBB or RRGGBBAA (a '#'
@@ -605,6 +619,107 @@ CrosshairStyle CurrentCrosshair() {
   s.color[2] = b / 255.0f;
   s.color[3] = a / 255.0f;
   return s;
+}
+
+// [acct2-ocr] 2026-11-14 The shared CS2 crosshair (f2/f2_crosshair_cs2.h) on this game's settings, once: the four
+// players' text settings, player 1's old cod3_crosshair_* names both ways, and what the hooks give (the sights'
+// fraction, the game's black over a dead body; split screen in cod3mp only; no spread yet).
+void BindCs2Crosshair() {
+  static bool bound = false;
+  if (bound) return;
+  bound = true;
+  f2::xhair::Bind(
+      {"cod3_crosshair_p1", "cod3_crosshair_p2", "cod3_crosshair_p3", "cod3_crosshair_p4"},
+      [] {
+        f2::xhair::Legacy l;
+        l.enabled = REXCVAR_GET(cod3_crosshair);
+        l.shape = REXCVAR_GET(cod3_crosshair_style);
+        l.size = REXCVAR_GET(cod3_crosshair_size);
+        l.thickness = REXCVAR_GET(cod3_crosshair_thickness);
+        l.gap = REXCVAR_GET(cod3_crosshair_gap);
+        l.outline = REXCVAR_GET(cod3_crosshair_outline);
+        l.outline_thickness = REXCVAR_GET(cod3_crosshair_outline_thickness);
+        l.dot = REXCVAR_GET(cod3_crosshair_dot);
+        l.constant_color = REXCVAR_GET(cod3_crosshair_constant_color);
+        l.color = REXCVAR_GET(cod3_crosshair_color);
+        l.own_colors = REXCVAR_GET(cod3_crosshair_own_colors);
+        l.colors[f2::xhair::kCaseNormal] = REXCVAR_GET(cod3_crosshair_color_normal);
+        l.colors[f2::xhair::kCaseEnemy] = REXCVAR_GET(cod3_crosshair_color_enemy);
+        l.colors[f2::xhair::kCaseFriendly] = REXCVAR_GET(cod3_crosshair_color_friendly);
+        l.colors[f2::xhair::kCaseDead] = REXCVAR_GET(cod3_crosshair_color_dead);
+        return l;
+      },
+      [](const f2::xhair::Legacy& l) {
+        REXCVAR_SET(cod3_crosshair, l.enabled);
+        REXCVAR_SET(cod3_crosshair_style, std::clamp(l.shape, 0, 4));
+        REXCVAR_SET(cod3_crosshair_size, std::clamp(l.size, 0.0, 64.0));
+        REXCVAR_SET(cod3_crosshair_thickness, std::clamp(l.thickness, 0.5, 16.0));
+        REXCVAR_SET(cod3_crosshair_gap, std::clamp(l.gap, -8.0, 64.0));
+        REXCVAR_SET(cod3_crosshair_outline, l.outline);
+        REXCVAR_SET(cod3_crosshair_outline_thickness, std::clamp(l.outline_thickness, 0.5, 4.0));
+        REXCVAR_SET(cod3_crosshair_dot, l.dot);
+        REXCVAR_SET(cod3_crosshair_constant_color, l.constant_color);
+        REXCVAR_SET(cod3_crosshair_color, l.color);
+        REXCVAR_SET(cod3_crosshair_own_colors, l.own_colors);
+        REXCVAR_SET(cod3_crosshair_color_normal, l.colors[f2::xhair::kCaseNormal]);
+        REXCVAR_SET(cod3_crosshair_color_enemy, l.colors[f2::xhair::kCaseEnemy]);
+        REXCVAR_SET(cod3_crosshair_color_friendly, l.colors[f2::xhair::kCaseFriendly]);
+        REXCVAR_SET(cod3_crosshair_color_dead, l.colors[f2::xhair::kCaseDead]);
+      });
+  f2::xhair::Caps caps;
+#if defined(COD3_MP)
+  caps.players = 4;
+#else
+  caps.players = 1;
+#endif
+  caps.sights = true;      // the hook's f29: how far the sights are up
+  caps.dead_color = true;  // CG_CalcCrosshairColor's black over a dead body
+  // [acct2-ocr] 2026-11-14 17:40 the special crosshairs (owner 17:19: "default should be the game's own"): a weapon
+  // with a reticle piece of its own, and the mounted guns' and vehicles' crosshair (one way in this game); the aiming
+  // mode and the scopes are drawn without a hook of ours yet, so they stay the game's own.
+  caps.special = (1u << f2::xhair::kSpecialOwnCross) | (1u << f2::xhair::kSpecialTurret);
+  caps.special_label[f2::xhair::kSpecialOwnCross] = "Weapons with a reticle of their own";
+  caps.special_label[f2::xhair::kSpecialTurret] = "Mounted guns and vehicles";
+  caps.special_later = (1u << f2::xhair::kSpecialScope) | (1u << f2::xhair::kSpecialAimMode);
+  f2::xhair::SetCaps(caps);
+}
+
+// [acct2-ocr] 2026-11-14 For the CG_DrawCrosshair hooks (the game's thread): whether the player of the view the game
+// is about to draw a crosshair for has their own crosshair on (SetGameCrosshairView names the view first). The asks
+// are counted for cod3_debug_crosshair's line.
+std::atomic<uint32_t> g_crosshair_asks{0};
+bool CustomCrosshairForNextView() {
+  g_crosshair_asks.fetch_add(1, std::memory_order_relaxed);
+  return f2::xhair::Enabled(g_next_view);
+}
+
+// [acct2-ocr] 2026-11-14 17:40 For a kind of crosshair (f2::xhair::kHipFire or a Special), after the ask above:
+// whether the game draws its own and whether that player's is drawn.
+f2::xhair::Plan CrosshairPlanForNextView(int kind) { return f2::xhair::PlanFor(g_next_view, kind); }
+
+// [acct2-ocr] 2026-11-14 17:40 Whether the weapon of the local client the game draws for now has a reticle piece of its
+// own: CG_DrawCrosshair draws it after the cross (0x8243B038) when the weapon's +0x4D8 names one (a non-empty name;
+// only its first character is read). The weapon is the cg's (campaign 0x82A99E2C + client * 0x16D0, multiplayer
+// 0x82C7E70C + client * 0x18E0, as CG_DrawCrosshair reads it), the client the active local client.
+bool WeaponHasOwnReticle(uint8_t* base) {
+#if defined(COD3_MP)
+  constexpr uint32_t kCgWeapon = 0x82C7E70C, kCgStride = 0x18E0;
+#else
+  constexpr uint32_t kCgWeapon = 0x82A99E2C, kCgStride = 0x16D0;
+#endif
+  constexpr uint32_t kWeaponOwnReticle = 0x4D8;
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4) return false;
+  const uint32_t weapon = cod3::guest::ReadU32(base, kCgWeapon + client * kCgStride);
+  if (weapon < 0x10000000u || weapon >= 0xF0000000u) return false;
+  const uint32_t name = cod3::guest::ReadU32(base, weapon + kWeaponOwnReticle);
+  const bool own = name >= 0x10000000u && name < 0xF0000000u && cod3::guest::ReadU8(base, name) != 0;
+  thread_local uint32_t told = 0;
+  if (weapon != told && REXCVAR_GET(cod3_debug_crosshair)) {  // for test runs: which weapons count
+    told = weapon;
+    REXLOG_INFO("cod3: crosshair: player {}'s weapon changed; a reticle of its own: {}", client + 1, own);
+  }
+  return own;
 }
 
 static void DrawCrosshairShape(ImDrawList* dl, ImVec2 c, const CrosshairStyle& s, float scale,
@@ -1689,8 +1804,23 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     f2::accel::Tick();
   }
   DrawMenuCrosshairPreview(io);  // [claude-9b] the AIM page's preview (menus only)
-  auto s = CurrentCrosshair();
-  if (!s.enabled) return;
+  // [acct2-ocr] 2026-11-14 each view's crosshair is its own player's, every CS2 option, drawn as CS2's shader does
+  // (f2/f2_crosshair_cs2.h); claude-9b's places and sizes for each view stay.
+  BindCs2Crosshair();
+  f2::xhair::Sync();
+  bool any = false;
+  for (int p = 0; p < kCrosshairViews; ++p) any |= f2::xhair::Enabled(p);
+  if (REXCVAR_GET(cod3_debug_crosshair)) {  // [acct2-ocr] whether the game asks for a crosshair, and whose are on
+    static int64_t told_ns = 0;
+    const int64_t t = NowNs();
+    if (t - told_ns > 5'000'000'000) {
+      told_ns = t;
+      REXLOG_INFO("cod3: crosshair: the game asked {} times so far; players' own on: {} {} {} {}",
+                  g_crosshair_asks.load(std::memory_order_relaxed), f2::xhair::Enabled(0), f2::xhair::Enabled(1),
+                  f2::xhair::Enabled(2), f2::xhair::Enabled(3));
+    }
+  }
+  if (!any) return;
   // Only while the game itself would draw its crosshair (not in menus or
   // cutscenes): the CG_DrawCrosshair hooks stamp that every frame, for each
   // local player's view in split screen. Raising the sights fades it out over
@@ -1705,17 +1835,11 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   const int64_t now = NowNs();
   ImDrawList* dl = ImGui::GetForegroundDrawList();
   for (auto& v : g_crosshair_views) {
+    const int view = int(&v - g_crosshair_views);
+    if (!f2::xhair::Enabled(view)) continue;
     if (now - v.ns.load(std::memory_order_relaxed) > kCrosshairShownNs) continue;
-    const float fade = std::clamp(1.0f - 2.0f * v.aim.load(std::memory_order_relaxed), 0.0f, 1.0f);
-    if (fade <= 0.0f) continue;
-    float color[4] = {s.color[0], s.color[1], s.color[2], s.color[3]};
-    // The game's own color unless the player chose a constant one.
-    if (!s.constant_color) {
-      for (int i = 0; i < 4; ++i) color[i] = v.color[i].load(std::memory_order_relaxed);
-      if (REXCVAR_GET(cod3_crosshair_own_colors)) ApplyOwnCrosshairColor(color);  // [claude-9b]
-    }
-    const float alpha = color[3] * fade;
-    if (alpha <= 0.0f) continue;
+    const float aim = v.aim.load(std::memory_order_relaxed);
+    const float fade = std::clamp(1.0f - 2.0f * aim, 0.0f, 1.0f);
     const float rx = v.rect[0].load(std::memory_order_relaxed), ry = v.rect[1].load(std::memory_order_relaxed);
     const float rw = v.rect[2].load(std::memory_order_relaxed), rh = v.rect[3].load(std::memory_order_relaxed);
     ImVec2 c(std::floor(io.DisplaySize.x * 0.5f), std::floor(io.DisplaySize.y * 0.5f));
@@ -1730,40 +1854,76 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
       c = ImVec2(std::floor(float(picture.x) + float(picture.width) * (rx + rw * 0.5f)),
                  std::floor(float(picture.y) + float(picture.height) * (ry + rh * 0.5f)));
     }
-    // [claude-9b] A split-screen view's crosshair is the whole picture's size times the view's share
-    // of its height (owner 2026-10-27 05:49 "splitscreen hud drawing seems off"): the 0.5 minimum
-    // applies to the whole picture, so a half view in a 720-line window gets 0.33, not 0.5 (1.5x too
-    // big before), like the game's own HUD, which is drawn smaller in split screen.
-    const float scale = (rw < 0.99f || rh < 0.99f)
-                            ? std::max(0.25f, std::max(0.5f, float(picture.height) / 1080.0f) * rh)
-                            : std::max(0.5f, view_h / 1080.0f);
+    f2::xhair::View xv;
+    xv.cx = c.x;
+    xv.cy = c.y;
+    xv.height = view_h;
+    for (int i = 0; i < 4; ++i) xv.rgba[i] = v.color[i].load(std::memory_order_relaxed);
+    xv.rgba[3] *= fade;  // the sights coming up fade it, as before; the iron sight dot doesn't fade
+    xv.sights = aim;
     // [claude-9b] 2026-10-27 cod3_debug_crosshair: screenshots are the game's own picture without this
     // overlay (game/screenshot.cpp), so tests read each view's crosshair from the log instead.
     if (REXCVAR_GET(cod3_debug_crosshair)) {
       static int64_t logged_ns[kCrosshairViews] = {};
-      const int view = int(&v - g_crosshair_views);
       if (now - logged_ns[view] > 1'000'000'000) {
         logged_ns[view] = now;
-        REXLOG_INFO("cod3: crosshair: view {} drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, scale {:.3f} (view {:.2f} of "
-                    "the picture's height), alpha {:.2f}",
-                    view + 1, c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, scale, rh, alpha);
+        const f2::xhair::Settings& ps = f2::xhair::Player(view);
+        REXLOG_INFO("cod3: crosshair: view {} drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, view height {:.0f} ({:.2f} of "
+                    "the picture's), alpha {:.2f}; player {}'s: style {} ({}), length {:.1f}, thickness {:.1f}, gap "
+                    "{:.1f}, outline {}, color from {}",
+                    view + 1, c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, view_h, rh, xv.rgba[3], view + 1,
+                    ps.style, f2::xhair::StyleName(ps.style), ps.length, ps.thickness, ps.gap, ps.outline,
+                    ps.color_from);
       }
     }
-    if (s.outline) {
-      DrawCrosshairShape(dl, c, s, scale, IM_COL32(0, 0, 0, static_cast<int>(alpha * 255)),
-                         s.outline_thickness * scale);
-    }
-    DrawCrosshairShape(dl, c, s, scale, ImGui::ColorConvertFloat4ToU32(ImVec4(color[0], color[1], color[2], alpha)),
-                       0.0f);
+    f2::xhair::DrawView(dl, view, xv);
   }
 }
 
 // ===========================================================================
 // Settings window
 // ===========================================================================
+
+// [acct2-main] 2026-11-13 The custom aspect ratio and custom size boxes (Video > Resolution; owner 11-13 17:41:
+// "Custom aspect ratio entered via the text box doesn't work", dev/agents/acct2-main/F2-AUDIT.md). They applied
+// only on Enter or their button; now leaving the box applies it too, as the name boxes do, and so does closing F2
+// while it is being typed in: the typed value waits here until then (SaveIfDirty). Empty: nothing waiting.
+namespace {
+std::string g_typed_aspect;      // for cod3_aspect_ratio, written "W:H" or as a number
+std::string g_typed_resolution;  // for cod3_render_resolution, "WxH"
+int g_windows_opened = 0;        // so each new window shows the boxes as the settings are
+
+// A shape as the setting writes it: "21x9" and "21/9" become "21:9" (cod3::ParseAspectText reads all three).
+std::string AspectSettingText(const char* text) {
+  std::string shape = text;
+  for (char& ch : shape)
+    if (ch == 'x' || ch == 'X' || ch == '/') ch = ':';
+  return shape;
+}
+
+// Applies a shape or size still being typed when F2 closes. True when there was one.
+bool ApplyTypedBoxes() {
+  bool applied = false;
+  if (!g_typed_aspect.empty()) {
+    rex::cvar::SetFlagByName("cod3_aspect_ratio", g_typed_aspect);
+    g_typed_aspect.clear();
+    applied = true;
+  }
+  if (!g_typed_resolution.empty()) {
+    REXCVAR_SET(cod3_render_resolution, g_typed_resolution);
+    cod3::RequestRenderResolution();
+    g_typed_resolution.clear();
+    applied = true;
+  }
+  return applied;
+}
+}  // namespace
+
 SettingsWindow::SettingsWindow(rex::ui::ImGuiDrawer* drawer, std::filesystem::path config_path,
                                std::function<void()> on_close)
-    : ImGuiDialog(drawer), config_path_(std::move(config_path)), on_close_(std::move(on_close)) {}
+    : ImGuiDialog(drawer), config_path_(std::move(config_path)), on_close_(std::move(on_close)) {
+  ++g_windows_opened;  // [acct2-main]
+}
 
 void SettingsWindow::Save() {
   cod3::binds::CommitF2Edits();  // [keybinds] text typed into a key row and not applied yet
@@ -1777,6 +1937,7 @@ void SettingsWindow::Save() {
 }
 
 void SettingsWindow::SaveIfDirty() {
+  dirty_ |= ApplyTypedBoxes();  // [acct2-main] F2 closed while a custom shape or size was being typed
   dirty_ |= cod3::binds::CommitF2Edits();  // [keybinds] F2 closed while a key row had typed text
   if (dirty_) Save();
 }
@@ -1806,11 +1967,36 @@ static bool CvarCombo(const char* label, const char* cvar, const char* const* va
   std::vector<const char*> shown_names;
   for (int i : shown) shown_names.push_back(names[i]);
 
+  // [acct2-main] 2026-11-14 Compared without case: the game's readers lowercase these values (cod3_mp_texture_policy
+  // `Insignia` showed "All" while the game applied insignia). A value matching no choice still shows as the first one,
+  // as before (a retired shadow "high" as Original, a mistyped texture policy as All, which is what their readers
+  // make of them), but picking that choice now writes it: before, picking the choice already shown did nothing, so
+  // the value stayed mistyped.
   std::string cur = Get(cvar);
-  int idx = 0;
+  auto same = [](const std::string& a, std::string_view b) {
+    if (a.size() != b.size()) return false;
+    for (size_t k = 0; k < b.size(); ++k)
+      if (std::tolower(static_cast<unsigned char>(a[k])) != std::tolower(static_cast<unsigned char>(b[k]))) return false;
+    return true;
+  };
+  int idx = -1;
   for (size_t j = 0; j < shown.size(); ++j)
-    if (cur == values[shown[j]]) idx = static_cast<int>(j);
-  if (ImGui::Combo(label, &idx, shown_names.data(), static_cast<int>(shown_names.size()))) {
+    if (idx < 0 && same(cur, values[shown[j]])) idx = static_cast<int>(j);
+  const bool known = idx >= 0;
+  if (!known) idx = 0;
+  bool picked = false;
+  if (ImGui::BeginCombo(label, shown_names[idx])) {
+    for (size_t j = 0; j < shown.size(); ++j) {
+      const bool selected = static_cast<int>(j) == idx;
+      if (ImGui::Selectable(shown_names[j], selected) && (!selected || !known)) {
+        idx = static_cast<int>(j);
+        picked = true;
+      }
+      if (selected) ImGui::SetItemDefaultFocus();
+    }
+    ImGui::EndCombo();
+  }
+  if (picked) {
     rex::cvar::SetFlagByName(cvar, values[shown[idx]]);
     if (info && info->lifecycle != rex::cvar::Lifecycle::kHotReload) *restart = true;
     return true;
@@ -2013,6 +2199,8 @@ void SettingsWindow::DrawVideo() {
                                       "vulkan_allow_present_mode_immediate",
                                       "d3d12_allow_variable_refresh_rate_and_tearing", "present_letterbox",
                                       "swap_post_effect", "present_effect",
+                                      // [acct2-main] 2026-11-14 the two sharpness rows under Output scaling too
+                                      "present_cas_additional_sharpness", "present_fsr_sharpness_reduction",
                                       "anisotropic_override", "cod3_hd_textures",
                                       "cod3_user_textures", "cod3_mp_texture_policy",  // [f2-menus] 2026-11-11
                                       "cod3_max_fps", "cod3_shadow_quality", "cod3_color_space",
@@ -2063,7 +2251,10 @@ void SettingsWindow::DrawVideoDisplay() {
     // (Direct3D 12 there would need Wine).
     const char* v[] = {"auto", "d3d12", "vulkan"};
     const char* n[] = {"Automatic (Vulkan)", "Direct3D 12", "Vulkan"};
-    dirty_ |= CvarCombo("Graphics API", "cod3_graphics_api", v, n, 3, &restart_needed_);
+    if (CvarCombo("Graphics API", "cod3_graphics_api", v, n, 3, &restart_needed_)) {
+      restart_needed_ = true;  // [acct2-main] 2026-11-13 read only at start (OnPreSetup), so the restart line
+      dirty_ = true;
+    }
     Help("Which graphics API draws the game. Vulkan (the automatic choice, as on Linux) gives the "
          "emulated GPU twice the Xbox 360's render target memory, so the game draws up to "
          "1920x1080 itself (native) and the settings match the Linux version. Direct3D 12 is there if Vulkan "
@@ -2075,8 +2266,10 @@ void SettingsWindow::DrawVideoDisplay() {
     const char* v[] = {"false", "true"};
     const char* n[] = {"Windowed", "Fullscreen (borderless)"};
     dirty_ |= CvarCombo("Display mode", "fullscreen", v, n, 2, &restart_needed_);
+    // [acct2-main] 2026-11-14 the refresh rate row below makes fullscreen exclusive when a rate is picked.
     Help("Play in a window, or fill the whole monitor without changing its resolution "
-         "(borderless). Applies at once and is kept for the next start.");
+         "(borderless; a rate picked under \"Refresh rate (fullscreen)\" makes it exclusive at that "
+         "rate). Applies at once and is kept for the next start.");
   }
   {
     // [claude-9b] The screen the game plays on (SDK patch 0068; owner 2026-10-21: "we also need
@@ -2180,8 +2373,11 @@ void SettingsWindow::DrawVideoDisplay() {
     const bool vk = Has("vulkan_allow_present_mode_immediate");
     const bool dx = Has("d3d12_allow_variable_refresh_rate_and_tearing");
     if (vk || dx) {
-      bool on = vk ? !GetBool("vulkan_allow_present_mode_immediate")
-                   : !GetBool("d3d12_allow_variable_refresh_rate_and_tearing");
+      // [acct2-main] 2026-11-14 shows the flag of the graphics API the game starts with (both are written below),
+      // as the game's Options row does (menu_video_rows.cpp VsyncOn).
+      const bool show_dx = dx && (!vk || (Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12"));
+      bool on = show_dx ? !GetBool("d3d12_allow_variable_refresh_rate_and_tearing")
+                        : !GetBool("vulkan_allow_present_mode_immediate");
       if (ImGui::Checkbox("V-Sync (no tearing)", &on)) {
         if (vk) rex::cvar::SetFlagByName("vulkan_allow_present_mode_immediate", on ? "false" : "true");
         if (dx)
@@ -2197,7 +2393,7 @@ void SettingsWindow::DrawVideoDisplay() {
   dirty_ |= CvarCheckbox("Black bars instead of stretching", "present_letterbox", &restart_needed_);  // [acct2-decomp]
   Help("Keeps the picture's shape with black bars when the window has another shape (for example "
        "16:9 chosen on an ultrawide monitor, or 4:3 on a 16:9 one), instead of stretching it to the "
-       "window.");
+       "window. Applies at once.");  // [acct2-main] 2026-11-14 when it applies (the SDK reads it at every present)
 }
 
 // Video > Resolution: what the game draws and the picture's shape.
@@ -2216,12 +2412,14 @@ void SettingsWindow::DrawVideoResolution() {
     static bool show_custom = false;
     static char custom_text[24] = "";
     static std::string last_seen;
-    if (cur != last_seen) {
+    static int window_seen = -1;  // [acct2-main]
+    if (cur != last_seen || window_seen != g_windows_opened) {  // [acct2-main] or a new window
       // A change made elsewhere (the game's Options, the console, the setup
       // tool) is shown as it is.
       show_custom = custom;
       if (custom) std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
       last_seen = cur;
+      window_seen = g_windows_opened;  // [acct2-main]
     }
     std::string preview = custom ? "Custom (" + cur + ")"
                                  : cur + " (not a size: \"Match the screen\" is used)";
@@ -2251,16 +2449,22 @@ void SettingsWindow::DrawVideoResolution() {
       const bool entered = ImGui::InputText("##custom_resolution", custom_text, sizeof(custom_text),
                                             ImGuiInputTextFlags_EnterReturnsTrue |
                                                 ImGuiInputTextFlags_CharsNoBlank);
+      // [acct2-main] 2026-11-13 Leaving the box applies the size too; F2 closing while it is typed in, SaveIfDirty.
+      const bool left = ImGui::IsItemDeactivatedAfterEdit();
+      const bool typing = ImGui::IsItemActive();
       ImGui::SameLine();
       uint32_t w = 0, h = 0;
       std::string typed = custom_text;
       for (char& ch : typed) ch = ch == 'X' ? 'x' : ch;
       const bool valid = typed.find('x') != std::string::npos && cod3::ParseResolutionChoice(typed, &w, &h);
-      ImGui::BeginDisabled(!valid);
-      if ((ImGui::Button("Use this size") || entered) && valid) {
-        const std::string value = std::to_string(w) + "x" + std::to_string(h);
+      const std::string value = valid ? std::to_string(w) + "x" + std::to_string(h) : std::string();
+      const bool waiting = valid && value != cur;  // [acct2-main] typed, not in use yet
+      g_typed_resolution = typing && waiting ? value : std::string();  // [acct2-main]
+      ImGui::BeginDisabled(!waiting);  // [acct2-main] greyed while the box holds what is in use
+      if ((ImGui::Button("Use this size") || entered || left) && waiting) {  // [acct2-main] left, waiting
         REXCVAR_SET(cod3_render_resolution, value);
         cod3::RequestRenderResolution();
+        g_typed_resolution.clear();  // [acct2-main]
         dirty_ = true;
       }
       ImGui::EndDisabled();
@@ -2268,6 +2472,8 @@ void SettingsWindow::DrawVideoResolution() {
         ImGui::TextDisabled("Width x height, from %ux%u to %ux%u (for example 2560x1080).",
                             cod3::kMinCustomWidth, cod3::kMinCustomHeight, cod3::kMaxCustomWidth,
                             cod3::kMaxCustomHeight);
+      else if (waiting)  // [acct2-main]
+        ImGui::TextDisabled("Not in use yet: Enter, \"Use this size\" or a click elsewhere applies it.");
       // A size of another shape than the picture is drawn in the picture's
       // shape (game/render_resolution.h FitAspect), unless the shape follows it.
       const float picture = cod3::DisplayAspect();
@@ -2359,12 +2565,14 @@ void SettingsWindow::DrawVideoResolution() {
     static bool show_custom = false;
     static char custom_text[24] = "";
     static std::string last_seen;
-    if (cur != last_seen) {
+    static int window_seen = -1;  // [acct2-main]
+    if (cur != last_seen || window_seen != g_windows_opened) {  // [acct2-main] or a new window
       if (listed >= 0)
         show_custom = false;
       else
         std::snprintf(custom_text, sizeof(custom_text), "%s", cur.c_str());
       last_seen = cur;
+      window_seen = g_windows_opened;  // [acct2-main]
     }
     auto in_range = [](float shape) {
       return shape >= cod3::kMinAspect - 0.001f && shape <= cod3::kMaxAspect + 0.001f;
@@ -2402,21 +2610,31 @@ void SettingsWindow::DrawVideoResolution() {
       const bool entered = ImGui::InputText("##custom_aspect", custom_text, sizeof(custom_text),
                                             ImGuiInputTextFlags_EnterReturnsTrue |
                                                 ImGuiInputTextFlags_CharsNoBlank);
+      // [acct2-main] 2026-11-13 Leaving the box applies the shape too; F2 closing while it is typed in, SaveIfDirty.
+      const bool left = ImGui::IsItemDeactivatedAfterEdit();
+      const bool typing = ImGui::IsItemActive();
       ImGui::SameLine();
       float typed = 0.0f;
       const bool parses = cod3::ParseAspectText(custom_text, &typed);
       const bool valid = parses && in_range(typed);
-      ImGui::BeginDisabled(!valid);
-      if ((ImGui::Button("Use this shape") || entered) && valid) {
-        rex::cvar::SetFlagByName("cod3_aspect_ratio", custom_text);
+      const std::string shape_text = AspectSettingText(custom_text);  // [acct2-main] 21x9, 21/9: 21:9
+      const bool waiting = valid && shape_text != cur;                // [acct2-main] typed, not in use yet
+      g_typed_aspect = typing && waiting ? shape_text : std::string();  // [acct2-main]
+      ImGui::BeginDisabled(!waiting);  // [acct2-main] greyed while the box holds what is in use
+      if ((ImGui::Button("Use this shape") || entered || left) && waiting) {  // [acct2-main] left, waiting
+        rex::cvar::SetFlagByName("cod3_aspect_ratio", shape_text);
+        g_typed_aspect.clear();  // [acct2-main]
         dirty_ = true;
       }
       ImGui::EndDisabled();
       if (custom_text[0] && !parses)
-        ImGui::TextDisabled("Width:height, for example 24:10, 16:10 or 2.39:1 (from 4:3 to 48:9).");
+        ImGui::TextDisabled("Width:height, for example 24:10, 21x9, 16:10 or 2.39:1 (from 4:3 to 48:9).");
       else if (custom_text[0] && !valid)
         ImGui::TextDisabled("%.3f:1 is %s: a shape goes from 4:3 (1.333:1) to 48:9 (5.333:1).", typed,
                             typed < cod3::kMinAspect ? "narrower than 4:3" : "wider than 48:9");
+      else if (waiting)  // [acct2-main] the number alone read as if it were in use
+        ImGui::TextDisabled("%.3f:1, not in use yet: Enter, \"Use this shape\" or a click elsewhere applies it.",
+                            typed);
       else if (custom_text[0])
         ImGui::TextDisabled("%.3f:1", typed);
     }
@@ -2452,7 +2670,9 @@ void SettingsWindow::DrawVideoFrameRate() {
     // com_maxfps is a limit, not a target: the game runs as fast as it can
     // up to this. Applies at once (the console's com_maxfps is the same thing).
     auto& engine = cod3::Engine::Get();
-    static const int values[] = {0, 30, 60, 85, 120, 144, 165, 200, 240, 300, 360, 500, 1000};
+    // [acct2-main] 2026-11-14 75 too, as the game's Options > VIDEO row has it (menu_video_rows.cpp kFrameRates):
+    // without it, 75 picked there showed here as "75 (set in the console)".
+    static const int values[] = {0, 30, 60, 75, 85, 120, 144, 165, 200, 240, 300, 360, 500, 1000};
     constexpr int count = static_cast<int>(sizeof(values) / sizeof(values[0]));
     const int cur = cod3::FrameRate::Get().limit();
     std::vector<std::string> labels;
@@ -2474,8 +2694,9 @@ void SettingsWindow::DrawVideoFrameRate() {
       ImGui::EndCombo();
     }
     if (!engine.GameReady()) ImGui::EndDisabled();
+    // [acct2-main] 2026-11-14 "the game simply runs a little slower" read as the game's speed.
     Help("The most frames per second the game may draw. It's a cap, not a target: when the PC "
-         "can't keep up the game simply runs a little slower, instead of dropping to half. Applies "
+         "can't keep up, the frame rate simply drops a little, instead of to half. Applies "
          "immediately, like typing com_maxfps in the ~ console. Above 60 is new ground: the "
          "game's clock keeps its speed correct, but the levels were only ever played at 30-60 on "
          "the Xbox 360.");
@@ -2614,7 +2835,7 @@ void SettingsWindow::DrawVideoQuality() {
     const char* n[] = {"Game default", "Off", "1x", "2x", "4x", "8x", "16x"};
     dirty_ |= CvarCombo("Anisotropic filtering", "anisotropic_override", v, n, 7, &restart_needed_);
     Help("Keeps floors, roads and walls sharp when you look along them at a distance. 16x costs "
-         "almost nothing on a modern GPU.");
+         "almost nothing on a modern GPU. Applies at once.");  // [acct2-main] 2026-11-14 (read at every draw)
   }
 
   Section("Shadows");
@@ -2688,8 +2909,10 @@ void SettingsWindow::DrawVideoQuality() {
     const char* v[] = {"all", "insignia", "off"};  // [f2-menus]
     const char* n[] = {"All", "Insignia only", "Off"};  // [f2-menus]
     dirty_ |= CvarCombo("Replaced textures in multiplayer", "cod3_mp_texture_policy", v, n, 3, &restart_needed_);  // [f2-menus]
+    // [acct2-main] 2026-11-14 says what Insignia leaves (hd_textures.cpp: never a texture a soldier or a vehicle wears).
     Help("All: the HD and your own pack, as in the campaign. Insignia: only the world insignia from your own "  // [f2-menus]
-         "pack. Off: none. Applies at once.");  // [f2-menus]
+         "pack (flags and banners); the insignia on soldiers and vehicles stay as the game has them. Off: none. "
+         "Applies at once.");  // [f2-menus]
   }  // [f2-menus]
 }
 
@@ -3361,198 +3584,53 @@ void SettingsWindow::DrawSpeakerLayout() {
 }
 
 void SettingsWindow::DrawCrosshair() {
-  // [acct2-decomp] 2026-11-05 owner 06:05: "check the crosshair menu for a redundant preview. Also when scrolling
-  // that menu the preview should stay on the right side of the menu while staying centered." The settings scroll
-  // in a column of their own; the one preview (claude-9b's, at its in-game size) has a column on the right that
-  // never scrolls, and sits centered in it. The second preview that was at the bottom of the page (the same
-  // crosshair at a fixed 1.5x on a green box, white unless Constant color, so it showed neither the per-case
-  // colors nor the custom crosshair being off) is gone.
-  const ImGuiStyle& style = ImGui::GetStyle();
-  const float preview_side = std::floor(ImGui::GetFrameHeight() * 5.0f);
-  static constexpr const char* kCaption[] = {"Preview, at its size", "in the game", "(custom crosshair off)"};
-  float caption_w = 0.0f;
-  for (const char* line : kCaption) caption_w = std::max(caption_w, ImGui::CalcTextSize(line).x);
-  const float column_w = std::floor(std::max(preview_side, caption_w) + style.WindowPadding.x * 2.0f);
-  const float page_w = ImGui::GetContentRegionAvail().x;
-  ImGui::BeginChild("##crosshair_settings",
-                    ImVec2(std::floor(std::max(page_w * 0.5f, page_w - column_w - style.ItemSpacing.x)), 0.0f));
-  bool changed = false;
-  if (ResetButton("reset_crosshair", "crosshair settings")) {
-    ResetSettings({"cod3_crosshair", "cod3_crosshair_style", "cod3_crosshair_size", "cod3_crosshair_thickness",
-                   "cod3_crosshair_gap", "cod3_crosshair_outline", "cod3_crosshair_outline_thickness",
-                   "cod3_crosshair_dot", "cod3_crosshair_constant_color", "cod3_crosshair_color",
-                   "cod3_crosshair_own_colors", "cod3_crosshair_color_normal", "cod3_crosshair_color_enemy",
-                   "cod3_crosshair_color_friendly", "cod3_crosshair_color_dead"});
-    changed = true;
-  }
-  bool per_player = false;
+  // [acct2-ocr] 2026-11-14 (owner 15:22, 15:24) every CS2 option, one crosshair per split-screen player
+  // (f2/f2_crosshair_cs2.h). The shared page keeps this page's two columns (acct2-decomp 11-05: the rows scroll, the
+  // preview stays centered on the right), its sliders with a number box and its rows greyed while the crosshair is off
+  // (f2-menus 11-11). The game's own crosshair switch (claude-9b 10-26, per split-screen player claude-setup 11-03)
+  // stays this game's, above the rows. The Reset is the page's ("Reset this crosshair", player by player).
+  BindCs2Crosshair();
+  static int player = 0;
+  const bool changed = f2::xhair::DrawPage(&player, [&]() -> bool {
+    bool per_player = false;
 #if defined(COD3_MP)
-  // [claude-setup] 2026-11-03 split screen: one box per local player, each that player's own switch (LocalCrosshairs).
-  if (uint8_t* base = GuestBase()) {
-    const std::vector<LocalCrosshair> players = LocalCrosshairs(base);
-    if (players.size() > 1) {
-      per_player = true;
-      ImGui::TextUnformatted("Show crosshair");
-      for (const LocalCrosshair& p : players) {
-        ImGui::SameLine();
-        bool on = cod3::guest::ReadU8(base, p.byte) != 0;
-        char label[40];
-        std::snprintf(label, sizeof(label), "Player %u##show_crosshair_%u", p.player + 1, p.player);
-        if (ImGui::Checkbox(label, &on)) cod3::guest::WriteU8(base, p.byte, on ? 1 : 0);
-      }
-      Help("Each split-screen player's own crosshair switch, the same as that player's Options > Gameplay > "
-           "Crosshair: off hides that player's crosshair, the game's and the custom one, on their part of the "
-           "screen only. Player 1's is remembered as before; for the others, set it in their own Options to keep "
-           "it after the game closes.");
-    }
-  }
-#endif
-  if (!per_player) {
-    // [claude-9b] The game's own crosshair switch (owner 2026-10-26: "F2 crosshair menu should have a
-    // toggle box for show crosshair that reflects the in-game one menu toggle"): Options > Gameplay >
-    // Crosshair, read from the game every time F2 draws, so both places always agree.
-    const int game_on = GameCrosshairOption();
-    bool show = game_on != 0;
-    ImGui::BeginDisabled(game_on < 0);
-    if (ImGui::Checkbox("Show crosshair", &show)) SetGameCrosshairOption(show);
-    ImGui::EndDisabled();
-    Help(game_on < 0 ? "The game's own crosshair switch (Options > Gameplay > Crosshair): shown once the "
-                       "game has started."
-                     : "The game's own crosshair switch, the same as Options > Gameplay > Crosshair: off "
-                       "hides the crosshair, the game's and the custom one. The game saves it with your "
-                       "profile.");
-  }
-  bool en = REXCVAR_GET(cod3_crosshair);
-  if (ImGui::Checkbox("Use custom crosshair", &en)) {
-    REXCVAR_SET(cod3_crosshair, en);
-    changed = true;
-  }
-  Help("Draws the crosshair below instead of the game's. It appears only when the game would show "
-       "its own: not in menus or cutscenes, and it fades out as you aim down the sights. Show "
-       "crosshair above (the game's own switch) still hides it.");
-  ImGui::BeginDisabled(!en);  // [f2-menus] 2026-11-11 the custom crosshair's rows grey while it is off
-  // [acct2-decomp] the preview moved to the column on the right (end of this function).
-  const char* styles[] = {"Classic cross", "Cross + dot", "Dot", "Circle", "T"};
-  int st = REXCVAR_GET(cod3_crosshair_style);
-  if (ImGui::Combo("Style", &st, styles, 5)) {
-    REXCVAR_SET(cod3_crosshair_style, st);
-    changed = true;
-  }
-  auto slider = [&](const char* label, double& value, float lo, float hi) {
-    float f = static_cast<float>(value);
-    if (SliderFloatBox(label, &f, lo, hi, "%.1f")) {  // [claude-9b] slider + number box (owner: "sliders + textbox")
-      value = f;
-      changed = true;
-    }
-  };
-  // [acct2-decomp] the cvars' own ranges (they were 0-32, 0.5-8, -4..32: a console value beyond was cut)
-  slider("Length", REXCVAR_GET(cod3_crosshair_size), 0.0f, 64.0f);
-  slider("Thickness", REXCVAR_GET(cod3_crosshair_thickness), 0.5f, 16.0f);
-  slider("Gap", REXCVAR_GET(cod3_crosshair_gap), -8.0f, 64.0f);
-  Help("Sizes are in pixels on a 1080p screen and scale with the window. Gap is the space between "
-       "the center and each arm.");
-  bool outline = REXCVAR_GET(cod3_crosshair_outline);
-  if (ImGui::Checkbox("Outline", &outline)) {
-    REXCVAR_SET(cod3_crosshair_outline, outline);
-    changed = true;
-  }
-  if (outline) slider("Outline thickness", REXCVAR_GET(cod3_crosshair_outline_thickness), 0.5f, 4.0f);
-  Help("A thin black border that keeps the crosshair visible on bright backgrounds.");
-  bool dot = REXCVAR_GET(cod3_crosshair_dot);
-  if (ImGui::Checkbox("Center dot", &dot)) {
-    REXCVAR_SET(cod3_crosshair_dot, dot);
-    changed = true;
-  }
-  bool constant = REXCVAR_GET(cod3_crosshair_constant_color);
-  if (ImGui::Checkbox("Constant color", &constant)) {
-    REXCVAR_SET(cod3_crosshair_constant_color, constant);
-    changed = true;
-  }
-  Help("Off (default): the crosshair changes color the way the game's own does: white, red over an "
-       "enemy, green over a friendly, black over a dead body. On: always the color below.");
-  auto s = CurrentCrosshair();
-  float col[4] = {s.color[0], s.color[1], s.color[2], s.color[3]};
-  if (!constant) ImGui::BeginDisabled();
-  if (ImGui::ColorEdit4("Color", col)) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%d %d %d %d", int(col[0] * 255 + .5f), int(col[1] * 255 + .5f),
-                  int(col[2] * 255 + .5f), int(col[3] * 255 + .5f));
-    REXCVAR_SET(cod3_crosshair_color, std::string(buf));
-    changed = true;
-  }
-  if (!constant) ImGui::EndDisabled();
-  {
-    // [claude-9b] A color of your own for each of the game's cases (owner 2026-10-26).
-    bool own = REXCVAR_GET(cod3_crosshair_own_colors);
-    ImGui::BeginDisabled(constant);
-    if (ImGui::Checkbox("My own colors for each case", &own)) {
-      REXCVAR_SET(cod3_crosshair_own_colors, own);
-      changed = true;
-    }
-    Help("The crosshair still changes color when the game's does, but to your colors: over nothing, "
-         "over an enemy, over a friendly and over a dead body. Off: the game's white, red, green and "
-         "black. Not used with Constant color.");
-    if (own && !constant) {
-      struct Case {
-        const char* label;
-        const char* setting;
-      };
-      static constexpr Case kCases[] = {{"Over nothing", "cod3_crosshair_color_normal"},
-                                        {"Over an enemy", "cod3_crosshair_color_enemy"},
-                                        {"Over a friendly", "cod3_crosshair_color_friendly"},
-                                        {"Over a dead body", "cod3_crosshair_color_dead"}};
-      for (const Case& k : kCases) {
-        auto c = ParseRgba(Get(k.setting), {1.0f, 1.0f, 1.0f, 1.0f});
-        if (ImGui::ColorEdit4(k.label, c.data())) {
-          rex::cvar::SetFlagByName(k.setting, fmt::format("{} {} {} {}", int(c[0] * 255 + .5f), int(c[1] * 255 + .5f),
-                                                          int(c[2] * 255 + .5f), int(c[3] * 255 + .5f)));
-          changed = true;
+    // [claude-setup] 2026-11-03 split screen: one box per local player, each that player's own switch (LocalCrosshairs).
+    if (uint8_t* base = GuestBase()) {
+      const std::vector<LocalCrosshair> players = LocalCrosshairs(base);
+      if (players.size() > 1) {
+        per_player = true;
+        ImGui::TextUnformatted("Show crosshair");
+        for (const LocalCrosshair& p : players) {
+          ImGui::SameLine();
+          bool on = cod3::guest::ReadU8(base, p.byte) != 0;
+          char label[40];
+          std::snprintf(label, sizeof(label), "Player %u##show_crosshair_%u", p.player + 1, p.player);
+          if (ImGui::Checkbox(label, &on)) cod3::guest::WriteU8(base, p.byte, on ? 1 : 0);
         }
+        Help("Each split-screen player's own crosshair switch, the same as that player's Options > Gameplay > "
+             "Crosshair: off hides that player's crosshair, the game's and the custom one, on their part of the "
+             "screen only. Player 1's is remembered as before; for the others, set it in their own Options to keep "
+             "it after the game closes.");
       }
     }
-    ImGui::EndDisabled();
-    // [claude-9b] Owner 2026-10-26: "an option for resetting the colors".
-    if (ImGui::Button("Reset colors")) {
-      ResetSettings({"cod3_crosshair_constant_color", "cod3_crosshair_color", "cod3_crosshair_own_colors",
-                     "cod3_crosshair_color_normal", "cod3_crosshair_color_enemy", "cod3_crosshair_color_friendly",
-                     "cod3_crosshair_color_dead"});
-      changed = true;
+#endif
+    if (!per_player) {
+      // [claude-9b] The game's own crosshair switch (owner 2026-10-26: "F2 crosshair menu should have a
+      // toggle box for show crosshair that reflects the in-game one menu toggle"): Options > Gameplay >
+      // Crosshair, read from the game every time F2 draws, so both places always agree.
+      const int game_on = GameCrosshairOption();
+      bool show = game_on != 0;
+      ImGui::BeginDisabled(game_on < 0);
+      if (ImGui::Checkbox("Show crosshair", &show)) SetGameCrosshairOption(show);
+      ImGui::EndDisabled();
+      Help(game_on < 0 ? "The game's own crosshair switch (Options > Gameplay > Crosshair): shown once the "
+                         "game has started."
+                       : "The game's own crosshair switch, the same as Options > Gameplay > Crosshair: off "
+                         "hides the crosshair, the game's and the custom one. The game saves it with your "
+                         "profile.");
     }
-    ImGui::SameLine();
-    ImGui::TextDisabled("Back to the game's own colors.");
-  }
-  ImGui::EndDisabled();  // [f2-menus] 2026-11-11 the custom crosshair's rows
-  ImGui::EndChild();
-  ImGui::SameLine();
-  // [acct2-decomp] The preview's column: as tall as the page, never scrolls; the preview and its caption are
-  // centered in it, so they stay put while the settings beside them scroll.
-  ImGui::BeginChild("##crosshair_preview", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None,
-                    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-  {
-    const int lines = REXCVAR_GET(cod3_crosshair) ? 2 : 3;
-    const ImVec2 area = ImGui::GetContentRegionAvail();
-    const ImVec2 start = ImGui::GetCursorPos();
-    const float block_h = preview_side + style.ItemSpacing.y + lines * ImGui::GetTextLineHeightWithSpacing();
-    ImGui::SetCursorPos(ImVec2(start.x + std::floor(std::max(0.0f, (area.x - preview_side) * 0.5f)),
-                               start.y + std::floor(std::max(0.0f, (area.y - block_h) * 0.5f))));
-    // [claude-9b] Preview at its in-game size (owner 2026-10-20: "the crosshair menu needs a preview").
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const ImVec2 p1(p0.x + preview_side, p0.y + preview_side);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(p0, p1, IM_COL32(40, 40, 40, 255));
-    dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
-    dl->PushClipRect(p0, p1, true);
-    DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
-                              std::max(0.5f, ImGui::GetIO().DisplaySize.y / 1080.0f));
-    dl->PopClipRect();
-    ImGui::Dummy(ImVec2(preview_side, preview_side));
-    for (int i = 0; i < lines; ++i) {
-      const float w = ImGui::CalcTextSize(kCaption[i]).x;
-      ImGui::SetCursorPosX(start.x + std::floor(std::max(0.0f, (area.x - w) * 0.5f)));
-      ImGui::TextDisabled("%s", kCaption[i]);
-    }
-  }
-  ImGui::EndChild();
+    return false;
+  });
   if (changed) dirty_ = true;
 }
 
@@ -4595,8 +4673,12 @@ void SettingsWindow::DrawEmulationSpeedups() {
   Help("While a new effect's shader is still being built, keep playing and draw it a moment later, "
        "instead of pausing the game until it's ready. Fewer stutters the first time you see an "
        "effect.");
-  dirty_ |= CvarCheckbox("Store shader cache on disk", "store_shaders", &restart_needed_);
-  Help("Saves built shaders, so the next session doesn't stutter on effects you've already seen.");
+  if (CvarCheckbox("Store shader cache on disk", "store_shaders", &restart_needed_)) {
+    restart_needed_ = true;  // [acct2-main] 2026-11-13 read only at start (InitializeShaderStorage)
+    dirty_ = true;
+  }
+  Help("Saves built shaders, so the next session doesn't stutter on effects you've already seen. Applies "
+       "after a restart.");  // [acct2-main] the restart
 }
 
 // EMULATION > Native code: parts of the game's own code that run as hand-written PC code instead of the
@@ -4826,24 +4908,34 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
 // ---------------------------------------------------------------------------
 // Infantry weapons @ 0x82444BB8; f29 = aim-down-sights fraction, the color
 // CG_CalcCrosshairColor worked out is on the stack.
+// [acct2-ocr] 2026-11-14 17:40 (owner 17:19: "default should be the game's own") a weapon with a reticle piece of its
+// own keeps the game's whole crosshair unless that player chose Mine, Both or None for it.
 bool Cod3CrosshairHook(PPCRegister& f29, PPCRegister& r1, uint8_t* base) {
-  if (!REXCVAR_GET(cod3_crosshair)) return false;
-  namespace ch = cod3::addr::crosshair;
-  const uint32_t at = r1.u32 + ch::kColorOnStack;
-  const float rgba[4] = {cod3::guest::ReadF32(base, at), cod3::guest::ReadF32(base, at + 4),
-                         cod3::guest::ReadF32(base, at + 8), cod3::guest::ReadF32(base, at + 12)};
-  cod3::ui::NotifyGameCrosshair(static_cast<float>(f29.f64), rgba);
-  return true;
+  if (!cod3::ui::CustomCrosshairForNextView()) return false;  // [acct2-ocr] 2026-11-14 that player's own switch
+  const f2::xhair::Plan plan = cod3::ui::CrosshairPlanForNextView(
+      cod3::ui::WeaponHasOwnReticle(base) ? f2::xhair::kSpecialOwnCross : f2::xhair::kHipFire);
+  if (plan.mine) {
+    namespace ch = cod3::addr::crosshair;
+    const uint32_t at = r1.u32 + ch::kColorOnStack;
+    const float rgba[4] = {cod3::guest::ReadF32(base, at), cod3::guest::ReadF32(base, at + 4),
+                           cod3::guest::ReadF32(base, at + 8), cod3::guest::ReadF32(base, at + 12)};
+    cod3::ui::NotifyGameCrosshair(static_cast<float>(f29.f64), rgba);
+  }
+  return !plan.game;
 }
 
 // Mounted guns and vehicles @ 0x824396D4: white at cg_crosshairAlpha.
+// [acct2-ocr] 2026-11-14 17:40 the game's own unless that player chose Mine, Both or None for them.
 bool Cod3MountedCrosshairHook(PPCRegister& r1, uint8_t* base) {
-  if (!REXCVAR_GET(cod3_crosshair)) return false;
-  namespace ch = cod3::addr::crosshair;
-  const uint32_t at = r1.u32 + ch::kMountedColorOnStack;
-  const float rgba[4] = {cod3::guest::ReadF32(base, at), cod3::guest::ReadF32(base, at + 4),
-                         cod3::guest::ReadF32(base, at + 8),
-                         cod3::guest::ReadF32(base, ch::kAlphaVmCvar + ch::kVmCvarValue)};
-  cod3::ui::NotifyGameCrosshair(0.0f, rgba);
-  return true;
+  if (!cod3::ui::CustomCrosshairForNextView()) return false;  // [acct2-ocr] 2026-11-14 that player's own switch
+  const f2::xhair::Plan plan = cod3::ui::CrosshairPlanForNextView(f2::xhair::kSpecialTurret);
+  if (plan.mine) {
+    namespace ch = cod3::addr::crosshair;
+    const uint32_t at = r1.u32 + ch::kMountedColorOnStack;
+    const float rgba[4] = {cod3::guest::ReadF32(base, at), cod3::guest::ReadF32(base, at + 4),
+                           cod3::guest::ReadF32(base, at + 8),
+                           cod3::guest::ReadF32(base, ch::kAlphaVmCvar + ch::kVmCvarValue)};
+    cod3::ui::NotifyGameCrosshair(0.0f, rgba);
+  }
+  return !plan.game;
 }

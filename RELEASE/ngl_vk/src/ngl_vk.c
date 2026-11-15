@@ -117,6 +117,15 @@ static const uint32_t heat_warp_frag_spirv[] =     /* [rexglue-native-fx] 2026-1
 static const uint32_t output_frag_spirv[] =
 #include "output.frag.inc"
 ;
+static const uint32_t window_cas_frag_spirv[] =    /* [acct2-fh] 2026-11-14: the window's CAS and FSR 1 (window_fx) */
+#include "window_cas.frag.inc"
+;
+static const uint32_t window_easu_frag_spirv[] =   /* [acct2-fh] */
+#include "window_easu.frag.inc"
+;
+static const uint32_t window_rcas_frag_spirv[] =   /* [acct2-fh] */
+#include "window_rcas.frag.inc"
+;
 
 #define TARGET_FORMAT   VK_FORMAT_R8G8B8A8_UNORM
 #define DEPTH_FORMAT    VK_FORMAT_D32_SFLOAT
@@ -134,6 +143,8 @@ static const uint32_t output_frag_spirv[] =
 #define GLOW_MOST_BLURS 8u                          /* [rexglue-native] and the most blurs it draws (the game's levels: 4) */
 #define OUTPUT_SETS     2u                          /* ngl_vk_output's: the target, the color table */
 #define EMPTY_CUBE_SETS 1u                          /* [rexglue-native] rn34: the empty cube's (make_empty_cube) */
+#define WINDOW_FX_SETS  4u                          /* [acct2-fh] the window's CAS / FSR 1: the target, the color
+                                                     * table's image, its own 2 images */
 #define MAX_TEXTURE_LEVELS 14u                      /* a texture's levels: 8192 x 8192 down to 1 x 1 */
 #define MAX_MESHES      65536u                      /* meshes made with ngl_vk_mesh */
 #define FRAME_CORNERS   (512u << 10)                /* a frame's own corners (skinned meshes), at the buffer's end */
@@ -303,6 +314,9 @@ static struct {
     VkPipelineLayout mesh_layout;
     int fabric_sets;                    /* [rexglue-native] 1: the layout has the fabric's sets 4 and 5 (mesh.frag) */
     VkPipeline mesh_pipeline;
+    /* [acct2-bro] 2026-11-13 rn69a: the same with the faces that wind clockwise on the screen culled (NGL_VK_CULL_CW;
+     * the mesh pipeline's front faces), and with the others culled (NGL_VK_CULL_CCW); VK_NULL_HANDLE: not made */
+    VkPipeline mesh_cull_pipeline[2];
     VkPipeline mesh_blend_pipeline;     /* the same, blended by alpha, not writing depth */
     VkPipeline mesh_add_pipeline;       /* and added (NGL_VK_BLEND_ADD), taken away (NGL_VK_BLEND_SUBTRACT) */
     VkPipeline mesh_subtract_pipeline;
@@ -456,7 +470,9 @@ static struct {
     VkPipeline dof_blur_pipeline, dof_mix_pipeline;
     VkRenderPass overlay_pass;          /* the target loaded (and left to be copied out), the depth not used */
     int dof_on;                         /* this frame has depth of field */
-    float dof_focus[4];                 /* its near depth, far depth, keep depth and blanket */
+    /* its near depth, far depth, keep depth and blanket; [acct2-bro] 2026-11-13 rn64a: then the bands' scale (0: a
+     * ramp between the two depths), the front depth and its amount, and one not used */
+    float dof_focus[8];
     /* a tint (ngl_vk_set_tint): after the depth of field, the target copied whole and drawn back over itself, toned */
     VkImage post_copy;
     VkDeviceMemory post_copy_memory;
@@ -569,6 +585,8 @@ static char device_name[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE];
 /* [acct2-bro] 2026-11-12: what ngl_vk_set_anisotropy asked for (settings: they stay across ngl_vk_shutdown) */
 static float anisotropy_asked = 1.0f;
 static int anisotropy_on_borrowed_device;
+/* [acct2-bro] 2026-11-12 rn61a: ngl_vk_set_shown_scale: the target is this many times the shown picture each way */
+static uint32_t shown_scale = 1u;
 
 /* A memory type in type_bits with all of the wanted properties. */
 static int find_memory(uint32_t type_bits, VkMemoryPropertyFlags wanted, uint32_t *index)
@@ -1008,6 +1026,14 @@ static int make_swapchain(void)
     for (i = 0; window.present_mode == 1 && info.presentMode == VK_PRESENT_MODE_FIFO_KHR && i < mode_count; i++)
         if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
             info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    /* [acct2-fh] 2026-11-14 present_mode 2: each frame shown the moment it is done (IMMEDIATE, it may tear), else
+     * MAILBOX; 0 and 1 as before (Big Red One and Call of Duty 3 never ask for 2) */
+    for (i = 0; window.present_mode == 2 && i < mode_count; i++)
+        if (modes[i] == VK_PRESENT_MODE_IMMEDIATE_KHR)
+            info.presentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    for (i = 0; window.present_mode == 2 && info.presentMode == VK_PRESENT_MODE_FIFO_KHR && i < mode_count; i++)
+        if (modes[i] == VK_PRESENT_MODE_MAILBOX_KHR)
+            info.presentMode = VK_PRESENT_MODE_MAILBOX_KHR;
     info.surface = vk.surface;
     info.minImageCount = image_count;
     info.imageArrayLayers = 1;
@@ -1069,6 +1095,16 @@ void ngl_vk_set_window(const char *const *instance_extensions, uint32_t extensio
     window.user = user;
     window.width = width;
     window.height = height;
+    window.present_mode = present_mode;
+}
+
+/* [acct2-fh] 2026-11-14 (ngl_vk.h): a new present mode, taken when the swapchain is made again at the next frame */
+void ngl_vk_set_present_mode(int present_mode)
+{
+    if (present_mode < 0 || present_mode > 2)
+        present_mode = 0;
+    if (present_mode != window.present_mode)
+        vk.swap_stale = 1;
     window.present_mode = present_mode;
 }
 
@@ -1256,7 +1292,7 @@ static int make_pipeline(void)
     VkDescriptorSetLayoutBinding binding = { 0 };
     VkDescriptorSetLayoutCreateInfo set_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                                       1 + MAX_TEXTURES + DOF_SETS + POST_SETS + OUTPUT_SETS + EMPTY_CUBE_SETS };
+                                       1 + MAX_TEXTURES + DOF_SETS + POST_SETS + OUTPUT_SETS + EMPTY_CUBE_SETS + WINDOW_FX_SETS };
     VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
@@ -1312,7 +1348,7 @@ static int make_pipeline(void)
     set_layout_info.bindingCount = 1;
     set_layout_info.pBindings = &binding;
     CHECK(vkCreateDescriptorSetLayout(vk.device, &set_layout_info, NULL, &vk.set_layout));
-    pool_info.maxSets = 1 + MAX_TEXTURES + DOF_SETS + POST_SETS + OUTPUT_SETS + EMPTY_CUBE_SETS;
+    pool_info.maxSets = 1 + MAX_TEXTURES + DOF_SETS + POST_SETS + OUTPUT_SETS + EMPTY_CUBE_SETS + WINDOW_FX_SETS;
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_size;
     CHECK(vkCreateDescriptorPool(vk.device, &pool_info, NULL, &vk.descriptor_pool));
@@ -1779,6 +1815,12 @@ float ngl_vk_anisotropy(void)
     return vk.aniso_sampler ? vk.anisotropy : 1.0f;
 }
 
+/* [acct2-bro] 2026-11-12 rn61a: see ngl_vk.h */
+void ngl_vk_set_shown_scale(uint32_t scale)
+{
+    shown_scale = scale < 1u ? 1u : scale > 4u ? 4u : scale;
+}
+
 uint64_t ngl_vk_take_staging(uint64_t *flushes)
 {
     uint64_t bytes = vk.staged_bytes;
@@ -1886,6 +1928,19 @@ static int make_mesh_pipeline(void)
     info.renderPass = vk.render_pass;
     info.subpass = 0;
     result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_pipeline);
+    /* [acct2-bro] 2026-11-13 rn69a: the two culling ones (front faces wind clockwise here, so CW is FRONT); without
+     * them a draw that asks for culling is drawn from both sides, as before */
+    if (result == VK_SUCCESS) {
+        raster.cullMode = VK_CULL_MODE_FRONT_BIT;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_cull_pipeline[0]) !=
+            VK_SUCCESS)
+            vk.mesh_cull_pipeline[0] = VK_NULL_HANDLE;
+        raster.cullMode = VK_CULL_MODE_BACK_BIT;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_cull_pipeline[1]) !=
+            VK_SUCCESS)
+            vk.mesh_cull_pipeline[1] = VK_NULL_HANDLE;
+        raster.cullMode = VK_CULL_MODE_NONE;    /* as before, for the pipelines that follow */
+    }
     if (result == VK_SUCCESS) {
         blend_attachment.blendEnable = VK_TRUE;
         blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
@@ -2645,6 +2700,25 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
             slot[METAL_FLOATS_AT + 6 + 4 * part] = w[8 + part];
             slot[METAL_FLOATS_AT + 7 + 4 * part] = d->lens_tint[part];
         }
+    } else if (water && d->cod3_water) {    /* [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (ngl_vk.h
+                                             * cod3_water): at FABRIC_FLOATS_AT (its color, 0), (the reflection's
+                                             * color, 0), (0, 1: water, 0: not a lens, -1: Call of Duty 3's); at
+                                             * METAL_FLOATS_AT the two ripple layers (scale, offset u, offset v; the
+                                             * bump's scale after the first, the cube's bias after the second), (the
+                                             * Fresnel numbers, the opacity), (the highlights' power, 0, 0, 0) */
+        for (int part = 0; part < 3; part++) {
+            slot[FABRIC_FLOATS_AT + part] = d->cod3_water_color[part];
+            slot[FABRIC_FLOATS_AT + 4 + part] = d->cod3_water_reflection[part];
+            slot[METAL_FLOATS_AT + part] = d->cod3_water_ripple[0][part];
+            slot[METAL_FLOATS_AT + 4 + part] = d->cod3_water_ripple[1][part];
+            slot[METAL_FLOATS_AT + 8 + part] = d->cod3_water_fresnel[part];
+        }
+        slot[METAL_FLOATS_AT + 3] = d->cod3_water_bump;
+        slot[METAL_FLOATS_AT + 7] = d->cod3_water_cube_bias;
+        slot[METAL_FLOATS_AT + 11] = d->cod3_water_opacity;
+        slot[METAL_FLOATS_AT + 12] = d->cod3_water_power;
+        slot[FABRIC_FLOATS_AT + 9] = 1.0f;
+        slot[FABRIC_FLOATS_AT + 11] = -1.0f;
     } else if (water) { /* [waw-decomp] the water (ngl_vk.h water_cube): at FABRIC_FLOATS_AT (its color, 0: not
                          * fabric), (the sun's color, 0), (0, 1: water, 0: not a lens, 0); at METAL_FLOATS_AT the
                          * way toward the sun */
@@ -2839,7 +2913,7 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
 {
     static const float fixed_light[3] = { 0.35f, 0.25f, 0.9f };    /* toward it, from above (z is up) */
     const float *w = d->world;
-    float matrix[16], inverse[9], determinant;
+    float matrix[16], inverse[9], determinant, turn;
     uint32_t push[32], flags = (mode & 255u) << PUSH_MODE_SHIFT;
     uint32_t more = d->lit ? (d->extra_light_count < 3 ? d->extra_light_count : 3) : 0;
     int invertible;
@@ -2878,6 +2952,10 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
     invertible = determinant > 1e-12f || determinant < -1e-12f;
     if (invertible && determinant < 0)
         flags |= PUSH_MIRRORED;
+    /* [acct2-bro] 2026-11-13 rn67b: the nine numbers above are the inverse times the determinant. Under a mirroring
+     * world matrix the determinant is below 0, so a way taken through them came out turned around and the mesh was
+     * lit from its far side (the shader's normalize takes the size out, not the sign). turn puts the sign back. */
+    turn = invertible && determinant < 0 ? -1.0f : 1.0f;
     for (uint32_t light = 0; light < 4; light++) {
         const float *direction = light == 0 ? d->light_direction : d->extra_light_direction[light - 1];
         const float *color = light == 0 ? d->light_color : d->extra_light_color[light - 1];
@@ -2889,10 +2967,11 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
         }
         for (int i = 0; i < 3; i++)
             toward[i] = d->lit ? -direction[i] : fixed_light[i];
-        /* row vector x inverse; the inverse's 1/determinant only scales, and the shader normalizes */
+        /* row vector x inverse; the inverse's 1/determinant scales (the shader normalizes) and, below 0, turns
+         * the way around: turn (rn67b) */
         for (int column = 0; column < 3; column++)
-            in_mesh[column] = invertible ? toward[0] * inverse[column] + toward[1] * inverse[3 + column] +
-                                           toward[2] * inverse[6 + column]
+            in_mesh[column] = invertible ? turn * (toward[0] * inverse[column] + toward[1] * inverse[3 + column] +
+                                                   toward[2] * inverse[6 + column])
                                          : toward[column];
         push[24 + light] = packed_toward(in_mesh);
         push[28 + light] = packed_color(color);
@@ -2902,7 +2981,7 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
 
         if (invertible)
             for (int column = 0; column < 3; column++)
-                up[column] = inverse[6 + column];
+                up[column] = turn * inverse[6 + column];    /* rn67b */
         push[25] = packed_toward(up);
         push[29] = 0;
     }
@@ -3137,6 +3216,17 @@ static void draw_meshes(int part)
                                                                       : vk.mesh_blend_pipeline;
                 if (d->blend == NGL_VK_BLEND_HEAT_MASK)     /* [rexglue-native-fx] 2026-11-11 fx1 */
                     wanted = vk.mesh_heat_pipeline;                                 /* [rexglue-native-fx] */
+
+                if (wanted != pipeline) {
+                    pipeline = wanted;
+                    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    bound[0] = bound[1] = bound[2] = VK_NULL_HANDLE;
+                    fabric_bound[0] = fabric_bound[1] = fabric_bound[2] = VK_NULL_HANDLE;
+                }
+            } else {    /* [acct2-bro] 2026-11-13 rn69a: an opaque draw drops the faces its game state drops */
+                VkPipeline wanted = d->cull == NGL_VK_CULL_CW && vk.mesh_cull_pipeline[0] ? vk.mesh_cull_pipeline[0]
+                                  : d->cull == NGL_VK_CULL_CCW && vk.mesh_cull_pipeline[1] ? vk.mesh_cull_pipeline[1]
+                                                                                          : vk.mesh_pipeline;
 
                 if (wanted != pipeline) {
                     pipeline = wanted;
@@ -3959,8 +4049,85 @@ static int acquire_window_image(uint32_t *index)
     return *index < vk.swap_count;
 }
 
+/* [acct2-ocr] 2026-11-13: the window through a color table (ngl_vk_set_window_table: Big Red One's gamma ramp, the
+ * game's brightness as the Xbox's display showed it). The finished target is drawn through the table with
+ * ngl_vk_output's pipeline into an image of the target's own size, and record_window_copy blits that instead. */
+static struct {
+    int on;                         /* a table is set */
+    uint32_t table[256];            /* red in the low byte, then green and blue */
+    VkImage image;                  /* the target through the table: vk.width x vk.height, TARGET_FORMAT */
+    VkDeviceMemory memory;
+    VkImageView view;
+    VkFramebuffer framebuffer;      /* image, for vk.output_pass */
+    VkRenderPass pass;              /* the vk.output_pass the framebuffer was made for */
+    uint32_t width, height;         /* image's size */
+    int failed;                     /* its parts couldn't be made: the plain blit from then on */
+} window_ramp;                      /* [acct2-ocr] */
+
+static int window_ramp_record(void);   /* [acct2-ocr] below ngl_vk_output: 0 when window_ramp.image holds the frame */
+
+void ngl_vk_set_window_table(const uint32_t *table)    /* [acct2-ocr] 2026-11-13 */
+{
+    window_ramp.on = table != NULL;
+    if (table)
+        memcpy(window_ramp.table, table, sizeof window_ramp.table);
+}
+
+/* [acct2-fh] 2026-11-14 How the finished target is scaled into the window (ngl_vk.h ngl_vk_set_window_scaling): a
+ * setting, kept across ngl_vk_shutdown. NGL_VK_SCALE_SMOOTH, the default, is the window copy as it always was. */
+static int window_scaling = NGL_VK_SCALE_SMOOTH;
+static struct { uint32_t from_width, from_height; int32_t x, y, width, height; int scaling, passes, ramp; } window_copy_said;
+
+void ngl_vk_set_window_scaling(int scaling)
+{
+    window_scaling = scaling == NGL_VK_SCALE_SHARP || scaling == NGL_VK_SCALE_INTEGER || scaling == NGL_VK_SCALE_CAS ||
+                     scaling == NGL_VK_SCALE_FSR ? scaling : NGL_VK_SCALE_SMOOTH;
+}
+
+/* [acct2-fh] 2026-11-14 The window through AMD FidelityFX CAS or FSR 1 (ngl_vk.h NGL_VK_SCALE_CAS / NGL_VK_SCALE_FSR;
+ * shaders/window_cas.frag, window_easu.frag, window_rcas.frag): drawn into one of two images the size of the
+ * picture's place in the window, which record_window_copy then copies in one to one. The pass, its pipelines and sets
+ * are made the first time they are used, the images again when that size changes; all freed by ngl_vk_shutdown (the
+ * three settings stay). With a color table (ngl_vk_set_window_table) the table is drawn first, into window_ramp's
+ * image, and CAS / FSR 1 read that (11-14 stage 5c). */
+static struct {
+    float cas_sharpness;            /* 0..1, CAS's sharpness (ngl_vk_set_window_sharpness) */
+    float fsr_reduction;            /* 0..2, the stops FSR's RCAS is less sharp by */
+    int fsr_passes;                 /* 1..8, FSR's EASU passes at most, each up to twice the size */
+    VkRenderPass pass;              /* one TARGET_FORMAT image, in and out in COLOR_ATTACHMENT_OPTIMAL */
+    VkPipelineLayout layout;        /* set 0 the picture read, 16 bytes of push constants */
+    VkPipeline cas, easu, rcas;
+    VkDescriptorSet target_set;     /* vk.target_view (target_view: the view written into it) */
+    VkImageView target_view;
+    VkDescriptorSet ramp_set;       /* window_ramp.view, the picture through the window's color table (ramp_view) */
+    VkImageView ramp_view;
+    VkDescriptorSet image_set[2];   /* image[i] read */
+    VkImage image[2];
+    VkDeviceMemory memory[2];
+    VkImageView view[2];
+    VkFramebuffer framebuffer[2];
+    uint32_t width, height;         /* both images' size */
+    int failed;                     /* couldn't be made: smooth from then on, until ngl_vk_shutdown */
+} window_fx = { 0.0f, 0.2f, 1 };
+
+void ngl_vk_set_window_sharpness(float cas_sharpness, float fsr_sharpness_reduction, int fsr_passes)
+{
+    window_fx.cas_sharpness = !(cas_sharpness > 0.0f) ? 0.0f : cas_sharpness > 1.0f ? 1.0f : cas_sharpness;
+    window_fx.fsr_reduction = !(fsr_sharpness_reduction > 0.0f) ? 0.0f
+                              : fsr_sharpness_reduction > 2.0f   ? 2.0f
+                                                                 : fsr_sharpness_reduction;
+    window_fx.fsr_passes = fsr_passes < 1 ? 1 : fsr_passes > 8 ? 8 : fsr_passes;   /* 8: 256 times, 64 to 16384 */
+}
+
+/* below window_ramp_record: the picture through CAS (passes 0) or FSR 1 (that many EASU passes, then RCAS) into one
+ * of window_fx's images at width x height; returns which (left in TRANSFER_SRC_OPTIMAL), or -1 */
+static int window_fx_record(uint32_t width, uint32_t height, int passes, int from_ramp);
+
 /* The finished target (in TRANSFER_SRC_OPTIMAL) into the acquired image: black, then the target scaled to fit and
- * centered, then ready to be shown. */
+ * centered, then ready to be shown. [acct2-fh] With NGL_VK_SCALE_INTEGER the scale is the largest whole number that
+ * fits (a target bigger than the window is still shrunk to fit); SHARP and INTEGER copy each pixel as it is; CAS and
+ * FSR draw the picture at its place's size first (window_fx_record) and that is copied in as it is. FSR scales up
+ * only: a picture not smaller than its place goes through CAS. */
 static void record_window_copy(uint32_t index)
 {
     VkImage image = vk.swap_images[index];
@@ -3969,16 +4136,103 @@ static void record_window_copy(uint32_t index)
     VkImageBlit blit = { { 0 } };
     float scale_x = (float)vk.swap_extent.width / (float)vk.width;
     float scale_y = (float)vk.swap_extent.height / (float)vk.height;
-    float scale = scale_x < scale_y ? scale_x : scale_y;
+    float fit = scale_x < scale_y ? scale_x : scale_y;
+    float scale = window_scaling == NGL_VK_SCALE_INTEGER && fit >= 1.0f ? (float)(int32_t)fit : fit;  /* [acct2-fh] */
+    VkFilter filter = window_scaling == NGL_VK_SCALE_SHARP || window_scaling == NGL_VK_SCALE_INTEGER ? VK_FILTER_NEAREST
+                                                                                                 : VK_FILTER_LINEAR;
     int32_t width = (int32_t)((float)vk.width * scale + 0.5f), height = (int32_t)((float)vk.height * scale + 0.5f);
     int32_t x = ((int32_t)vk.swap_extent.width - width) / 2, y = ((int32_t)vk.swap_extent.height - height) / 2;
+    /* [acct2-fh] CAS or FSR 1 (window_fx): FSR when the picture is scaled up, with an EASU pass for each doubling
+     * (at most fsr_passes); passes 0 is CAS. With a color table on (window_ramp) the table comes first, at the
+     * picture's size, and CAS / FSR 1 work from its image (11-14 stage 5c; before, a table meant smooth). */
+    int filtered = (window_scaling == NGL_VK_SCALE_CAS || window_scaling == NGL_VK_SCALE_FSR) && !window_fx.failed &&
+                   width > 0 && height > 0;
+    int passes = 0, fx = -1;
 
+    if (filtered && window_scaling == NGL_VK_SCALE_FSR)
+        while (passes < window_fx.fsr_passes &&
+               ((vk.width << passes) < (uint32_t)width || (vk.height << passes) < (uint32_t)height))
+            passes++;
+    if (vk.width != window_copy_said.from_width || vk.height != window_copy_said.from_height ||
+        x != window_copy_said.x || y != window_copy_said.y || width != window_copy_said.width ||
+        height != window_copy_said.height || window_scaling != window_copy_said.scaling ||
+        passes != window_copy_said.passes || window_ramp.on != window_copy_said.ramp) {
+        /* [acct2-fh] 2026-11-14 said once for each new placement, so a run's log shows where the picture went */
+        char how[96];
+
+        if (passes)
+            snprintf(how, sizeof how, "AMD FSR 1 (%d EASU pass%s, then RCAS)%s", passes, passes > 1 ? "es" : "",
+                     window_ramp.on ? ", after the color table" : "");
+        else if (filtered && window_ramp.on)
+            snprintf(how, sizeof how, "%s, after the color table",
+                     window_scaling == NGL_VK_SCALE_CAS ? "AMD CAS" : "AMD FSR 1 asked, not scaled up: AMD CAS");
+        else
+            snprintf(how, sizeof how, "%s",
+                     window_scaling == NGL_VK_SCALE_SHARP     ? "sharp"
+                     : window_scaling == NGL_VK_SCALE_INTEGER ? "whole multiples, sharp"
+                     : window_scaling == NGL_VK_SCALE_CAS && filtered ? "AMD CAS"
+                     : window_scaling == NGL_VK_SCALE_FSR && filtered ? "AMD FSR 1 asked, not scaled up: AMD CAS"
+                                                                      : "smooth");
+        fprintf(stderr, "[ngl_vk] the picture (%u x %u) shown at %d,%d as %d x %d in the window's %u x %u, %s\n",
+                vk.width, vk.height, (int)x, (int)y, (int)width, (int)height, vk.swap_extent.width,
+                vk.swap_extent.height, how);
+        window_copy_said.from_width = vk.width;
+        window_copy_said.from_height = vk.height;
+        window_copy_said.x = x;
+        window_copy_said.y = y;
+        window_copy_said.width = width;
+        window_copy_said.height = height;
+        window_copy_said.scaling = window_scaling;
+        window_copy_said.passes = passes;
+        window_copy_said.ramp = window_ramp.on;
+    }
     image_barrier(image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
     vkCmdClearColorImage(vk.commands, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1, &range);
     image_barrier(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+    if (filtered)                                                                  /* [acct2-fh] 2026-11-14 */
+        fx = window_fx_record((uint32_t)width, (uint32_t)height, passes,
+                              window_ramp.on && !window_ramp.failed && window_ramp_record() == 0);
+    if (fx >= 0) {                                                                 /* [acct2-fh] as it is */
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        blit.srcSubresource.layerCount = 1;
+        blit.srcOffsets[1].x = width;
+        blit.srcOffsets[1].y = height;
+        blit.srcOffsets[1].z = 1;
+        blit.dstSubresource = blit.srcSubresource;
+        blit.dstOffsets[0].x = x;
+        blit.dstOffsets[0].y = y;
+        blit.dstOffsets[1].x = x + width;
+        blit.dstOffsets[1].y = y + height;
+        blit.dstOffsets[1].z = 1;
+        vkCmdBlitImage(vk.commands, window_fx.image[fx], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+        image_barrier(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        return;
+    }
+    if (window_ramp.on && !window_ramp.failed && window_ramp_record() == 0) {     /* [acct2-ocr] 2026-11-13 */
+        blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;                /* [acct2-ocr] as below, from */
+        blit.srcSubresource.layerCount = 1;                                        /* the target through the */
+        blit.srcOffsets[1].x = (int32_t)vk.width;                                  /* window's color table */
+        blit.srcOffsets[1].y = (int32_t)vk.height;
+        blit.srcOffsets[1].z = 1;
+        blit.dstSubresource = blit.srcSubresource;
+        blit.dstOffsets[0].x = x;
+        blit.dstOffsets[0].y = y;
+        blit.dstOffsets[1].x = x + width;
+        blit.dstOffsets[1].y = y + height;
+        blit.dstOffsets[1].z = 1;
+        vkCmdBlitImage(vk.commands, window_ramp.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, filter);     /* [acct2-fh] was LINEAR */
+        image_barrier(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                      VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+        return;                                                                    /* [acct2-ocr] */
+    }
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
     blit.srcOffsets[1].x = (int32_t)vk.width;
@@ -3991,7 +4245,7 @@ static void record_window_copy(uint32_t index)
     blit.dstOffsets[1].y = y + height;
     blit.dstOffsets[1].z = 1;
     vkCmdBlitImage(vk.commands, vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, image,
-                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+                   VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, filter);             /* [acct2-fh] was LINEAR */
     image_barrier(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
                   VK_ACCESS_TRANSFER_WRITE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
@@ -4242,13 +4496,16 @@ static int make_dof(void)
     VkWriteDescriptorSet writes[DOF_SETS] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
                                               { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
     VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-    VkPushConstantRange blur_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 2 * sizeof(float) };
-    VkPushConstantRange mix_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float) };
+    /* [acct2-bro] 2026-11-13 rn64c: four floats (the step, the kind of blur, one not used), it was two */
+    VkPushConstantRange blur_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float) };
+    /* [acct2-bro] 2026-11-13 rn64a: eight floats (dof_focus), it was four */
+    VkPushConstantRange mix_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 * sizeof(float) };
     VkDescriptorSetLayout mix_layouts[2] = { vk.set_layout, vk.shadow_set_layout };
     VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 
-    vk.dof_width = vk.width / 4u ? vk.width / 4u : 1u;
-    vk.dof_height = vk.height / 4u ? vk.height / 4u : 1u;
+    /* [acct2-bro] 2026-11-12 rn61a: a quarter of the shown picture (the target is shown_scale times it) */
+    vk.dof_width = vk.width / (4u * shown_scale) ? vk.width / (4u * shown_scale) : 1u;
+    vk.dof_height = vk.height / (4u * shown_scale) ? vk.height / (4u * shown_scale) : 1u;
     /* [rexglue-native] 2026-11-09: sampled too, only because make_image gives every image a view and a view needs a
      * usage that has one (the validation layer, VUID-VkImageViewCreateInfo-image-04441) */
     if (make_image(vk.dof_width * 2u, vk.dof_height * 2u, 1, TARGET_FORMAT,
@@ -4318,6 +4575,20 @@ void ngl_vk_set_depth_of_field(float near_depth, float far_depth, float keep_dep
     vk.dof_focus[1] = far_depth;
     vk.dof_focus[2] = keep_depth;
     vk.dof_focus[3] = blanket;
+    vk.dof_focus[4] = 0.0f;     /* [acct2-bro] 2026-11-13 rn64a: no bands: the ramp */
+    vk.dof_focus[5] = 0.0f;
+    vk.dof_focus[6] = 0.0f;
+    vk.dof_focus[7] = 0.0f;
+}
+
+/* [acct2-bro] 2026-11-13 rn64a: see ngl_vk.h */
+void ngl_vk_set_depth_of_field_bands(float near_depth, float far_depth, float keep_depth, float blanket, float scale,
+                                     float front_depth, float front_amount)
+{
+    ngl_vk_set_depth_of_field(near_depth, far_depth, keep_depth, blanket);
+    vk.dof_focus[4] = scale > 0.0f ? scale : 0.0f;
+    vk.dof_focus[5] = front_depth;
+    vk.dof_focus[6] = front_amount < 0.0f ? 0.0f : front_amount > 1.0f ? 1.0f : front_amount;
 }
 
 /* The tint's copy of the target (sampled through set 0) and its pipeline, drawn in the overlay pass. */
@@ -4369,8 +4640,9 @@ static int make_tint(void)
         }
     }
     /* [rexglue-native] 2026-11-11 rn48b: the afterimage's kept picture at a quarter size; without it the full-size one is used */
-    vk.after_small_width = vk.width / 4u ? vk.width / 4u : 1u;
-    vk.after_small_height = vk.height / 4u ? vk.height / 4u : 1u;
+    /* [acct2-bro] 2026-11-12 rn61a: of the shown picture, as the depth of field's quarter */
+    vk.after_small_width = vk.width / (4u * shown_scale) ? vk.width / (4u * shown_scale) : 1u;
+    vk.after_small_height = vk.height / (4u * shown_scale) ? vk.height / (4u * shown_scale) : 1u;
     /* [rexglue-native] 2026-11-11 rn48c: a blit source too (stretched back into after_image); no set of its own */
     if (make_image(vk.after_small_width, vk.after_small_height, 1, TARGET_FORMAT,
                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
@@ -5226,8 +5498,11 @@ static void draw_glow(VkRenderPassBeginInfo *pass, const VkViewport *view, const
 
 /* Between the second half and the overlay pass: the target (left ready to be copied) shrunk to a half and then a
  * quarter of its size, then blurred across into dof_temp and down back into dof_quarter, rounds times, the taps step
- * of its texels apart (1.5: about 12 of the target's at the Gaussian's sigma). */
-static void record_dof(int rounds, float spacing)
+ * of its texels apart (1.5: about 12 of the target's at the Gaussian's sigma).
+ * [acct2-bro] 2026-11-13 rn64c: game_taps: Call of Duty 3's own depth of field blur instead (its 0x82147458 with
+ * the taps of 0x82146E90): one pass of 13 taps a texel apart from dof_quarter into dof_temp, then a plain copy back
+ * into dof_quarter, which the mix reads; rounds and spacing are not used then. */
+static void record_dof(int rounds, float spacing, int game_taps)
 {
     VkImageBlit blit = { 0 };
     VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -5268,10 +5543,17 @@ static void record_dof(int rounds, float spacing)
     area.extent.height = vk.dof_height;
     pass.renderPass = vk.dof_blur_pass;
     pass.renderArea = area;
-    for (int pass_number = 0; pass_number < 2 * rounds; pass_number++) {
+    for (int pass_number = 0; pass_number < 2 * (game_taps ? 1 : rounds); pass_number++) {
         int down = pass_number & 1;
-        float step[2] = { down ? 0.0f : spacing / (float)vk.dof_width, down ? spacing / (float)vk.dof_height : 0.0f };
+        /* the step, then the kind (dof_blur.frag): 0 a line of nine taps, 1 the game's 13 taps, 2 a plain copy */
+        float step[4] = { down ? 0.0f : spacing / (float)vk.dof_width,
+                          down ? spacing / (float)vk.dof_height : 0.0f, 0.0f, 0.0f };
 
+        if (game_taps) {    /* [acct2-bro] 2026-11-13 rn64c */
+            step[0] = 1.0f / (float)vk.dof_width;
+            step[1] = 1.0f / (float)vk.dof_height;
+            step[2] = down ? 2.0f : 1.0f;
+        }
         pass.framebuffer = down ? vk.dof_quarter_framebuffer : vk.dof_temp_framebuffer;
         vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
         vkCmdSetViewport(vk.commands, 0, 1, &view);
@@ -5610,10 +5892,11 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                  * [rexglue-native-render] 2026-11-11 rn48m: three rounds 1.25 texels apart, sigma 3.72 quarter texels
                  * against the game's chain's 3.51 (post effect 10; RENDER-NOTES.md, 10:37 item 4); it was two rounds
                  * 2.0 apart: sigma 4.78, every odd texel skipped */
+                /* [acct2-bro] 2026-11-13 rn64c: with the bands (dof_focus[4]), the game's own 13 taps */
                 if (vk.dof_focus[3] > 0.0f)
-                    record_dof(3, 1.25f);   /* [rexglue-native-render] 2026-11-11 rn48m: was record_dof(2, 2.0f) */
+                    record_dof(3, 1.25f, 0);    /* [rexglue-native-render] 2026-11-11 rn48m: was (2, 2.0f) */
                 else
-                    record_dof(1, 1.5f);
+                    record_dof(1, 1.5f, vk.dof_focus[4] > 0.0f);
                 pass.renderPass = vk.overlay_pass;
                 vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
                 vkCmdSetViewport(vk.commands, 0, 1, &all);     /* over the whole target, as the blits took it */
@@ -6144,6 +6427,382 @@ int ngl_vk_output(uint64_t image, uint64_t view, uint32_t format, uint32_t width
     return 0;
 }
 
+/* [acct2-ocr] 2026-11-13: window_ramp's image and framebuffer freed (after the GPU is done with them). */
+static void window_ramp_free(void)
+{
+    if (!vk.device)
+        return;
+    vkDestroyFramebuffer(vk.device, window_ramp.framebuffer, NULL);
+    vkDestroyImageView(vk.device, window_ramp.view, NULL);
+    vkDestroyImage(vk.device, window_ramp.image, NULL);
+    vkFreeMemory(vk.device, window_ramp.memory, NULL);
+    window_ramp.framebuffer = VK_NULL_HANDLE;
+    window_ramp.view = VK_NULL_HANDLE;
+    window_ramp.image = VK_NULL_HANDLE;
+    window_ramp.memory = VK_NULL_HANDLE;
+    window_ramp.pass = VK_NULL_HANDLE;
+    window_ramp.width = window_ramp.height = 0;
+    window_fx.ramp_view = VK_NULL_HANDLE;   /* [acct2-fh] 11-14: window_fx's set points at the next one again */
+}
+
+/* [acct2-ocr] 2026-11-13: recorded into this frame's commands, after the read-back, from record_window_copy: the
+ * finished target (TRANSFER_SRC_OPTIMAL) drawn through window_ramp.table into window_ramp.image, which is left in
+ * TRANSFER_SRC_OPTIMAL for the blit; the target goes back to TRANSFER_SRC_OPTIMAL. The table, its image, the pass
+ * and the pipeline are ngl_vk_output's (a program uses one or the other: Big Red One the window, Call of Duty 3
+ * ngl_vk_output). draw() has finished the last frame (finish_frame) before this is recorded, so the image, its
+ * framebuffer and the table's upload buffer are free. Returns 0 when the image holds the frame. */
+static int window_ramp_record(void)
+{
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkViewport viewport = { 0.0f, 0.0f, (float)vk.width, (float)vk.height, 0.0f, 1.0f };
+    VkRect2D whole = { { 0, 0 }, { vk.width, vk.height } };
+    VkDescriptorSet sets[OUTPUT_SETS];
+
+    if (make_output_parts() || make_output_pass(TARGET_FORMAT)) {
+        window_ramp.failed = 1;
+        fprintf(stderr, "[ngl_vk] the window's color table can't be drawn: the window shows the target as drawn\n");
+        return -1;
+    }
+    if (!window_ramp.image || window_ramp.width != vk.width || window_ramp.height != vk.height) {
+        window_ramp_free();
+        if (make_image(vk.width, vk.height, 1, TARGET_FORMAT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                           VK_IMAGE_USAGE_SAMPLED_BIT,             /* [acct2-fh] 11-14: window_fx reads it too */
+                       &window_ramp.image, &window_ramp.memory, &window_ramp.view)) {
+            window_ramp.failed = 1;
+            fprintf(stderr, "[ngl_vk] no image for the window's color table: the window shows the target as drawn\n");
+            return -1;
+        }
+        window_ramp.width = vk.width;
+        window_ramp.height = vk.height;
+        fprintf(stderr, "[ngl_vk] the window shows the target through a color table (%ux%u)\n", vk.width, vk.height);
+    }
+    if (!window_ramp.framebuffer || window_ramp.pass != vk.output_pass) {
+        vkDestroyFramebuffer(vk.device, window_ramp.framebuffer, NULL);
+        window_ramp.framebuffer = VK_NULL_HANDLE;
+        framebuffer_info.renderPass = vk.output_pass;
+        framebuffer_info.attachmentCount = 1;
+        framebuffer_info.pAttachments = &window_ramp.view;
+        framebuffer_info.width = vk.width;
+        framebuffer_info.height = vk.height;
+        framebuffer_info.layers = 1;
+        if (vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &window_ramp.framebuffer) != VK_SUCCESS) {
+            window_ramp.failed = 1;
+            fprintf(stderr, "[ngl_vk] no framebuffer for the window's color table: the target as drawn\n");
+            return -1;
+        }
+        window_ramp.pass = vk.output_pass;
+    }
+    /* the table, when it changed (the game sets its ramp rarely) */
+    if (!vk.table_ready || memcmp(vk.table_words, window_ramp.table, sizeof vk.table_words)) {
+        VkBufferImageCopy copy = { 0 };
+
+        memcpy(vk.table_words, window_ramp.table, sizeof vk.table_words);
+        memcpy(vk.table_upload_data, window_ramp.table, sizeof vk.table_words);
+        output_barrier(vk.commands, vk.table_image,
+                       vk.table_ready ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent.width = 256;
+        copy.imageExtent.height = 1;
+        copy.imageExtent.depth = 1;
+        vkCmdCopyBufferToImage(vk.commands, vk.table_upload, vk.table_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                               &copy);
+        output_barrier(vk.commands, vk.table_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        vk.table_ready = 1;
+    }
+    /* the target as the draw left it (drawn, perhaps copied out), to be sampled; the image, its old frame dropped */
+    output_barrier(vk.commands, vk.target, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    output_barrier(vk.commands, window_ramp.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    pass.renderPass = vk.output_pass;
+    pass.framebuffer = window_ramp.framebuffer;
+    pass.renderArea = whole;
+    vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, &viewport);
+    vkCmdSetScissor(vk.commands, 0, 1, &whole);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.output_pipeline);
+    sets[0] = vk.output_target_set;
+    sets[1] = vk.output_table_set;
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.output_layout, 0, OUTPUT_SETS, sets, 0,
+                            NULL);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
+    vkCmdEndRenderPass(vk.commands);
+    /* the image ready to be blitted; the target back to where the draws leave it */
+    output_barrier(vk.commands, window_ramp.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+    output_barrier(vk.commands, vk.target, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   0, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    return 0;
+}
+
+/* [acct2-fh] 2026-11-14: window_fx's two images and their framebuffers freed (the GPU done with them). */
+static void window_fx_free_images(void)
+{
+    uint32_t i;
+
+    for (i = 0; i < 2; i++) {
+        vkDestroyFramebuffer(vk.device, window_fx.framebuffer[i], NULL);
+        vkDestroyImageView(vk.device, window_fx.view[i], NULL);
+        vkDestroyImage(vk.device, window_fx.image[i], NULL);
+        vkFreeMemory(vk.device, window_fx.memory[i], NULL);
+        window_fx.framebuffer[i] = VK_NULL_HANDLE;
+        window_fx.view[i] = VK_NULL_HANDLE;
+        window_fx.image[i] = VK_NULL_HANDLE;
+        window_fx.memory[i] = VK_NULL_HANDLE;
+    }
+    window_fx.width = window_fx.height = 0;
+}
+
+/* [acct2-fh] 2026-11-14: all of window_fx's own Vulkan parts freed (its sets go with vk.descriptor_pool); the three
+ * settings are kept. */
+static void window_fx_free(void)
+{
+    if (!vk.device)
+        return;
+    window_fx_free_images();
+    vkDestroyPipeline(vk.device, window_fx.cas, NULL);
+    vkDestroyPipeline(vk.device, window_fx.easu, NULL);
+    vkDestroyPipeline(vk.device, window_fx.rcas, NULL);
+    vkDestroyPipelineLayout(vk.device, window_fx.layout, NULL);
+    vkDestroyRenderPass(vk.device, window_fx.pass, NULL);
+    window_fx.cas = window_fx.easu = window_fx.rcas = VK_NULL_HANDLE;
+    window_fx.layout = VK_NULL_HANDLE;
+    window_fx.pass = VK_NULL_HANDLE;
+    window_fx.target_set = window_fx.image_set[0] = window_fx.image_set[1] = window_fx.ramp_set = VK_NULL_HANDLE;
+    window_fx.target_view = window_fx.ramp_view = VK_NULL_HANDLE;
+    window_fx.failed = 0;
+}
+
+/* [acct2-fh] 2026-11-14: one image of a set (binding 0) pointed at a view, read in SHADER_READ_ONLY_OPTIMAL. */
+static void window_fx_point(VkDescriptorSet set, VkImageView view)
+{
+    VkDescriptorImageInfo image_info = { 0 };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+
+    image_info.sampler = vk.sampler;
+    image_info.imageView = view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    write.dstSet = set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+}
+
+/* [acct2-fh] 2026-11-14: window_fx's pass (the image's contents not kept: every pixel drawn is drawn), its layout,
+ * its three pipelines (quad.vert's triangle over the viewport) and its three sets. Made once for a device. */
+static int window_fx_make_parts(void)
+{
+    VkAttachmentDescription attachment = { 0 };
+    VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = { 0 };
+    VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+    VkPushConstantRange push = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float) };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkDescriptorSetLayout layouts[WINDOW_FX_SETS] = { vk.set_layout, vk.set_layout, vk.set_layout, vk.set_layout };
+    VkDescriptorSet sets[WINDOW_FX_SETS] = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+
+    if (window_fx.target_set)
+        return 0;
+    if (!window_fx.pass) {
+        attachment.format = TARGET_FORMAT;
+        attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        attachment.initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        attachment.finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &color;
+        pass_info.attachmentCount = 1;
+        pass_info.pAttachments = &attachment;
+        pass_info.subpassCount = 1;
+        pass_info.pSubpasses = &subpass;
+        CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, &window_fx.pass));
+    }
+    if (!window_fx.layout) {
+        layout_info.setLayoutCount = 1;
+        layout_info.pSetLayouts = &vk.set_layout;
+        layout_info.pushConstantRangeCount = 1;
+        layout_info.pPushConstantRanges = &push;
+        CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &window_fx.layout));
+    }
+    if ((!window_fx.cas && make_fullscreen_pipeline(window_cas_frag_spirv, sizeof window_cas_frag_spirv,
+                                                    window_fx.layout, window_fx.pass, 0, &window_fx.cas)) ||
+        (!window_fx.easu && make_fullscreen_pipeline(window_easu_frag_spirv, sizeof window_easu_frag_spirv,
+                                                     window_fx.layout, window_fx.pass, 0, &window_fx.easu)) ||
+        (!window_fx.rcas && make_fullscreen_pipeline(window_rcas_frag_spirv, sizeof window_rcas_frag_spirv,
+                                                     window_fx.layout, window_fx.pass, 0, &window_fx.rcas)))
+        return -1;
+    set_info.descriptorPool = vk.descriptor_pool;
+    set_info.descriptorSetCount = WINDOW_FX_SETS;
+    set_info.pSetLayouts = layouts;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, sets));
+    window_fx.target_set = sets[0];
+    window_fx.image_set[0] = sets[1];
+    window_fx.image_set[1] = sets[2];
+    window_fx.ramp_set = sets[3];
+    window_fx.target_view = window_fx.ramp_view = VK_NULL_HANDLE;     /* pointed when first read */
+    return 0;
+}
+
+/* [acct2-fh] 2026-11-14: window_fx's two images at width x height (each drawn into and read, then copied out), their
+ * framebuffers, and their sets pointed at them. */
+static int window_fx_make_images(uint32_t width, uint32_t height)
+{
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    uint32_t i;
+
+    window_fx_free_images();
+    for (i = 0; i < 2; i++) {
+        if (make_image(width, height, 1, TARGET_FORMAT,
+                       VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                       &window_fx.image[i], &window_fx.memory[i], &window_fx.view[i]))
+            return -1;
+        framebuffer_info.renderPass = window_fx.pass;
+        framebuffer_info.attachmentCount = 1;
+        framebuffer_info.pAttachments = &window_fx.view[i];
+        framebuffer_info.width = width;
+        framebuffer_info.height = height;
+        framebuffer_info.layers = 1;
+        CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &window_fx.framebuffer[i]));
+        window_fx_point(window_fx.image_set[i], window_fx.view[i]);
+    }
+    window_fx.width = width;
+    window_fx.height = height;
+    return 0;
+}
+
+/* [acct2-fh] 2026-11-14: one of window_fx's passes: pipeline reads set (with the four push constants) and draws the
+ * corner (0, 0) to (width, height) of image[into], left in COLOR_ATTACHMENT_OPTIMAL. The image's old contents are
+ * dropped, after the reads of an earlier pass of this frame. */
+static void window_fx_draw(int into, VkPipeline pipeline, VkDescriptorSet set, uint32_t width, uint32_t height,
+                           const float push[4])
+{
+    VkRenderPassBeginInfo begin = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkViewport viewport = { 0.0f, 0.0f, (float)width, (float)height, 0.0f, 1.0f };
+    VkRect2D area = { { 0, 0 }, { width, height } };
+
+    output_barrier(vk.commands, window_fx.image[into], VK_IMAGE_LAYOUT_UNDEFINED,
+                   VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+    begin.renderPass = window_fx.pass;
+    begin.framebuffer = window_fx.framebuffer[into];
+    begin.renderArea = area;
+    vkCmdBeginRenderPass(vk.commands, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, &viewport);
+    vkCmdSetScissor(vk.commands, 0, 1, &area);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, window_fx.layout, 0, 1, &set, 0, NULL);
+    vkCmdPushConstants(vk.commands, window_fx.layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float), push);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
+    vkCmdEndRenderPass(vk.commands);
+}
+
+/* [acct2-fh] 2026-11-14: recorded into this frame's commands from record_window_copy, after the read-back: the
+ * finished target (TRANSFER_SRC_OPTIMAL, and back so after) through CAS (passes 0: window_cas.frag, its 3 x 3 read
+ * one shown pixel apart) or FSR 1 (passes EASU passes, each to at most twice the last size and the last to width x
+ * height, then RCAS at width x height) into one of window_fx's images, ping-pong. draw() has finished the last frame
+ * (finish_frame) before this is recorded, so the images and sets are free to be made again or pointed elsewhere.
+ * Returns the image holding the picture (in TRANSFER_SRC_OPTIMAL), or -1 when the parts can't be made (said once:
+ * smooth from then on). */
+static int window_fx_record(uint32_t width, uint32_t height, int passes, int from_ramp)
+{
+    VkDescriptorSet from = VK_NULL_HANDLE, source_set;
+    VkImage source;
+    uint32_t from_width = vk.width, from_height = vk.height;
+    float push[4];
+    int into = 0, pass;
+
+    if (window_fx_make_parts() ||
+        ((width != window_fx.width || height != window_fx.height) && window_fx_make_images(width, height))) {
+        window_fx.failed = 1;
+        window_fx_free_images();
+        fprintf(stderr, "[ngl_vk] the window's CAS / FSR 1 can't be made: the window shows the picture smooth\n");
+        return -1;
+    }
+    /* [acct2-fh] 11-14 stage 5c: the source is the target, or the color table's image (window_ramp_record has just
+     * drawn it, the picture's size, left in TRANSFER_SRC_OPTIMAL as the target is) */
+    if (from_ramp) {
+        if (window_fx.ramp_view != window_ramp.view) {
+            window_fx_point(window_fx.ramp_set, window_ramp.view);
+            window_fx.ramp_view = window_ramp.view;
+        }
+        source = window_ramp.image;
+        source_set = window_fx.ramp_set;
+    } else {
+        if (window_fx.target_view != vk.target_view) {
+            window_fx_point(window_fx.target_set, vk.target_view);
+            window_fx.target_view = vk.target_view;
+        }
+        source = vk.target;
+        source_set = window_fx.target_set;
+    }
+    output_barrier(vk.commands, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                   VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    if (passes > 0) {
+        from = source_set;
+        for (pass = 0; pass < passes; pass++) {
+            uint32_t to_width = pass + 1 == passes || from_width * 2 > width ? width : from_width * 2;
+            uint32_t to_height = pass + 1 == passes || from_height * 2 > height ? height : from_height * 2;
+
+            push[0] = (float)from_width;
+            push[1] = (float)from_height;
+            push[2] = (float)to_width;
+            push[3] = (float)to_height;
+            window_fx_draw(into, window_fx.easu, from, to_width, to_height, push);
+            output_barrier(vk.commands, window_fx.image[into], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                           VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+            from = window_fx.image_set[into];
+            from_width = to_width;
+            from_height = to_height;
+            into ^= 1;
+        }
+        push[0] = (float)width;
+        push[1] = (float)height;
+        push[2] = window_fx.fsr_reduction;              /* stops: the shader's sharpness is 2 to the minus that */
+        push[3] = 0.0f;
+        window_fx_draw(into, window_fx.rcas, from, width, height, push);
+    } else {
+        push[0] = 1.0f / (float)width;
+        push[1] = 1.0f / (float)height;
+        push[2] = -1.0f / (8.0f + (5.0f - 8.0f) * window_fx.cas_sharpness);   /* -1 / mix(8, 5, sharpness) */
+        push[3] = 0.0f;
+        window_fx_draw(into, window_fx.cas, source_set, width, height, push);
+    }
+    output_barrier(vk.commands, window_fx.image[into], VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                   VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                   VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                   VK_PIPELINE_STAGE_TRANSFER_BIT);
+    output_barrier(vk.commands, source, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   0, 0, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    return into;
+}
+
 void ngl_vk_shutdown(void)
 {
     uint32_t row;
@@ -6152,6 +6811,8 @@ void ngl_vk_shutdown(void)
         wait_until_idle();
         free_swapchain();
         free_picture();
+        window_ramp_free();     /* [acct2-ocr] 2026-11-13: the window's color table image (made only when used) */
+        window_fx_free();       /* [acct2-fh] 2026-11-14: the window's CAS / FSR 1 parts (made only when used) */
         /* ngl_vk_output's (none of it made unless it was used) */
         vkDestroyFramebuffer(vk.device, vk.output_framebuffer, NULL);
         vkDestroyPipeline(vk.device, vk.output_pipeline, NULL);
@@ -6187,6 +6848,8 @@ void ngl_vk_shutdown(void)
         vkFreeMemory(vk.device, vk.mesh_corner_memory, NULL);
         vkFreeMemory(vk.device, vk.mesh_index_memory, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.mesh_cull_pipeline[0], NULL);  /* [acct2-bro] 2026-11-13 rn69a */
+        vkDestroyPipeline(vk.device, vk.mesh_cull_pipeline[1], NULL);  /* [acct2-bro] */
         vkDestroyPipeline(vk.device, vk.mesh_blend_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_add_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_subtract_pipeline, NULL);

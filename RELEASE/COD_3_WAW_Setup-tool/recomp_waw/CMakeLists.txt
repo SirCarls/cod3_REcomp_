@@ -38,10 +38,13 @@ set(WAW_SOURCES
     src/waw_native_side.cpp  # [waw-decomp-waw] 2026-11-11 a frame drawn natively (ngl_vk) beside the game's own
     src/waw_native_textures.cpp  # [waw-decomp-waw] 2026-11-11 Xbox 360 textures decoded for the native side
     src/waw_native_window.cpp  # [waw-decomp-waw] 2026-11-11 round 5 the native picture shown (waw_native_vulkan)
+    src/waw_mods.cpp  # [acct2-mods] 2026-11-14 a converted PC mod's zones after a level's (waw_mod; empty, the default: off)
     ${COD3_RECOMP_SRC}/test_input.cpp
     # [f2-menus] The F2 settings window shared by every game's port (../recomp/src/f2/), built from its own folder.
     ${COD3_RECOMP_SRC}/f2/f2_common.cpp  # [f2-menus] the F2 rows every port shares
     ${COD3_RECOMP_SRC}/f2/f2_accel.cpp  # [f2-menus] 2026-11-11 mouse acceleration, randomizer, scales (Call of Duty 3 builds it too)
+    ${COD3_RECOMP_SRC}/f2/f2_crosshair_cs2.cpp  # [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
+    ${COD3_RECOMP_SRC}/f2/crosshair_cs2_code.cpp  # [acct2-decomp] CS2's share codes (copied in by acct2-ocr)
     ${COD3_RECOMP_SRC}/f2/f2_render_size.cpp  # [f2-menus] the game's own 3D size (game_draw_size)
     ${COD3_RECOMP_SRC}/f2/f2_console.cpp
     ${COD3_RECOMP_SRC}/f2/f2_pad.cpp
@@ -49,6 +52,17 @@ set(WAW_SOURCES
     ${COD3_RECOMP_SRC}/f2/f2_theme.cpp
     ${COD3_RECOMP_SRC}/f2/f2_window.cpp
 )
+
+# [acct2-decomp] 2026-11-12: the game's memory past the Xbox 360's 512 MB: the zone report and the move test, both
+# off by default (src/waw_memory.cpp), on the code the Infinity Ward ports share
+# (../recomp/src/guest_memory/). Only when that folder is there: a build script that copies recomp/src piece
+# by piece and doesn't know the folder yet builds the game as before, without these settings.
+if(EXISTS "${COD3_RECOMP_SRC}/guest_memory/iw_zone.cpp")
+    list(APPEND WAW_SOURCES
+        src/waw_memory.cpp
+        ${COD3_RECOMP_SRC}/guest_memory/block_arena.cpp
+        ${COD3_RECOMP_SRC}/guest_memory/iw_zone.cpp)
+endif()
 
 if(WIN32)
     add_executable(waw WIN32 ${WAW_SOURCES})

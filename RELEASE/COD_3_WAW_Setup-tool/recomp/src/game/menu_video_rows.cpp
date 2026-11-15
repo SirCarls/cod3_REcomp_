@@ -105,9 +105,15 @@ bool RestartOnly(const char* cvar) {
   return info && info->lifecycle != rex::cvar::Lifecycle::kHotReload;
 }
 
+// [acct2-main] 2026-11-14 Windows builds have both flags (the SDK's two presenters). The row writes both, but shows
+// the one of the graphics API the game starts with (cod3_graphics_api; "auto" is Vulkan), so a cod3.toml edited by
+// hand, where the two differ, shows the one that applies. Linux has only Vulkan's.
 bool VsyncOn() {
-  if (Has(kVsyncVulkan)) return !GetBool(kVsyncVulkan);
-  if (Has(kVsyncD3D12)) return !GetBool(kVsyncD3D12);
+  const bool d3d12 = Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12";
+  const char* first = d3d12 ? kVsyncD3D12 : kVsyncVulkan;
+  const char* second = d3d12 ? kVsyncVulkan : kVsyncD3D12;
+  if (Has(first)) return !GetBool(first);
+  if (Has(second)) return !GetBool(second);
   return false;
 }
 
@@ -421,8 +427,14 @@ void NoteStartValues() {
 }
 
 void SetSaveHandler(std::function<void()> save) {
-  std::lock_guard lock(g_save_mutex);
-  g_save = std::move(save);
+  {
+    std::lock_guard lock(g_save_mutex);
+    g_save = std::move(save);
+  }
+  // [acct2-main] 2026-11-14 Both apps call this once, in OnPostSetup: the settings file is read and the GPU plugin
+  // loaded, and nothing has changed a setting yet. So the start values are noted here, not first when an options
+  // page opens: a change made in F2 before then used to count as the start value.
+  NoteStartValues();
 }
 
 }  // namespace cod3::videomenu

@@ -25,6 +25,7 @@
 //    match ends), so every console of a system link match plays by the host's rules.
 
 #include "game/mp/session.h"
+#include "game/mp/peer_guard_mp.h"  // [acct2-main] 2026-11-14
 
 #include <algorithm>
 #include <atomic>
@@ -465,6 +466,14 @@ REX_HOOK_RAW(MPPlayerManager__vfunc_1) {
   if (message >= 0x10000 && message < 0xC0000000u && (message & 3) == 0 &&
       cod3::guest::ReadU8(base, message + 8) == 0x70) {
     cod3::mp::OnNotice(base, message);
+    ctx.r3.u64 = 1;
+    return;
+  }
+  // [acct2-main] 2026-11-14 (dev/agents/acct2-main/MP-SAFETY.md gap 3): a message the game's handler would take
+  // without a check it needs (peer_guard_mp.cpp: a position update for another console's player) is dropped, as
+  // handled.
+  if (message >= 0x10000 && message < 0xC0000000u && (message & 3) == 0 &&
+      !cod3::mp::PeerMessageAllowed(base, ctx.r3.u32, ref, message)) {
     ctx.r3.u64 = 1;
     return;
   }

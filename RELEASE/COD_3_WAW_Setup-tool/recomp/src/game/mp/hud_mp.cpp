@@ -41,10 +41,21 @@ constexpr int kLocalPlayers = 4;
 
 // Tell the overlay which player's view this crosshair is for and where that view is: as a
 // share of the screen, which is what all the local players' views cover together.
+// [acct2-bro] 2026-11-15 b97 (owner 18:06, split screen): every call names its view. Before, a call that returned
+// early left the view of the call before it (the overlay sets it back to player 1's whole picture only once a custom
+// crosshair is drawn), so as a player joined or left, a frame's crosshair could follow another player's settings and
+// part of the screen.
+// A player whose view can't be read keeps their own settings and the part their view had last.
+float g_last_part[kLocalPlayers][4] = {{0.0f, 0.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f}, {0.0f, 0.0f, 1.0f, 1.0f},
+                                       {0.0f, 0.0f, 1.0f, 1.0f}};
+
 void SetView(uint8_t* base) {
   using cod3::guest::ReadS32;
   const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
-  if (client >= uint32_t(kLocalPlayers)) return;  // not a local player: player 1's whole picture
+  if (client >= uint32_t(kLocalPlayers)) {  // not a local player: player 1's whole picture ([acct2-bro] b97: said so)
+    cod3::ui::SetGameCrosshairView(0, 0.0f, 0.0f, 1.0f, 1.0f);
+    return;
+  }
   int32_t right = 0, bottom = 0;
   int32_t rect[kLocalPlayers][4] = {};
   for (int i = 0; i < kLocalPlayers; ++i) {
@@ -57,7 +68,11 @@ void SetView(uint8_t* base) {
     bottom = std::max(bottom, r[1] + r[3]);
   }
   const int32_t* r = rect[client];
-  if (right <= 0 || bottom <= 0 || r[2] <= 0 || r[3] <= 0) return;
+  if (right <= 0 || bottom <= 0 || r[2] <= 0 || r[3] <= 0) {  // [acct2-bro] b97: this player, their last part
+    const float* last = g_last_part[client];
+    cod3::ui::SetGameCrosshairView(int(client), last[0], last[1], last[2], last[3]);
+    return;
+  }
   // A view's place and shape in the log when it changes (a player joining or leaving): the game's
   // projection shape from its field of view (refdef +16 / +20 are fov_x / fov_y in degrees, not
   // tangents; [claude-9b] 2026-10-27, FINDINGS-SPLITSCREEN-VIEW: the old line divided the degrees and
@@ -77,8 +92,12 @@ void SetView(uint8_t* base) {
                 "shape {:.4f}, shape on the picture {:.4f}",
                 client + 1, r[2], r[3], r[0], r[1], right, bottom, fov_x, fov_y, game, shown);
   }
-  cod3::ui::SetGameCrosshairView(int(client), float(r[0]) / float(right), float(r[1]) / float(bottom),
-                                 float(r[2]) / float(right), float(r[3]) / float(bottom));
+  float* part = g_last_part[client];  // [acct2-bro] b97: kept for a frame whose view can't be read
+  part[0] = float(r[0]) / float(right);
+  part[1] = float(r[1]) / float(bottom);
+  part[2] = float(r[2]) / float(right);
+  part[3] = float(r[3]) / float(bottom);
+  cod3::ui::SetGameCrosshairView(int(client), part[0], part[1], part[2], part[3]);
 }
 
 }  // namespace

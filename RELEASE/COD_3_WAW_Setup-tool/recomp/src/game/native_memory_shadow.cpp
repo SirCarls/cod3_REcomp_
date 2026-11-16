@@ -227,6 +227,9 @@ bool InArena0(uint8_t* base, uint32_t block) {
 struct Listed {
   uint32_t pc[kStackDepth];
   const char* what;
+  // [acct2-decomp] 2026-11-14 the sound library's bank: when the move moves it, FMOD's memory check is taught where
+  // it went (g_moved_bank_lo and _hi, the hook on 0x823A4470 below). One entry is marked so; none by default.
+  bool fmod_bank = false;
 };
 #if !defined(COD3_MP)
 constexpr Listed kMoveList[] = {
@@ -248,14 +251,13 @@ constexpr Listed kMoveList[] = {
     {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D28, 0x82400398}, "particle pool 4 MB"},
     {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D1C, 0x82400398}, "particle pool 2 MB"},
     {{0x820CC21C, 0x820CC570, 0x82418D40, 0x82400398, 0x82344E98, 0}, "particle heap 2 MB"},
-    // [acct2-decomp] 2026-11-13 the sound library's bank memory (NSL init 0x8211AD98: 0x23D7840 bytes, 35.8 MB;
-    // site 0x820CC30C <- 0x82522DF4 <- 0x82127AB8 <- 0x8211AE04 <- 0x82117CE0 <- 0x82492F98) is OFF the list. Moved,
-    // no campaign run plays an XMA sound (FMOD's float resampler never runs: 0 of 67 runs, every level, Linux and
-    // Wine, against 60 of 60 without the move), and the level scripts that wait on those sounds run differently
-    // (Falaise: the shell shock 3 to 4 s early, and the level, which reloads in 5 of 8 runs without the move, never
-    // does in 14). Kept in arena 0 while the rest of the list moves, the sounds and the level's timing are as without
-    // the move (4 of 4 runs). The move then frees 32 MB of arena 0 instead of 68. dev/agents/acct2-decomp/MEMORY.md,
-    // section 2d; the reason is not known yet (FMOD's codec still starts, with its buffers in arena 0).
+    // [acct2-decomp] 2026-11-14 the sound library's bank memory (NSL init 0x8211AD98: 0x23D7840 bytes, 35.8 MB). It
+    // was off the list from 2026-11-13: moved, no campaign run played a sound (0 of 67). The reason, found 11-14:
+    // FMOD's memory check (0x823A4470, hooked below) takes a sound's memory only at 0xA0000000 and up, where the
+    // console's physical views begin, and refused every sound in the moved bank. With the hook it keeps them, and
+    // FMOD reads that memory with the CPU (0x823A44E8, memcpy); the XMA decoder only ever gets FMOD's own buffers
+    // (the next allocation, 20 MB, which stays). dev/agents/acct2-decomp/MEMORY.md, section 2d.
+    {{0x820CC30C, 0x82522DF4, 0x82127AB8, 0x8211AE04, 0x82117CE0, 0x82492F98}, "sound bank memory", true},
 };
 #else
 // cod3mp (shadow: mp_merv, rouen, c4shadowmp; the same roles as the campaign's, at cod3mp's addresses).
@@ -303,6 +305,9 @@ std::atomic<uint32_t> g_move_header{0};  // the header in use (0: not made yet)
 std::atomic<bool> g_move_failed{false}, g_move_reserve_tried{false};
 std::atomic<uint32_t> g_move_lo{0}, g_move_hi{0};
 std::atomic<uint64_t> g_moved{0}, g_move_fallbacks{0}, g_moved_seen_by_gpu{0};
+// [acct2-decomp] 2026-11-14 the moved sound bank's bounds (0 while it isn't moved), for FMOD's memory check. hi is
+// stored before lo, and lo read first (acquire), as the moved pool's.
+std::atomic<uint32_t> g_moved_bank_lo{0}, g_moved_bank_hi{0};
 std::mutex g_move_mu;
 
 bool MoveOn() {
@@ -672,6 +677,10 @@ REX_HOOK_RAW(sub_820CBC40) {
         NotePool(key, ctx.r3.u32, size, true);
         if (g_moved.fetch_add(1, std::memory_order_relaxed) < 32)
           REXLOG_INFO("cod3: memory move: {} ({} bytes) at {:08X}", listed->what, size, ctx.r3.u32);
+        if (listed->fmod_bank) {  // [acct2-decomp] 2026-11-14 the sound library's bank: for FMOD's memory check
+          g_moved_bank_hi.store(ctx.r3.u32 + size, std::memory_order_relaxed);
+          g_moved_bank_lo.store(ctx.r3.u32, std::memory_order_release);
+        }
         return;
       }
       if (g_move_fallbacks.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -748,6 +757,27 @@ REX_HOOK_RAW(sub_823B7ED8) {
   for (uint32_t offset : {0x4u, 0x8u, 0xCu, 0x10u})
     Watch(ReadU32(base, xma + offset), "an XMA audio buffer", /*graphics=*/false);
 }
+
+// [acct2-decomp] 2026-11-14 FMOD's memory check (0x823A4470, 24 bytes; r3 a sound's memory object, r4 the memory's
+// address; reached only through FMOD's function table). An address other than 0 below 0xA0000000 gets FMOD's error
+// 32; any other is kept at +252, from where FMOD copies the sound data with the CPU (0x823A44E8, memcpy). With the
+// bank moved (0x52003000 in a Falaise run) every sound in it was refused, the game asked again and again (more than
+// 70,000 refusals in 120 s) and none played. An address inside the moved bank is kept here as the function keeps one
+// it accepts; every other call is the game's own. Campaign only: cod3mp's bank moves and plays without it (6 of 6
+// runs, 2026-11-13), so its twin (0x82373AA0) is left alone.
+#if !defined(COD3_MP)
+REX_EXTERN(__imp__sub_823A4470);
+REX_HOOK_RAW(sub_823A4470) {
+  const uint32_t address = ctx.r4.u32;
+  const uint32_t lo = g_moved_bank_lo.load(std::memory_order_acquire);
+  if (lo && address >= lo && address < g_moved_bank_hi.load(std::memory_order_relaxed)) {
+    cod3::guest::WriteU32(base, ctx.r3.u32 + 252, address);
+    ctx.r3.u64 = 0;
+    return;
+  }
+  __imp__sub_823A4470(ctx, base);
+}
+#endif  // !COD3_MP
 
 // --- What the game hands Direct3D ----------------------------------------------------------------------------------
 

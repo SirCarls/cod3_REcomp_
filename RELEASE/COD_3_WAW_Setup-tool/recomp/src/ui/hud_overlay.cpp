@@ -3611,6 +3611,19 @@ void SettingsWindow::DrawCrosshair() {
              "Crosshair: off hides that player's crosshair, the game's and the custom one, on their part of the "
              "screen only. Player 1's is remembered as before; for the others, set it in their own Options to keep "
              "it after the game closes.");
+      } else if (players.size() == 1 &&
+                 players[0].byte != cod3::addr::controls::kSettings + cod3::addr::controls::kCrosshair) {
+        // [acct2-bro] 2026-11-15 b97 (owner 18:06, split screen): one local player on another controller than the
+        // first (player 1 left, or the player plays on controller 2): the switch of the profile they play with, not
+        // the first controller's (the box below, which read and changed someone else's).
+        per_player = true;
+        bool on = cod3::guest::ReadU8(base, players[0].byte) != 0;
+        char label[48];
+        std::snprintf(label, sizeof(label), "Show crosshair (player %u)##show_crosshair_one", players[0].player + 1);
+        if (ImGui::Checkbox(label, &on)) cod3::guest::WriteU8(base, players[0].byte, on ? 1 : 0);
+        Help("The game's own crosshair switch for the controller you play with, the same as its Options > Gameplay "
+             "> Crosshair: off hides the crosshair, the game's and the custom one. Set it in that Options page to "
+             "keep it after the game closes.");
       }
     }
 #endif

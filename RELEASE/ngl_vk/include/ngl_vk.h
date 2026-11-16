@@ -709,6 +709,21 @@ struct ngl_vk_mesh_draw {
     float cod3_water_fresnel[3];
     float cod3_water_power;
     float cod3_water_cube_bias;
+    /* [acct2-bro] 2026-11-15 rn99a: Call of Duty 3's K98 shader (its pixel shader BDA4BB849BDF0C39: the Kar98k, the
+     * BAR's wood). With k98 1 on a vehicle_bumped draw (see there; vehicle_normal_scale 1, vehicle_specular_power
+     * the shader's power), with E the unit way to the eye's own place and N the bent normal:
+     *   - the base texture is multiplied by mix(k98_tint, 1, s), s = t x t x (3 - 2t), t = clamp((N . E - 0.29) x
+     *     -4.1841, 0, 1) (the shader's literals): k98_tint where the surface faces the eye, 1 seen edge-on;
+     *   - the specular map is multiplied by k98_specular (red, green, blue) before it scales the highlights;
+     *   - the light (the rows, the first light's and the point lights' N.L) and the highlights are multiplied by
+     *     k98_light_scale, and the light isn't held to 1 for a HELD draw (the shader doesn't hold it).
+     * Needs a device that binds six descriptor sets (as vehicle_bumped). k98 0 (memset draws): as before.
+     * NGL_VK_K98 tells a caller that this header has the fields. */
+#define NGL_VK_K98 1
+    uint32_t k98;
+    float k98_tint[3];
+    float k98_specular[3];
+    float k98_light_scale;
 };
 /* [acct2-bro] 2026-11-13 rn69a: ngl_vk_mesh_draw's cull */
 enum {

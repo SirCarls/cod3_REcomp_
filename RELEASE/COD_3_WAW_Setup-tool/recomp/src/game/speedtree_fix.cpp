@@ -241,17 +241,22 @@ constexpr uint64_t kAssetTypeFx = 10;
 constexpr uint32_t kTreeRequestData = 0x44;
 constexpr uint32_t kTreeRequestOwnsData = 0x50;
 std::atomic<int> g_tree_waits{0};
+std::atomic<int> g_tree_handovers{0};  // [acct2-main] 2026-11-15 the second guard's finds (sub_823F0128 below)
 
-// Whether the job's own lookup finds speedtree_shader now, from this (the job's) thread.
-bool TreeShaderReady(PPCContext& ctx, uint8_t* base) {
+// The job's own lookup of speedtree_shader, from this (the job's) thread: the effect, or 0.
+// [acct2-main] 2026-11-15 returns what it found (it was a yes / no), for the second guard below.
+uint32_t FindTreeShader(PPCContext& ctx, uint8_t* base) {
   cod3::guest::Call c(ctx, base);
   const uint32_t name = c.PushString("speedtree_shader");
   const uint32_t scratch = (c.PushString(std::string(191, '.')) + 15) & ~15u;  // the name hash (the job's is 144)
   const uint32_t hash = static_cast<uint32_t>(c.Invoke(kNameHashInit, {scratch, name}));
-  if (!Plain(hash, 4) || !ReadU32(base, hash)) return false;
+  if (!Plain(hash, 4) || !ReadU32(base, hash)) return 0;
   const uint64_t package = c.Invoke(kCurrentPackage, {ReadU32(base, kPackages)});
-  return static_cast<uint32_t>(c.Invoke(kFindAsset, {ReadU32(base, kAssetLibrary), kAssetTypeFx, package, hash})) != 0;
+  return static_cast<uint32_t>(c.Invoke(kFindAsset, {ReadU32(base, kAssetLibrary), kAssetTypeFx, package, hash}));
 }
+
+// Whether the job's own lookup finds speedtree_shader now.
+bool TreeShaderReady(PPCContext& ctx, uint8_t* base) { return FindTreeShader(ctx, base) != 0; }
 
 // The job's end without its work: its request freed as the job frees it.
 void FreeTreeRequest(PPCContext& ctx, uint8_t* base, uint32_t request) {
@@ -299,6 +304,51 @@ REX_HOOK_RAW(sub_823F7798) {
   __imp__sub_82410D18(ctx, base);
 #else
   __imp__sub_823F7798(ctx, base);
+#endif
+}
+
+// [acct2-main] 2026-11-15 A second guard, where the job hands its effect over. The wait above runs before the job
+// and checks with the job's own calls; still one run crashed here with no wait line before it (acct2-bro's s140b30,
+// 11-15 04:45, Falaise's load at 30 fps: sub_82141B28 reading 0x10, r3 0, from sub_823F0128 <- the job). So that
+// check found speedtree_shader and the job's own lookup, moments later on the same thread, found none; why is not
+// known. In 740 run logs of 8 days the wait above caught the race twice and missed it this once
+// (dev/agents/acct2-main/COD3-AUDIT.md, pass 9). sub_823F0128(tree r3, effect r4) (cod3mp sub_82409D38: the same
+// registers) stores the effect in the tree (+748) and at once reads its parameters through it; the job is its only
+// caller, once for each tree it makes. With no effect it looks again from this thread, waiting as above (2 ms steps,
+// up to cod3_tree_shader_wait_ms), and hands over what it finds. If none comes, the game's code runs as it is (and
+// crashes as before) after an error line. With an effect (every other call) nothing changes.
+#if defined(COD3_MP)
+REX_EXTERN(__imp__sub_82409D38);
+REX_HOOK_RAW(sub_82409D38) {
+#else
+REX_EXTERN(__imp__sub_823F0128);
+REX_HOOK_RAW(sub_823F0128) {
+#endif
+  const int wait_ms = std::clamp(REXCVAR_GET(cod3_tree_shader_wait_ms), 0, 60000);
+  if (ctx.r4.u32 == 0 && wait_ms > 0) {
+    const auto start = std::chrono::steady_clock::now();
+    uint32_t effect = FindTreeShader(ctx, base);
+    while (!effect && std::chrono::steady_clock::now() - start < std::chrono::milliseconds(wait_ms)) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+      effect = FindTreeShader(ctx, base);
+    }
+    const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    if (effect) {
+      ctx.r4.u64 = effect;
+      if (g_tree_handovers.fetch_add(1, std::memory_order_relaxed) < 20)
+        REXLOG_WARN("cod3: SpeedTree: tree {:08X} was handed no shader (speedtree_shader) by its job; found it after "
+                    "{:.1f} ms and handed it over (the game would have crashed here, in sub_82141B28)",
+                    ctx.r3.u32, waited);
+    } else {
+      REXLOG_ERROR("cod3: SpeedTree: tree {:08X} was handed no shader (speedtree_shader) and none came in {:.0f} ms "
+                   "(cod3_tree_shader_wait_ms); the game's code runs as it is and crashes in sub_82141B28",
+                   ctx.r3.u32, waited);
+    }
+  }
+#if defined(COD3_MP)
+  __imp__sub_82409D38(ctx, base);
+#else
+  __imp__sub_823F0128(ctx, base);
 #endif
 }
 

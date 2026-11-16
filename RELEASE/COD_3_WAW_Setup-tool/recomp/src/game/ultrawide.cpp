@@ -25,6 +25,7 @@
 #include "game/text_language.h"  // [acct2-ocr] RawTextFor
 #include "game/program.h"
 #include "game/guest.h"
+#include "game/pc_menu.h"  // [acct2-bro] 2026-11-15 DrawingSystem: a quad a menu system draws
 #include "game/render_resolution.h"
 
 REXCVAR_DEFINE_STRING(cod3_aspect_ratio, "auto", "cod3/Display",
@@ -662,7 +663,12 @@ bool CinematicBar(PPCContext& ctx, uint8_t* base, uint32_t quad, float w, float 
   const bool at_edge = y0 <= slack || y1 >= h - slack;
   const bool thin = (y1 - y0) <= h / 3.0f && (y1 - y0) > 0.0f;
   if (!(across && at_edge && thin)) return false;
-  if (InGameMenuOpen(base)) {  // [claude-9b-think] v4: never a menu's panel
+  // [claude-9b-think] v4: never a menu's panel. [acct2-bro] 2026-11-15 (owner 17:21: "cinematic letterboxing toggle
+  // gets turned off when hitting tab and displaying your objectives"): only a quad a menu system draws itself
+  // (pc_menu's draw hooks) is kept, not every quad while a menu is open, so the cinematic's own bars (drawn by the
+  // HUD, under the menu) still follow cod3_letterbox while the objectives (Tab), the pause menu or its options are
+  // up. Before, with the bars off, they came back for as long as the objectives page was shown.
+  if (cod3::pcmenu::DrawingSystem() != 0) {
     NoteMenuKept();
     return false;
   }
@@ -677,10 +683,10 @@ bool CinematicBar(PPCContext& ctx, uint8_t* base, uint32_t quad, float w, float 
     std::lock_guard<std::mutex> lock(mutex);
     if (seen.size() < 40 && seen.insert(key).second) {
       REXLOG_INFO("cod3: letterbox candidate in {:.0f}x{:.0f}: x {:.3f}..{:.3f} y {:.3f}..{:.3f} colors {:08X} {:08X} "
-                  "{:08X} {:08X} black {} rest {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}",
+                  "{:08X} {:08X} black {} rest {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}; a menu open {}",
                   w, h, x0, x1, y0, y1, color[0], color[1], color[2], color[3], black ? 1 : 0, ReadU32(base, quad + 80),
                   ReadU32(base, quad + 84), ReadU32(base, quad + 88), ReadU32(base, quad + 92), ReadU32(base, quad + 96),
-                  ReadU32(base, quad + 100));
+                  ReadU32(base, quad + 100), InGameMenuOpen(base) ? 1 : 0);  // [acct2-bro] 2026-11-15 a menu open
     }
   }
   // [claude-9b-think] v3: which test matched, for the once-a-second line (NoteBarLeftOut).

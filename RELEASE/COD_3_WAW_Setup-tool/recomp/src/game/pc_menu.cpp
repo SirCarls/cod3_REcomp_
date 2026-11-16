@@ -2326,6 +2326,8 @@ uint32_t BeginSystemDraw(uint32_t system) {
 
 void EndSystemDraw(uint32_t outer) { t_drawing_system = outer; }
 
+uint32_t DrawingSystem() { return t_drawing_system; }  // [acct2-bro] 2026-11-15 (pc_menu.h)
+
 void NotePictureDrawn(uint8_t* base, uint32_t quad) {
   if (t_drawing_system && REXCVAR_GET(cod3_pc_menus)) NoteControl(base, quad);
 }

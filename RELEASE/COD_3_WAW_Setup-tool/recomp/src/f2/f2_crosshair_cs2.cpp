@@ -52,6 +52,12 @@ bool UsesGap(int st) { return st != kDynamicCircle && st != kDotOnly; }
 bool UsesT(int st) { return UsesLength(st); }
 bool UsesDot(int st) { return st != kDotOnly; }
 bool UsesSpreadLimit(int st) { return st == kDynamicCross || st == kDynamicCircle || st == kDynamicQuad; }
+// [acct2-bro] 2026-11-15 (owner 17:15: "the T style has no dynamic settings. Please take a look at CS2 again"):
+// with T style on, a style that offers it is drawn still and shows none of the dynamic rows (the spread limit, the
+// split, how far it opens); T style itself only applies to the styles that offer it (CS2: "removes the top bar on
+// cross styles").
+bool TOn(const Settings& s) { return s.t_style && UsesT(s.style); }
+bool MovesWithSpread(const Settings& s) { return StyleIsDynamic(s.style) && !TOn(s); }
 
 // ------------------------------------------------------------------------------------------------- text
 
@@ -714,7 +720,7 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
 
   // The game's spread for the dynamic styles, in pixels of this view.
   int spread = 0;
-  if (StyleIsDynamic(s.style) && caps.spread) {
+  if (MovesWithSpread(s) && caps.spread) {  // [acct2-bro] 2026-11-15: not with T style on
     float px = std::max(0.0f, v.spread) * v.height / 480.0f * s.open_scale;
     if (UsesSpreadLimit(s.style) && s.spread_limit > 0) px = std::min(px, float(s.spread_limit) * scale);
     spread = Round(px);
@@ -744,13 +750,13 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
     rect(cx + d, cy - h0, cx + d + l - 1, cy - h0 + t - 1, alpha);  // right
     rect(cx - d - l, cy - h0, cx - d - 1, cy - h0 + t - 1, alpha);  // left
     rect(cx - h0, cy + d, cx - h0 + t - 1, cy + d + l - 1, alpha);  // down
-    if (!s.t_style) rect(cx - h0, cy - d - l, cx - h0 + t - 1, cy - d - 1, alpha);  // up
+    if (!TOn(s)) rect(cx - h0, cy - d - l, cx - h0 + t - 1, cy - d - 1, alpha);  // up ([acct2-bro] 11-15: TOn)
   };
   const float rc = (t % 2) ? 0.5f : 0.0f;  // a ring's middle where the lines' middle is
   auto ring = [&](int kind, float inner, float span) {
     Shape sh;
     sh.kind = kind;
-    if (kind == 2 && s.t_style) sh.arcs = 2 | 4;  // the bottom two
+    if (kind == 2 && TOn(s)) sh.arcs = 2 | 4;  // the bottom two ([acct2-bro] 2026-11-15: TOn)
     sh.x0 = float(cx) + rc;
     sh.y0 = float(cy) + rc;
     sh.y1 = float(t);
@@ -1079,7 +1085,7 @@ void DrawPreviewBox(const Settings& s, int player, float side) {
   v.height = io.DisplaySize.y;  // its size on the whole screen
   v.rgba[3] = s.enabled ? 1.0f : 0.35f;
   const double t = ImGui::GetTime();
-  if (StyleIsDynamic(s.style)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));
+  if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-bro] 11-15: not with T
   if (s.style == kStaticCrossShotFeedback) v.seconds_since_shot = std::fmod(t, 0.8);
   DrawSettings(dl, s, v, player, true);
   dl->PopClipRect();
@@ -1178,7 +1184,7 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
   Section("Style");
   ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x * 0.6f, 320.0f));
   edit |= ImGui::Combo("Style", &s.style, kStyleNames, kStyleCount);
-  if (StyleIsDynamic(s.style) && !caps.spread)
+  if (MovesWithSpread(s) && !caps.spread)  // [acct2-bro] 2026-11-15: a T style stays still anyway
     Help("This game doesn't tell its spread yet, so a dynamic style stays still here.");
   edit |= SliderF("Thickness", &s.thickness, 0.0f, 32.0f, "%.1f");
   if (UsesLength(s.style)) edit |= SliderF("Length", &s.length, 0.0f, 255.0f, "%.1f");
@@ -1189,22 +1195,23 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     ImGui::SameLine();
     edit |= ImGui::Checkbox("T style (no top line)", &s.t_style);
   }
-  if (UsesSpreadLimit(s.style)) {
-    Greyed g(caps.spread, "Needs the game's spread, which this game's hook doesn't give yet.");
-    edit |= SliderI("Dynamic spread limit", &s.spread_limit, 0, 255);
-  }
-  if (s.style == kDynamicCrossLegacy) {
-    edit |= SliderI("Split distance", &s.split_distance, 0, 127);
-    edit |= SliderF("Inner split alpha", &s.split_inner_alpha, 0.0f, 1.0f, "%.2f");
-    edit |= SliderF("Outer split alpha", &s.split_outer_alpha, 0.3f, 1.0f, "%.2f");
-    edit |= SliderF("Split size ratio", &s.split_ratio, 0.0f, 1.0f, "%.2f");
-  }
-  if (s.style == kStaticQuad) edit |= SliderF("Static quad split ratio", &s.split_ratio, 0.0f, 1.0f, "%.2f");
-  if (StyleIsDynamic(s.style)) {
-    Greyed g(caps.spread, "Needs the game's spread.");
+  // [acct2-bro] 2026-11-15 (owner 17:15): the dynamic rows only while the crosshair can move (not with T style on),
+  // greyed together, with one reason, while the game gives no spread (the split rows were editable before)
+  if (MovesWithSpread(s)) {
+    Greyed g(caps.spread, "These need the game's spread, which this game's hook doesn't give yet.");
+    if (UsesSpreadLimit(s.style)) edit |= SliderI("Dynamic spread limit", &s.spread_limit, 0, 255);
+    if (s.style == kDynamicCrossLegacy) {
+      edit |= SliderI("Split distance", &s.split_distance, 0, 127);
+      edit |= SliderF("Inner split alpha", &s.split_inner_alpha, 0.0f, 1.0f, "%.2f");
+      edit |= SliderF("Outer split alpha", &s.split_outer_alpha, 0.3f, 1.0f, "%.2f");
+      edit |= SliderF("Split size ratio", &s.split_ratio, 0.0f, 1.0f, "%.2f");
+    }
     edit |= SliderF("How far it opens", &s.open_scale, 0.0f, 3.0f, "%.2f x");
     if (caps.spread) Help("1 is exactly the game's own spread; lower keeps the crosshair tighter.");
+  } else if (StyleIsDynamic(s.style)) {
+    Help("With T style on, this crosshair stays still, so the dynamic rows are hidden.");
   }
+  if (s.style == kStaticQuad) edit |= SliderF("Static quad split ratio", &s.split_ratio, 0.0f, 1.0f, "%.2f");
   edit |= SliderI("Sizes are for a screen this tall", &s.screen_height, 240, 4320);
   Help("Sizes are pixels on a screen this many lines tall; they grow and shrink with yours, and with a split-screen "
        "player's part of it. A CS2 code brings its own.");
@@ -1256,8 +1263,10 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
   {
     Greyed g(caps.spectating, "Needs to know when you watch another player, which this game's hook doesn't give yet.");
     edit |= ImGui::Checkbox("Show the crosshair when watching another player", &s.observer);
-    ImGui::SameLine();
-    edit |= ImGui::Checkbox("...also a bot", &s.observed_bot);
+    if (s.observer) {  // [acct2-bro] 2026-11-15: only means something with the box before it on
+      ImGui::SameLine();
+      edit |= ImGui::Checkbox("...also a bot", &s.observed_bot);
+    }
   }
 
   Section("Grenades");

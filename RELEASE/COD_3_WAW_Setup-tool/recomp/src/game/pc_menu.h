@@ -102,6 +102,9 @@ void OnProcessInput(PPCContext& ctx, uint8_t* base, uint32_t system);
 // pass it to End.
 uint32_t BeginSystemDraw(uint32_t system);
 void EndSystemDraw(uint32_t outer);
+// [acct2-bro] 2026-11-15 The menu system drawing right now on this thread (0: none), for code that must tell a
+// menu's own quads from the HUD's (game/ultrawide.cpp: the cinematic bars).
+uint32_t DrawingSystem();
 
 // A picture a menu drew (arrows and gauges are noted for the mouse).
 void NotePictureDrawn(uint8_t* base, uint32_t quad);

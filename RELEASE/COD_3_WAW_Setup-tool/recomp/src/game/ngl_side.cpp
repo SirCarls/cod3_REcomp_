@@ -373,6 +373,17 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_skin, true, "cod3/Debug",
                     "With cod3_native_vulkan, the soldiers' heads take the game's skin look (lighter where seen "
                     "edge-on, highlights masked by the noise swatch, the sun as their pass binds it); off: drawn as "
                     "other bumped models");
+// [acct2-bro] 2026-11-15 rn95a: the view model's hands as the arms' pixel shader CDBAC6026B525050 draws them: the same
+// skin as the heads' (cod3_debug_ngl_side_skin) with the numbers compiled into it, read from its pass's shader
+// (ReadArmSkinPass): its color map x mix(c254.x, 1, s) x c254.xyz (the island's BAR: 1.142, and 1.142 1.05666
+// 0.980978: a warmer, lighter hand), highlights of power c253.y masked by the specular map mixed c253.x (0.208) toward
+// the noise swatch at (uv - 0.5) x c251.y (10.073) + 0.5. Read from the shader's own code (work folder
+// rn9/dump/shader_CDBAC6026B525050.ucode.frag, its instructions 16-114). They were drawn as other bumped models.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_arm_skin, true, "cod3/Debug",
+                    "With cod3_native_vulkan, the view model's hands take the game's skin look (CDBAC6026B525050: "
+                    "lighter where seen edge-on, its warm tint, highlights masked by the noise swatch); off: drawn "
+                    "as other bumped models (as before)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-09 rn34: the guns' metal as the game's pixel shader CFC45995D1294CCE draws it (the Springfield,
 // the BREN): the normal map, Metal_Hue x the diffuse, the light x texture_brightness, highlights of SpecularPower and
 // Reflection_Amt x the environment cube (read as a cube, ngl_vk_texture_cube), all times the specular map + the scratch
@@ -657,6 +668,12 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_vehicle, true, "cod3/Debug",
                     "game's look (the sun as their pass binds it, never under the shadow's grey level where the game "
                     "holds it there, highlights of their own power); off: drawn as other bumped models")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-15 rn99a (owner 16:45: the Kar98k matte black natively, slightly shiny in the game)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_k98, true, "cod3/Debug",
+                    "With cod3_native_vulkan, the K98 shader's surfaces (the Kar98k, the BAR's wood) take the game's "
+                    "look: its highlights' power and specular color, its tint where they face the eye, the light x "
+                    "1.5; off: drawn as other bumped models")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn40t: the soldiers' helmets as the game's pixel shader 1D4725CEF0551EBB draws them
 // (ReadHelmetPass); rn40x: and those with a woven swatch (and two soldiers' bodies) as ADC02DCE4FDC9253 does
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_helmets, true, "cod3/Debug",
@@ -726,6 +743,15 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_front_target, true, "cod3/Debug",
                     "With cod3_native_vulkan, a scene is drawn in front of the world (as the gun's) only if it draws "
                     "into the world's own target; off: by its near plane alone (a scene without a target of its own "
                     "can then cover the picture)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-14 rn94a: a skinned corner's weights by the game's rule. The arms' vertex shader
+// (DB29558896983B88) runs with c161.x = 4 (t134): the first three weights as stored over 255 and the fourth 1 less
+// their sum; the stored fourth is never read. SkinPosition and SurfaceSkin took all four stored weights over their
+// own sum, which is the same only where the four add up to 255 (392 of the arms' 3059 corners don't; the island
+// BAR's front hand over its forend). On: the way before, to compare.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_skin_stored_weights, false, "cod3/Debug",
+                    "With cod3_native_vulkan: skin with the four stored weights over their sum (as before rn94a) "
+                    "instead of the game's rule (the fourth weight is what the first three leave of 255)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn42w: the lit models' lighting flicker (owner 10:29: "the grass/bushes flicker with
 // lighting. There are a lot of other effects that also do this"). rn42u's live frames: a lit model's sun was its
@@ -2724,6 +2750,9 @@ void ReadPack(const std::filesystem::path& folder, bool user) {
   std::string line;
   int taken = 0;
   while (std::getline(index, line)) {
+    // [acct2-bro] 2026-11-14 (acct2-main's platform review, 21:58): an index written on Windows ends its lines CR
+    // LF; the CR stayed in the fifth field, PlainPackFile refused it and every line was skipped on Linux.
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty() || line[0] == '#') continue;
     std::vector<std::string> field;
     size_t from = 0;
@@ -3696,11 +3725,16 @@ void LogPassBinding(uint8_t* base, uint32_t node, const char* what) {
 
 // side117: a normal map's name (the gun's pixel shader CDBAC6026B525050 samples "Normal_Map"; the materials name
 // theirs Normal_Map_Texture, k98_n_Texture, ..._nrm_...; hd-correctness's survey: normalmap_texture, DXT5).
+// [acct2-bro] 2026-11-14 rn93a: and "_norm" as a word's start: the BAR's wood (the K98 shader's samplers on
+// w_us_bar_*: k98_Norm_Texture "w_us_bar_n", k98_diffuse_Texture, k98_Spec_Texture) was drawn with its color map
+// alone, its normal map taken for nothing and so its specular map unused too (t126's census). "_norm" is in no
+// other sampler name of the island's census but the ones "normal" already takes.
 bool NormalMapName(const std::string& name) {
   const std::string lower = Lower(name);
   if (lower.find("swatch") != std::string::npos) return false;  // [rexglue-native] rn24: a detail swatch isn't it
   return lower.find("normal") != std::string::npos || lower.find("_n_") != std::string::npos ||
          lower.find("nrm") != std::string::npos || lower.find("bump") != std::string::npos ||
+         lower.find("_norm") != std::string::npos ||  // [acct2-bro] 2026-11-14 rn93a
          (lower.size() > 2 && lower.compare(lower.size() - 2, 2, "_n") == 0);
 }
 
@@ -4986,6 +5020,71 @@ constexpr MetalCompiledIn kMetalCompiledInNumbers = {0.25f, 35.0f, {1.122f, 1.04
                                                      {0.294f, 0.316f, 0.412f}, 0.13f};
 // [acct2-bro] 2026-11-11 rn50a: a pass's pixel shader's own numbers (defined by ProbePassShaders, whose way it is)
 bool PassPixelLiterals(uint8_t* base, uint32_t node, uint32_t words[32]);
+// [acct2-bro] 2026-11-15 rn95a: the view model's hands' pass (the arms' pixel shader CDBAC6026B525050: its irradiance
+// rows from c18, as the sleeves'; a Noise_Swatch and no fabric mask). Its own numbers (PassPixelLiterals: c248-c255)
+// give the shader its shape, c252 (0 1 -0.5 2), c253.zw (0.5 -1), c254.w -1, c255.y 1 and c251.x 3 (the 3 of
+// e^2 (3 - 2e), e = saturate(1 - N.V): mix(c254.x, 1, s) as the heads' skin takes it), and carry its look: c254.x the
+// lift where the hand is seen edge-on, c254.xyz the tint on its color map, c253.x the noise swatch's share in the
+// highlights' mask, c253.y their power from the sun (c255.w from the nearest point light: the same one, else not
+// taken), c251.y the swatch's repeat. The swatch's own tint in the mask (c255.y c255.x c255.z for red, green, blue;
+// 1 0.92198 0.859 on the island) has no place in ngl_vk.h and is left out (at most 0.03 of the mask). ok false (with
+// why) when a step fails; the debug log says the numbers once.
+struct ArmSkinPass {
+  bool ok = false;
+  const char* why = "";
+  float edge_lift = 1.0f, tint[3] = {1.0f, 1.0f, 1.0f}, noise_mix = 0.0f, power = 30.0f, noise_repeat = 1.0f;
+};
+ArmSkinPass ReadArmSkinPass(uint8_t* base, uint32_t node) {
+  ArmSkinPass out;
+  uint32_t w[32];
+  const PassBinding binding = ReadPassBinding(base, node);
+  if (!binding.ok || binding.rows_at != kRowsViewModelFabric) {
+    out.why = "its rows don't start at c18";
+  } else if (!PassPixelLiterals(base, node, w)) {
+    out.why = "its shader's numbers not read";
+  } else if (w[12] != 0x40400000u || w[16] != 0 || w[17] != 0x3F800000u || w[18] != 0xBF000000u ||
+             w[19] != 0x40000000u || w[22] != 0x3F000000u || w[23] != 0xBF800000u || w[27] != 0xBF800000u ||
+             w[29] != 0x3F800000u) {
+    out.why = "not the shape of CDBAC602's numbers";
+  } else {
+    float v[32];  // c248 .. c255
+    std::memcpy(v, w, sizeof v);
+    const bool sound = v[24] > 0.0f && v[24] < 4.0f && v[25] > 0.0f && v[25] < 4.0f && v[26] > 0.0f &&
+                       v[26] < 4.0f && v[20] >= 0.0f && v[20] <= 1.0f && v[21] > 0.0f && v[21] < 1000.0f &&
+                       v[13] > 0.0f && v[13] < 1000.0f;
+    if (!sound) {
+      out.why = "its numbers out of range";
+    } else if (v[31] != v[21]) {
+      out.why = "two highlight powers";
+    } else {
+      out.ok = true;
+      out.edge_lift = v[24];
+      std::memcpy(out.tint, v + 24, sizeof out.tint);
+      out.noise_mix = v[20];
+      out.power = v[21];
+      out.noise_repeat = v[13];
+    }
+  }
+  if (REXCVAR_GET(cod3_debug_ngl_side)) {
+    static std::atomic<int> said{0};
+    if (said.fetch_add(1, std::memory_order_relaxed) < 2) {
+      std::string numbers;
+      if (binding.ok && binding.rows_at == kRowsViewModelFabric && PassPixelLiterals(base, node, w)) {
+        float v[32];
+        std::memcpy(v, w, sizeof v);
+        char item[96];
+        for (int c = 0; c < 8; ++c) {
+          std::snprintf(item, sizeof item, " c%d=(%.6g %.6g %.6g %.6g)", 248 + c, v[4 * c], v[4 * c + 1],
+                        v[4 * c + 2], v[4 * c + 3]);
+          numbers += item;
+        }
+      }
+      REXLOG_INFO("cod3: ngl side: rn95a the arms' skin pass (node {:08X}): {}{}; numbers{}", node,
+                  out.ok ? "taken" : "not taken: ", out.why, numbers.empty() ? " not read" : numbers);
+    }
+  }
+  return out;
+}
 // [acct2-bro] 2026-11-12 rn56a: the lightmapped world's bump as its pass has it (defined after PassPixelLiterals,
 // whose way to the pass's pixel shader it shares). The pass's pixel shader must name NormalMap_Sampler and
 // Normal_Scale in its own constant table: the plain world shaders (E72CD0D5E1523920, B2367F8011B6042A) read no
@@ -5519,6 +5618,76 @@ VehiclePass ReadVehiclePass(uint8_t* base, uint32_t node, uint32_t object) {
       !(normal_scale >= 0.0f && normal_scale <= kMostScale) || !(power >= 1.0f && power < 1000.0f)) {
     out.why = "a value out of its range";
     return out;
+  }
+  out.ok = true;
+  return out;
+}
+// [acct2-bro] 2026-11-15 rn99a: the K98 shader (its pixel shader BDA4BB849BDF0C39, vertex shader 21EE1D97381652BD:
+// the Kar98k, and the BAR's wood on the island; samplers k98_Norm_Texture, k98_diffuse_Texture, k98_Spec_Texture).
+// From its instructions and the game's own constants at its draws (t158, the island): the nine rows from c18; c27 the
+// sun's color (shadowed by the game's map, tf1); c28.x the highlights' power (80); c29 a tint on the color map where
+// the surface faces the eye (1.461 1.183 1.031: x c29 facing, x 1 edge-on, by a smoothstep of clamp((N.E - 0.29) x
+// -4.1841, 0, 1)); c30 the specular map's scale (0.412 0.374 0.298); its literal c254.z, 1.5, on the whole light and
+// on the highlights; the normal map unscaled; two highlights (the sun, the nearest point light c17) toward the eye's
+// own place (c16). Its binding has the wheels' shape (7D4E7CAD: rows from c18, c27-c30 bound to the value block, c31
+// not), so it is told apart by c28, a scalar here (lanes y and z the heap's fill) and a color there. The sun's place
+// is its vertex shader's c29 when that is bound to the value block. ok when every number is in its range.
+struct K98Pass {
+  bool ok = false;
+  const char* why = "";
+  float sun_color[3] = {}, power = 0.0f, tint[3] = {}, specular[3] = {};
+  bool sun_placed = false;
+  float sun_place[3] = {};
+};
+constexpr float kK98LightScale = 1.5f;  // the K98 pixel shader's literal c254.z
+K98Pass ReadK98Pass(uint8_t* base, uint32_t node) {
+  K98Pass out;
+  const PassBinding binding = ReadPassBinding(base, node);
+  if (!binding.ok || !binding.values || binding.rows_at != kRowsDetail) {
+    out.why = "the pass's binding can't be read, or its rows aren't from c18";
+    return out;
+  }
+  for (uint32_t c = 27; c <= 30; ++c) {
+    if (binding.slot[c] != 1) {
+      out.why = "c27-c30 aren't all bound to the value block";
+      return out;
+    }
+  }
+  if (binding.slot[31] == 1) {
+    out.why = "c31 is bound to the value block too";
+    return out;
+  }
+  float power[3] = {};
+  if (!ReadBound(base, binding, 27, out.sun_color, 3) || !ReadBound(base, binding, 28, power, 3) ||
+      !ReadBound(base, binding, 29, out.tint, 3) || !ReadBound(base, binding, 30, out.specular, 3)) {
+    out.why = "a register isn't a number";
+    return out;
+  }
+  if (!FillValue(power[1]) || !FillValue(power[2])) {
+    out.why = "c28 isn't a scalar (the wheels' color, not the K98's power)";
+    return out;
+  }
+  out.power = power[0];
+  constexpr float kMostColor = 64.0f, kMostScale = 16.0f;
+  for (int i = 0; i < 3; ++i) {
+    if (FillValue(out.sun_color[i]) || !(out.sun_color[i] >= 0.0f && out.sun_color[i] <= kMostColor) ||
+        !(out.tint[i] >= 0.0f && out.tint[i] <= kMostScale) ||
+        !(out.specular[i] >= 0.0f && out.specular[i] <= kMostScale)) {
+      out.why = "the sun's color, the tint or the specular scale out of its range";
+      return out;
+    }
+  }
+  if (!(out.power >= 1.0f && out.power < 1000.0f)) {
+    out.why = "the power out of its range";
+    return out;
+  }
+  const PassBinding vertex_binding = ReadVertexBinding(base, node);
+  float place[3] = {};
+  if (vertex_binding.ok && vertex_binding.slot[29] == 1 && ReadBound(base, vertex_binding, 29, place, 3) &&
+      !FillValue(place[0]) && !FillValue(place[1]) && !FillValue(place[2]) && std::isfinite(place[0]) &&
+      std::isfinite(place[1]) && std::isfinite(place[2])) {
+    out.sun_placed = true;
+    std::memcpy(out.sun_place, place, sizeof place);
   }
   out.ok = true;
   return out;
@@ -8286,15 +8455,18 @@ void AddQuad(std::vector<ngl_vk_vertex>& v, const Quad& q, uint32_t texture) {
 }
 
 void SavePpm(const std::filesystem::path& path, const uint8_t* rgba, uint32_t width, uint32_t height) {
-  std::FILE* file = std::fopen(path.string().c_str(), "wb");
+  // [acct2-bro] 2026-11-14 (acct2-main's platform review, 21:58): opened by the path itself. path.string() is
+  // Windows' ANSI code page there, so a folder name outside it could not be opened (debug pictures only).
+  std::ofstream file(path, std::ios::binary);
   if (!file) return;
-  std::fprintf(file, "P6\n%u %u\n255\n", width, height);
+  char head[48];
+  const int head_size = std::snprintf(head, sizeof head, "P6\n%u %u\n255\n", width, height);
+  file.write(head, head_size);
   std::vector<uint8_t> row(static_cast<size_t>(width) * 3);
   for (uint32_t y = 0; y < height; ++y) {
     for (uint32_t x = 0; x < width; ++x) std::memcpy(&row[x * 3], rgba + (static_cast<size_t>(y) * width + x) * 4, 3);
-    std::fwrite(row.data(), 1, row.size(), file);
+    file.write(reinterpret_cast<const char*>(row.data()), static_cast<std::streamsize>(row.size()));
   }
-  std::fclose(file);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -8898,6 +9070,14 @@ constexpr bool kSkin = true;
 
 uint32_t U16(uint8_t* base, uint32_t at) { return g::ReadU16(base, at); }  // [rexglue-native/win-port] through g::At
 
+// [acct2-bro] 2026-11-14 rn94a: a corner's four weights (out of 255) from its stored word, by the game's rule: the
+// first three as stored, the fourth what they leave of 255 (below 0 when they add up to more, as the game's own).
+// `stored`: all four as stored, the way before (cod3_debug_ngl_side_skin_stored_weights).
+inline void SkinWeights(uint32_t weights, bool stored, float w[4]) {
+  for (int k = 0; k < 4; ++k) w[k] = static_cast<float>((weights >> (8 * k)) & 255u);
+  if (!stored) w[3] = 255.0f - (w[0] + w[1] + w[2]);
+}
+
 // The skinned position of the vertex at `at` (its own position p), or false when none of its bones is usable.
 // `remap`: the slot names a bone through the surface's list (else the slot is the bone itself). side134: with n and
 // n_out, its normal n turned by the same bones (their rotations only), as Big Red One's skinning does
@@ -8918,9 +9098,10 @@ bool SkinPosition(uint8_t* base, uint32_t surface, uint32_t object, const Geomet
   if (!Readable(records)) return false;
   const uint32_t slots = GpuU32(base, at + static_cast<uint32_t>(geo.blend_indices));
   const uint32_t weights = GpuU32(base, at + static_cast<uint32_t>(geo.blend_weights));
-  float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f;
+  float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f, by_rule[4];
+  SkinWeights(weights, REXCVAR_GET(cod3_debug_ngl_side_skin_stored_weights), by_rule);  // rn94a
   for (int k = 0; k < 4; ++k) {
-    const float weight = static_cast<float>((weights >> (8 * k)) & 255u);
+    const float weight = by_rule[k];
     if (weight == 0.0f) continue;
     const uint32_t slot = (slots >> (8 * k)) & 255u;
     const uint32_t bone = remap ? U16(base, surface + kSurfaceBones + 2 * slot) : slot;
@@ -8958,6 +9139,7 @@ class SurfaceSkin {
  public:
   SurfaceSkin(uint8_t* base, uint32_t surface, uint32_t object) : base_(base), surface_(surface) {
     slot_bones_.fill(kSlotUnread);  // [acct2-bro] 2026-11-13 rn79b
+    stored_weights_ = REXCVAR_GET(cod3_debug_ngl_side_skin_stored_weights);  // [acct2-bro] 2026-11-14 rn94a
     const uint32_t posed = g::ReadU32(base, object + kObjectBoneCount), bones = g::ReadU32(base, object + kObjectBones);
     if (!GameData(bones) || posed == 0 || posed > 512) return;  // [rexglue-native-mem] 2026-11-11: the AnimHeap
     const uint32_t model = g::ReadU32(base, object + kObjectModel);
@@ -8984,9 +9166,10 @@ class SurfaceSkin {
 
   // The same with the corner's bone slots and weights (the two words as GpuU32 reads them) already read.
   bool SkinWith(uint32_t slots, uint32_t weights, const float p[3], float out[3], const float* n, float* n_out) {
-    float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f;
+    float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f, by_rule[4];
+    SkinWeights(weights, stored_weights_, by_rule);  // [acct2-bro] 2026-11-14 rn94a
     for (int k = 0; k < 4; ++k) {
-      const float weight = static_cast<float>((weights >> (8 * k)) & 255u);
+      const float weight = by_rule[k];
       if (weight == 0.0f) continue;
       const uint32_t slot = (slots >> (8 * k)) & 255u;
       const uint32_t bone = BoneOfSlot(slot);  // [acct2-bro] 2026-11-13 rn79b (was read here every time)
@@ -9044,6 +9227,7 @@ class SurfaceSkin {
   uint8_t* base_;
   uint32_t surface_;
   uint32_t bones_ = 0, records_ = 0, count_ = 0;
+  bool stored_weights_ = false;  // rn94a: cod3_debug_ngl_side_skin_stored_weights when this surface's skin was made
   std::vector<Matrix> matrices_;
   std::vector<uint8_t> ready_;
   std::array<uint16_t, 256> slot_bones_;  // rn79b
@@ -12616,7 +12800,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       } else if (d.specular_map && samplers.noise_swatch && !samplers.fabric_mask &&
                  REXCVAR_GET(cod3_debug_ngl_side_skin)) {
         // rn32: the soldiers' heads, when the pass is the game's skin shader 3949D29E09A78AA1 (its rows from c20;
-        // the arms' CDBAC6026B525050 has a Noise_Swatch too, rows from c18, and stays as it was). Its literals at its
+        // the arms' CDBAC6026B525050 has a Noise_Swatch too, rows from c18: rn95a below takes it). Its literals at its
         // draws (rn29): c253 (1.215 0.5 0.38 68.528), c254 (0 1 0.4 68.528), c255 (11.018 0.5 -0.5 -1).
         constexpr float kSkinNoiseRepeat = 11.018f;     // c255.x
         constexpr float kSkinSpecularPower = 68.528f;   // c253.w
@@ -12646,6 +12830,27 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                           fabric_pass_read.sun_place[0], fabric_pass_read.sun_place[1], fabric_pass_read.sun_place[2]);
             }
             LogPassBinding(base, s.node, "skin");
+          }
+        } else if (REXCVAR_GET(cod3_debug_ngl_side_arm_skin)) {
+          // [acct2-bro] 2026-11-15 rn95a: the view model's hands (the arms' CDBAC6026B525050, rows from c18): the
+          // skin as above with the numbers compiled into that shader (ReadArmSkinPass), no shadow floor or fade (it
+          // reads no COD_SHADOW_FARZ or GREYLEVEL); the sun as its pass binds it (c27, as the sleeves')
+          const ArmSkinPass arm = ReadArmSkinPass(base, s.node);
+          if (arm.ok) {
+            fabric_read = true;
+            d.noise_swatch = TextureFor(base, samplers.noise_swatch);
+            d.fabric_swatch_repeat = arm.noise_repeat;
+            d.fabric_diffuse_scale = 1.0f;
+            d.fabric_specular_power = arm.power;
+            d.skin_edge_lift = arm.edge_lift;
+            d.skin_specular_scale = 1.0f;  // the specular map as it is (its instructions 59, 104-109)
+            d.skin_noise_mix = arm.noise_mix;
+#if defined(NGL_VK_SKIN_TINT)
+            std::memcpy(d.skin_tint, arm.tint, sizeof d.skin_tint);
+#endif
+            d.fabric_shadow_floor = 0.0f;
+            d.fabric_shadow_fade = 0.0f;
+            if (d.noise_swatch) left_out["(of those, the view model's hands: CDBAC6026B525050)"]++;
           }
         }
       } else if (d.specular_map && samplers.detail && !samplers.fabric_mask && !samplers.noise_swatch &&
@@ -12689,6 +12894,9 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         // [rexglue-native] 2026-11-10 rn39: the vehicles' bumped parts (ReadVehiclePass), when the pass is bound as
         // one of their five shaders' (VehicleLayout); its sun (color and place) taken as the uniforms' below
         const VehiclePass vehicle_pass = ReadVehiclePass(base, s.node, object);
+        // [acct2-bro] 2026-11-15 rn99a: or the K98 shader's (ReadK98Pass; its binding has the wheels' shape)
+        const K98Pass k98_pass = !vehicle_pass.ok && REXCVAR_GET(cod3_debug_ngl_side_k98) ? ReadK98Pass(base, s.node)
+                                                                                         : K98Pass{};
         if (vehicle_pass.ok) {
           d.vehicle_bumped = 1;
           d.vehicle_normal_scale = vehicle_pass.normal_scale;
@@ -12758,6 +12966,37 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                           vehicle_pass.sun_color[1], vehicle_pass.sun_color[2], vehicle_pass.sun_place[0],
                           vehicle_pass.sun_place[1], vehicle_pass.sun_place[2], vehicle_pass.shadow_floor,
                           vehicle_pass.shadow_fade);
+            }
+          }
+        } else if (k98_pass.ok) {  // [acct2-bro] 2026-11-15 rn99a: drawn as a vehicle part with the K98's extras
+          d.vehicle_bumped = 1;
+          d.vehicle_normal_scale = 1.0f;  // its normal map unscaled
+          d.vehicle_specular_power = k98_pass.power;
+#if defined(NGL_VK_K98)
+          d.k98 = 1;
+          std::memcpy(d.k98_tint, k98_pass.tint, sizeof d.k98_tint);
+          std::memcpy(d.k98_specular, k98_pass.specular, sizeof d.k98_specular);
+          d.k98_light_scale = kK98LightScale;
+#endif
+          d.fabric_shadow_floor = 0.0f;  // no floor or fade (the K98 reads the game's shadow map as it is)
+          d.fabric_shadow_fade = 0.0f;
+          fabric_read = true;
+          vehicle_read = true;
+          fabric_pass_read = FabricPass{};
+          fabric_pass_read.sun_bound = true;
+          std::memcpy(fabric_pass_read.sun_color, k98_pass.sun_color, sizeof fabric_pass_read.sun_color);
+          fabric_pass_read.sun_placed = k98_pass.sun_placed;
+          std::memcpy(fabric_pass_read.sun_place, k98_pass.sun_place, sizeof fabric_pass_read.sun_place);
+          left_out["(of those, rn99a: the K98 shader's: BDA4BB849BDF0C39)"]++;
+          if (REXCVAR_GET(cod3_debug_ngl_side)) {
+            static std::atomic<int> said{0};
+            if (said.fetch_add(1, std::memory_order_relaxed) < 8) {
+              REXLOG_INFO("cod3: ngl side: rn99a K98 surface (object {:08X}): power {:.4g}, sun {:.3f} {:.3f} {:.3f} "
+                          "{} {:.0f} {:.0f} {:.0f}, tint {:.3f} {:.3f} {:.3f}, specular {:.3f} {:.3f} {:.3f}", object,
+                          k98_pass.power, k98_pass.sun_color[0], k98_pass.sun_color[1], k98_pass.sun_color[2],
+                          k98_pass.sun_placed ? "from" : "(its place not read)", k98_pass.sun_place[0],
+                          k98_pass.sun_place[1], k98_pass.sun_place[2], k98_pass.tint[0], k98_pass.tint[1],
+                          k98_pass.tint[2], k98_pass.specular[0], k98_pass.specular[1], k98_pass.specular[2]);
             }
           }
         } else if (REXCVAR_GET(cod3_debug_ngl_side) && frame >= kWatchFrom && IsTexture(base, samplers.color)) {
@@ -19469,6 +19708,9 @@ std::atomic<uint64_t> g_worker_wait_ns{0};  // side212: how long the game's main
 // it too (ForgetIfNewLevel). On LiveFrame's thread, like every cache here.
 void ForgetEverything() {
   ngl_vk_forget();
+  // [acct2-bro] 2026-11-14 (acct2-main's review, 18:05): the packs' pictures are forgotten with every other texture,
+  // so their budget starts again. It only grew, and after 1.5 GB in one session no pack picture was used any more.
+  g_pack_bytes = 0;
   g_textures.clear();
   g_cube_textures.clear();  // [rexglue-native] rn34
   g_d3d_textures.clear();

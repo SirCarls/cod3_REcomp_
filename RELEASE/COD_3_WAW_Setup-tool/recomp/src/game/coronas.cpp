@@ -29,6 +29,7 @@
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/logging.h>  // [acct2-bro] 2026-11-15 rn98a
 
 #include "game/guest.h"
 
@@ -39,6 +40,12 @@ REXCVAR_DEFINE_BOOL(cod3_fix_corona_fade, true, "cod3/Video",
 REXCVAR_DEFINE_BOOL(cod3_corona_trace, false, "cod3/Video",
                     "Light coronas hidden by a ray against the world and characters, and the aim-down-sights blur "
                     "focused by a ray, instead of reading the GPU's depth buffer back (no wait on the GPU)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+// [acct2-bro] 2026-11-15 rn98a (debug, off by default): why the coronas' trace (on in native mode) falls back to
+// the depth read; native mode never writes the depth the read looks at (0 = far: a corona shows through a wall).
+REXCVAR_DEFINE_BOOL(cod3_debug_corona_trace, false, "cod3/Debug",
+                    "Log the coronas' trace every 2 s: passes, records, depth reads, answers, fallbacks")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
@@ -54,7 +61,16 @@ constexpr uint32_t kRecordSize = 0x30;
 constexpr uint32_t kRecordFade = 0x24;   // a record: its fade (float, 0 hidden .. 1 shown)
 constexpr size_t kMaxRecords = 8192;
 constexpr double kStepSeconds = 1.0 / 60.0;
-constexpr int kSystems = 4;              // corona systems seen (one per view at most)
+constexpr int kSystems = 8;              // corona systems seen, by view ([acct2-bro] 2026-11-15 b97: 4 -> 8)
+
+// [acct2-bro] 2026-11-15 b97 (owner 18:06, split screen): cod3mp's pass is handed one corona system for every view (the
+// caller 0x824488F4 loads r3 from one global), so a system's step and a corona's ray answer are kept by view: the
+// active local client (the view being drawn; the campaign's is 0) with the system or the record.
+#if defined(COD3_MP)
+constexpr uint32_t kViewClient = 0x82BCBE9C;
+#else
+constexpr uint32_t kViewClient = 0x82A2A1C8;
+#endif
 
 struct Saved {
   uint32_t addr;
@@ -64,6 +80,7 @@ std::vector<Saved> g_saved;
 
 struct System {
   uint32_t arg = 0;
+  uint32_t view = 0;  // [acct2-bro] 2026-11-15 b97: the local client it was stepped for
   Clock::time_point last{};
 };
 System g_systems[kSystems];
@@ -71,17 +88,54 @@ int g_next_system = 0;
 
 bool Valid(uint32_t p) { return p >= 0x10000 && (p & 3) == 0; }
 
+// [acct2-bro] 2026-11-15 rn98a: the debug counts (main thread), logged and cleared every 2 s
+struct TraceCounts {
+  uint64_t passes = 0, records = 0;            // corona passes, records in their lists
+  uint64_t reads = 0, reads_other = 0;         // depth reads from the pass, from elsewhere
+  uint64_t seen = 0, hidden = 0;               // answered by a ray (kept or fresh)
+  uint64_t fresh = 0, blocked = 0;             // fresh rays, of those blocked
+  uint64_t bad_record = 0, bad_eye = 0, bad_ray = 0, off = 0;  // fell back to the depth read
+  uint64_t fell_far = 0;                       // fallbacks whose read said 0 (far: shown)
+  uint64_t shared = 0;                         // [acct2-bro] b97: answers for a record another view asked last
+  uint32_t views = 0;                          // b97: the views (bits) that ran a pass
+  uint32_t first_system = 0;                   // b97: the first system seen
+  uint64_t other_system = 0;                   // b97: passes for another system than that one
+  float sample_pos[3] = {}, sample_f30 = 0, sample_v[4] = {}, sample_read = -1;
+  uint32_t sample_record = 0, sample_lr = 0;
+  Clock::time_point last = Clock::now();
+};
+TraceCounts g_tc;
+void LogTraceCounts() {
+  if (!REXCVAR_GET(cod3_debug_corona_trace)) return;
+  const auto now = Clock::now();
+  if (std::chrono::duration<double>(now - g_tc.last).count() < 2.0) return;
+  REXLOG_INFO("cod3: coronas: rn98a trace {}: passes {} records {}; depth reads {} (+{} elsewhere): shown {} hidden "
+              "{} (fresh rays {}, blocked {}); fell back: record {} eye {} ray {} off {} (read 0, far: {}); views "
+              "{:x}, passes for another system {}, records asked by another view last {}; sample "
+              "record {:08X} at {:.1f} {:.1f} {:.1f} f30 {:.2f} v127 {:.1f} {:.1f} {:.1f} {:.1f} lr {:08X} read {:.4g}",
+              REXCVAR_GET(cod3_corona_trace) ? "on" : "off", g_tc.passes, g_tc.records, g_tc.reads, g_tc.reads_other,
+              g_tc.seen, g_tc.hidden, g_tc.fresh, g_tc.blocked, g_tc.bad_record, g_tc.bad_eye, g_tc.bad_ray, g_tc.off,
+              g_tc.fell_far, g_tc.views, g_tc.other_system, g_tc.shared, g_tc.sample_record, g_tc.sample_pos[0],
+              g_tc.sample_pos[1], g_tc.sample_pos[2],
+              g_tc.sample_f30, g_tc.sample_v[0], g_tc.sample_v[1], g_tc.sample_v[2], g_tc.sample_v[3], g_tc.sample_lr,
+              g_tc.sample_read);
+  g_tc = TraceCounts{};
+  g_tc.last = now;
+}
+
 // The share of a 60 Hz step this pass gets: real time since this system's last pass, at most 1 (the first pass: 1).
-double StepShare(uint32_t arg) {
+// [acct2-bro] 2026-11-15 b97: by view too (split screen: each view's pass is a 60 Hz step of its own, as the game's)
+double StepShare(uint32_t arg, uint32_t view) {
   const auto now = Clock::now();
   System* s = nullptr;
   for (System& c : g_systems) {
-    if (c.arg == arg) s = &c;
+    if (c.arg == arg && c.view == view) s = &c;
   }
   if (!s) {
     s = &g_systems[g_next_system];
     g_next_system = (g_next_system + 1) % kSystems;
     s->arg = arg;
+    s->view = view;
     s->last = now;
     return 1.0;
   }
@@ -122,8 +176,19 @@ REX_EXTERN(__imp__sub_8245C208);
 REX_HOOK_RAW(sub_8245C208) {
 #endif
   const uint32_t system = ctx.r3.u32;
+  if (REXCVAR_GET(cod3_debug_corona_trace) && Valid(system)) {  // [acct2-bro] 2026-11-15 rn98a
+    ++g_tc.passes;
+    const uint32_t view = g::ReadU32(base, kViewClient);  // [acct2-bro] b97
+    if (view < 32) g_tc.views |= 1u << view;
+    if (g_tc.first_system == 0) g_tc.first_system = system;
+    if (system != g_tc.first_system) ++g_tc.other_system;
+    for (int i = 0; i < kListCount; ++i) {
+      const uint32_t list = g::ReadU32(base, system + kLists + 4 * i);
+      if (Valid(list)) g_tc.records += g::ReadU32(base, list + kListRecords);
+    }
+  }
   const bool fix = REXCVAR_GET(cod3_fix_corona_fade) && Valid(system);
-  const double share = fix ? StepShare(system) : 1.0;
+  const double share = fix ? StepShare(system, g::ReadU32(base, kViewClient)) : 1.0;  // [acct2-bro] b97: by view
   const bool scale = fix && share < 1.0;
   if (scale) Save(base, system);
 #if defined(COD3_MP)
@@ -173,7 +238,9 @@ struct Seen {
   Clock::time_point when{};
   float eye[3] = {};
 };
-std::unordered_map<uint32_t, Seen> g_seen;   // by record (main thread)
+std::unordered_map<uint64_t, Seen> g_seen;  // by view and record (main thread; [acct2-bro] 2026-11-15 b97: by view)
+std::unordered_map<uint32_t, uint32_t> g_last_view;  // [acct2-bro] b97, debug only: the view that asked for it last
+static_assert(kActiveClient == kViewClient, "the same active local client");
 double g_ray_tokens = kRayBurst;
 Clock::time_point g_ray_refill = Clock::now();
 
@@ -234,11 +301,29 @@ bool PassEye(const PPCContext& ctx, const float pos[3], float eye[3]) {
 
 // Whether the corona `record` is in sight (true: answered in *visible).
 bool CoronaInSight(PPCContext& ctx, uint8_t* base, uint32_t record, bool* visible) {
-  if (!Valid(record)) return false;
+  if (!Valid(record)) {
+    ++g_tc.bad_record;  // [acct2-bro] 2026-11-15 rn98a
+    return false;
+  }
   float pos[3], eye[3];
   ReadVec3(base, record, pos);
-  if (!PassEye(ctx, pos, eye)) return false;
-  Seen& seen = g_seen[record];
+  g_tc.sample_record = record;  // rn98a: the last one seen
+  for (int i = 0; i < 3; ++i) g_tc.sample_pos[i] = pos[i];
+  g_tc.sample_f30 = static_cast<float>(ctx.f30.f64);
+  for (int i = 0; i < 4; ++i) g_tc.sample_v[i] = ctx.v127.f32[i];
+  if (!PassEye(ctx, pos, eye)) {
+    ++g_tc.bad_eye;  // rn98a
+    return false;
+  }
+  // [acct2-bro] 2026-11-15 b97: one view's answer is never another's (split screen: the same record, another eye)
+  const uint32_t view = g::ReadU32(base, kActiveClient);
+  if (REXCVAR_GET(cod3_debug_corona_trace)) {
+    auto [it, added] = g_last_view.try_emplace(record, view);
+    if (!added && it->second != view) ++g_tc.shared;
+    it->second = view;
+    if (g_last_view.size() > 4096) g_last_view.clear();
+  }
+  Seen& seen = g_seen[(uint64_t(view) << 32) | record];
   const auto now = Clock::now();
   const float mx = eye[0] - seen.eye[0], my = eye[1] - seen.eye[1], mz = eye[2] - seen.eye[2];
   const bool stale = seen.when == Clock::time_point{} ||
@@ -250,8 +335,13 @@ bool CoronaInSight(PPCContext& ctx, uint8_t* base, uint32_t record, bool* visibl
     const float k = len > kShortOfCorona ? (len - kShortOfCorona) / len : 0.0f;
     const float end[3] = {eye[0] + dx * k, eye[1] + dy * k, eye[2] + dz * k};
     const float f = RayFraction(ctx, base, eye, end);
-    if (f < 0.0f) return false;
+    if (f < 0.0f) {
+      ++g_tc.bad_ray;  // rn98a
+      return false;
+    }
     seen.visible = f >= 0.999f;
+    ++g_tc.fresh;                       // rn98a
+    if (!seen.visible) ++g_tc.blocked;  // rn98a
     seen.when = now;
     for (int i = 0; i < 3; ++i) seen.eye[i] = eye[i];
   }
@@ -270,10 +360,18 @@ REX_HOOK_RAW(sub_82438DF0) {
 REX_EXTERN(__imp__sub_82420F48);
 REX_HOOK_RAW(sub_82420F48) {
 #endif
-  if (REXCVAR_GET(cod3_corona_trace) && static_cast<uint32_t>(ctx.lr) == kDepthReadReturn) {
+  const bool from_pass = static_cast<uint32_t>(ctx.lr) == kDepthReadReturn;  // [acct2-bro] 2026-11-15 rn98a
+  if (REXCVAR_GET(cod3_debug_corona_trace)) {
+    from_pass ? ++g_tc.reads : ++g_tc.reads_other;
+    if (!from_pass) g_tc.sample_lr = static_cast<uint32_t>(ctx.lr);
+    if (from_pass && !REXCVAR_GET(cod3_corona_trace)) ++g_tc.off;
+    LogTraceCounts();
+  }
+  if (REXCVAR_GET(cod3_corona_trace) && from_pass) {
     bool visible = false;
     if (CoronaInSight(ctx, base, ctx.r30.u32, &visible)) {
       ctx.f1.f64 = visible ? double(kNoHit) : 0.0;
+      visible ? ++g_tc.seen : ++g_tc.hidden;  // rn98a
       return;
     }
   }
@@ -282,6 +380,10 @@ REX_HOOK_RAW(sub_82420F48) {
 #else
   __imp__sub_82420F48(ctx, base);
 #endif
+  if (REXCVAR_GET(cod3_debug_corona_trace) && from_pass) {  // rn98a: what the fallback read
+    g_tc.sample_read = static_cast<float>(ctx.f1.f64);
+    if (ctx.f1.f64 == 0.0) ++g_tc.fell_far;
+  }
 }
 
 // The aim-down-sights blur's depth samples (10 around the screen's middle): one ray along the view instead.

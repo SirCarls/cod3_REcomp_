@@ -28,6 +28,7 @@
 #include <imgui.h>
 
 #include "game/aim_assist.h"
+#include "game/movement/program_sp.h"  // [acct2-main] the pmove_t global (the PM_UpdateViewAngles hook below)
 #include "game/protected_dvars.h"
 #endif
 
@@ -389,6 +390,34 @@ void DrawF2Section() {
 
 }  // namespace cod3::sticky_aim
 
+#if !defined(COD3_MP)
+// [acct2-main] 2026-11-15 (owner 10-20: "aim assist cannot scale up or down based on FPS"; audit pass 11,
+// dev/agents/acct2-main/COD3-AUDIT.md). With cod3_move_hz the campaign's server runs one Pmove per 1/60 s step end
+// inside a usercmd (movement/hooks_sp.cpp RunHzSteps), each with the usercmd's time put at that step's end and the
+// same old usercmd, so counting a call's pulls from the old usercmd's time counts the time before the step again
+// (two steps a usercmd below 60 fps) or not at all (time the stepless usercmds before it had, above 60 fps, once
+// cod3_move_hz_sync moved the step ends off the pulls' 60 Hz marks): pass 11 logged 20 pulls a second at 240 fps
+// against 60-61 at 60. PM_UpdateViewAngles (0x8248DF18: ps r3, usercmd r4, old usercmd r5, msec r6, from PmoveSingle
+// 0x824960D0 with pml + 40, the step's own length) is kept here for the call below it, which then counts from the
+// step's own start: the steps cover the time once each, so 60 pulls a second at any frame rate. Still a function of
+// the call's own arguments, as before. Only for the server's Pmove (the usercmd is the pmove_t global's, as in
+// PmoveSingle's call and hooks_sp.cpp's UpdateViewAngles); the client game's view prediction (CG_PredictPlayerState,
+// its own usercmds) and a call with no msec (r6 not 1..1000) count as before.
+namespace {
+thread_local int t_view_msec = 0;
+}  // namespace
+REX_EXTERN(__imp__sub_8248DF18);
+REX_HOOK_RAW(sub_8248DF18) {
+  const int saved = t_view_msec;
+  const int msec = static_cast<int>(ctx.r6.u32);
+  const uint32_t pm = cod3::guest::ReadU32(base, cod3::movement::kCampaign.pm);
+  const bool server = pm >= 0x10000 && ctx.r4.u32 == pm + cod3::movement::kCampaign.pmove.cmd;
+  t_view_msec = (server && msec >= 1 && msec <= 1000) ? msec : 0;
+  __imp__sub_8248DF18(ctx, base);
+  t_view_msec = saved;
+}
+#endif
+
 // The game's Sticky Aim (campaign 0x8248D138, cod3mp 0x824ABCC8):
 // (playerState_t* ps, usercmd_t* cmd, usercmd_t* oldcmd), from
 // PM_UpdateViewAngles once per usercmd, on the server and in the client's
@@ -408,6 +437,12 @@ REX_HOOK_RAW(sub_8248D138) {
   } else {
     now = cod3::guest::ReadS32(base, cmd + kCmdServerTime);
     before = cod3::guest::ReadS32(base, oldcmd + kCmdServerTime);
+#if !defined(COD3_MP)
+    // [acct2-main] 2026-11-15 a step counts from its own start (see the PM_UpdateViewAngles hook above). A call
+    // whose time is put back to the step's start (a usercmd with no step end, hooks_sp.cpp) is not after the old
+    // usercmd and pulls nothing, as before; the next step counts that time.
+    if (t_view_msec > 0 && now > before) before = now - t_view_msec;
+#endif
     pulls = int(std::clamp<int64_t>(PullIndex(now) - PullIndex(before), 0, kMaxPullsAtOnce));
   }
   // [claude-9b] 2026-10-27 (owner 12:39: "The usage of aim assist on kbm cannot work."): while the keyboard and mouse

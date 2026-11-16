@@ -2643,6 +2643,18 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
             slot[METAL_FLOATS_AT + 5] = d->overlay_key[1];
             slot[METAL_FLOATS_AT + 6] = d->overlay_key[2];
         }
+        if (d->k98) {   /* [acct2-bro] 2026-11-15 rn99a: the K98 shader (ngl_vk.h k98): vec4 18 its tint and light
+                         * scale, vec4 19 its specular color and 1 (the gun metal's world columns' place, which a
+                         * vehicle part doesn't use) */
+            slot[METAL_FLOATS_AT + 8] = d->k98_tint[0];
+            slot[METAL_FLOATS_AT + 9] = d->k98_tint[1];
+            slot[METAL_FLOATS_AT + 10] = d->k98_tint[2];
+            slot[METAL_FLOATS_AT + 11] = d->k98_light_scale;
+            slot[METAL_FLOATS_AT + 12] = d->k98_specular[0];
+            slot[METAL_FLOATS_AT + 13] = d->k98_specular[1];
+            slot[METAL_FLOATS_AT + 14] = d->k98_specular[2];
+            slot[METAL_FLOATS_AT + 15] = 1.0f;
+        }
     } else if (fabric) {       /* [rexglue-native] vec4s 13 and 14 (mesh.frag's FABRIC_AT) */
         slot[FABRIC_FLOATS_AT] = d->fabric_swatch_repeat;
         slot[FABRIC_FLOATS_AT + 1] = d->fabric_diffuse_scale;

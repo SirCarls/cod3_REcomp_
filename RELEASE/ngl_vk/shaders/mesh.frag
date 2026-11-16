@@ -472,6 +472,11 @@ void main()
     // rn39: the bumped vehicle parts (B2E0DA00, 9A3D3175, 7D4E7CAD): fabric, not skin or detail, METAL_AT's w 1
     bool vehicle = fabric && !skin && !detail &&
                    draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT].w > 0.0;
+    // [acct2-bro] 2026-11-15 rn99a: the K98 shader (BDA4BB849BDF0C39; ngl_vk.h k98): a vehicle part whose METAL_AT + 3
+    // has w 1; METAL_AT + 2 holds its tint and light scale, METAL_AT + 3 its specular color
+    bool k98 = vehicle && draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 3u].w > 0.0;
+    vec4 k98_numbers = k98 ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 2u] : vec4(1.0);
+    vec3 k98_specular = k98 ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + METAL_AT + 3u].rgb : vec3(1.0);
     // [waw-decomp] 2026-11-10: Call of Duty 2's models with a highlights' lookup (ngl_vk.h specular_lookup; the game's
     // 98A77B2DFA1049B4): bumped and specular, not fabric or metal, the slot's third fabric vec4's y 1
     bool lookup = fabric_slot != 0u && !fabric && !metal &&
@@ -519,6 +524,9 @@ void main()
     const bool metal = false;
     const bool detail = false;
     const bool vehicle = false;
+    const bool k98 = false;                 // [acct2-bro] 2026-11-15 rn99a
+    const vec4 k98_numbers = vec4(1.0);
+    const vec3 k98_specular = vec3(1.0);
     const bool lookup = false;              // [waw-decomp]
     const uint lens_slot = 0u;
     const bool lens = false;
@@ -814,7 +822,7 @@ void main()
                                   : unpacked_color(light_colors[i]));
         }
         light += nearby_light(slot, normal, surface_normal, skin_terminator);
-        if ((flags & HELD) != 0u)
+        if ((flags & HELD) != 0u && !k98)   // [acct2-bro] 2026-11-15 rn99a: the K98 shader doesn't hold it
             light = min(light, vec3(1.0));
         if (lens) {     // rn40: FC767C09DBD34C2A's instructions 22-58 (its sun is the pass's own, unshadowed); rn40e:
                         // or 5931940F174EA055's 52-100 (the eyes: opaque, the sun shadowed as the treads')
@@ -932,6 +940,13 @@ void main()
                     base.rgb = fabric_numbers.y * mix(base.rgb, pow(max(base.rgb, vec3(0.0)), fabric_sheen),
                                                       edge * edge * (3.0 - 2.0 * edge));
                 }
+                if (k98) {  // [acct2-bro] 2026-11-15 rn99a: BDA4BB849BDF0C39's instructions 25-27, 53, 58-67: the
+                            // specular map x c30; the base x mix(c29, 1, smoothstep(clamp((N.E - 0.29) x -4.1841)))
+                    float k98_t = clamp((dot(normal, eye) - 0.29) * -4.1841, 0.0, 1.0);
+
+                    gloss *= k98_specular;
+                    base.rgb *= mix(k98_numbers.rgb, vec3(1.0), k98_t * k98_t * (3.0 - 2.0 * k98_t));
+                }
                 shine += gloss * nearby_highlight(slot, normal, eye, power);
             }
             if (dot(toward, toward) > 0.0)
@@ -991,6 +1006,10 @@ void main()
         light = water_rgb;
         shine = vec3(0.0);
         alpha = vertex_color.a;
+    }
+    if (k98) {  // [acct2-bro] 2026-11-15 rn99a: its literal c254.z on the light and the highlights (its 36-37, 45, 73)
+        light *= k98_numbers.w;
+        shine *= k98_numbers.w;
     }
     color = vec4(min(base.rgb * light + shine, vec3(1.0)), alpha);
     if (shading != SHADE_UNLIT)             // the sky and the background aren't fogged

@@ -328,7 +328,10 @@ class Pages:
         cb = ttk.Checkbutton(box, text="Cover the Nazi flags and insignia", variable=self.v_cb_on,
                              command=self._censor_builtin_toggle)
         cb.pack(anchor="w")
-        tip(cb, "No disc needed. Campaign and multiplayer.")
+        # [acct2-decomp] 2026-11-14 what a match's texture setting leaves (acct2-main's review, 18:05)
+        tip(cb, "No disc needed. Campaign and multiplayer. In a multiplayer match it follows your texture setting "
+                "for matches (F2 > Video > Textures): All, the default, covers everything; Insignia only covers the "
+                "flags and banners but not what soldiers and vehicles wear; Off covers nothing.")
         self.cb_designs = ttk.Frame(box)
         for col, (key, title, var) in enumerate((("flags", "Flags", self.v_cb_flags),
                                                   ("insignia", "Insignia", self.v_cb_insignia))):
@@ -378,6 +381,10 @@ class Pages:
                 return
             self._cb_colors[key] = picked[1]
         self._cb_shown[key] = design
+        if self._cb_shown == {"flags": "off", "insignia": "off"}:
+            # [acct2-decomp] 2026-11-14 both left as the game has them is the censor off: the box follows at once,
+            # as the next load would show it (acct2-main's review, 18:05); ticking it brings back the first designs
+            self.v_cb_on.set(False)
         self._censor_builtin_save()
 
     def _censor_builtin_save(self) -> None:

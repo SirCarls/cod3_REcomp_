@@ -218,6 +218,7 @@ def edit_sdk(sdk_src: Path) -> int:
         except ShaderEditError as e:
             raise ShaderEditError(f"{h.name}: {e}") from None
         if new is not None:
-            h.write_text(new, encoding="utf-8", newline="\n")
+            # [rexglue-native-platform] 2026-11-16: LF, and Python 3.9 too (write_text's newline= is 3.10+)
+            h.write_bytes(new.encode("utf-8"))
             changed += 1
     return changed

@@ -132,6 +132,7 @@ set(COD3_SOURCES
     src/game/sticky_aim.cpp  # [claude-9b] Sticky Aim at a fixed 60 Hz, the match's aim assist rules
     src/game/voice_language.cpp  # [voice]
     src/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (campaign only)
+    src/game/text_rekey.cpp  # [acct2-main] 2026-11-15 a text set from a key follows a change of the text language
     src/game/font_fill.cpp  # [acct2-ocr] the glyphs the game's fonts lack, added in memory (campaign only)
     src/ui/text_overlay.cpp  # [acct2-ocr] Russian/Chinese/Japanese/Korean text, drawn by us
     src/ui/text_native.cpp  # [acct2-ocr] the same text drawn through the game's own text path
@@ -241,6 +242,11 @@ endif()
 # which MinGW's C runtime only calls when the program links with -municode.
 if(MINGW)
     target_link_options(cod3 PRIVATE -municode)
+endif()
+# [rexglue-native-io] 2026-11-16: the application manifest (UTF-8 code page, long paths; src/win/app.manifest).
+if(WIN32)
+    enable_language(RC)  # llvm-mingw's windres (the toolchain file's CMAKE_RC_COMPILER)
+    target_sources(cod3 PRIVATE src/win/app.rc)
 endif()
 
 # Windows: timeBeginPeriod (1 ms timer resolution, see Cod3App::OnPreSetup).

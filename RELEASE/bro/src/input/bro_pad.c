@@ -52,6 +52,7 @@
 
 #if defined(BRO_HAVE_SDL3)
 #include <SDL3/SDL.h>
+#include "gamepad_db.h"     /* [rexglue-native-input] 2026-11-16 the SDK's controller database loader (same file) */
 #endif
 
 #define GAMEPAD_TYPE        0x007A9F78u     /* the XPP device type the game's input code passes */
@@ -374,6 +375,63 @@ static SDL_Gamepad *controller;
 static int controllers_started;     /* 0: not tried, 1: SDL's gamepads are up, -1: they aren't */
 static long long last_scan_ms;
 
+/* [rexglue-native-input] 2026-11-16 (owner 11-16 14:27: "SDL_GameControllerDB ... might help with controller support
+ * and mappings for gamecube or switch controllers"): as Call of Duty 3's SDK does (rex/input/sdl/gamepad_db.h, the
+ * same file as gamepad_db.h here), the controller database is read once SDL's gamepads are up and before one is
+ * opened: gamecontrollerdb.txt next to the program (the copy shipped with it), then gamecontrollerdb.txt in the
+ * folder above it (an installed game's bro/, beside bro.toml: your own lines, which win), then SDL's
+ * SDL_GAMECONTROLLERCONFIG_FILE and SDL_GAMECONTROLLERCONFIG. A missing file is only noted. On Linux, a controller
+ * SDL can't read directly (no access to its /dev/hidraw node, an adapter that needs libusb) is said once. A joystick
+ * no mapping makes a gamepad is said once (by GUID) with how to map it, instead of nothing. The buttons stay as
+ * [pad] binds them, by position (bro.toml's "a" is the bottom button: B on a Switch pad). */
+static char user_mappings[4200];
+static char unmapped_noted[16][33];
+static int unmapped_count;
+
+static void mappings_log(void *ctx, int level, const char *text)
+{
+    (void)ctx;
+    fprintf(stderr, "[pad] %s%s\n", level == GDB_WARN ? "warning: " : level == GDB_ERROR ? "error: " : "", text);
+}
+
+static void load_mappings(void)
+{
+    const char *base = SDL_GetBasePath();   /* the program's folder, UTF-8, with its separator */
+    char shipped[4200] = "";
+
+    if (base && base[0]) {
+        snprintf(shipped, sizeof shipped, "%sgamecontrollerdb.txt", base);
+        snprintf(user_mappings, sizeof user_mappings, "%s..%cgamecontrollerdb.txt", base,
+                 base[strlen(base) - 1] == '\\' ? '\\' : '/');
+    }
+    gdb_load_all(shipped, user_mappings, mappings_log, NULL);
+#if defined(__linux__)
+    gdb_linux_access_hints(mappings_log, NULL);
+#endif
+}
+
+static void note_unmapped_joysticks(void)
+{
+    int count = 0, i, j;
+    SDL_JoystickID *joysticks = SDL_GetJoysticks(&count);
+
+    for (i = 0; joysticks && i < count; i++) {
+        char guid[33];
+        int seen = 0;
+
+        if (SDL_IsGamepad(joysticks[i]))
+            continue;
+        SDL_GUIDToString(SDL_GetJoystickGUIDForID(joysticks[i]), guid, (int)sizeof guid);
+        for (j = 0; j < unmapped_count; j++)
+            seen |= strcmp(unmapped_noted[j], guid) == 0;
+        if (seen || unmapped_count >= 16)
+            continue;
+        if (gdb_note_joystick(joysticks[i], user_mappings, mappings_log, NULL))
+            memcpy(unmapped_noted[unmapped_count++], guid, sizeof guid);
+    }
+    SDL_free(joysticks);
+}
+
 static int16_t clamp_thumb(int value)
 {
     return (int16_t)(value > 32767 ? 32767 : value < -32767 ? -32767 : value);
@@ -528,6 +586,8 @@ static void real_pad(uint16_t *digital, uint8_t *analog, uint8_t analog_values[8
         controllers_started = SDL_InitSubSystem(SDL_INIT_GAMEPAD) ? 1 : -1;
         if (controllers_started < 0)
             fprintf(stderr, "[pad] no game controllers (%s): the keyboard and BRO_PAD_SCRIPT only\n", SDL_GetError());
+        else
+            load_mappings();        /* [rexglue-native-input] before the first SDL_OpenGamepad */
     }
     if (controllers_started > 0) {
         SDL_UpdateGamepads();
@@ -542,10 +602,18 @@ static void real_pad(uint16_t *digital, uint8_t *analog, uint8_t analog_values[8
 
             last_scan_ms = now_ms();
             for (int n = 0; pads && n < count && !controller; n++) {
-                if ((controller = SDL_OpenGamepad(pads[n])) != NULL)
-                    fprintf(stderr, "[pad] controller: %s\n", SDL_GetGamepadName(controller));
+                if ((controller = SDL_OpenGamepad(pads[n])) != NULL) {
+                    char text[600];
+                    Uint16 face[4];
+
+                    gdb_face_map(controller, GDB_FACE_BY_POSITION, face);   /* [rexglue-native-input] which and how */
+                    gdb_describe(controller, face, text, sizeof text);
+                    fprintf(stderr, "[pad] controller: %s\n", text);
+                }
             }
             SDL_free(pads);
+            if (!controller)
+                note_unmapped_joysticks();  /* [rexglue-native-input] */
         }
     }
     if (controller) {

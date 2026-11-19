@@ -121,7 +121,12 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
                  "libxi-dev", "libxrandr-dev", "libxfixes-dev", "libxss-dev", "libvulkan-dev", "libwayland-dev",
                  "libwayland-bin", "wayland-protocols", "libxkbcommon-dev", "libdecor-0-dev",
                  "libasound2-dev", "libpulse-dev", "libpipewire-0.3-dev",  # [rexglue-native-settings]
-                 "glslc"],  # [rexglue-native-settings] 2026-11-11
+                 "glslc",  # [rexglue-native-settings] 2026-11-11
+                 # [rexglue-native-io] 2026-11-16: GCC 12's C++ library for clang (std::expected, std::byteswap,
+                 # std::unreachable: C++23, in libstdc++ 12+). Ubuntu 22.04 / Linux Mint 21 install g++ 11 by default
+                 # (clang then fails in the SDK); Debian 12 has 12. A distro without the package skips it (probed).
+                 "libstdc++-12-dev",
+                 "libusb-1.0-0-dev"],  # [rexglue-native-input] 2026-11-16: SDL's libusb support (the official GameCube adapter, Switch 2 USB pads), loaded at run time
         "extras": ["p7zip-full", "innoextract", "unshield", "unar", "file"],
         "mingw": ["gcc-mingw-w64-x86-64"],
     },
@@ -133,7 +138,8 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXScrnSaver-devel", "vulkan-loader-devel",
                  "vulkan-headers", "wayland-devel", "wayland-protocols-devel", "libxkbcommon-devel",
                  "libdecor-devel", "alsa-lib-devel", "pulseaudio-libs-devel", "pipewire-devel",  # [rexglue-native-settings]
-                 "glslc"],  # [rexglue-native-settings] 2026-11-11
+                 "glslc",  # [rexglue-native-settings] 2026-11-11
+                 "libusb1-devel"],  # [rexglue-native-input] 2026-11-16: SDL's libusb support (the official GameCube adapter, Switch 2 USB pads), loaded at run time
         "extras": ["p7zip", "p7zip-plugins", "innoextract", "unshield", "unar", "file"],
         "mingw": ["mingw64-gcc"],
     },
@@ -143,7 +149,9 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
         "libs": ["gtk3", "libx11", "libxcb", "libxext", "libxcursor", "libxi", "libxrandr",
                  "libxfixes", "libxss", "vulkan-icd-loader", "vulkan-headers", "wayland",
                  "wayland-protocols", "libxkbcommon", "libdecor", "alsa-lib", "libpulse", "pipewire",  # [rexglue-native-settings]
-                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
+                 "shaderc",  # [rexglue-native-settings] 2026-11-11
+                 "libusb"],  # [rexglue-native-input] 2026-11-16: SDL's libusb support (the official GameCube adapter, Switch 2 USB pads), loaded at run time
+                 #  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unarchiver", "file"],
         "mingw": ["mingw-w64-gcc"],
     },
@@ -154,7 +162,9 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXss-devel", "vulkan-devel",
                  "wayland-devel", "wayland-protocols-devel", "libxkbcommon-devel", "libdecor-devel",
                  "alsa-devel", "libpulse-devel", "pipewire-devel",  # [rexglue-native-settings]
-                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
+                 "shaderc",  # [rexglue-native-settings] 2026-11-11
+                 "libusb-1_0-devel"],  # [rexglue-native-input] 2026-11-16: SDL's libusb support (the official GameCube adapter, Switch 2 USB pads), loaded at run time
+                 #  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unar", "file"],
         "mingw": ["mingw64-cross-gcc"],
     },
@@ -165,7 +175,9 @@ LINUX_PACKAGES: Dict[str, Dict[str, List[str]]] = {
                  "libXi-devel", "libXrandr-devel", "libXfixes-devel", "libXScrnSaver-devel", "vulkan-loader-devel",
                  "Vulkan-Headers", "wayland-devel", "wayland-protocols", "libxkbcommon-devel", "libdecor-devel",
                  "alsa-lib-devel", "pulseaudio-devel", "pipewire-devel",  # [rexglue-native-settings]
-                 "shaderc"],  # [rexglue-native-settings] 2026-11-11
+                 "shaderc",  # [rexglue-native-settings] 2026-11-11
+                 "libusb-devel"],  # [rexglue-native-input] 2026-11-16: SDL's libusb support (the official GameCube adapter, Switch 2 USB pads), loaded at run time
+                 #  # [rexglue-native-settings] 2026-11-11
         "extras": ["7zip", "innoextract", "unshield", "unar", "file"],
         "mingw": ["cross-x86_64-w64-mingw32"],
     },
@@ -309,6 +321,8 @@ class Toolchain:
     vs_path: Optional[Path] = None
     windows_sdk: Optional[Path] = None   # Windows: the SDK's Include/<version> folder, when complete
     missing_libs: List[str] = field(default_factory=list)
+    # [rexglue-native-io] 2026-11-16: Linux: why clang's C++ library can't build the game ("" when it can)
+    cxx_library: str = ""
     cargo: Optional[Path] = None
     rust_version: Tuple[int, ...] = ()
     linker: Optional[Path] = None    # Linux: Rust links through the system C compiler
@@ -369,6 +383,8 @@ class Toolchain:
             out.append("Windows 10/11 SDK (a Visual Studio Build Tools component)")
         if IS_LINUX and self.missing_libs:
             out.append("development libraries: " + ", ".join(self.missing_libs))
+        if IS_LINUX and self.cxx_library:  # [rexglue-native-io] 2026-11-16
+            out.append(self.cxx_library)
         return out
 
     def rows(self) -> List[Tuple[str, bool, str]]:
@@ -644,6 +660,32 @@ def _pkgconfig_missing(runner: Runner, env: Dict[str, str]) -> List[str]:
     return missing
 
 
+# [rexglue-native-io] 2026-11-16 (owner 20:00 via main: the Linux build must work on Ubuntu 22.04 / Mint 21 /
+# Debian 12 and newer): the C++23 library parts the SDK and the port use, checked before the build instead of a
+# compile error an hour into it. clang uses GCC's libstdc++ (the newest GCC it finds); std::expected, std::byteswap
+# and std::unreachable need libstdc++ 12.
+_CXX_PROBE = """#include <version>
+#if !defined(__cpp_lib_expected) || !defined(__cpp_lib_byteswap) || !defined(__cpp_lib_unreachable)
+#error C++23 library too old
+#endif
+#include <expected>
+int main() { std::expected<int, int> e = 1; return *e - 1; }
+"""
+
+
+def _cxx_library_problem(runner: Runner, cxx: Path) -> str:
+    """[rexglue-native-io] 2026-11-16: "" when `cxx -std=c++23` has the C++ library the build needs, else what
+    to install (as one line for problems())."""
+    with tempfile.TemporaryDirectory(prefix="c3w-cxx-") as d:
+        src = Path(d) / "probe.cpp"
+        src.write_text(_CXX_PROBE, encoding="utf-8")
+        rc, _ = runner.capture([cxx, "-std=c++23", "-fsyntax-only", src], timeout=60)
+    if rc == 0:
+        return ""
+    return ("a C++23 standard library for clang (GCC's libstdc++ 12 or newer; on Ubuntu 22.04 / Linux Mint 21 "
+            "install the package libstdc++-12-dev)")
+
+
 def _clang_cxx(cc: Path, path: str, runner: Runner) -> Optional[Path]:
     """The C++ driver that goes with a clang: clang++-NN next to clang-NN or
     on PATH, else a clang++ in the same folder that is the same clang (the
@@ -757,6 +799,8 @@ def detect(tools_dir: Path, runner: Runner) -> Toolchain:
                                     "GIT_CONFIG_VALUE_0": "true"})
     if IS_LINUX:
         tc.missing_libs = _pkgconfig_missing(runner, tc.env)
+        if tc.cxx and tc.clang_version >= MIN_CLANG:  # [rexglue-native-io] 2026-11-16
+            tc.cxx_library = _cxx_library_problem(runner, tc.cxx)
     return tc
 
 

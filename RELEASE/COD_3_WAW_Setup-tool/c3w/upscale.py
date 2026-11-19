@@ -215,7 +215,10 @@ def repair_old_pack(pack: Path, log: Log) -> bool:
         lines = ["# key\twidth\theight\txenos_format\tfile",
                  "# Repaired: only textures whose file is their own; lightmaps and fog ramps left as they are."]
         lines += ["\t".join(r[:5]) for r in keep]
-        index.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        # [rexglue-native-platform] 2026-11-16 (acct2-main's platform review, item 3): LF on both systems, so a pack
+        # repaired on Windows is the same bytes on Linux (text mode wrote CR LF there; the native renderer's reader
+        # skipped every line of such an index on Linux before 11-14).
+        index.write_bytes(("\n".join(lines) + "\n").encode("utf-8"))
     except OSError as e:
         log.warn(f"The HD texture pack in {pack} gives some textures another texture's picture and couldn't be "
                  f"repaired ({e}); turn off F2 > Video > HD textures until it is rebuilt.")

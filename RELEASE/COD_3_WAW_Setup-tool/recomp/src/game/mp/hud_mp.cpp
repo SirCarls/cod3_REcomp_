@@ -111,3 +111,8 @@ bool Cod3MpMountedCrosshairHook(PPCRegister& r1, uint8_t* base) {
   SetView(base);
   return Cod3MountedCrosshairHook(r1, base);
 }
+
+// [acct2-ocr] 2026-11-15 For ui/hud_overlay.cpp's hooks on the game's other crosshairs (a vehicle's, the tank's
+// reticle, a cooked grenade's countdown), which don't come through CG_DrawCrosshair: their view and its place, named
+// the same way.
+void Cod3MpNameCrosshairView(uint8_t* base) { SetView(base); }

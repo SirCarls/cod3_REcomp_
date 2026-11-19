@@ -18,6 +18,11 @@ fps_log = 0
 vsync = true
 # The window fills the screen. [BRO_FULLSCREEN]
 fullscreen = false
+# The display the window opens on: its name or its number counting from 1, as the "[ngl] displays:" line of the
+# game's log lists them; empty or 0 = the system's choice (a full-screen window: the primary display). The window is
+# made there, so it never shows on another screen first. One that isn't connected counts as empty. [BRO_MONITOR]
+# [rexglue-native-monitor] 2026-11-16
+# monitor = ""
 # A window at all; false draws offscreen (tests). [BRO_WINDOW]
 window = true
 # The window opens below the window in use without taking the focus (or the mouse), and on X11 it stays under the

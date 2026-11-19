@@ -286,7 +286,9 @@ def ensure_glslc(tools: Path, found: Optional[Path], log: Log, cancel: threading
         raise SetupError(f"glslang.exe wasn't found in {folder}.")
     wrapper = Path(tools) / "bro-windows" / "glslc.bat"
     wrapper.parent.mkdir(parents=True, exist_ok=True)
-    wrapper.write_text(glslc_wrapper_text(console_python(), glslang), encoding="utf-8", newline="")
+    # [rexglue-native-platform] 2026-11-16: the bytes as they are (write_text's newline= needs Python 3.10, and the
+    # tool supports 3.9: a TypeError there)
+    wrapper.write_bytes(glslc_wrapper_text(console_python(), glslang).encode("utf-8"))
     return wrapper
 
 
@@ -335,15 +337,48 @@ def ensure_sdl3(src: Path, tools: Path, cmake: Path, ninja: Optional[Path], tool
 
 def vulkan_import_library(loader_src: Path, toolchain_bin: Path, out: Path, runner: Runner) -> Path:
     """libvulkan-1.a, the import library for vulkan-1.dll, made with llvm-mingw's dlltool from the loader's own list
-    of functions."""
+    of functions. [waw-decomp] 2026-11-16: one that is the same already stays as it is, dated as it was, so a kept
+    build folder doesn't link bro.exe again for nothing."""
     deffile = Path(loader_src) / "loader" / "vulkan-1.def"
     if not deffile.is_file():
         raise SetupError(f"The Vulkan loader's vulkan-1.def isn't in {loader_src}.")
     out = Path(out)
     out.mkdir(parents=True, exist_ok=True)
     lib = out / "libvulkan-1.a"
-    runner.run([_prog(toolchain_bin, TRIPLE + "-dlltool"), "-d", deffile, "-D", "vulkan-1.dll", "-l", lib])
+    new = out / "libvulkan-1.a.new"
+    runner.run([_prog(toolchain_bin, TRIPLE + "-dlltool"), "-d", deffile, "-D", "vulkan-1.dll", "-l", new])
+    if lib.is_file() and lib.read_bytes() == new.read_bytes():
+        new.unlink()
+    else:
+        new.replace(lib)
     return lib
+
+
+def _write_if_changed(path: Path, text: str) -> None:
+    """[waw-decomp] 2026-11-16 A file written only when its text changes (CMake reconfigures when a toolchain file's
+    date moves)."""
+    path = Path(path)
+    if not (path.is_file() and path.read_text(encoding="utf-8") == text):
+        path.write_text(text, encoding="utf-8")
+
+
+# [waw-decomp] 2026-11-16 Keeping a build folder between builds (cleanup off): the configure command it was made with.
+CONFIGURE_STAMP = "setup-tool-configure.json"
+
+
+def configure_folder(cmd: Sequence, folder: Path, keep: bool, lay, runner: Runner, log: Log) -> None:
+    """[waw-decomp] 2026-11-16 CMake's configure of a build folder, for this Windows build and bro.py's Linux one.
+    keep (cleanup off): the folder of the last build is used again when it was configured with the same command, so
+    the build compiles only what changed (CMake notices new or removed C files itself: bro/CMakeLists.txt's
+    CONFIGURE_DEPENDS); else it starts new, as each build did before. lay: bro.py's Layout (the work folder)."""
+    folder = Path(folder)
+    cmd = [str(c) for c in cmd]
+    stamp = folder / CONFIGURE_STAMP
+    last = common.read_json(stamp)
+    if folder.exists() and not (keep and isinstance(last, dict) and last.get("command") == cmd):
+        common.safe_rmtree(folder, Path(lay.work), [lay.out], log)
+    runner.run(cmd)
+    common.write_json(stamp, {"command": cmd})
 
 
 # ---------------------------------------------------------------------------
@@ -396,8 +431,11 @@ def cache_problems(cache_text: str) -> List[str]:
 
 def build(lay, host_git: Path, cmake: Path, ninja: Optional[Path], glslc_found: Optional[Path], jobs: int,
           runner: Runner, log: Log, cancel: threading.Event,
-          line_filter: Optional[Callable[[str], None]] = None) -> Path:
-    """bro.exe from the recompiled C in lay.gen (bro.py's Layout); returns it."""
+          line_filter: Optional[Callable[[str], None]] = None, keep: bool = False,
+          target: Optional[str] = None) -> Optional[Path]:
+    """bro.exe from the recompiled C in lay.gen (bro.py's Layout); returns it. [waw-decomp] 2026-11-16: keep: the
+    build folder of the last build is used again (configure_folder); target: only that CMake target (the libraries,
+    while the recompiler still writes the C): returns None."""
     tools = Path(lay.tools)
     toolchain_bin = fetch_toolchain(tools, runner, log, cancel)
     glslc = ensure_glslc(tools, glslc_found, log, cancel)
@@ -406,22 +444,23 @@ def build(lay, host_git: Path, cmake: Path, ninja: Optional[Path], glslc_found: 
     base.mkdir(parents=True, exist_ok=True)
     sdl3_install = base / "sdl3"
     toolchain = base / "toolchain.cmake"
-    toolchain.write_text(toolchain_file_text(toolchain_bin, [sdl3_install]), encoding="utf-8")
+    _write_if_changed(toolchain, toolchain_file_text(toolchain_bin, [sdl3_install]))   # [waw-decomp] 2026-11-16
     inc, lib = ensure_sdl3(src["sdl3"], tools, cmake, ninja, toolchain, jobs, runner, log)
     out = Path(lay.work) / "build-windows"
-    if out.exists():
-        common.safe_rmtree(out, lay.work, [lay.out], log)   # a new configure each time: the C may be new
     vulkan_lib = vulkan_import_library(src["vulkan-loader"], toolchain_bin, Path(lay.work) / "windows-libs", runner)
     libs = Libraries(inc, lib, src["vulkan-headers"] / "include", vulkan_lib, src["imgui"])
-    log.info("Building the Windows version (bro.exe) with llvm-mingw...")
-    runner.run(configure_command(cmake, ninja, lay.bro_src, out, toolchain, lay.xboxrecomp, lay.gen, libs, glslc,
-                                 console_python()))
+    log.info("Building the Windows version (bro.exe) with llvm-mingw" + (f" ({target})..." if target else "..."))
+    configure_folder(configure_command(cmake, ninja, lay.bro_src, out, toolchain, lay.xboxrecomp, lay.gen, libs,
+                                       glslc, console_python()), out, keep, lay, runner, log)
     cache = out / "CMakeCache.txt"
     missing = cache_problems(cache.read_text(encoding="utf-8", errors="replace") if cache.is_file() else "")
     if missing:
         raise SetupError("The Windows build found no " + " and no ".join(missing) + ", so the game couldn't draw "
                          "anything.")
-    runner.run([cmake, "--build", out, "-j", str(max(1, jobs))], line_filter=line_filter)
+    runner.run([cmake, "--build", out, "-j", str(max(1, jobs))] + (["--target", target] if target else []),
+               line_filter=line_filter)
+    if target:
+        return None
     exe = out / EXE
     if not exe.is_file():
         raise SetupError(f"The Windows build finished without {EXE} in {out}: see the log above.")

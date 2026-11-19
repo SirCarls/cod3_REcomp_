@@ -1,0 +1,509 @@
+diff --git a/include/rex/audio/sdl/sdl_audio_driver.h b/include/rex/audio/sdl/sdl_audio_driver.h
+--- a/include/rex/audio/sdl/sdl_audio_driver.h
++++ b/include/rex/audio/sdl/sdl_audio_driver.h
+@@ -12,11 +12,13 @@
+ #pragma once
+ 
+ #include <atomic>
++#include <condition_variable>
+ #include <cstdint>
+ #include <mutex>
+ #include <queue>
+ #include <stack>
+ #include <string>
++#include <thread>
+ #include <unordered_map>
+ 
+ #include <rex/audio/audio_driver.h>
+@@ -50,6 +52,41 @@
+   void CheckDevice();
+   void UpdateCurrentDevice();
+ 
++  // [rexglue-native-audio] 2026-11-16 (patch 0316) the sound comes back. Before, a device that didn't open when the
++  // game started (none plugged in, a busy or broken one, the sound server not up yet, SDL's first driver without a
++  // device), or a stream whose device went away while playing, left the game silent until it was started again.
++  // Now the game runs on without an output (its frames are dropped at the device's pace), and a watcher thread
++  // (Watch, every kWatchMs) tries again every kRetryMs (kRetrySlowMs after 30 s), opens the stream again when its
++  // device stopped asking for sound for kStallMs, and acts on the settings (CheckDevice, which ran per frame).
++  void Watch();
++  bool StartSdl();                                // SDL's audio subsystem (stream_mutex_ held)
++  bool OpenWithFallback(SDL_AudioDeviceID device);  // OpenStream, then SDL's other drivers (stream_mutex_ held)
++  void LoseStream();                              // close it and give the queued frames back (stream_mutex_ held)
++  void TryReopen(uint64_t now);                   // one retry without a stream (stream_mutex_ held)
++  void DropFrames();                              // frames taken without a stream: permits back at its pace
++  std::thread watcher_;
++  std::mutex watcher_mutex_;
++  std::condition_variable watcher_cv_;
++  bool watcher_stop_ = false;
++  std::atomic<uint64_t> last_callback_ms_{0};     // SDL_GetTicks() at the device's last callback
++  uint64_t stream_opened_ms_ = 0;
++  bool lost_ = false;                             // no stream, the watcher retries
++  uint64_t lost_since_ms_ = 0;                    // since when there is no stream
++  uint64_t next_retry_ms_ = 0;
++  uint64_t next_retry_log_ms_ = 0;
++  uint32_t retries_ = 0;
++  bool quiet_open_ = false;                       // a retry's failed open is a debug line, not an error
++  bool init_error_logged_ = false;
++  std::atomic<uint32_t> dropped_frames_{0};       // frames SubmitFrame took without a stream, permits not back yet
++  uint64_t drop_clock_us_ = 0;                    // the watcher's: when the next dropped frame's permit is due
++  uint64_t next_check_ms_ = 0;                    // the watcher's: the next CheckDevice
++  static constexpr uint64_t kDropTickMs = 5;      // the watcher's tick while frames are dropped
++  static constexpr uint64_t kWatchMs = 100;
++  static constexpr uint64_t kStallMs = 2000;
++  static constexpr uint64_t kStallGraceMs = 5000;  // after an open, before a silent device counts as gone
++  static constexpr uint64_t kRetryMs = 2000;
++  static constexpr uint64_t kRetrySlowMs = 5000;
++
+   rex::thread::Semaphore* semaphore_ = nullptr;
+ 
+   SDL_AudioStream* sdl_stream_ = nullptr;
+diff --git a/src/audio/sdl/sdl_audio_driver.cpp b/src/audio/sdl/sdl_audio_driver.cpp
+--- a/src/audio/sdl/sdl_audio_driver.cpp
++++ b/src/audio/sdl/sdl_audio_driver.cpp
+@@ -158,15 +158,9 @@
+   // (set before this) wins over it: SDL reads the hint first.
+   SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING, "rexglue");
+ 
+-  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+-    REXAPU_ERROR("SDL_InitSubSystem(SDL_INIT_AUDIO) failed: {}", SDL_GetError());
+-    return false;
+-  }
+-  sdl_initialized_ = true;
+-
+-  // A new audio_device choice is picked up at the audio thread's next frame
+-  // (the callback runs under the settings' lock, so it only sets a flag);
+-  // the 2 s check catches changes made without a callback (a reset).
++  // A new audio_device choice is picked up at the watcher's next turn (the
++  // callback runs under the settings' lock, so it only sets a flag); the 2 s
++  // check catches changes made without a callback (a reset).
+   static std::atomic<bool> callback_registered{false};
+   if (!callback_registered.exchange(true)) {
+     rex::cvar::RegisterChangeCallback("audio_device", [](std::string_view, std::string_view) {
+@@ -179,28 +173,210 @@
+   g_device_setting_changed = false;
+   g_layout_setting_changed = false;
+ 
+-  const auto devices = PlaybackDevices();
+-  std::string outputs;
+-  for (const auto& device : devices) {
+-    outputs += outputs.empty() ? "" : " | ";
+-    outputs += device.name;
+-  }
+-  const char* sdl_driver = SDL_GetCurrentAudioDriver();
+-  REXAPU_INFO("audio outputs ({}): {}; the system's default: '{}'", sdl_driver ? sdl_driver : "?",
+-              outputs.empty() ? "(none listed)" : outputs, DefaultDeviceName(devices));
+-
+-  const std::string wanted = WantedDevice();
+-  const SDL_AudioDeviceID device = FindPlaybackDevice(devices, wanted);
+-  if (!wanted.empty() && !device) {
+-    REXAPU_WARN("audio_device '{}' isn't connected; using the system's default output", wanted);
+-  }
+-  std::lock_guard lock(stream_mutex_);
+-  last_default_ = DefaultDeviceName(devices);
+-  first_listed_.clear();
+-  for (const auto& listed : devices) first_listed_[listed.name] = 0;
+-  opened_on_ = device;
++  {
++    std::lock_guard lock(stream_mutex_);
++    // [rexglue-native-audio] 2026-11-16 (0316) no sound system, or no device that opens, is no longer the end of
++    // the game's sound: the driver is made anyway (it was refused, and the game's sound client with it), the game's
++    // frames are dropped at the device's pace, and the watcher tries again.
++    if (StartSdl()) {
++      const auto devices = PlaybackDevices();
++      std::string outputs;
++      for (const auto& device : devices) {
++        outputs += outputs.empty() ? "" : " | ";
++        outputs += device.name;
++      }
++      const char* sdl_driver = SDL_GetCurrentAudioDriver();
++      REXAPU_INFO("audio outputs ({}): {}; the system's default: '{}'", sdl_driver ? sdl_driver : "?",
++                  outputs.empty() ? "(none listed)" : outputs, DefaultDeviceName(devices));
++
++      const std::string wanted = WantedDevice();
++      const SDL_AudioDeviceID device = FindPlaybackDevice(devices, wanted);
++      if (!wanted.empty() && !device) {
++        REXAPU_WARN("audio_device '{}' isn't connected; using the system's default output", wanted);
++      }
++      last_default_ = DefaultDeviceName(devices);
++      first_listed_.clear();
++      for (const auto& listed : devices) first_listed_[listed.name] = 0;
++      opened_on_ = device;
++      if (!OpenWithFallback(device) && device) OpenWithFallback(0);
++    }
++    if (!have_stream_) {
++      lost_ = true;
++      lost_since_ms_ = SDL_GetTicks();
++      next_retry_ms_ = lost_since_ms_ + kRetryMs;
++      next_retry_log_ms_ = lost_since_ms_ + 60000;
++      REXAPU_WARN("audio: no sound output opened; the game runs on without one and its sound starts as soon as an "
++                  "output opens (tried again every {} s)", kRetryMs / 1000);
++    }
++  }
++  watcher_stop_ = false;
++  watcher_ = std::thread([this] { Watch(); });
++  return true;
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) SDL's audio subsystem, once. Its own driver order (Linux: PipeWire,
++// PulseAudio, ALSA, sndio; Windows: WASAPI, DirectSound) or SDL_AUDIO_DRIVER; it fails when none starts (no sound
++// system at all, or one that isn't up yet). Called with stream_mutex_ held.
++bool SDLAudioDriver::StartSdl() {
++  if (sdl_initialized_) return true;
++  if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
++    if (!init_error_logged_) {
++      REXAPU_ERROR("SDL_InitSubSystem(SDL_INIT_AUDIO) failed: {} (no sound system answered; tried again while "
++                   "the game runs)", SDL_GetError());
++      init_error_logged_ = true;
++    }
++    return false;
++  }
++  sdl_initialized_ = true;
++  if (init_error_logged_) {
++    const char* sdl_driver = SDL_GetCurrentAudioDriver();
++    REXAPU_INFO("audio: SDL's sound system started ({})", sdl_driver ? sdl_driver : "?");
++    init_error_logged_ = false;
++  }
++  return true;
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) OpenStream, and when the system default doesn't open with the driver
++// SDL started, SDL's other drivers in its order: a driver can start and still have no device that opens (PipeWire
++// running without a session manager, a sound server with no output, WASAPI refusing the endpoint while
++// DirectSound takes it). Not when SDL_AUDIO_DRIVER is set (that driver was chosen), and only while this driver is
++// SDL's only audio user (SDL_QuitSubSystem must really stop it). Called with stream_mutex_ held.
++bool SDLAudioDriver::OpenWithFallback(SDL_AudioDeviceID device) {
+   if (OpenStream(device)) return true;
+-  return device && OpenStream(0);
++  if (device || !sdl_initialized_) return false;
++  const char* forced = SDL_getenv("SDL_AUDIO_DRIVER");
++  if (forced && *forced) return false;
++  const char* current = SDL_GetCurrentAudioDriver();
++  const std::string first = current ? current : "";
++  std::vector<std::string> others;
++  for (int i = 0, n = SDL_GetNumAudioDrivers(); i < n; ++i) {
++    const char* name = SDL_GetAudioDriver(i);
++    if (name && first != name && std::strcmp(name, "dummy") != 0 && std::strcmp(name, "disk") != 0) {
++      others.emplace_back(name);
++    }
++  }
++  if (others.empty()) return false;
++  SDL_QuitSubSystem(SDL_INIT_AUDIO);
++  sdl_initialized_ = false;
++  if (SDL_WasInit(SDL_INIT_AUDIO)) {  // another user keeps SDL's audio up: its driver stays
++    sdl_initialized_ = SDL_InitSubSystem(SDL_INIT_AUDIO);
++    return false;
++  }
++  for (const auto& name : others) {
++    SDL_SetHint(SDL_HINT_AUDIO_DRIVER, name.c_str());
++    const bool started = SDL_InitSubSystem(SDL_INIT_AUDIO);
++    SDL_ResetHint(SDL_HINT_AUDIO_DRIVER);
++    if (!started) continue;
++    sdl_initialized_ = true;
++    if (OpenStream(0)) {
++      REXAPU_WARN("audio: SDL's '{}' opened no output; the sound plays through '{}'", first, name);
++      return true;
++    }
++    SDL_QuitSubSystem(SDL_INIT_AUDIO);
++    sdl_initialized_ = false;
++  }
++  StartSdl();  // SDL's own order again, for the next try
++  return false;
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) The stream is closed and the frames queued for it are given back to the
++// guest's audio (their semaphore places): without that the guest's sound thread waited for a device that would
++// never take them, and stayed silent. Called with stream_mutex_ held.
++void SDLAudioDriver::LoseStream() {
++  CloseStream();  // have_stream_ false first: SubmitFrame queues nothing more (it asks under frames_mutex_)
++  uint32_t given_back = 0;
++  {
++    std::unique_lock<std::mutex> guard(frames_mutex_);
++    while (!frames_queued_.empty()) {
++      frames_unused_.push(frames_queued_.front());
++      frames_queued_.pop();
++      ++given_back;
++    }
++    queued_count_.store(0, std::memory_order_relaxed);
++  }
++  if (given_back) semaphore_->Release(static_cast<int32_t>(given_back), nullptr);
++  UpdateCurrentDevice();
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) One try to get an output while there is none: SDL's audio started (if it
++// wasn't), the device audio_device names or the system default, and every fifth try SDL's other drivers too.
++// Called with stream_mutex_ held.
++void SDLAudioDriver::TryReopen(uint64_t now) {
++  ++retries_;
++  next_retry_ms_ = now + (now - lost_since_ms_ < 30000 ? kRetryMs : kRetrySlowMs);
++  bool opened = false;
++  quiet_open_ = true;
++  if (StartSdl()) {
++    const auto devices = PlaybackDevices();
++    const std::string wanted = WantedDevice();
++    const SDL_AudioDeviceID device = FindPlaybackDevice(devices, wanted);
++    opened_on_ = device;
++    opened = OpenStream(device) || (device && OpenStream(0));
++    if (!opened && retries_ % 5 == 1 && OpenWithFallback(0)) {
++      opened = true;
++      opened_on_ = 0;  // another driver's default (its device ids are its own)
++    }
++    if (opened) {
++      const auto now_listed = PlaybackDevices();
++      last_default_ = DefaultDeviceName(now_listed);
++      for (const auto& listed : now_listed) first_listed_.emplace(listed.name, now);
++    }
++  }
++  quiet_open_ = false;
++  if (opened) {
++    REXAPU_INFO("audio: sound output open after {:.1f} s without one ({} tr{})",
++                double(now - lost_since_ms_) / 1000.0, retries_, retries_ == 1 ? "y" : "ies");
++    retries_ = 0;
++    lost_ = false;
++  } else if (now >= next_retry_log_ms_) {
++    const char* sdl_driver = sdl_initialized_ ? SDL_GetCurrentAudioDriver() : nullptr;
++    REXAPU_WARN("audio: still no sound output after {:.0f} s ({} tries; SDL driver {}); trying again every {} s",
++                double(now - lost_since_ms_) / 1000.0, retries_, sdl_driver ? sdl_driver : "none",
++                (now - lost_since_ms_ < 30000 ? kRetryMs : kRetrySlowMs) / 1000);
++    next_retry_log_ms_ = now + 60000;
++  }
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) The watcher thread: CheckDevice every kWatchMs.
++void SDLAudioDriver::Watch() {
++  std::unique_lock<std::mutex> lock(watcher_mutex_);
++  while (!watcher_stop_) {
++    // lost_ is the watcher's own (CheckDevice and TryReopen run here; Initialize set it before this thread began).
++    const bool dropping = lost_ || dropped_frames_.load(std::memory_order_relaxed) != 0;
++    watcher_cv_.wait_for(lock, std::chrono::milliseconds(dropping ? kDropTickMs : kWatchMs));
++    if (watcher_stop_) break;
++    lock.unlock();
++    DropFrames();
++    const uint64_t now = SDL_GetTicks();
++    if (now >= next_check_ms_) {
++      next_check_ms_ = now + kWatchMs;
++      CheckDevice();
++    }
++    lock.lock();
++  }
++}
++
++// [rexglue-native-audio] 2026-11-16 (0316) The frames SubmitFrame took without a stream get their permits back here,
++// one a frame period (5.33 ms) as a device would take them, so the game's audio keeps its pace. Not in SubmitFrame:
++// the kernel's global lock is held around it, and a sleep there (the old no-stream path) held up every guest thread
++// that needs that lock (measured: "global lock 73% (held by Audio Worker)").
++void SDLAudioDriver::DropFrames() {
++  constexpr uint64_t kFrameUs = 1000000ull * channel_samples_ / frame_frequency_;
++  const uint32_t pending = dropped_frames_.load(std::memory_order_acquire);
++  if (!pending) {
++    drop_clock_us_ = 0;
++    return;
++  }
++  const uint64_t now_us = static_cast<uint64_t>(
++      std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
++          .count());
++  if (!drop_clock_us_) drop_clock_us_ = now_us;
++  const uint64_t due = (now_us - drop_clock_us_) / kFrameUs;
++  if (!due) return;
++  const uint32_t n = static_cast<uint32_t>(std::min<uint64_t>(due, pending));
++  dropped_frames_.fetch_sub(n, std::memory_order_acq_rel);
++  drop_clock_us_ = n < due ? now_us : drop_clock_us_ + n * kFrameUs;
++  semaphore_->Release(static_cast<int32_t>(n), nullptr);
+ }
+ 
+ // Opens the output stream on `device` (0: the system default, which SDL
+@@ -231,8 +407,13 @@
+     sdl_device_channels_ = channels;
+     sdl_stream_ = SDL_OpenAudioDeviceStream(target, &desired_spec, SDLCallback, this);
+     if (!sdl_stream_) {
+-      REXAPU_ERROR("SDL_OpenAudioDeviceStream() with {} channels failed: {}", static_cast<int>(channels),
+-                   SDL_GetError());
++      if (quiet_open_) {  // [rexglue-native-audio] 2026-11-16 (0316) a retry: one line a minute says it
++        REXAPU_DEBUG("SDL_OpenAudioDeviceStream() with {} channels failed: {}", static_cast<int>(channels),
++                     SDL_GetError());
++      } else {
++        REXAPU_ERROR("SDL_OpenAudioDeviceStream() with {} channels failed: {}", static_cast<int>(channels),
++                     SDL_GetError());
++      }
+       return SDL_AudioDeviceID{0};
+     }
+     const SDL_AudioDeviceID opened = SDL_GetAudioStreamDevice(sdl_stream_);
+@@ -307,6 +488,9 @@
+     CloseStream();
+     return false;
+   }
++  // [rexglue-native-audio] 2026-11-16 (0316) the watcher counts the device's silence from here
++  stream_opened_ms_ = SDL_GetTicks();
++  last_callback_ms_.store(stream_opened_ms_, std::memory_order_relaxed);
+   have_stream_ = true;
+   UpdateCurrentDevice();
+   return true;
+@@ -328,11 +512,36 @@
+   g_current_layout = sdl_stream_ ? layout_text_ : std::string();
+ }
+ 
+-// Runs on the audio thread for every frame, so it is a clock read unless the
++// Runs on the watcher thread every kWatchMs, so it is a clock read unless the
+ // setting changed or its time comes (every 2 s: a device chosen being
+ // unplugged and plugged back in, the setting reset, or the system's default
+ // output switched; SDL itself moves a stream on the system default).
+ void SDLAudioDriver::CheckDevice() {
++  // [rexglue-native-audio] 2026-11-16 (0316) runs on the watcher thread (it ran on the audio thread for every
++  // frame). First: a stream whose device stopped asking for sound (unplugged with nothing to move to, the sound
++  // server stopped or restarted, an endpoint Windows invalidated and SDL couldn't move) is opened again; without a
++  // stream, a retry when its time comes.
++  {
++    const uint64_t now = SDL_GetTicks();
++    std::lock_guard lock(stream_mutex_);
++    const uint64_t last = last_callback_ms_.load(std::memory_order_relaxed);
++    if (have_stream_ && lost_) {  // a settings change opened one (below) meanwhile
++      lost_ = false;
++      retries_ = 0;
++    }
++    if (have_stream_ && now > stream_opened_ms_ + kStallGraceMs && now > last + kStallMs) {
++      REXAPU_WARN("audio: the output '{}' took no sound for {} ms (unplugged, or its sound server stopped); "
++                  "opening an output again", CurrentOutputDevice(), now - last);
++      LoseStream();
++      lost_ = true;
++      lost_since_ms_ = now;
++      next_retry_ms_ = now;
++      next_retry_log_ms_ = now + 60000;
++      retries_ = 0;
++    }
++    if (!have_stream_ && lost_ && now >= next_retry_ms_) TryReopen(now);
++    if (!sdl_initialized_) return;
++  }
+   const bool layout_changed = g_layout_setting_changed.exchange(false);
+   const bool changed = g_device_setting_changed.exchange(false) || layout_changed;
+   const uint64_t now = SDL_GetTicks();
+@@ -404,7 +613,16 @@
+       opened_on_ = device;
+       CloseStream();
+       if (!OpenStream(device) && device) OpenStream(0);
+-      if (!sdl_stream_) UpdateCurrentDevice();
++      if (!sdl_stream_) {
++        // [rexglue-native-audio] 2026-11-16 (0316) nothing opened: the queued frames go back to the guest and
++        // the watcher tries again (before, the guest's sound waited for them and stayed silent)
++        LoseStream();
++        lost_ = true;
++        lost_since_ms_ = SDL_GetTicks();
++        next_retry_ms_ = lost_since_ms_ + kRetryMs;
++        next_retry_log_ms_ = lost_since_ms_ + 60000;
++        retries_ = 0;
++      }
+     }
+   }
+   // The settings' own lock is taken here, not under the stream's (its change
+@@ -413,48 +631,46 @@
+ }
+ 
+ void SDLAudioDriver::SubmitFrame(uint32_t frame_ptr) {
+-  CheckDevice();
+-  if (!have_stream_) {
+-    // No output at all (every open failed): drop the frame at the rate it
+-    // would have played, so the guest's audio keeps its pace instead of
+-    // waiting forever for a device callback.
+-    std::this_thread::sleep_for(std::chrono::microseconds(1000000ull * channel_samples_ /
+-                                                          frame_frequency_));
+-    auto ret = semaphore_->Release(1, nullptr);
+-    assert_true(ret);
+-    return;
+-  }
+-
++  // [rexglue-native-audio] 2026-11-16 (0316) the device checks run on the watcher thread now; whether a stream
++  // takes this frame is asked under frames_mutex_, so a stream that is lost meanwhile (LoseStream) gives it back.
+   const auto input_frame = memory_->TranslateVirtual<float*>(frame_ptr);
+-  float* output_frame;
+   {
+     std::unique_lock<std::mutex> guard(frames_mutex_);
+-    if (frames_unused_.empty()) {
+-      output_frame = new float[frame_samples_];
+-    } else {
+-      output_frame = frames_unused_.top();
+-      frames_unused_.pop();
+-    }
+-  }
+-
+-  std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+-
+-  static uint32_t sdl_submit_count = 0;
+-  if (sdl_submit_count < 10) {
+-    REXAPU_DEBUG("SDLAudioDriver::SubmitFrame: frame_ptr={:08X} queued_count={}", frame_ptr,
+-                 frames_queued_.size() + 1);
+-    sdl_submit_count++;
+-  }
++    if (have_stream_) {
++      float* output_frame;
++      if (frames_unused_.empty()) {
++        output_frame = new float[frame_samples_];
++      } else {
++        output_frame = frames_unused_.top();
++        frames_unused_.pop();
++      }
++      std::memcpy(output_frame, input_frame, frame_samples_ * sizeof(float));
+ 
+-  {
+-    std::unique_lock<std::mutex> guard(frames_mutex_);
+-    frames_queued_.push(output_frame);
+-    queued_count_.store(static_cast<uint32_t>(frames_queued_.size()), std::memory_order_relaxed);
+-    PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(frames_queued_.size()));
++      static uint32_t sdl_submit_count = 0;
++      if (sdl_submit_count < 10) {
++        REXAPU_DEBUG("SDLAudioDriver::SubmitFrame: frame_ptr={:08X} queued_count={}", frame_ptr,
++                     frames_queued_.size() + 1);
++        sdl_submit_count++;
++      }
++      frames_queued_.push(output_frame);
++      queued_count_.store(static_cast<uint32_t>(frames_queued_.size()), std::memory_order_relaxed);
++      PROFILE_BUFFER_QUEUE_DEPTH(static_cast<int64_t>(frames_queued_.size()));
++      return;
++    }
+   }
++  // No output (none opened yet, or it was lost): the frame is dropped.
++  // [rexglue-native-audio] 2026-11-16 (0316) its permit comes back from the watcher at the rate it would have played
++  // (DropFrames), so the guest's audio keeps its pace; no sleep here, under the kernel's global lock.
++  if (dropped_frames_.fetch_add(1, std::memory_order_acq_rel) == 0) watcher_cv_.notify_one();
+ }
+ 
+ void SDLAudioDriver::Shutdown() {
++  {  // [rexglue-native-audio] 2026-11-16 (0316) the watcher first: it opens and closes streams
++    std::lock_guard lock(watcher_mutex_);
++    watcher_stop_ = true;
++  }
++  watcher_cv_.notify_all();
++  if (watcher_.joinable()) watcher_.join();
+   {
+     std::lock_guard lock(stream_mutex_);
+     CloseStream();
+@@ -488,6 +704,8 @@
+     return;
+   }
+   const auto driver = static_cast<SDLAudioDriver*>(userdata);
++  // [rexglue-native-audio] 2026-11-16 (0316) the device still asks for sound (the watcher's stall check)
++  driver->last_callback_ms_.store(SDL_GetTicks(), std::memory_order_relaxed);
+   const int sample_count =
+       static_cast<int>(channel_samples_ * std::max<uint8_t>(driver->sdl_device_channels_, 1));
+   const int len = static_cast<int>(sizeof(float) * sample_count);
+diff --git a/thirdparty/sdl3/src/audio/pulseaudio/SDL_pulseaudio.c b/thirdparty/sdl3/src/audio/pulseaudio/SDL_pulseaudio.c
+--- a/thirdparty/sdl3/src/audio/pulseaudio/SDL_pulseaudio.c
++++ b/thirdparty/sdl3/src/audio/pulseaudio/SDL_pulseaudio.c
+@@ -882,7 +882,10 @@
+ {
+     //SDL_Log("PULSEAUDIO ServerInfoCallback!");
+ 
+-    if (!default_sink_path || (SDL_strcmp(default_sink_path, i->default_sink_name) != 0)) {
++    // [rexglue-native-audio] 2026-11-16 (0316) SDL 3.5.0 as the SDK carries it, ServerInfoCallback (lines 886, 895): a
++    // server with no output (or no input) names no default, NULL here, and SDL_strdup/SDL_strcmp of it crashed the
++    // game ("PulseMainloop" thread). The old name is kept until the server names one again (same line count: __LINE__).
++    if (i->default_sink_name && (!default_sink_path || (SDL_strcmp(default_sink_path, i->default_sink_name) != 0))) {
+         char *str = SDL_strdup(i->default_sink_name);
+         if (str) {
+             SDL_free(default_sink_path);
+@@ -891,7 +894,7 @@
+         }
+     }
+ 
+-    if (!default_source_path || (SDL_strcmp(default_source_path, i->default_source_name) != 0)) {
++    if (i->default_source_name && (!default_source_path || (SDL_strcmp(default_source_path, i->default_source_name) != 0))) {
+         char *str = SDL_strdup(i->default_source_name);
+         if (str) {
+             SDL_free(default_source_path);

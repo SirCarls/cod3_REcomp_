@@ -22,9 +22,19 @@ The Big Red One tab (games.py) builds it in the same steps as Call of Duty 3's S
    and 105 before bro/patches/xboxrecomp-lazy-decode.patch ([acct2-bro] 2026-11-08, owner 09:43 "Is there a way to
    speed up the setup tool for the big red one?": the same C, byte for byte). The C is the game's code, so it stays
    in the work folder and is deleted with it.
+   [waw-decomp] 2026-11-16 (owner 13:58: "Work on optimizing the recompilation process ... Make sure the
+   optimizations aren't disc specific"; 14:3x on keeping the output: "Keep it unless cleanup is on"): each of the
+   five steps is done again only when something it reads changed (a key per step, LiftInputs), so a stand-in's new
+   name redoes nothing and a new stand-in redoes only the last step. With cleanup off the tables and the C stay in
+   the work folder between builds (<work>/bro/lift-cache: one entry per disc, by its default.xbe's MD5), so a second
+   build of a disc skips the recompile, and the C keeps its file dates where it didn't change, so only changed files
+   are compiled again. With cleanup on, everything is made again and deleted at the end, as before.
 5. Build bro/ with CMake against that C: graphics on ../ngl_vk; the window, sound and pads through SDL3, the static
    SDL3 Call of Duty 3's SDK builds when that SDK is in the same work folder (both games then use one SDL), else the
    system's own SDL3 (owner 2026-11-07 10:04: "Ok just use what cod3 has").
+   [waw-decomp] 2026-11-16: while the recompiler runs (one processor core), what doesn't need its C is built beside
+   it (the Windows version's SDL3, both builds' libraries); then the Linux and Windows versions are built side by
+   side, sharing the jobs.
 6. Install bin/bro, saves/, a launcher (play.sh) and bro.json in <output>/bro.
 
 Linux and Windows ([acct2-ocr] 2026-11-12, owner 23:06 "Also the windows build needs to happen"): on Windows step 5
@@ -126,6 +136,9 @@ LINUX_PACKAGES: Dict[str, List[str]] = {
 WORK_ROOM = 1_500_000_000
 # [acct2-ocr] the Windows version besides: its build (about 0.4 GB), SDL3's, and llvm-mingw (about 1 GB unpacked)
 WINDOWS_ROOM = 1_600_000_000
+# [waw-decomp] 2026-11-16 with cleanup off, a disc's entry in the lift cache besides (LiftCache: tables about 0.1 GB,
+# the C about 0.2 GB)
+LIFT_CACHE_ROOM = 400_000_000
 
 # The recompiler's steps: (key, what the log says, share of the build's time).
 STEPS: Tuple[Tuple[str, str, float], ...] = (
@@ -342,6 +355,22 @@ class Layout:
     @property
     def stamp(self) -> Path:
         return self.work / "recompile.stamp.json"
+
+    # [waw-decomp] 2026-11-16
+    @property
+    def analysis_json(self) -> Path:
+        """What xboxrecomp's parser writes beside default.xbe; its disassembly finds it there."""
+        return self.xbe.with_name("default_analysis.json")
+
+    @property
+    def source_stamp(self) -> Path:
+        """Which xboxrecomp and patches the work copy (xboxrecomp/) was made from."""
+        return self.work / "xboxrecomp.stamp.json"
+
+    @property
+    def lift_cache(self) -> Path:
+        """The recompiler's output kept between builds when cleanup is off (LiftCache)."""
+        return self.work / "lift-cache"
 
     # In the project folder
     @property
@@ -570,9 +599,16 @@ def ensure_xboxrecomp(lay: Layout, git: Path, runner: Runner, log: Log) -> Path:
     return src
 
 
+def source_key(lay: Layout) -> dict:
+    """[waw-decomp] 2026-11-16 What the work copy of xboxrecomp is made from: the commit and the patches. Only when
+    this changes is the copy made again (and the tables its steps wrote into it go with it)."""
+    return {"xboxrecomp": XBOXRECOMP_COMMIT, "patches": {p.name: _file_md5(p) for p in lay.patches}}
+
+
 def prepare_xboxrecomp(lay: Layout, git: Path, runner: Runner, log: Log) -> None:
     """A copy of the fetched source in the work folder (its steps write their tables into it), with the port's
     patches (bro/patches) applied."""
+    lay.source_stamp.unlink(missing_ok=True)   # [waw-decomp] 2026-11-16 written again only once the copy is whole
     if lay.xboxrecomp.exists():
         common.safe_rmtree(lay.xboxrecomp, lay.work, [lay.out], log)
     lay.stamp.unlink(missing_ok=True)   # the steps' tables were in the copy just removed
@@ -582,6 +618,7 @@ def prepare_xboxrecomp(lay: Layout, git: Path, runner: Runner, log: Log) -> None
     for patch in lay.patches:
         runner.run([git, *NO_CRLF, "-C", lay.xboxrecomp, "apply", "--whitespace=nowarn", patch])
         log.info(f"Applied {patch.name}")
+    common.write_json(lay.source_stamp, source_key(lay))   # [waw-decomp] 2026-11-16
 
 
 def ensure_python(lay: Layout, runner: Runner, log: Log) -> Path:
@@ -811,11 +848,13 @@ def _copy_folder(src: Path, dest: Path, log: Log, cancel: threading.Event) -> No
     log.progress(1.0, f"Copied {human(total)}")
 
 
-def check_room(disc: Disc, lay: Layout, windows: bool = False) -> None:
+def check_room(disc: Disc, lay: Layout, windows: bool = False, cache: bool = False) -> None:
     """Enough free space for the game's files (output) and the build (work); `windows`: and the Windows version's
-    ([acct2-ocr] its build, and llvm-mingw unpacked in tools/ the first time)."""
+    ([acct2-ocr] its build, and llvm-mingw unpacked in tools/ the first time); `cache` ([waw-decomp] 2026-11-16):
+    and the disc's entry in the lift cache (cleanup off)."""
     have_game = sum(f.stat().st_size for f in _folder_files(lay.game)) if lay.game.is_dir() else 0
-    needs = [(lay.out, max(0, disc.size - have_game)), (lay.work, WORK_ROOM + (WINDOWS_ROOM if windows else 0))]
+    work_need = WORK_ROOM + (WINDOWS_ROOM if windows else 0) + (LIFT_CACHE_ROOM if cache else 0)
+    needs = [(lay.out, max(0, disc.size - have_game)), (lay.work, work_need)]
     for folder, need in needs:
         probe = folder
         while not probe.exists() and probe != probe.parent:
@@ -837,10 +876,347 @@ def _file_md5(path: Path) -> str:
 
 
 def recompile_key(lay: Layout, xbe_md5: str) -> dict:
-    """What the recompiled C depends on: when any of it changes, it is made again."""
+    """What the recompiled C depends on: when any of it changes, it is made again. [waw-decomp] 2026-11-16: since
+    then each step has a key of its own (step_keys); this one is kept, for people, in a lift cache entry's
+    manifest (what the entry was made from)."""
     return {"xbe_md5": xbe_md5, "xboxrecomp": XBOXRECOMP_COMMIT,
             "patches": {p.name: _file_md5(p) for p in lay.patches},
             "seeds": _file_md5(lay.seeds), "stand_ins": _file_md5(lay.stand_ins)}
+
+
+# ---------------------------------------------------------------------------
+# [waw-decomp] 2026-11-16 A key per step, and the lift cache
+# (owner 2026-11-16 13:58 "Work on optimizing the recompilation process ... Make sure the optimizations aren't disc
+# specific"; 14:3x "Keep it unless cleanup is on"). Before, one stamp held all five steps, keyed on the whole
+# stand-in table: a stand-in's new name made the 6-minute recompile run again from the disassembly.
+# ---------------------------------------------------------------------------
+STAMP_FORMAT = 2        # recompile.stamp.json: {"format": 2, "steps": {step: key}}; another shape: nothing done
+CACHE_FORMAT = 1        # a lift cache entry's manifest.json
+RUNTIME_HEADER = "recomp_types.h"   # templates/runtime/'s header, which the lift copies beside the C
+
+
+def _sha256(path: Path) -> str:
+    """A file's SHA-256 ("" when it isn't there)."""
+    if not path.is_file():
+        return ""
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def tree_sha256(root: Path, skip: Sequence[str] = ("output", "__pycache__")) -> str:
+    """One SHA-256 over every file under `root`: each file's path from root and its own SHA-256, in path order.
+    Folders named in `skip` are left out (xboxrecomp's steps write their tables into tools/<step>/output, and Python
+    its caches into __pycache__). The same files give the same hash on Linux and Windows."""
+    found = []
+    for folder, subfolders, names in os.walk(root):
+        subfolders[:] = [d for d in subfolders if d not in skip]
+        found += [Path(folder) / name for name in names]
+    h = hashlib.sha256()
+    for path in sorted(found, key=lambda p: p.relative_to(root).as_posix()):
+        h.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + _sha256(path).encode("ascii") + b"\n")
+    return h.hexdigest()
+
+
+def _address(text: str) -> str:
+    """A stand-in's address as 8 hex digits ("0x000634D0" and "000634d0" are the same address)."""
+    try:
+        return f"{int(text, 16):08X}"
+    except ValueError:
+        return text.strip()
+
+
+@dataclass(frozen=True)
+class LiftInputs:
+    """What xboxrecomp's steps read besides each other's tables, from its source (f0f8a461 with bro/patches applied):
+    - every step: default.xbe, its own code (the tools/ package; tools/lazy_decode.py too) and Python; the
+      disassembly and the lift decode with capstone;
+    - xbe_parser writes default_analysis.json, which the disassembly reads (loader._find_analysis_json);
+    - the disassembly: the seeds (--seed-functions: each entry's start and observed);
+    - func_id: the disassembly's functions, strings and xrefs; abi_analysis: functions and func_id's identified
+      functions;
+    - the lift (recomp): the tables above (functions, labels, summary, identified, abi), the stand-ins' addresses
+      (--manual-functions: read as a set of addresses, so the table's order and its other columns, the names, don't
+      change the C) and templates/runtime/recomp_types.h, which it copies beside the C.
+    Each step's key (step_keys) holds what it reads and the key of the step before it, whose output it reads."""
+    xbe_md5: str
+    tools: str              # tree_sha256 of the patched tools/ tree
+    runtime_header: str     # SHA-256 of templates/runtime/recomp_types.h
+    python: str             # the steps' Python, e.g. "3.12.3"
+    capstone: str           # capstone's version, e.g. "5.0.9"
+    seeds: str              # SHA-256 of bro/config/seed_functions.json
+    stand_ins: Tuple[str, ...]   # the stand-ins' addresses, sorted, 8 hex digits each
+
+
+def lift_inputs(lay: Layout, py: Path, xbe_md5: str, runner: Runner) -> LiftInputs:
+    rc, out = runner.capture([py, "-c", "import sys, capstone; print(sys.version.split()[0]); "
+                                        "print(capstone.__version__)"])
+    words = out.split()
+    if rc != 0 or len(words) < 2:
+        raise SetupError(f"The recompiler's Python ({py}) didn't say its version and Capstone's: {out.strip()[:300]}")
+    return LiftInputs(
+        xbe_md5=xbe_md5, tools=tree_sha256(lay.xboxrecomp / "tools"),
+        runtime_header=_sha256(lay.xboxrecomp / "templates" / "runtime" / RUNTIME_HEADER),
+        python=words[0], capstone=words[1], seeds=_sha256(lay.seeds),
+        stand_ins=tuple(sorted({_address(a) for a in manual_functions(lay.stand_ins)})))
+
+
+def step_flags(step: str, lay: Layout) -> List[str]:
+    """A step's command line without the Python and with the work folder written as <work>: its options."""
+    out = []
+    for arg in step_command(step, lay, Path("python"))[1:]:
+        try:
+            out.append("<work>/" + Path(arg).relative_to(lay.work).as_posix())
+        except ValueError:
+            out.append(arg)
+    return out
+
+
+def step_keys(inputs: LiftInputs, lay: Layout) -> Dict[str, str]:
+    """Each step's key: what it reads (LiftInputs' docstring) and the key of the step before it. A step whose key
+    changed is done again, and so is every step after it (their keys hold its key)."""
+    keys: Dict[str, str] = {}
+    before = ""
+    for step, _, _ in STEPS:
+        parts = {"step": step, "after": before, "xbe_md5": inputs.xbe_md5, "tools": inputs.tools,
+                 "python": inputs.python, "capstone": inputs.capstone, "options": step_flags(step, lay)}
+        if step == "disasm":
+            parts["seeds"] = inputs.seeds
+        if step == "recomp":
+            parts["stand_ins"] = list(inputs.stand_ins)
+            parts["runtime_header"] = inputs.runtime_header
+        keys[step] = before = _sha256_text(json.dumps(parts, sort_keys=True))
+    return keys
+
+
+def step_outputs(lay: Layout) -> Dict[str, List[Tuple[str, Path, Optional[List[str]]]]]:
+    """Where each step leaves its output, as (its name in a cache entry, the folder, the file names, or None for
+    every file at the folder's top). The disassembly's ASM listings (output/asm/) are left out: nothing reads them."""
+    tools = lay.xboxrecomp / "tools"
+    return {"xbe_parser": [("xbe_parser", lay.analysis_json.parent, [lay.analysis_json.name])],
+            "disasm": [("disasm", tools / "disasm" / "output", None)],
+            "func_id": [("func_id", tools / "func_id" / "output", None)],
+            "abi_analysis": [("abi_analysis", tools / "abi_analysis" / "output", None)],
+            "recomp": [("recomp", lay.recomp_out, None), ("gen", lay.gen, None)]}
+
+
+def _files(folder: Path, names: Optional[List[str]]) -> List[Path]:
+    if names is not None:
+        return [folder / n for n in names]
+    return sorted(p for p in folder.iterdir() if p.is_file()) if folder.is_dir() else []
+
+
+def _outputs_there(step: str, lay: Layout) -> bool:
+    for _, folder, names in step_outputs(lay)[step]:
+        files = _files(folder, names)
+        if not files or not all(f.is_file() for f in files):
+            return False
+    return True
+
+
+def read_stamp(lay: Layout) -> Dict[str, str]:
+    """The steps done in the work folder, with the key each was done with."""
+    data = common.read_json(lay.stamp)
+    steps = data.get("steps") if isinstance(data, dict) and data.get("format") == STAMP_FORMAT else None
+    if not isinstance(steps, dict) or not (lay.xboxrecomp / ".git").exists():
+        return {}   # (the tables are in xboxrecomp's folder: gone with it)
+    return {k: v for k, v in steps.items() if isinstance(v, str)}
+
+
+def write_stamp(lay: Layout, done: Dict[str, str]) -> None:
+    common.write_json(lay.stamp, {"format": STAMP_FORMAT, "steps": done})
+
+
+def steps_done(lay: Layout, keys: Dict[str, str]) -> int:
+    """How many of the steps, from the first, are done in the work folder with today's keys."""
+    done = read_stamp(lay)
+    n = 0
+    for step, _, _ in STEPS:
+        if done.get(step) != keys[step] or not _outputs_there(step, lay):
+            break
+        n += 1
+    return n
+
+
+def _copy_new(src: Path, dest: Path) -> None:
+    """src over dest, dated now (not src's date: a build must see a changed file as newer than what it made)."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".part")
+    shutil.copyfile(src, tmp)
+    tmp.replace(dest)
+
+
+def _copy_hashed(src: Path, dest: Path) -> dict:
+    """src to dest, read once: its size and SHA-256."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    h, size = hashlib.sha256(), 0
+    with open(src, "rb") as fi, open(dest, "wb") as fo:
+        for chunk in iter(lambda: fi.read(1 << 20), b""):
+            h.update(chunk)
+            fo.write(chunk)
+            size += len(chunk)
+    return {"size": size, "sha256": h.hexdigest()}
+
+
+class LiftCache:
+    """The recompiler's output kept between builds when cleanup is off: <work>/bro/lift-cache/<xbe MD5>-<key>/. One
+    entry per disc (by its default.xbe's MD5, as the disc check reads it: nothing here names a disc), the newest; a
+    cleanup at the end of a build deletes it with the rest of <work>/bro. An entry holds every step's tables
+    (<step>/), the C (gen/) and manifest.json: the five steps' keys and each file's size and SHA-256. It is written
+    into a folder of its own and renamed into place only when whole, so a build that stops leaves no half entry
+    (at most a *.partial-* folder, which the next build removes), and its files are checked against the manifest
+    before they are used."""
+
+    def __init__(self, root: Path, log: Log):
+        self.root = Path(root)
+        self.log = log
+
+    def _entries(self, xbe_md5: str) -> List[Path]:
+        if not self.root.is_dir():
+            return []
+        return sorted(p for p in self.root.glob(f"{xbe_md5}-*") if p.is_dir() and ".partial-" not in p.name)
+
+    def name(self, xbe_md5: str, keys: Dict[str, str]) -> Path:
+        return self.root / f"{xbe_md5}-{keys['recomp'][:16]}"
+
+    def remove_partial(self) -> None:
+        """What a build that stopped while writing an entry left."""
+        if self.root.is_dir():
+            for p in self.root.glob("*.partial-*"):
+                common.safe_rmtree(p, self.root, [], self.log)
+
+    def has(self, xbe_md5: str, keys: Dict[str, str]) -> bool:
+        m = common.read_json(self.name(xbe_md5, keys) / "manifest.json")
+        return isinstance(m, dict) and m.get("format") == CACHE_FORMAT and m.get("keys") == keys
+
+    @staticmethod
+    def check(entry: Path, manifest: dict) -> bool:
+        """Every file the manifest lists is there with its size and SHA-256."""
+        files = manifest.get("files")
+        if not isinstance(files, dict) or not files:
+            return False
+        for rel, info in files.items():
+            p = entry / rel
+            if ".." in Path(rel).parts or not isinstance(info, dict) or not p.is_file():
+                return False
+            if p.stat().st_size != info.get("size") or _sha256(p) != info.get("sha256"):
+                return False
+        return True
+
+    def best(self, xbe_md5: str, keys: Dict[str, str]) -> Tuple[Optional[Path], dict, int]:
+        """This disc's entry that holds the most steps (from the first) done with today's keys, checked: (entry,
+        manifest, how many steps), or (None, {}, 0). An entry whose files don't match its manifest is removed."""
+        found: Tuple[Optional[Path], dict, int] = (None, {}, 0)
+        for entry in self._entries(xbe_md5):
+            m = common.read_json(entry / "manifest.json")
+            theirs = m.get("keys") if isinstance(m, dict) and m.get("format") == CACHE_FORMAT else None
+            if not isinstance(theirs, dict):
+                continue
+            n = 0
+            for step, _, _ in STEPS:
+                if theirs.get(step) != keys[step]:
+                    break
+                n += 1
+            if n <= found[2]:
+                continue
+            if self.check(entry, m):
+                found = (entry, m, n)
+            else:
+                self.log.warn(f"The kept recompiler output in {entry} isn't what it was when it was written (a file "
+                              "is missing or changed): it is removed, and that part is made again.")
+                common.safe_rmtree(entry, self.root, [], self.log)
+        return found
+
+    def restore(self, entry: Path, manifest: dict, lay: Layout, steps: Sequence[str]) -> None:
+        """The outputs of `steps` from an entry into the work folder. A file that is the same already is left as it
+        is, dated as it was, so the build doesn't compile it again; one the entry doesn't have goes (in folders
+        that hold only that step's output)."""
+        files = manifest["files"]
+        for step in steps:
+            for name, folder, names in step_outputs(lay)[step]:
+                ours = {rel.split("/", 1)[1]: info for rel, info in files.items() if rel.split("/", 1)[0] == name}
+                folder.mkdir(parents=True, exist_ok=True)
+                if names is None:
+                    for p in folder.iterdir():
+                        if p.name not in ours:
+                            if p.is_dir():
+                                common.safe_rmtree(p, lay.work, [lay.out], self.log)
+                            else:
+                                p.unlink()
+                for fname, info in ours.items():
+                    dest = folder / fname
+                    if dest.is_file() and dest.stat().st_size == info["size"] and _sha256(dest) == info["sha256"]:
+                        continue
+                    _copy_new(entry / name / fname, dest)
+
+    def store(self, lay: Layout, xbe_md5: str, keys: Dict[str, str], made_from: dict,
+              cancel: Optional[threading.Event] = None) -> Path:
+        """The work folder's tables and C as this disc's entry (replacing its older ones)."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.remove_partial()
+        final = self.name(xbe_md5, keys)
+        tmp = self.root / f"{final.name}.partial-{os.getpid()}"
+        files = {}
+        for step, _, _ in STEPS:
+            for name, folder, names in step_outputs(lay)[step]:
+                for src in _files(folder, names):
+                    if cancel is not None and cancel.is_set():
+                        raise Cancelled()
+                    files[f"{name}/{src.name}"] = _copy_hashed(src, tmp / name / src.name)
+        common.write_json(tmp / "manifest.json", {
+            "format": CACHE_FORMAT, "game": GAME_NAME, "xbe_md5": xbe_md5, "keys": keys, "made_from": made_from,
+            "written": time.strftime("%Y-%m-%d %H:%M"), "files": files})
+        if final.exists():
+            common.safe_rmtree(final, self.root, [], self.log)
+        tmp.replace(final)
+        for older in self._entries(xbe_md5):
+            if older != final:
+                common.safe_rmtree(older, self.root, [], self.log)
+        return final
+
+
+def restore_lift(lay: Layout, keys: Dict[str, str], xbe_md5: str, cache: Optional[LiftCache], log: Log) -> int:
+    """Before the recompile: the steps done already (in the work folder, else from the lift cache, whichever has
+    more of them); returns how many, from the first, need not run."""
+    have = steps_done(lay, keys)
+    if have == len(STEPS) or cache is None:
+        return have
+    cache.remove_partial()
+    entry, manifest, n = cache.best(xbe_md5, keys)
+    if entry is None or n <= have:
+        return have
+    names = [s for s, _, _ in STEPS][:n]
+    log.info("Taking " + ("the whole recompile" if n == len(STEPS) else f"the recompiler's first {n} steps") +
+             f" from an earlier build of this disc ({entry.name}, checked).")
+    t0 = time.monotonic()
+    cache.restore(entry, manifest, lay, names)
+    write_stamp(lay, {s: keys[s] for s in names})   # the steps after these follow from them: none are kept
+    log.info(f"Taken in {format_minutes(time.monotonic() - t0)}.")
+    return n
+
+
+def remove_stale_c(lay: Layout, log: Log) -> None:
+    """After a lift into a kept gen/: the files it didn't write (another disc's, an older lifter's) go, so the build
+    doesn't compile them. The lift's summary (recomp_out/summary.json, "files") names what it wrote; it also writes
+    recomp_types.h. Its own numbered chunks past the new count it removes itself."""
+    summary = common.read_json(lay.recomp_out / "summary.json")
+    written = summary.get("files") if isinstance(summary, dict) else None
+    if not isinstance(written, list) or not written:
+        log.warn(f"The recompiler's summary doesn't say which files it wrote: everything in {lay.gen} is kept.")
+        return
+    keep = {Path(str(f)).name for f in written} | {RUNTIME_HEADER}
+    stale = sorted(p for p in lay.gen.iterdir() if p.is_file() and p.name not in keep)
+    for p in stale:
+        p.unlink()
+    if stale:
+        log.info(f"Removed {len(stale)} file(s) from {lay.gen} that this recompile didn't write: "
+                 + ", ".join(p.name for p in stale[:5]) + (" ..." if len(stale) > 5 else ""))
 
 
 def manual_functions(tsv: Path) -> List[str]:
@@ -872,42 +1248,55 @@ def step_command(key: str, lay: Layout, py: Path) -> List[str]:
 
 
 def recompile(lay: Layout, py: Path, xbe_md5: str, runner: Runner, log: Log,
-              on_step: Optional[Callable[[str, float], None]] = None) -> None:
+              on_step: Optional[Callable[[str, float], None]] = None, keys: Optional[Dict[str, str]] = None,
+              keep_gen: bool = False) -> List[str]:
     """default.xbe to C (lay.gen) with xboxrecomp's steps. Each finished step is noted in the stamp, so a build that
-    stopped goes on from the step it stopped in."""
-    key = recompile_key(lay, xbe_md5)
-    stamp = common.read_json(lay.stamp)
-    done = list(stamp.get("done", [])) if isinstance(stamp, dict) and stamp.get("key") == key else []
-    if done and not (lay.xboxrecomp / ".git").exists():
-        done = []   # the tables are in xboxrecomp's folder: gone with it
+    stopped goes on from the step it stopped in. [waw-decomp] 2026-11-16: with its own key (step_keys), so a step
+    is done again only when something it reads changed; keep_gen (cleanup off): gen/ stays, so the lift's
+    write-if-changed leaves the files it would write the same as they are, dates and all, and the build compiles
+    only the changed ones. Returns the steps it ran."""
+    keys = keys or step_keys(lift_inputs(lay, py, xbe_md5, runner), lay)
+    done = read_stamp(lay)
     shutil.copy2(lay.seeds, lay.work / "seed_functions.json")
     (lay.work / "manual_functions.json").write_text(json.dumps(manual_functions(lay.stand_ins)), encoding="utf-8")
     env = dict(os.environ, PYTHONUNBUFFERED="1")
     env.pop("PYTHONPATH", None)
     start = 0.0
-    for step, what, share in STEPS:
+    names = [s for s, _, _ in STEPS]
+    ran: List[str] = []
+    for i, (step, what, share) in enumerate(STEPS):
         if on_step:
             on_step(what, start)
-        if step in done:
+        if done.get(step) == keys[step] and _outputs_there(step, lay):
             log.info(f"{what}: done before, kept.")
             start += share
             continue
+        # This step's output is about to change, so it and every step after it count as not done until they are.
+        for later in names[i:]:
+            done.pop(later, None)
+        write_stamp(lay, done)
         if step == "recomp":
+            if lay.recomp_out.exists():   # its summary names the files the lift writes (remove_stale_c)
+                common.safe_rmtree(lay.recomp_out, lay.work, [lay.out], log)
+            if lay.gen.exists() and not keep_gen:
+                common.safe_rmtree(lay.gen, lay.work, [lay.out], log)
             for d in (lay.gen, lay.recomp_out):
-                if d.exists():
-                    common.safe_rmtree(d, lay.work, [lay.out], log)
-                d.mkdir(parents=True)
+                d.mkdir(parents=True, exist_ok=True)
         log.step(what)
         t0 = time.monotonic()
         with _StepClock(log, what, start, share) as clock:
             runner.run(step_command(step, lay, py), cwd=lay.xboxrecomp, env=env,
                        line_filter=_progress_lines(log, what, clock.where))
         log.info(f"{what}: {format_minutes(time.monotonic() - t0)}.")
-        done.append(step)
-        common.write_json(lay.stamp, {"key": key, "done": done})
+        if step == "recomp":
+            remove_stale_c(lay, log)
+        done[step] = keys[step]
+        write_stamp(lay, done)
+        ran.append(step)
         start += share
     if not any(lay.gen.glob("*.c")):
         raise SetupError(f"The recompiler wrote no C into {lay.gen}: see the log above.")
+    return ran
 
 
 def _progress_lines(log: Log, what: str, frac) -> Callable[[str], None]:
@@ -981,12 +1370,17 @@ def build_command(lay: Layout, t: Tools, jobs: int) -> List[str]:
     return [str(t.cmake), "--build", str(lay.build), "-j", str(max(1, jobs))]
 
 
-def build(lay: Layout, t: Tools, jobs: int, runner: Runner, log: Log) -> Path:
-    """bro/ with CMake against the recompiled C; returns the program."""
-    if lay.build.exists():
-        common.safe_rmtree(lay.build, lay.work, [lay.out], log)   # a new configure each time: the C may be new
-    runner.run(configure_command(lay, t))
-    runner.run(build_command(lay, t, jobs), line_filter=_progress_lines(log, "Compiling", 0.0))
+def build(lay: Layout, t: Tools, jobs: int, runner: Runner, log: Log, keep: bool = False,
+          target: Optional[str] = None) -> Optional[Path]:
+    """bro/ with CMake against the recompiled C; returns the program. [waw-decomp] 2026-11-16: keep: the build
+    folder of the last build is used again when it was configured the same way, so only what changed is compiled
+    (cleanup off; else a new one, as before: bro_windows.configure_folder). target: only that CMake target (the
+    libraries, while the recompiler still writes the C): returns None."""
+    bro_windows.configure_folder(configure_command(lay, t), lay.build, keep, lay, runner, log)
+    runner.run(build_command(lay, t, jobs) + (["--target", target] if target else []),
+               line_filter=_progress_lines(log, "Compiling" + (f" ({target})" if target else ""), 0.0))
+    if target:
+        return None
     exe = lay.build / common.exe_name("bro")
     if not exe.is_file():
         raise SetupError(f"The build finished without {exe.name} in {lay.build}: see the log above.")
@@ -1038,7 +1432,9 @@ def install(lay: Layout, exe: Optional[Path], disc: Disc, tool_version: str,
         lay.launcher.write_text(LAUNCHER_SH, encoding="utf-8")
         lay.launcher.chmod(0o755)
     if exe_windows is not None:
-        lay.launcher_windows.write_text(bro_windows.LAUNCHER_BAT_TEXT, encoding="utf-8", newline="")
+        # [rexglue-native-platform] 2026-11-16: the bytes as they are (write_text's newline= needs Python 3.10, and
+        # the tool supports 3.9: a TypeError there)
+        lay.launcher_windows.write_bytes(bro_windows.LAUNCHER_BAT_TEXT.encode("utf-8"))
     m = {"game": GAME_NAME, "tool_version": tool_version, "built": time.strftime("%Y-%m-%d %H:%M"),
          "xbe_md5": disc.xbe_md5, "xboxrecomp": XBOXRECOMP_COMMIT}
     if exe is not None and not IS_WINDOWS:
@@ -1191,7 +1587,7 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
         raise SetupError(f"The work folder {work} and the output folder {lay.out.parent} are inside each other: "
                          "pick two separate folders.")
     common.claim_work_dir(work)
-    check_room(disc, lay, windows=IS_WINDOWS or o.windows)
+    check_room(disc, lay, windows=IS_WINDOWS or o.windows, cache=not o.cleanup)   # [waw-decomp] 2026-11-16 cache
     # The build's log is also kept in <output>/bro/logs/build.log (the one before as build.previous.log).
     try:
         lay.logs.mkdir(parents=True, exist_ok=True)
@@ -1231,16 +1627,33 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
         step(3)
         ensure_xboxrecomp(lay, tools.git, runner, log)
         py = ensure_python(lay, runner, log)
-        stamp = common.read_json(lay.stamp)
-        if not (isinstance(stamp, dict) and stamp.get("key") == recompile_key(lay, disc.xbe_md5)
-                and (lay.xboxrecomp / ".git").exists()):
+        # [waw-decomp] 2026-11-16 the work copy is made again only when xboxrecomp or a patch changed (it holds the
+        # steps' tables); which steps run is up to their keys
+        if not (common.read_json(lay.source_stamp) == source_key(lay) and (lay.xboxrecomp / ".git").exists()):
             prepare_xboxrecomp(lay, tools.git, runner, log)
+        keys = step_keys(lift_inputs(lay, py, disc.xbe_md5, runner), lay)
         step(4)
-        recompile(lay, py, disc.xbe_md5, runner, log,
-                  on_step=lambda what, frac: log.progress(frac, what))
-        step(5)
-        exe = None if IS_WINDOWS else build(lay, tools, o.jobs, runner, log)
-        exe_windows = _build_windows(o, lay, tools, runner, log, cancel) if (IS_WINDOWS or o.windows) else None
+        cache = None if o.cleanup else LiftCache(lay.lift_cache, log)
+        done = restore_lift(lay, keys, disc.xbe_md5, cache, log)
+        lay.gen.mkdir(parents=True, exist_ok=True)     # (bro/CMakeLists.txt wants it there to configure)
+        early = _EarlyBuilds(o, lay, tools, log, cancel).start() if done < len(STEPS) else None
+        try:
+            ran = recompile(lay, py, disc.xbe_md5, runner, log, on_step=lambda what, frac: log.progress(frac, what),
+                            keys=keys, keep_gen=not o.cleanup)
+            if cache is not None and (ran or not cache.has(disc.xbe_md5, keys)):
+                t0 = time.monotonic()
+                try:
+                    entry = cache.store(lay, disc.xbe_md5, keys, recompile_key(lay, disc.xbe_md5), cancel)
+                    log.info(f"Kept the recompiler's output for the next build of this disc in {entry} "
+                             f"({format_minutes(time.monotonic() - t0)}).")
+                except OSError as e:   # (a full disk, say: the next build of this disc recompiles, that's all)
+                    log.warn(f"The recompiler's output couldn't be kept for the next build: {e}")
+                    cache.remove_partial()
+            step(5)
+            exe, exe_windows = _build_all(o, lay, tools, runner, log, cancel, early)
+        finally:
+            if early is not None:
+                early.stop()
         copier.finish()
     except BaseException:
         copier.stop()
@@ -1250,6 +1663,8 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
     if o.cleanup:
         common.safe_rmtree(lay.work, work, [lay.out, disc.path], log)
         log.info(f"Removed the build files in {lay.work}. xboxrecomp and Capstone stay in {lay.tools}.")
+    else:   # [waw-decomp] 2026-11-16
+        log.info(f"Kept the recompiler's output and the build in {lay.work} for the next build (cleanup is off).")
     log.progress(1.0, "Done")
     text = (f"{GAME_NAME} is in {lay.out}: Play starts it (or {lay.launcher.name} there).\n"
             f"Saves: {lay.saves}")
@@ -1260,12 +1675,14 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
 
 
 def _build_windows(o: BuildOptions, lay: Layout, tools: Tools, runner: Runner, log: Log,
-                   cancel: threading.Event) -> Optional[Path]:
+                   cancel: threading.Event, jobs: Optional[int] = None, keep: bool = False) -> Optional[Path]:
     """[acct2-ocr] bro.exe (bro_windows.build). On Linux it comes besides the Linux game: if it fails, the reason is
-    logged and the Linux game is installed all the same (as Call of Duty 3's Windows version)."""
+    logged and the Linux game is installed all the same (as Call of Duty 3's Windows version). [waw-decomp]
+    2026-11-16: jobs (default o.jobs) and keep (build() has it)."""
     try:
-        return bro_windows.build(lay, tools.git, tools.cmake, tools.ninja, tools.glslc, o.jobs, runner, log, cancel,
-                                 line_filter=_progress_lines(log, "Compiling the Windows version", 0.0))
+        return bro_windows.build(lay, tools.git, tools.cmake, tools.ninja, tools.glslc, jobs or o.jobs, runner, log,
+                                 cancel, line_filter=_progress_lines(log, "Compiling the Windows version", 0.0),
+                                 keep=keep)
     except Cancelled:
         raise
     except Exception as e:  # noqa: BLE001 - downloads, unpacking, the compiler: all reported the same way
@@ -1273,3 +1690,133 @@ def _build_windows(o: BuildOptions, lay: Layout, tools: Tools, runner: Runner, l
             raise
         log.warn(f"The Windows version wasn't made: {e}")
         return None
+
+
+# ---------------------------------------------------------------------------
+# [waw-decomp] 2026-11-16 The processor's other cores while the recompiler runs, and both builds side by side
+# ---------------------------------------------------------------------------
+# The recompiler is one Python process: one core, and up to 3.6 GB of memory (rc-xbox, 11-16). common.recommended_jobs
+# gives each compiler job 2 GB, so the builds beside it get two jobs fewer (a 16 GB PC: 8 jobs, 6 beside the lift).
+LIFT_JOB_SLOTS = 2
+# bro/CMakeLists.txt's target for everything the program links but the recompiled C.
+LIBRARIES_TARGET = "bro_libraries"
+# Linux and Windows side by side share the jobs, so together they use no more memory than one build did. GCC takes
+# about twice clang's processor time on the generated C (rc-xbox, 11-16: 671 s and 320 s at -j8), so Linux gets two
+# thirds and both end at about the same time. Below 3 jobs one after the other is as quick.
+LINUX_JOB_SHARE = 2 / 3
+SIDE_BY_SIDE_MIN_JOBS = 3
+
+
+def _follow(cancel: threading.Event, stop: threading.Event) -> None:
+    """Sets `stop` when `cancel` is set (the user's Stop), until `stop` is set: on a thread of its own."""
+    def watch() -> None:
+        while not stop.wait(0.5):
+            if cancel.is_set():
+                stop.set()
+    threading.Thread(target=watch, name="bro-follow-cancel", daemon=True).start()
+
+
+def _wait(thread: threading.Thread, cancel: threading.Event, stop: threading.Event) -> None:
+    """Waits for `thread`; the user's Stop meanwhile stops it too."""
+    while thread.is_alive():
+        thread.join(0.5)
+        if cancel.is_set():
+            stop.set()
+
+
+class _EarlyBuilds:
+    """While the recompiler writes the C, what doesn't need it is built beside it, on a thread of its own with
+    LIFT_JOB_SLOTS fewer jobs: the Windows version's compiler, sources, SDL3 (27 s, once) and import library, and
+    both versions' configure and libraries (LIBRARIES_TARGET). What fails here is only noted: the build after the
+    recompile does the same again, and says what went wrong there."""
+
+    def __init__(self, o: BuildOptions, lay: Layout, tools: Tools, log: Log, cancel: threading.Event):
+        self.o, self.lay, self.tools, self.log, self.cancel = o, lay, tools, log, cancel
+        self.stopped = threading.Event()
+        self.configured: set = set()      # "linux", "windows": build folders configured by this build
+        self._thread = threading.Thread(target=self._run, name="bro-early-builds", daemon=True)
+
+    def start(self) -> "_EarlyBuilds":
+        _follow(self.cancel, self.stopped)
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        o, lay, log = self.o, self.lay, self.log
+        runner = common.Runner(log, self.stopped)
+        jobs = max(1, o.jobs - LIFT_JOB_SLOTS)
+        log.info(f"Building what doesn't need the recompiled C beside the recompiler ({jobs} jobs).")
+        t0 = time.monotonic()
+        if IS_WINDOWS or o.windows:
+            try:
+                bro_windows.build(lay, self.tools.git, self.tools.cmake, self.tools.ninja, self.tools.glslc, jobs,
+                                  runner, _NoBar(log), self.stopped, keep=not o.cleanup, target=LIBRARIES_TARGET)
+                self.configured.add("windows")
+            except Cancelled:
+                return
+            except Exception as e:  # noqa: BLE001 - the build after the recompile tries again and reports it
+                log.info(f"(The Windows version's libraries weren't built beside the recompiler: {e})")
+        if not IS_WINDOWS:
+            try:
+                build(lay, self.tools, jobs, runner, _NoBar(log), keep=not o.cleanup, target=LIBRARIES_TARGET)
+                self.configured.add("linux")
+            except Cancelled:
+                return
+            except Exception as e:  # noqa: BLE001 - as above
+                log.info(f"(The libraries weren't built beside the recompiler: {e})")
+        log.info(f"Built what doesn't need the recompiled C ({format_minutes(time.monotonic() - t0)}).")
+
+    def wait(self) -> None:
+        _wait(self._thread, self.cancel, self.stopped)
+
+    def stop(self) -> None:
+        self.stopped.set()
+        self._thread.join(timeout=60)
+
+
+def _build_all(o: BuildOptions, lay: Layout, tools: Tools, runner: Runner, log: Log, cancel: threading.Event,
+               early: Optional[_EarlyBuilds]) -> Tuple[Optional[Path], Optional[Path]]:
+    """The Linux program (not on Windows) and the Windows one (on Windows, or when asked): side by side when both
+    are made and there are SIDE_BY_SIDE_MIN_JOBS jobs, else one after the other. Returns (Linux's, Windows')."""
+    linux, windows = not IS_WINDOWS, IS_WINDOWS or o.windows
+    configured = set()
+    if early is not None:
+        early.wait()        # its compilers work in the same build folders
+        configured = early.configured
+        runner.check_cancel()
+    # With cleanup on, a build folder starts new in each build (as before), unless this build configured it already.
+    keep_linux = not o.cleanup or "linux" in configured
+    keep_windows = not o.cleanup or "windows" in configured
+    if not (linux and windows and o.jobs >= SIDE_BY_SIDE_MIN_JOBS):
+        exe = build(lay, tools, o.jobs, runner, log, keep=keep_linux) if linux else None
+        exe_windows = _build_windows(o, lay, tools, runner, log, cancel, keep=keep_windows) if windows else None
+        return exe, exe_windows
+    linux_jobs = max(1, round(o.jobs * LINUX_JOB_SHARE))
+    windows_jobs = max(1, o.jobs - linux_jobs)
+    log.info(f"Building the Linux and Windows versions side by side ({linux_jobs} and {windows_jobs} jobs).")
+    stop = threading.Event()
+    result: Dict[str, object] = {}
+
+    def windows_side() -> None:
+        try:
+            result["exe"] = _build_windows(o, lay, tools, common.Runner(log, stop), log, stop, jobs=windows_jobs,
+                                           keep=keep_windows)
+        except BaseException as e:  # noqa: BLE001 - handed to the build's own thread below
+            result["error"] = e
+
+    _follow(cancel, stop)
+    side = threading.Thread(target=windows_side, name="bro-windows-build", daemon=True)
+    side.start()
+    try:
+        exe = build(lay, tools, linux_jobs, runner, log, keep=keep_linux)
+        _wait(side, cancel, stop)
+    except BaseException:
+        stop.set()
+        side.join(timeout=60)
+        raise
+    finally:
+        stop.set()      # (ends _follow's thread)
+    runner.check_cancel()
+    if "error" in result:
+        raise result["error"]   # type: ignore[misc]
+    return exe, result.get("exe")   # type: ignore[return-value]

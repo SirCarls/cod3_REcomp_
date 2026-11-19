@@ -126,7 +126,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             print(f"bro_glslc: {o.source}: {e}", file=sys.stderr)
             return 1
         tmp = out.with_name(out.name + ".tmp")
-        tmp.write_text(c_text(words), encoding="ascii", newline="\n")
+        # [rexglue-native-platform] 2026-11-16: LF on both systems, and Python 3.9 too (write_text's newline= is 3.10+)
+        tmp.write_bytes(c_text(words).encode("ascii"))
         os.replace(tmp, out)
         return 0
     finally:

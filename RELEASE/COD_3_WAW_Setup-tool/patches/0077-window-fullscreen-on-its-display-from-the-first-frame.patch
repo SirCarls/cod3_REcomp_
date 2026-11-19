@@ -1,0 +1,190 @@
+[rexglue-native-monitor] SDK 0077, 2026-11-16 (the owner, 13:26: "when the application starts it'll still start on the
+monitor that has the cursor then it quickly swaps to their correct monitor, we need to eliminate the need to switch").
+Needs 0074: it changes 0074's lines, and 0074 was held from every release, so the two go out together.
+What it does, in WindowSDL::OpenImpl, on top of 0074 (the window made centered on the chosen display):
+- No display chosen (monitor_name empty and monitor 0, the defaults) or the chosen one isn't connected: a window that
+  starts fullscreen (fullscreen is on by default; not with start_in_background) is made on the primary display. A
+  plain window keeps the system's place.
+- X11: a window that starts fullscreen gets _NET_WM_STATE_FULLSCREEN before it's mapped (AskX11FullscreenOnMap), so
+  the window manager maps it fullscreen on its display at once (EWMH: the state of a window is read when it's mapped).
+- Windows: the first size is taken at the content scale of the display the window is made on (SDL3 makes the process
+  per-monitor DPI aware, v2), not the primary display's.
+- One log line where the window showed: "window: shown at X,Y on display N[, fullscreen]".
+Why: SDL resolves fullscreen against the primary display for a window made without a position, the window manager
+puts such a window on the screen with the mouse (X11: no USPosition), and SDL asks for fullscreen only after the map.
+So with the defaults (automatic display, fullscreen) the window was first shown as a window on the mouse's screen and
+then moved fullscreen to the primary; with a display chosen and 0074 it was first shown as a plain window on its
+display and filled it a moment later.
+Measured on the owner's PC (X11, Muffin; DP-0 1920x1080 primary with the mouse, DP-2 1080x1920 portrait chosen; a test
+window doing exactly OpenImpl's calls with the SDK's SDL 3.5.0; the X server's events and 5 ms samples): released
+code, first visible on DP-0, on DP-2 5-12 ms later (with an exclusive mode it even ends fullscreen on DP-0); 0074, on
+DP-2 only but a 1080x720 window for 62 ms before fullscreen; 0077, fullscreen on DP-2 from the first visible frame,
+no move or resize after it. Windows (under Wine): no case ever showed on another screen, before or after.
+Unchanged: start_in_background (fullscreen still waits for the first click), moving an open window from F2
+(SetDisplayChoice), Wayland (fullscreen already went to the chosen output; a plain window is placed by the
+compositor), macOS.
+
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -134,6 +134,51 @@
+   long zero = 0;
+   XChangeProperty(display, x11_window, user_time, XA_CARDINAL, 32, PropModeReplace,
+                   reinterpret_cast<unsigned char*>(&zero), 1);
++  XFlush(display);
++  return true;
++}
++
++// A window that starts fullscreen, on X11 (0077): SDL asks the window manager
++// for fullscreen with a message once the window is mapped, so the window was
++// first shown as a window and became fullscreen a moment later.
++// _NET_WM_STATE_FULLSCREEN set on the window before it's mapped (EWMH: the
++// window manager reads the state of a window when it maps it) makes it
++// fullscreen from its first frame, on the display its position is on; SDL's
++// own request after the map then changes nothing. Added to what SDL set there.
++// False when the window isn't an X11 one.
++bool AskX11FullscreenOnMap(SDL_Window* window) {
++  SDL_PropertiesID props = SDL_GetWindowProperties(window);
++  auto* display = static_cast<Display*>(
++      SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr));
++  auto x11_window = static_cast<::Window>(
++      SDL_GetNumberProperty(props, SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0));
++  if (!display || !x11_window) {
++    return false;
++  }
++  const Atom state = XInternAtom(display, "_NET_WM_STATE", False);
++  const Atom fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", False);
++  if (state == None || fullscreen == None) {
++    return false;
++  }
++  Atom type = None;
++  int format = 0;
++  unsigned long count = 0;
++  unsigned long bytes_after = 0;
++  unsigned char* data = nullptr;
++  bool present = false;
++  if (XGetWindowProperty(display, x11_window, state, 0, 64, False, XA_ATOM, &type, &format, &count,
++                         &bytes_after, &data) == Success &&
++      data) {
++    const Atom* atoms = reinterpret_cast<const Atom*>(data);
++    for (unsigned long i = 0; i < count; ++i) {
++      present |= atoms[i] == fullscreen;
++    }
++    XFree(data);
++  }
++  if (!present) {
++    XChangeProperty(display, x11_window, state, XA_ATOM, 32, PropModeAppend,
++                    reinterpret_cast<const unsigned char*>(&fullscreen), 1);
++  }
+   XFlush(display);
+   return true;
+ }
+@@ -258,13 +303,11 @@
+   // SDL window coordinates are physical pixels on Windows and X11. Cocoa
+   // uses logical points and applies the backing scale itself.
+   SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
+-#if REX_PLATFORM_MAC
+-  int initial_width = int(GetDesiredLogicalWidth());
+-  int initial_height = int(GetDesiredLogicalHeight());
+-#else
+-  int initial_width = int(SizeToPhysical(GetDesiredLogicalWidth()));
+-  int initial_height = int(SizeToPhysical(GetDesiredLogicalHeight()));
+-#endif
++  // start_in_background: a fullscreen window would cover the screen (and
++  // fullscreen raises it on most systems), so it opens as a window and goes
++  // fullscreen when it first gets the focus (ApplyFullscreenWaitingForFocus).
++  const bool background = REXCVAR_GET(start_in_background);
++  const bool fullscreen_at_once = IsFullscreen() && !background;
+   // The chosen display (GetDisplayChoice: the monitor_name / monitor
+   // settings, or what the program set before Open) is found before the
+   // window is made, and the window is made centered on it, so fullscreen
+@@ -286,11 +329,46 @@
+     if (const int32_t index = FindDisplay(choice, displays); index > 0) {
+       chosen_display = DisplayIdAt(index);
+       REXLOG_INFO("window: on display {} \"{}\"", index, displays[size_t(index) - 1].name);
+-    } else if (!choice.IsAutomatic()) {
+-      REXLOG_WARN("window: display \"{}\" (number {}) isn't connected; the system picks one",
+-                  choice.name, choice.index);
+-    }
+-  }
++    } else {
++      if (!choice.IsAutomatic()) {
++        REXLOG_WARN("window: display \"{}\" (number {}) isn't connected; the system picks one",
++                    choice.name, choice.index);
++      }
++      // No display chosen, or the chosen one isn't connected (0077): a window
++      // goes where the system puts it, and a fullscreen one is made on the
++      // primary display. SDL resolves fullscreen against the primary display
++      // for a window made without a position, so it was first shown where the
++      // window manager put it (X11: on the screen with the mouse) and then
++      // moved to the primary display.
++      if (fullscreen_at_once) {
++        chosen_display = SDL_GetPrimaryDisplay();
++        if (chosen_display) {
++          REXLOG_INFO("window: fullscreen on the primary display (no display chosen)");
++        }
++      }
++    }
++  }
++#if REX_PLATFORM_MAC
++  int initial_width = int(GetDesiredLogicalWidth());
++  int initial_height = int(GetDesiredLogicalHeight());
++#else
++  int initial_width = int(SizeToPhysical(GetDesiredLogicalWidth()));
++  int initial_height = int(SizeToPhysical(GetDesiredLogicalHeight()));
++#endif
++#if REX_PLATFORM_WIN32
++  // Windows (0077): SDL3 makes the process per-monitor DPI aware (v2), so
++  // each display has its own scale, and before the window exists GetDpi reads
++  // the primary display's. The size is taken at the scale of the display the
++  // window is made on.
++  if (chosen_display) {
++    const float scale = SDL_GetDisplayContentScale(chosen_display);
++    if (scale > 0.0f) {
++      const uint32_t dpi = uint32_t(scale * float(GetMediumDpi()) + 0.5f);
++      initial_width = int(ConvertSizeDpi(GetDesiredLogicalWidth(), dpi, GetMediumDpi()));
++      initial_height = int(ConvertSizeDpi(GetDesiredLogicalHeight(), dpi, GetMediumDpi()));
++    }
++  }
++#endif
+   if (const SDL_PropertiesID create = SDL_CreateProperties(); create) {
+     SDL_SetStringProperty(create, SDL_PROP_WINDOW_CREATE_TITLE_STRING, GetTitle().c_str());
+     SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, initial_width);
+@@ -314,16 +392,15 @@
+   sdl_window_id_ = SDL_GetWindowID(sdl_window_);
+   sdl_app_context().RegisterWindow(sdl_window_id_, this);
+ 
+-  // start_in_background: a fullscreen window would cover the screen (and
+-  // fullscreen raises it on most systems), so it opens as a window and goes
+-  // fullscreen when it first gets the focus (ApplyFullscreenWaitingForFocus).
+-  const bool background = REXCVAR_GET(start_in_background);
+   fullscreen_waits_for_focus_ = background;
+-  if (IsFullscreen() && !background) {
++  if (fullscreen_at_once) {
+     // Borderless desktop fullscreen (a NULL display mode is SDL3's default),
+     // or an exclusive mode when a refresh rate was chosen.
+     ApplyFullscreenDisplayMode();
+     SDL_SetWindowFullscreen(sdl_window_, true);
++#if !REX_PLATFORM_WIN32 && !REX_PLATFORM_MAC
++    AskX11FullscreenOnMap(sdl_window_);
++#endif
+   }
+ #if REX_PLATFORM_MAC
+   CFPreferencesSetAppValue(CFSTR("ApplePressAndHoldEnabled"), kCFBooleanFalse,
+@@ -354,6 +431,16 @@
+     REXLOG_INFO("window: opened in the background (start_in_background){}",
+                 IsFullscreen() ? "; fullscreen when it's first clicked" : "");
+   }
++  {
++    // Where it showed (0077): one line for reports of a window on the wrong
++    // screen.
++    int x = 0;
++    int y = 0;
++    SDL_GetWindowPosition(sdl_window_, &x, &y);
++    const SDL_WindowFlags shown_flags = SDL_GetWindowFlags(sdl_window_);
++    REXLOG_INFO("window: shown at {},{} on display {}{}", x, y, GetCurrentDisplay(),
++                (shown_flags & SDL_WINDOW_FULLSCREEN) ? ", fullscreen" : "");
++  }
+ 
+   // Actualize state for the common Window code. Listener dispatch is handled
+   // by Window::Open after OpenImpl returns; these only record initial state.

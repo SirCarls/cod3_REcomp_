@@ -13,7 +13,10 @@
 
 #include <rex/cvar.h>
 #include <rex/hook.h>
+#include <rex/input/input_system.h>  // [rexglue-native-input] PadFamily
 #include <rex/logging.h>
+#include <rex/runtime.h>               // [rexglue-native-input]
+#include <rex/system/kernel_state.h>   // [rexglue-native-input]
 
 #include "game/addresses.h"
 #include "game/guest.h"
@@ -118,6 +121,52 @@ std::mutex g_seat_mutex;
 std::array<pad::Layout, kPlayers> g_seat_layout;
 std::array<std::array<std::string, pad::kButtonCount>, kPlayers> g_seat_text;
 std::array<bool, kPlayers> g_seat_have{};
+
+// [rexglue-native-input] 2026-11-16 (owner 20:00 via main 20:03: "GameCube D-pad: put the actions a GameCube pad has
+// no button for ... on the D-pad ... only in the GameCube profile, only where the D-pad has no use in the game's
+// layout, and as defaults the player can rebind"). A GameCube controller has no LB, no BACK and no stick clicks
+// (SDK patch 0078: its L and R are LT and RT, Z is RB). While a seat's cod3_binds_pad_pN is empty (the layout's
+// buttons) and that seat plays with a GameCube controller, what the layout puts on LB, BACK, LS and RS goes on the
+// D-pad directions the layout leaves empty (up, down, left, right, in that order; RS, LB, LS, BACK in that order of
+// need), as if the player had bound them.
+// Any text in the seat's setting (the player's own binds, from the menu or F2) replaces these defaults.
+bool SeatPadIsGameCube(uint8_t* base, uint32_t cl) {
+  auto* kernel = REX_KERNEL_STATE();
+  auto* runtime = kernel ? kernel->emulator() : nullptr;
+  auto* input = runtime ? static_cast<rex::input::InputSystem*>(runtime->input_system()) : nullptr;
+  return input && input->PadFamily(cod3::binds::PadOfPlayer(base, cl)) == rex::input::ControllerFamily::kGameCube;
+}
+
+pad::PadSet GameCubeDefaults(const pad::Layout& layout, const std::array<std::string, pad::kButtonCount>& text,
+                             std::string* said) {
+  using pad::Button;
+  pad::PadSet set;
+  // Most needed first (main 20:03: melee, the smoke grenade, binoculars, the scores): RS, LB, LS, BACK.
+  const Button missing[] = {Button::kRS, Button::kLB, Button::kLS, Button::kBack};
+  const Button dpad[] = {Button::kUp, Button::kDown, Button::kLeft, Button::kRight};
+  size_t next = 0;
+  for (const Button m : missing) {
+    const int from = static_cast<int>(m);
+    if (layout.binds[from].Count() == 0) continue;  // nothing (or no action) there in the layout
+    while (next < 4 && !text[static_cast<int>(dpad[next])].empty()) ++next;  // used by the layout: kept
+    if (next == 4) break;
+    const int to = static_cast<int>(dpad[next++]);
+    set.custom[to] = true;
+    set.binds[to] = layout.binds[from];
+    *said += std::string(said->empty() ? "" : ", ") + pad::ButtonId(m) + " (\"" + text[from] + "\") on " +
+             pad::ButtonId(dpad[next - 1]);
+  }
+  return set;
+}
+
+// The text BeforePoll compares: the GameCube defaults are worked out again when the layout's buttons change.
+std::string GameCubeKey(const std::array<std::string, pad::kButtonCount>& text) {
+  std::string key = "\x02gamecube";
+  for (const auto b : {pad::Button::kLB, pad::Button::kBack, pad::Button::kLS, pad::Button::kRS, pad::Button::kUp,
+                       pad::Button::kDown, pad::Button::kLeft, pad::Button::kRight})
+    key += "\x1f" + text[static_cast<int>(b)];
+  return key;
+}
 
 std::string SettingText(int player) {
   switch (player) {
@@ -385,13 +434,24 @@ void BeforePoll(PPCContext& ctx, uint8_t* base) {
   for (uint32_t cl : clients) in_use[cl & 3] = true;
   for (uint32_t cl : clients) {
     Player& p = g_players[cl & 3];
-    const std::string text = SettingText(PlayerOf(cl));
+    std::string text = SettingText(PlayerOf(cl));
+    // [rexglue-native-input] a GameCube controller and no binds of the player's own: the GameCube defaults.
+    const bool gamecube = text.empty() && p.have_layout && SeatPadIsGameCube(base, cl);
+    if (gamecube) text = GameCubeKey(p.layout);
     const bool changed = text != p.text;
     if (changed) {
       // Actions held from the old binds let go first.
       ReleaseHeld(ctx, base, cl, static_cast<uint32_t>(Call(ctx, base).Invoke(kb::kSysMilliseconds)));
       std::vector<std::string> notes;
-      p.set = pad::Parse(text, &notes);
+      if (gamecube) {
+        std::string said;
+        p.set = GameCubeDefaults(LayoutActions(p), p.layout, &said);
+        REXLOG_INFO("cod3: controller binds: player {} plays with a GameCube controller (no LB, BACK or stick "
+                    "clicks): {}", PlayerOf(cl) + 1,
+                    said.empty() ? std::string("nothing moved (no action there, or no free D-pad direction)") : said);
+      } else {
+        p.set = pad::Parse(text, &notes);
+      }
       p.text = text;
       for (const std::string& n : notes) REXLOG_WARN("cod3: controller binds: player {}: {}", PlayerOf(cl) + 1, n);
     }

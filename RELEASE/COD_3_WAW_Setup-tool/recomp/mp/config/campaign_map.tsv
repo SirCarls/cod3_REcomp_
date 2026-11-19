@@ -30,10 +30,15 @@ FEMenuSystem__vfunc_17	824C48B8	824D5A08	mp			hand check (10-20, [mp-menus] rese
 FEMultiLineText__ctor	824DEAD0	824EBDF0	mp			hand check (10-20, [mp-menus] research C): the same code shape; stores vtable 0x8207041C and the same fields +112..+166
 FEMultiLineText__vfunc_0	820AD1B8	820BBF98	mp			map: verified
 FEMultiLineText__vfunc_19	824CFA00	824D7218	mp			hand check (10-20, [mp-menus] research C): Draw: the visible check, then the lines via vtbl 296 / 312 (slot 74 -> 78) alike; the hook reads r3 only
+FEMultiLineText__vfunc_32	824D75F8	824FD310	mp			hand check (11-15, [acct2-main]): slot 32, a text from a key's hash: both look the hash up in the string table (0x8252A638 / 0x8254B250) and give the text to slot 36 (+144); game/text_rekey.cpp records r4 and calls the slot again
+FEMultiLineText__vfunc_33	824DE5F0	82502158	mp			hand check (11-15, [acct2-main]): slot 33 SetTextKey: Localize (0x8252CB98 / 0x8254D180) of r4, then slot 36 (+144) with its text, or with the key when Localize gives 0; game/text_rekey.cpp records the key and calls the slot again
 FEMultiLineText__vfunc_36	824E8180	824F76A0	mp			map: verified (96% equal, 96% same instruction kinds (87 vs 89 instructions); pair table: calls (4); vtable slot 36 of FEMult)
+FEMultiLineText__vfunc_90	824DD928	82501168	mp			hand check (11-15, [acct2-main]): the wrapped text from a key: Localize (0x8252CB98 / 0x8254D180) of r4 with r5 the width (640 when Localize gives 0) and f1 the scale, then the wrapped set-text slot (+364 = 91 / +388 = 97, as vfunc_91's row); cod3mp's slots after 90 are six further on; game/text_rekey.cpp records the key and calls the slot again
 FEMultiLineText__vfunc_91	824E8098	824F75A8	mp			map: verified (89% equal, 92% same instruction kinds (58 vs 62 instructions); pair table: calls (4); vtable slot 91 of FEMult)
 FEMultiLineText__vfunc_92	824DD790	824F7410	mp			map: verified
 FEMultiLineText__vfunc_93	824DD630	824F72B0	mp			map: verified
+FEText__vfunc_32	824D8380	824FD368	mp			hand check (11-15, [acct2-main]): slot 32, a text from a key's hash: both look the hash up in the string table (0x8252A638 / 0x8254B250) and give the text to slot 36 (+144); game/text_rekey.cpp records r4 and calls the slot again
+FEText__vfunc_33	824DEBA8	825021C0	mp			hand check (11-15, [acct2-main]): slot 33 SetTextKey (addresses_mp.h research A: identical): Localize (0x8252CB98 / 0x8254D180) of r4, then slot 36 (+144) with its text, or with the key when Localize gives 0; game/text_rekey.cpp records the key and calls the slot again
 FrontEndMenuSystem__vfunc_14	824CE4D0	824DC718	mp			hand check (10-20, [mp-menus] research A): the front end's draw: slot 14 -> 19
 InGameMenuSystem__vfunc_14	824CD9E0	824F6338	mp			hand check (10-20, [mp-menus] research A): the in-game menus' draw: slot 14 -> 19
 Localize	8252CB98	8254D180	mp			map: verified

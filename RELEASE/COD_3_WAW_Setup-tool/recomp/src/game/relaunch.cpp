@@ -204,19 +204,25 @@ bool Spawn(Program program, const std::filesystem::path& data_file) {
   int argc = 0;
   wchar_t** argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   std::wstring cmd = QuoteArg(exe);
-  const std::wstring skip = std::filesystem::path(kLaunchDataArg).wstring();
+  // [rexglue-native-platform] 2026-11-16 (acct2-main's platform review, item 4): the arguments are UTF-8 here and
+  // UTF-16 on Windows' command line. path(std::string) reads a std::string as the ANSI code page and path::string()
+  // writes it (and throws filesystem_error for a character outside it), so a non-ASCII startup command or argument
+  // changed on a relaunch or ended the program; Utf8ToPath / PathToUtf8 (util.h) convert UTF-8 both ways.
+  const std::wstring skip = Utf8ToPath(kLaunchDataArg).wstring();  // [rexglue-native-platform] 2026-11-16
   const bool window_known = !WindowArgs().empty();
   for (int i = 1; argv && i < argc; ++i) {
     if (std::wstring(argv[i]).rfind(skip, 0) == 0) continue;
-    if (window_known && IsWindowArg(std::filesystem::path(argv[i]).string())) continue;
-    if (IsOneOffArg(std::filesystem::path(argv[i]).string())) continue;
+    const std::string utf8 = PathToUtf8(std::filesystem::path(argv[i]));  // [rexglue-native-platform] 2026-11-16
+    if (window_known && IsWindowArg(utf8)) continue;  // [rexglue-native-platform] 2026-11-16
+    if (IsOneOffArg(utf8)) continue;  // [rexglue-native-platform] 2026-11-16
     cmd += L" " + QuoteArg(argv[i]);
   }
   if (argv) LocalFree(argv);
-  for (const std::string& arg : WindowArgs()) cmd += L" " + std::filesystem::path(arg).wstring();
+  // [rexglue-native-platform] 2026-11-16: UTF-8 to UTF-16 (was path(std::string): the ANSI code page)
+  for (const std::string& arg : WindowArgs()) cmd += L" " + Utf8ToPath(arg).wstring();
   // [claude-9b-think] SetStartupCommand's line (it has a space: quoted) and the guard's mark.
   for (const std::string& arg : StartupArgs())
-    cmd += L" " + QuoteArg(std::filesystem::path(arg).wstring());
+    cmd += L" " + QuoteArg(Utf8ToPath(arg).wstring());  // [rexglue-native-platform] 2026-11-16
   cmd += L" " + QuoteArg(skip + data_file.wstring());
   STARTUPINFOW si = {};
   si.cb = sizeof(si);

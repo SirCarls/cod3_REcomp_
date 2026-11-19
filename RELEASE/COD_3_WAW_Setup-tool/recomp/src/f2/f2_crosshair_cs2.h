@@ -82,7 +82,9 @@ enum Special : int {
   kSpecialTurret = 1,    // turrets and mounted guns
   kSpecialVehicle = 2,   // vehicles, the HUD's vehicle reticle too
   kSpecialScope = 3,     // a scope's overlay (and a scoped turret's)
-  kSpecialAimMode = 4,   // Call of Duty 3's aiming mode (its mark at a point, most likely the mortar's)
+  kSpecialCountdown = 4,  // [acct2-ocr] 11-15 a cooked grenade's countdown (Call of Duty 3's ring of six marks).
+                          // Was kSpecialAimMode, which no game offered (its row was greyed, so it was never set):
+                          // Call of Duty 3's "aiming mode" turned out to be its vehicles (kSpecialVehicle)
   kSpecialCount = 5,
 };
 constexpr int kHipFire = -1;  // an ordinary weapon's hip-fire crosshair (the custom crosshair's own place)
@@ -205,6 +207,11 @@ struct View {
   bool scoped = false;
   bool watching = false, watching_bot = false;
   double seconds_since_shot = -1;  // < 0: not known
+  // [acct2-ocr] 2026-11-15 a cooked grenade's time left, 1 when the pin is pulled to 0 at the bang (< 0: none), drawn
+  // as six marks round the crosshair (kSpecialCountdown's Mine); `cross` false: the marks alone (the game drew no
+  // crosshair this frame, only its countdown).
+  float countdown = -1;
+  bool cross = true;
 };
 
 // The port's settings from player 1's crosshair, as near as they can say it (for a game whose own menus still set the
@@ -247,7 +254,8 @@ void DrawPreview(int player, float side);
 // ---- for tests and for the preview
 
 // A shape as CS2's crosshair shader takes it (SHADER.md "Inputs"): kind 0 a rectangle (x0,y0)-(x1,y1) in whole
-// pixels, inclusive; kind 1 a ring and kind 2 four arcs around (x0, y0), outer radius x1, thickness y1, each arc
+// pixels, inclusive; kind 1 a ring, kind 2 four arcs and kind 3 one arc around (x0, y0), outer radius x1, thickness
+// y1, each arc
 // `span` radians wide, centered on the diagonals. `grow` is how far the outline reaches past the shape, on the
 // top / left (grow0) and on the bottom / right (grow1).
 struct Shape {
@@ -255,6 +263,8 @@ struct Shape {
   float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
   float span = 0;
   int arcs = 15;  // kind 2: which arcs, 1 top right, 2 bottom right, 4 bottom left, 8 top left (the port's own)
+  float angle = 0;  // [acct2-ocr] kind 3 (the port's own): one arc `span` wide centered at `angle` radians, 0 at the
+                    // top, clockwise (the grenade countdown's marks)
   float grow0 = 0, grow1 = 0;
   float fill[4] = {};
   float outline[4] = {};

@@ -23,6 +23,8 @@
  *   BRO_VK=1                    draw each frame through Vulkan (off by default while it is only this)
  *   BRO_WINDOW=0                no window even when there is a display (bro.toml: display.window)
  *   BRO_FULLSCREEN=1            the window fills the screen (display.fullscreen)
+ *   BRO_MONITOR=<name or number>  the display the window opens on: its name as SDL gives it, or its number counting
+ *                               from 1 (display.monitor; empty or 0: the system's choice) (window_display)
  *   BRO_VSYNC=0                 frames shown as they come (mailbox) instead of in step with the display
  *                               (display.vsync)
  *   BRO_MOUSE_LOOK=0            the mouse isn't captured for looking around (bro_pad.c)
@@ -1153,6 +1155,36 @@ static int ask_x11_not_to_focus_on_map(SDL_Window *w)
     return 1;
 }
 
+/* [rexglue-native-monitor] 2026-11-16: a window that starts full screen, on X11. SDL asks the window manager for full
+ * screen only once the window is mapped, so it was first shown as a window and filled the screen a moment later.
+ * _NET_WM_STATE_FULLSCREEN set on the window before it's mapped (EWMH: the window manager reads it when it maps the
+ * window) makes it full screen from its first frame, on the display its position is on, as CoD3's SDK does (its patch
+ * 0075). Added to what SDL set there. */
+#define X11_XA_ATOM             4ul                         /* Xatom.h */
+#define X11_PROP_MODE_APPEND    2                           /* Xlib.h */
+static int ask_x11_fullscreen_on_map(SDL_Window *w)
+{
+    x11_atom state, fullscreen, type = 0;
+    int format = 0, present = 0;
+    unsigned long count = 0, bytes_after = 0, i;
+    unsigned char *data = NULL;
+
+    if (!load_xlib(w) || !(state = xlib.intern_atom(xlib.display, "_NET_WM_STATE", 0)) ||
+        !(fullscreen = xlib.intern_atom(xlib.display, "_NET_WM_STATE_FULLSCREEN", 0)))
+        return 0;
+    if (xlib.get_window_property(xlib.display, xlib.window, state, 0, 64, 0, X11_XA_ATOM, &type, &format, &count,
+                                 &bytes_after, &data) == 0 && data) {
+        for (i = 0; i < count; ++i)
+            present |= ((unsigned long *)data)[i] == fullscreen;     /* Xlib hands 32-bit items over as longs */
+        xlib.free(data);
+    }
+    if (!present)
+        xlib.change_property(xlib.display, xlib.window, state, X11_XA_ATOM, 32, X11_PROP_MODE_APPEND,
+                             (const unsigned char *)&fullscreen, 1);
+    xlib.flush(xlib.display);
+    return 1;
+}
+
 /* Adds (below = 1) or takes off (0) _NET_WM_STATE_BELOW on the mapped window. A client asks for it with a message to
  * the root window (EWMH), laid out as Xlib's XClientMessageEvent inside an XEvent's 24 longs. */
 static void keep_x11_window_below(int below)
@@ -1216,6 +1248,63 @@ static int background_window;           /* display.start_in_background: the wind
 static int kept_in_background;
 static int background_done;             /* the first click has brought it forward: not again */
 
+/* [rexglue-native-monitor] 2026-11-16 (the owner, 11-16 13:26: the window starts on the monitor with the cursor and
+ * then swaps to its own; "we need to eliminate the need to switch"): the display the window opens on, found before
+ * the window is made, as CoD3's SDK finds its own (patches 0068, 0074 and 0075). display.monitor (BRO_MONITOR) names
+ * it: a display's name as SDL gives it, or its number counting from 1 in SDL's order; empty or 0 is the system's
+ * choice. The window is made centered on it, so it shows there from its first frame. With the system's choice, or a
+ * display that isn't connected, a window goes where the system puts it and a full-screen one is made on the primary
+ * display: SDL makes a window without a position full screen on the primary display, so it was first shown where the
+ * window manager put it (X11: on the screen with the mouse) and then moved there. 0: no position. */
+static SDL_DisplayID window_display(int fullscreen)
+{
+    const char *setting = bro_setting_text("display.monitor", "BRO_MONITOR");
+    SDL_DisplayID *ids, found = 0;
+    int count = 0, i;
+
+    ids = SDL_GetDisplays(&count);
+    for (i = 0; ids && i < count; ++i) {   /* the names and numbers display.monitor takes, once */
+        const char *name = SDL_GetDisplayName(ids[i]);
+        SDL_Rect bounds;
+
+        SDL_zero(bounds);
+        SDL_GetDisplayBounds(ids[i], &bounds);
+        fprintf(stderr, "%s%d \"%s\" %dx%d%s%s", i ? "; " : "[ngl] displays: ", i + 1, name ? name : "", bounds.w,
+                bounds.h, ids[i] == SDL_GetPrimaryDisplay() ? " (primary)" : "", i + 1 == count ? "\n" : "");
+    }
+    if (setting && setting[0] && strcmp(setting, "0") != 0) {
+        char *end = NULL;
+        long n = strtol(setting, &end, 10);
+
+        if (end != setting && *end == '\0') {
+            if (ids && n >= 1 && n <= count)
+                found = ids[n - 1];
+        } else {
+            for (i = 0; ids && i < count && !found; ++i) {
+                const char *name = SDL_GetDisplayName(ids[i]);
+
+                if (name && strcmp(name, setting) == 0)
+                    found = ids[i];
+            }
+        }
+        if (!found)
+            fprintf(stderr, "[ngl] display.monitor \"%s\" isn't connected: %s\n", setting,
+                    fullscreen ? "full screen on the primary display" : "the system places the window");
+    }
+    if (!found && fullscreen)
+        found = SDL_GetPrimaryDisplay();
+    for (i = 0; found && ids && i < count; ++i) {
+        if (ids[i] == found) {
+            const char *name = SDL_GetDisplayName(found);
+
+            fprintf(stderr, "[ngl] window on display %d \"%s\"%s\n", i + 1, name ? name : "",
+                    fullscreen ? ", full screen" : "");
+        }
+    }
+    SDL_free(ids);
+    return found;
+}
+
 /* A window for ngl_vk to show the frames in, when SDL3 has a display (display.window off, BRO_WINDOW=0: none).
  * display.start_in_background (BRO_START_IN_BACKGROUND: test runs on a PC someone is using) opens it the way CoD3's
  * start_in_background does (the project's SDK patch 0063): created hidden, shown without activating it
@@ -1233,7 +1322,9 @@ static int open_window(void)
     int background = bro_setting_bool("display.start_in_background", "BRO_START_IN_BACKGROUND", 0);
     Uint32 count = 0;
     int width = 0, height = 0;
-    SDL_WindowFlags flags = WINDOW_FLAGS;
+    SDL_WindowFlags flags = WINDOW_FLAGS | SDL_WINDOW_HIDDEN;   /* placed (and set up) before it's first shown */
+    SDL_DisplayID display;
+    SDL_PropertiesID props;
 
     if (!windowed)
         return 0;
@@ -1242,13 +1333,25 @@ static int open_window(void)
         return 0;
     }
     if (background) {
-        flags |= SDL_WINDOW_HIDDEN;         /* shown below, once it's been sent behind */
         fullscreen_waits_for_focus = fullscreen;
         background_window = 1;
-    } else if (fullscreen) {
-        flags |= SDL_WINDOW_FULLSCREEN;     /* the desktop's own size, with no mode change */
     }
-    window = SDL_CreateWindow("Call of Duty 2: Big Red One", 2 * SCREEN_WIDTH, 2 * SCREEN_HEIGHT, flags);
+    /* [rexglue-native-monitor] 2026-11-16: made on its display (window_display), hidden; before, it was made without
+     * a position, shown at once, and a full-screen one (SDL_WINDOW_FULLSCREEN) was then moved to the primary display */
+    display = window_display(fullscreen && !background);
+    props = SDL_CreateProperties();
+    if (props) {
+        SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, "Call of Duty 2: Big Red One");
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, 2 * SCREEN_WIDTH);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, 2 * SCREEN_HEIGHT);
+        SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, (Sint64)flags);
+        if (display) {
+            SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+            SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, SDL_WINDOWPOS_CENTERED_DISPLAY(display));
+        }
+        window = SDL_CreateWindowWithProperties(props);
+        SDL_DestroyProperties(props);
+    }
     if (!window || !(extensions = window_instance_extensions(&count))) {
         fprintf(stderr, "[ngl] no window for Vulkan (%s): drawing offscreen\n", SDL_GetError());
         if (window)
@@ -1271,6 +1374,14 @@ static int open_window(void)
                 (unsigned long)SDL_GetNumberProperty(SDL_GetWindowProperties(window),
                                                      SDL_PROP_WINDOW_X11_WINDOW_NUMBER, 0),
                 fullscreen ? "; full screen when it's first clicked" : "");
+    } else {
+        if (fullscreen) {
+            SDL_SetWindowFullscreen(window, true);  /* the desktop's own size, with no mode change; once it's shown */
+#if !defined(_WIN32)
+            ask_x11_fullscreen_on_map(window);      /* X11: full screen from its first frame */
+#endif
+        }
+        SDL_ShowWindow(window);
     }
     SDL_GetWindowSizeInPixels(window, &width, &height);
     ngl_vk_set_window(extensions, count, make_window_surface, window, (uint32_t)width, (uint32_t)height,

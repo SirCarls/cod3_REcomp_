@@ -87,6 +87,7 @@
 #include "game/qte_actions.h"
 #include "game/rumble.h"  // [rumble]
 #include "game/text_language.h"  // [acct2-ocr]
+#include "game/text_rekey.h"  // [acct2-main] 2026-11-15 a text set from a key follows the text language
 #include "game/use_hold.h"  // [acct2-decomp] cod3_use_hold_ms: the Use hold's words in the hints
 #include "game/pc_menu.h"
 
@@ -2295,7 +2296,11 @@ REX_HOOK_RAW(FEMultiLineText__vfunc_94) {
 // FEMultiLineText::Draw: stale prompts are laid out again first.
 REX_EXTERN(__imp__FEMultiLineText__vfunc_19);
 REX_HOOK_RAW(FEMultiLineText__vfunc_19) {
-  Refresh(ctx, base, ctx.r3.u32);
+  cod3::textkeys::Refresh(ctx, base, ctx.r3.u32);  // [acct2-main] 2026-11-15 set from its key again: the language changed
+  {
+    const cod3::textkeys::KeepKey keep(base, ctx.r3.u32);  // [acct2-main] laid out again: still its key's words
+    Refresh(ctx, base, ctx.r3.u32);
+  }
   __imp__FEMultiLineText__vfunc_19(ctx, base);
 }
 
@@ -2325,12 +2330,14 @@ REX_HOOK_RAW(FEMultiLineText__vfunc_93) {
 REX_EXTERN(__imp__FEMultiLineText__ctor);
 REX_HOOK_RAW(FEMultiLineText__ctor) {
   Forget(ctx.r3.u32);
+  cod3::textkeys::Forget(ctx.r3.u32);  // [acct2-main] 2026-11-15
   __imp__FEMultiLineText__ctor(ctx, base);
 }
 
 REX_EXTERN(__imp__FEMultiLineText__vfunc_0);
 REX_HOOK_RAW(FEMultiLineText__vfunc_0) {
   Forget(ctx.r3.u32);
+  cod3::textkeys::Forget(ctx.r3.u32);  // [acct2-main] 2026-11-15
   __imp__FEMultiLineText__vfunc_0(ctx, base);
 }
 
@@ -2373,7 +2380,11 @@ REX_HOOK_RAW(FEText__vfunc_36) {
 // [acct2-decomp] FEText::Draw: a plain text whose buttons are out of date is set again first.
 REX_EXTERN(__imp__FEText__vfunc_19);
 REX_HOOK_RAW(FEText__vfunc_19) {
-  RefreshPlain(ctx, base, ctx.r3.u32);
+  cod3::textkeys::Refresh(ctx, base, ctx.r3.u32);  // [acct2-main] 2026-11-15 set from its key again: the language changed
+  {
+    const cod3::textkeys::KeepKey keep(base, ctx.r3.u32);  // [acct2-main] other button names: still its key's words
+    RefreshPlain(ctx, base, ctx.r3.u32);
+  }
   __imp__FEText__vfunc_19(ctx, base);
 }
 
@@ -2382,18 +2393,21 @@ REX_HOOK_RAW(FEText__vfunc_19) {
 REX_EXTERN(__imp__FEText__ctor);
 REX_HOOK_RAW(FEText__ctor) {
   ForgetPlain(ctx.r3.u32);
+  cod3::textkeys::Forget(ctx.r3.u32);  // [acct2-main] 2026-11-15
   __imp__FEText__ctor(ctx, base);
 }
 
 REX_EXTERN(__imp__FEText__ctor_2);
 REX_HOOK_RAW(FEText__ctor_2) {
   ForgetPlain(ctx.r3.u32);
+  cod3::textkeys::Forget(ctx.r3.u32);  // [acct2-main] 2026-11-15
   __imp__FEText__ctor_2(ctx, base);
 }
 
 REX_EXTERN(__imp__FEText__dtor);
 REX_HOOK_RAW(FEText__dtor) {
   ForgetPlain(ctx.r3.u32);
+  cod3::textkeys::Forget(ctx.r3.u32);  // [acct2-main] 2026-11-15
   __imp__FEText__dtor(ctx, base);
 }
 

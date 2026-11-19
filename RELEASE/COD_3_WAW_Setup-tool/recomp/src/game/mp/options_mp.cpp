@@ -95,6 +95,8 @@
 #include "game/pad_settings.h"   // [acct2-ocr] 2026-11-07
 #include "game/protected_dvars.h"  // [acct2-ocr] SaveSettings (cod3mp_app sets its save)
 #include "game/pc_menu.h"
+#include "game/text_language.h"  // [acct2-main] 2026-11-15 the list and the titles in the chosen language
+#include "game/text_rekey.h"     // [acct2-main] 2026-11-15 the game's own rows follow a text language change
 
 namespace {
 
@@ -587,6 +589,7 @@ struct MatchPage {
   int list_item = 0;    // the list item to highlight on the list
   int rows_shown = 0;   // rows of the page shown
   std::array<std::string, kSlots> label_text, value_text;
+  std::array<std::string, kMaxCategories> item_text;  // [acct2-main] 2026-11-15 the list's items as shown
   std::string note_text, title_text;
   std::chrono::steady_clock::time_point last_drawn{};
 };
@@ -789,13 +792,22 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t elem, std::string& shown, 
   shown = text;
 }
 
+// [acct2-main] 2026-11-15 A list item's or a page title's words (game/options_pages.h keys): the chosen language's
+// when its pack has an "@port" row for the key (game/text_language.h PortText), else the English.
+std::string PageText(uint8_t* base, const char* key) {
+  if (const uint32_t ours = cod3::text::PortText(base, key)) return cod3::guest::ReadString(base, ours, 128);
+  const char* english = op::Text(key);
+  return english ? english : "?";
+}
+
 void ShowTitle(PPCContext& ctx, uint8_t* base, MatchPage& m) {
   const op::Page* p = m.page >= 0 ? op::PageAt(kMenu, m.page) : nullptr;
-  const char* want = p ? op::Text(p->title_key) : nullptr;
-  const std::string key = want ? want : kOwnTitleKey;
+  const char* want = p && op::Text(p->title_key) ? p->title_key : nullptr;
+  // [acct2-main] 2026-11-15 the key and the text language's generation: shown again after a language change
+  const std::string key = std::string(want ? want : kOwnTitleKey) + '#' + std::to_string(cod3::text::Generation());
   if (key == m.title_text) return;
   if (want)
-    SetTextRaw(ctx, base, m.title, want);
+    SetTextRaw(ctx, base, m.title, PageText(base, want));  // [acct2-main] was op::Text's English
   else
     SetTextKey(ctx, base, m.title, kOwnTitleKey);
   m.title_text = key;
@@ -804,9 +816,23 @@ void ShowTitle(PPCContext& ctx, uint8_t* base, MatchPage& m) {
 // The values and the note as they are now (F2 or the console may have changed
 // a setting meanwhile).
 void ShowRowValues(PPCContext& ctx, uint8_t* base, uint32_t page, MatchPage& m) {
+  // [acct2-main] 2026-11-15 After a text language change: the title, and the list's items (set as words), in it.
+  ShowTitle(ctx, base, m);
+  if (m.page < 0)
+    for (int i = 0; i < m.categories; ++i)
+      if (const op::Page* p = op::PageAt(kMenu, i))
+        SetText(ctx, base, m.item_label[i], m.item_text[i], PageText(base, p->button_key));
   for (int k = 0; k < m.rows_shown; ++k) {
     const op::Row* row = RowOfPage(m, k);
     if (!row) continue;
+    // [acct2-main] 2026-11-15 A game's own row shows the words of its own label and value, which are hidden (not
+    // drawn, so not set again at their draw): set again from their keys first after a text language change.
+    if (row->source == op::Source::kNative && row->index >= 0 && row->index < kMatchOptions) {
+      cod3::textkeys::Refresh(ctx, base, m.own[row->index][0]);
+      const uint32_t entry = m.own_entry[row->index];
+      if (Valid(entry) && ReadU32(base, entry) == kComboVtable)
+        cod3::textkeys::Refresh(ctx, base, ReadU32(base, entry + kComboValueText));
+    }
     SetText(ctx, base, m.row[k].label, m.label_text[k], RowLabel(base, m, *row));
     SetText(ctx, base, m.row[k].value, m.value_text[k], RowValue(ctx, base, m, *row));
   }

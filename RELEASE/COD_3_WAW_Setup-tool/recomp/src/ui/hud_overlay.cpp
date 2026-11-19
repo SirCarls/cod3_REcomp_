@@ -239,6 +239,12 @@ REXCVAR_DEFINE_INT32(cod3_max_fps, 60, "cod3/Display",
                      "com_maxfps in the console all change it; the game starts with it.")
     .range(0, 1000);
 
+#if defined(COD3_MP)
+// [acct2-ocr] 2026-11-15 game/mp/hud_mp.cpp: names the view of the local client the game works for now and its place
+// (as its CG_DrawCrosshair hooks do), for the hooks at the end of this file.
+void Cod3MpNameCrosshairView(uint8_t* base);
+#endif
+
 namespace cod3::ui {
 
 namespace {
@@ -251,11 +257,20 @@ struct GameCrosshairView {
   std::atomic<float> aim{0.0f};     // 0 hip fire .. 1 aiming down sights
   std::atomic<float> color[4] = {1.0f, 1.0f, 1.0f, 1.0f};  // the game's crosshair color
   std::atomic<float> rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};   // x, y, width, height on the picture (0-1)
+  // [acct2-ocr] 2026-11-15 a cooked grenade's countdown for this view's player (time left, 1 to 0) and when the game
+  // last showed it, while that player chose Mine or Both for it
+  std::atomic<float> countdown{-1.0f};
+  std::atomic<int64_t> countdown_ns{0};
+  // [acct2-ocr] 2026-11-15 (owner 20:59) the game's own spread for the dynamic styles, in its 640 x 480 HUD units
+  std::atomic<float> spread{0.0f};
 };
 GameCrosshairView g_crosshair_views[kCrosshairViews];
 // The view the next NotifyGameCrosshair is for (SetGameCrosshairView, same guest thread).
 int g_next_view = 0;
 float g_next_rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
+// [acct2-ocr] 2026-11-15 the game's spread for the next NotifyGameCrosshair (the CG_DrawCrosshair hook at the end of this
+// file works it out for the infantry cross; 0 otherwise)
+float g_next_spread = 0.0f;
 constexpr int64_t kCrosshairShownNs = 150'000'000;
 
 int64_t NowNs() {
@@ -575,6 +590,7 @@ void NotifyGameCrosshair(float aim_fraction, const float rgba[4]) {
   }
   if (!std::isfinite(aim_fraction)) aim_fraction = 0.0f;
   v.aim.store(std::clamp(aim_fraction, 0.0f, 1.0f), std::memory_order_relaxed);
+  v.spread.store(g_next_spread, std::memory_order_relaxed);  // [acct2-ocr] 2026-11-15
   v.ns.store(NowNs(), std::memory_order_relaxed);
   // The next call is player 1's whole picture again unless its hook says otherwise.
   g_next_view = 0;
@@ -673,14 +689,20 @@ void BindCs2Crosshair() {
   caps.players = 1;
 #endif
   caps.sights = true;      // the hook's f29: how far the sights are up
+  caps.spread = true;      // [acct2-ocr] 2026-11-15 (owner 20:59) the game's own spread (GameSpread, below)
   caps.dead_color = true;  // CG_CalcCrosshairColor's black over a dead body
   // [acct2-ocr] 2026-11-14 17:40 the special crosshairs (owner 17:19: "default should be the game's own"): a weapon
   // with a reticle piece of its own, and the mounted guns' and vehicles' crosshair (one way in this game); the aiming
   // mode and the scopes are drawn without a hook of ours yet, so they stay the game's own.
   caps.special = (1u << f2::xhair::kSpecialOwnCross) | (1u << f2::xhair::kSpecialTurret);
   caps.special_label[f2::xhair::kSpecialOwnCross] = "Weapons with a reticle of their own";
-  caps.special_label[f2::xhair::kSpecialTurret] = "Mounted guns and vehicles";
-  caps.special_later = (1u << f2::xhair::kSpecialScope) | (1u << f2::xhair::kSpecialAimMode);
+  // [acct2-ocr] 2026-11-15 (owner 20:21: "Keep adding these to cod3. There is a grenade countdown crosshair in-game
+  // already."): the "aiming mode" (the player's flag 0x100000) is the vehicles' (the tank reticle widget draws only
+  // with it), so mounted guns (flags 0x6000) and vehicles get a row each, and the cooked grenade's countdown one
+  caps.special |= (1u << f2::xhair::kSpecialVehicle) | (1u << f2::xhair::kSpecialCountdown);
+  caps.special_label[f2::xhair::kSpecialTurret] = "Mounted guns";
+  caps.special_label[f2::xhair::kSpecialVehicle] = "Tanks and jeeps";
+  caps.special_later = 1u << f2::xhair::kSpecialScope;
   f2::xhair::SetCaps(caps);
 }
 
@@ -696,6 +718,102 @@ bool CustomCrosshairForNextView() {
 // [acct2-ocr] 2026-11-14 17:40 For a kind of crosshair (f2::xhair::kHipFire or a Special), after the ask above:
 // whether the game draws its own and whether that player's is drawn.
 f2::xhair::Plan CrosshairPlanForNextView(int kind) { return f2::xhair::PlanFor(g_next_view, kind); }
+
+namespace {  // [acct2-ocr] 2026-11-15 this file's own (the hooks at its end)
+
+// [acct2-ocr] 2026-11-15 The view of the local client the game works for now (its active local client; the campaign's
+// is always 0), as hud_mp.cpp's SetView names it.
+int ActiveView(uint8_t* base) {
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  return client < uint32_t(kCrosshairViews) ? int(client) : 0;
+}
+
+// [acct2-ocr] 2026-11-15 For the hooks at the end of this file, which don't come through CG_DrawCrosshair's: their
+// crosshair is the view's of the local client the game works for now, at the middle of that view (cod3mp: hud_mp.cpp
+// names it and its place from the view's refdef, as for CG_DrawCrosshair's; the campaign: the whole picture). Then
+// player 1's whole picture is named again, as after NotifyGameCrosshair.
+GameCrosshairView& NameActiveView(uint8_t* base) {
+#if defined(COD3_MP)
+  ::Cod3MpNameCrosshairView(base);
+#else
+  (void)base;
+  SetGameCrosshairView(0, 0.0f, 0.0f, 1.0f, 1.0f);
+#endif
+  GameCrosshairView& v = g_crosshair_views[g_next_view];
+  for (int i = 0; i < 4; ++i) v.rect[i].store(g_next_rect[i], std::memory_order_relaxed);
+  g_next_view = 0;
+  g_next_rect[0] = g_next_rect[1] = 0.0f;
+  g_next_rect[2] = g_next_rect[3] = 1.0f;
+  return v;
+}
+
+// That view's crosshair wanted this frame (a vehicle's, the tank reticle's), in its player's color.
+void NotifyViewCrosshair(uint8_t* base) {
+  GameCrosshairView& v = NameActiveView(base);
+  for (int i = 0; i < 4; ++i) v.color[i].store(1.0f, std::memory_order_relaxed);
+  v.aim.store(0.0f, std::memory_order_relaxed);
+  v.spread.store(0.0f, std::memory_order_relaxed);
+  v.ns.store(NowNs(), std::memory_order_relaxed);
+}
+
+// That view's player's cooked grenade: `left` of its fuse left (1 to 0).
+void NotifyCountdown(uint8_t* base, float left) {
+  GameCrosshairView& v = NameActiveView(base);
+  v.countdown.store(std::isfinite(left) ? std::clamp(left, 0.0f, 1.0f) : 0.0f, std::memory_order_relaxed);
+  v.countdown_ns.store(NowNs(), std::memory_order_relaxed);
+}
+
+// [acct2-ocr] 2026-11-15 The local client's player state, as the IGO widgets read it: its entity (campaign
+// 0x82A2AB40, cod3mp 0x82BCC7FC: a pointer to the entities, client + 1), the entity's +0x210 (cod3mp +0x200). 0 when
+// it can't be read. Its flags are at +0xd0 (cod3mp +0xf0).
+#if defined(COD3_MP)
+constexpr uint32_t kPlayerFlags = 0xF0;
+#else
+constexpr uint32_t kPlayerFlags = 0xD0;
+#endif
+uint32_t PlayerState(uint8_t* base) {
+#if defined(COD3_MP)
+  constexpr uint32_t kEntities = 0x82BCC7FC, kEntityPlayerState = 0x200;
+#else
+  constexpr uint32_t kEntities = 0x82A2AB40, kEntityPlayerState = 0x210;
+#endif
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4) return 0;
+  const uint32_t table = cod3::guest::ReadU32(base, kEntities);
+  if (table < 0x10000000u || table >= 0xF0000000u) return 0;
+  const uint32_t entity = cod3::guest::ReadU32(base, table + (client + 1) * 4);
+  if (entity < 0x10000000u || entity >= 0xF0000000u) return 0;
+  const uint32_t ps = cod3::guest::ReadU32(base, entity + kEntityPlayerState);
+  return ps >= 0x10000000u && ps < 0xF0000000u ? ps : 0;
+}
+
+uint32_t PlayerFlags(uint8_t* base) {
+  const uint32_t ps = PlayerState(base);
+  return ps != 0 ? cod3::guest::ReadU32(base, ps + kPlayerFlags) : 0;
+}
+
+// Whether IGOTankReticleWidget's draw (vfunc 3) draws the tank's reticle now, by its own checks: the widget is shown
+// (+4) and has its reticle (+8, cod3mp +0xC), the player's flag 0x100000 (in a vehicle), and the player state's
+// +0x4F8 isn't 1 (cod3mp: +0x784 is 3, +0x518 and +0x514 aren't 1). (It then draws the reticle, and its four reload
+// marks while +0x40, cod3mp +0x44, isn't below 0.)
+bool TankReticleShown(uint8_t* base, uint32_t widget) {
+#if defined(COD3_MP)
+  constexpr uint32_t kReticle = 0xC;
+#else
+  constexpr uint32_t kReticle = 0x8;
+#endif
+  if (cod3::guest::ReadU8(base, widget + 4) == 0 || cod3::guest::ReadU32(base, widget + kReticle) == 0) return false;
+  const uint32_t ps = PlayerState(base);
+  if (ps == 0 || (cod3::guest::ReadU32(base, ps + kPlayerFlags) & 0x100000u) == 0) return false;
+#if defined(COD3_MP)
+  return cod3::guest::ReadS32(base, ps + 0x784) == 3 && cod3::guest::ReadS32(base, ps + 0x518) != 1 &&
+         cod3::guest::ReadS32(base, ps + 0x514) != 1;
+#else
+  return cod3::guest::ReadS32(base, ps + 0x4F8) != 1;
+#endif
+}
+
+}  // namespace
 
 // [acct2-ocr] 2026-11-14 17:40 Whether the weapon of the local client the game draws for now has a reticle piece of its
 // own: CG_DrawCrosshair draws it after the cross (0x8243B038) when the weapon's +0x4D8 names one (a non-empty name;
@@ -721,6 +839,46 @@ bool WeaponHasOwnReticle(uint8_t* base) {
   }
   return own;
 }
+
+namespace {  // [acct2-ocr] 2026-11-15 this file's own, for the hooks at its end
+
+// [acct2-ocr] 2026-11-15 (owner 20:59: "make that hook now", the dynamic styles following CoD3's spread) The game's
+// spread for the infantry cross of the local client the game works for now, in its 640 x 480 HUD units: how far from
+// the middle the game puts its four pieces (CG_DrawCrosshair's cross, 0x82442BB0 / cod3mp 0x8245C420, places each one
+// that far out). The game's own function works it out (campaign 0x82439378, cod3mp 0x82452A70): the weapon's spread
+// for the player now (its minimum to maximum by the player's aim spread scale) as tan(spread) / tan(half the field of
+// view) * 240, at least the weapon's +0x4E8; it writes that less the piece size times the weapon's +0x690, so it is
+// handed piece sizes of 0. It only reads (the player state, the weapon, the field of view). Its arguments as the cross
+// passes them: the weapon (the cg's, as WeaponHasOwnReticle reads it), the weapon's first word, the scale 1. -1 when
+// the weapon has no cross pieces (+0x4DC empty: the game draws none) or the player can't be read.
+float GameSpread(PPCContext& ctx, uint8_t* base) {
+#if defined(COD3_MP)
+  constexpr uint32_t kCgWeapon = 0x82C7E70C, kCgStride = 0x18E0, kSpreadFunc = 0x82452A70;
+#else
+  constexpr uint32_t kCgWeapon = 0x82A99E2C, kCgStride = 0x16D0, kSpreadFunc = 0x82439378;
+#endif
+  constexpr uint32_t kWeaponCrossPiece = 0x4DC;
+  auto valid = [](uint32_t a) { return a >= 0x10000000u && a < 0xF0000000u; };
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4 || PlayerState(base) == 0) return -1.0f;
+  const uint32_t weapon = cod3::guest::ReadU32(base, kCgWeapon + client * kCgStride);
+  if (!valid(weapon)) return -1.0f;
+  const uint32_t piece = cod3::guest::ReadU32(base, weapon + kWeaponCrossPiece);
+  if (!valid(piece) || cod3::guest::ReadU8(base, piece) == 0) return -1.0f;
+  cod3::guest::Call call(ctx, base);
+  auto& c = call.ctx();
+  c.r1.u32 = (c.r1.u32 - 0x40) & ~0xFu;  // scratch: [r1, r1 + 0x40), above the callee's frames
+  const uint32_t sizes = c.r1.u32, out = sizes + 0x10;
+  for (uint32_t a = sizes; a < sizes + 0x20; a += 4) cod3::guest::WriteU32(base, a, 0);
+  call.Invoke(kSpreadFunc, {weapon, cod3::guest::ReadU32(base, weapon), sizes, 0, out}, {1.0});
+  const float spread = cod3::guest::ReadF32(base, out + 4);
+  return std::isfinite(spread) && spread >= 0.0f ? std::min(spread, 480.0f) : -1.0f;
+}
+
+// For the CG_DrawCrosshair hook: the spread the next NotifyGameCrosshair passes on (0 for none).
+void SetNextSpread(float spread) { g_next_spread = std::isfinite(spread) && spread > 0.0f ? spread : 0.0f; }
+
+}  // namespace
 
 static void DrawCrosshairShape(ImDrawList* dl, ImVec2 c, const CrosshairStyle& s, float scale,
                                ImU32 col, float extra) {
@@ -1837,8 +1995,12 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   for (auto& v : g_crosshair_views) {
     const int view = int(&v - g_crosshair_views);
     if (!f2::xhair::Enabled(view)) continue;
-    if (now - v.ns.load(std::memory_order_relaxed) > kCrosshairShownNs) continue;
-    const float aim = v.aim.load(std::memory_order_relaxed);
+    // [acct2-ocr] 2026-11-15 the cooked grenade's countdown in this player's look (Mine or Both) is drawn too while
+    // the game shows its countdown, with the crosshair or without it (the countdown alone: the game drew no crosshair)
+    const bool cross = now - v.ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
+    const bool countdown = now - v.countdown_ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
+    if (!cross && !countdown) continue;
+    const float aim = cross ? v.aim.load(std::memory_order_relaxed) : 0.0f;
     const float fade = std::clamp(1.0f - 2.0f * aim, 0.0f, 1.0f);
     const float rx = v.rect[0].load(std::memory_order_relaxed), ry = v.rect[1].load(std::memory_order_relaxed);
     const float rw = v.rect[2].load(std::memory_order_relaxed), rh = v.rect[3].load(std::memory_order_relaxed);
@@ -1861,6 +2023,9 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     for (int i = 0; i < 4; ++i) xv.rgba[i] = v.color[i].load(std::memory_order_relaxed);
     xv.rgba[3] *= fade;  // the sights coming up fade it, as before; the iron sight dot doesn't fade
     xv.sights = aim;
+    if (cross) xv.spread = v.spread.load(std::memory_order_relaxed);  // [acct2-ocr] 2026-11-15
+    xv.cross = cross;  // [acct2-ocr] 2026-11-15
+    if (countdown) xv.countdown = v.countdown.load(std::memory_order_relaxed);
     // [claude-9b] 2026-10-27 cod3_debug_crosshair: screenshots are the game's own picture without this
     // overlay (game/screenshot.cpp), so tests read each view's crosshair from the log instead.
     if (REXCVAR_GET(cod3_debug_crosshair)) {
@@ -1870,10 +2035,10 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
         const f2::xhair::Settings& ps = f2::xhair::Player(view);
         REXLOG_INFO("cod3: crosshair: view {} drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, view height {:.0f} ({:.2f} of "
                     "the picture's), alpha {:.2f}; player {}'s: style {} ({}), length {:.1f}, thickness {:.1f}, gap "
-                    "{:.1f}, outline {}, color from {}",
+                    "{:.1f}, outline {}, color from {}; the game's spread {:.1f} units",  // [acct2-ocr] the spread
                     view + 1, c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, view_h, rh, xv.rgba[3], view + 1,
                     ps.style, f2::xhair::StyleName(ps.style), ps.length, ps.thickness, ps.gap, ps.outline,
-                    ps.color_from);
+                    ps.color_from, xv.spread);
       }
     }
     f2::xhair::DrawView(dl, view, xv);
@@ -4319,13 +4484,35 @@ static bool ApplyLowEndPreset() {
   return restart;
 }
 
+// [acct2-bro] 2026-11-15 PERFORMANCE and EMULATION tidied (owner 20:37: "The performance tab and emulation tab seem
+// like they are a mess, please take a look at them"). What was wrong: a help line was drawn for settings this build
+// doesn't have, with no box above it (GPU speed-ups showed two of them); "Logging" held screenshots and the HD
+// compare as well; greyed rows showed a value they weren't using ("Every minute" with Log detail on Normal); the
+// frame cost row had two help paragraphs; each Reset left some of its page's settings as they were (PERFORMANCE: the
+// log detail and debug screenshots; EMULATION: the native renderer switch); the two "sleep while waiting" rows sat
+// under Native code though they're about CPU use (the low-end preset on PERFORMANCE sets them); and most help ran to
+// three or four lines. Every setting, value and behavior is as before; only where rows sit and their words changed.
+
+// A setting's checkbox with its help under it; nothing at all when this build doesn't have the setting (the help
+// used to stay behind on its own). Returns true when the box was changed.
+static bool CvarCheckboxHelp(const char* label, const char* cvar, const char* help, bool* restart) {
+  if (!Has(cvar)) return false;
+  const bool changed = CvarCheckbox(label, cvar, restart);
+  Help(help);
+  return changed;
+}
+
+static constexpr const char* kPerformanceSettings[] = {
+    "cod3_perf_overlay", "cod3_perf_log", "cod3_job_wait_sleeps", "cod3_gpu_wait_sleeps", "cod3_log_detail",
+    "cod3_debug_screenshots",
+};
+
 void SettingsWindow::DrawPerformance() {
   if (ResetButton("reset_perf", "performance settings")) {
-    // [claude-9b] 2026-10-27 the shader, render target and memory settings moved to EMULATION (its own reset).
-    restart_needed_ |= ResetSettings({"cod3_perf_overlay", "cod3_perf_log"});
+    for (const char* name : kPerformanceSettings) restart_needed_ |= ResetSettings({name});
     dirty_ = true;
   }
-  Section("Low-end PC");
+  Section("Quick setup");
   if (ImGui::Button("Use low-end PC settings...")) ImGui::OpenPopup("Low-end PC settings##lowend");
   if (ImGui::BeginPopupModal("Low-end PC settings##lowend", nullptr,
                              ImGuiWindowFlags_AlwaysAutoResize)) {
@@ -4353,77 +4540,17 @@ void SettingsWindow::DrawPerformance() {
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
-  Help("Changes the options in Video, EMULATION and on this page that cost the most on a slow PC, for the "
-       "least difference on screen. Each can still be changed back by hand; most apply after a "
-       "restart. If something in the world goes missing or stops updating afterwards, turn on "
-       "EMULATION > GPU > \"Re-send all memory the game wrote, every frame\".");
-  Section("Logging");
-  {
-    const char* v[] = {"normal", "verbose", "debug"};
-    const char* n[] = {"Normal", "Verbose (slow frames, load times, costs)", "Debug (everything)"};
-    dirty_ |= CvarCombo("Log detail", "cod3_log_detail", v, n, 3, &restart_needed_);
-    Help("How much goes into userdata/logs/cod3.log. Verbose adds every slow frame with what the "
-         "emulated GPU did in it, level load times, the frame cost every 10 seconds and every "
-         "settings change. Debug also adds the SDK's own debug messages (a much bigger log). "
-         "Applies at once.");
-    if (ImGui::Button("Write a report")) {
-      const auto path = cod3::diag::WriteReport();
-      status_ = path.empty() ? "Couldn't write the report."
-                             : "Report written: userdata/logs/" + cod3::PathToUtf8(path.filename());
-    }
-    Help("Writes userdata/logs/report-<date>-<time>.txt: the build, the settings that matter, every "
-         "setting you changed, level load times, the last minute of frame costs and the slowest "
-         "frames. Attach it (and cod3.log) to a bug report. Same as cod3_report in the console.");
-    if (ImGui::Button("Take a screenshot")) {
-      const std::string file =
-          cod3::shot::Request(cod3::shot::Kind::kAsked, "asked for in F2");
-      status_ = !file.empty() ? "Screenshot: userdata/logs/screenshots/" + file
-                : cod3::shot::Available() ? std::string("One was just taken; try again in a moment.")
-                                          : std::string("Screenshots need the GPU emulation.");
-    }
-    Help("Saves the game's own picture (not this window, the console, the desktop or anything "
-         "else on screen) to userdata/logs/screenshots/. Same as screenshot in the console.");
-    {
-      const auto hd = cod3::GetHdTextures();
-      const bool can_compare = (hd == cod3::HdTextures::kOn || hd == cod3::HdTextures::kCommandLine) &&
-                               !cod3::kMultiplayer && !cod3::hd::IsMultiplayerMode();
-      ImGui::BeginDisabled(!can_compare);
-      if (ImGui::Button("Compare HD textures")) {
-        const std::string stem = cod3::shot::RequestHdCompare(2.0);
-        status_ = stem.empty() ? std::string("A comparison is already under way.")
-                               : "Screenshots: userdata/logs/screenshots/" + stem + "-on.png and -off.png";
-      }
-      ImGui::EndDisabled();
-    }
-    Help("Two screenshots of the same view: with the HD textures, then without them (they go off "
-         "for two seconds and come back by themselves). Stand still. Needs HD textures on at "
-         "start; campaign only. Same as cod3_hd_compare in the console.");
-    {
-      const char* v[] = {"0", "30", "60", "120", "300"};
-      const char* n[] = {"Off", "Every 30 seconds", "Every minute", "Every 2 minutes",
-                         "Every 5 minutes"};
-      ImGui::BeginDisabled(Get("cod3_log_detail") != "debug");  // [acct2-decomp] its help: Debug only
-      dirty_ |= CvarCombo("Debug screenshots", "cod3_debug_screenshots", v, n, 5, &restart_needed_);
-      ImGui::EndDisabled();
-    }
-    Help("With Log detail on Debug only: the game's picture every so often while it changes, "
-         "when the game gets stuck, and with each report, into userdata/logs/screenshots/ "
-         "(the newest 100 automatic ones are kept). Only the game's own picture is saved.");
-  }
+  Help("Turns down what costs most on a slow PC (in Video, EMULATION and here), with the list shown first. If "
+       "something in the world then stops updating, turn on EMULATION > GPU > \"Re-send all memory\".");
+
   Section("Frame cost");
-  dirty_ |= CvarCheckbox("Show what each frame costs", "cod3_perf_overlay", &restart_needed_);
-  Help("Under the frame rate: the game thread's time per frame, the emulated GPU's draws, "
-       "resolves and render target transfers, how often it waited for the graphics card, and "
-       "memory sent to the card. Same as cod3_perf_overlay in the console. cod3_perf_log N also "
-       "writes it to the log every N seconds.");
-  // [hw-scaling]
-  Help("It also shows the GPU emulation thread's time, the three busiest threads and what limits "
-       "the frame rate: the frame limit, your graphics card, the GPU emulation thread, the "
-       "game's main thread, or the game's other threads. \"Write a report\" lists every "
-       "thread and what this PC has.");
-  // [hw-scaling] the same, in full: what limits the frame rate, every busy
-  // thread with its waits, and what this PC has (game/thread_profiler.h,
-  // game/machine_profile.h).
+  dirty_ |= CvarCheckboxHelp("Show what each frame costs", "cod3_perf_overlay",
+                             "Under the frame rate: the game thread's time, the GPU emulation's draws and waits, the "
+                             "busiest threads, and what limits the frame rate (the frame limit, your graphics card, "
+                             "the GPU emulation or the game's own threads). cod3_perf_overlay in the console.",
+                             &restart_needed_);
+  // [hw-scaling] what limits the frame rate, every busy thread with its waits, and what this PC has
+  // (game/thread_profiler.h, game/machine_profile.h).
   if (ImGui::TreeNode("Threads and this PC")) {
     const cod3::ThreadReport threads = cod3::ThreadProfiler::Get().Report();
     const std::string verdict = cod3::ThreadProfiler::Verdict(threads);
@@ -4464,29 +4591,87 @@ void SettingsWindow::DrawPerformance() {
       }
       ImGui::EndTable();
     }
-    Help("CPU is % of one core over the last second; waits are the share of that second a thread "
-         "spent waiting on the game's own events, sleeping, spinning on a lock or waiting for the "
-         "emulator's global lock.");
+    Help("CPU is % of one core over the last second; waits are the share of that second a thread spent waiting "
+         "on the game's own events, sleeping, spinning on a lock or waiting for the emulator's global lock.");
     const auto& machine = cod3::machine::Get();
     const std::string pc = machine.Describe() + "Thread plan: " +
                            cod3::machine::Budget(machine).Describe();
     ImGui::TextUnformatted(pc.c_str());
     ImGui::TreePop();
   }
-  // [claude-9b] 2026-10-27 render target emulation and the shader settings moved to EMULATION.
+
+  // [acct2-bro] 2026-11-15 moved here from EMULATION > Native code: they decide how much CPU waiting costs.
+  Section("CPU");
+  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the game's own jobs", "cod3_job_wait_sleeps",
+                             "The game's thread sleeps until its jobs are done instead of checking over and over, "
+                             "which leaves CPU time for the rest.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the GPU emulation", "cod3_gpu_wait_sleeps",
+                             "The game's thread sleeps while the graphics emulation works, instead of keeping a CPU "
+                             "core busy.", &restart_needed_);
+
+  Section("Logs and reports");
+  {
+    const char* v[] = {"normal", "verbose", "debug"};
+    const char* n[] = {"Normal", "Verbose (slow frames, load times, costs)", "Debug (everything)"};
+    dirty_ |= CvarCombo("Log detail", "cod3_log_detail", v, n, 3, &restart_needed_);
+    Help("How much goes into userdata/logs/cod3.log. Verbose adds slow frames, load times and frame costs; Debug "
+         "also adds the SDK's own messages (a much bigger log). Applies at once.");
+  }
+  if (ImGui::Button("Write a report")) {
+    const auto path = cod3::diag::WriteReport();
+    status_ = path.empty() ? "Couldn't write the report."
+                           : "Report written: userdata/logs/" + cod3::PathToUtf8(path.filename());
+  }
+  Help("userdata/logs/report-<date>-<time>.txt: the build, the settings you changed, load times and the slowest "
+       "frames. Attach it and cod3.log to a bug report. cod3_report in the console.");
+  if (Get("cod3_log_detail") == "debug") {  // [acct2-decomp] its help: Debug only
+    const char* v[] = {"0", "30", "60", "120", "300"};
+    const char* n[] = {"Off", "Every 30 seconds", "Every minute", "Every 2 minutes", "Every 5 minutes"};
+    dirty_ |= CvarCombo("Debug screenshots", "cod3_debug_screenshots", v, n, 5, &restart_needed_);
+    Help("The game's picture every so often, when it gets stuck and with each report, in "
+         "userdata/logs/screenshots/ (the newest 100 are kept).");
+  } else {
+    // [acct2-bro] 2026-11-15 a greyed box showed a value it wasn't using ("Every minute" with Log detail on Normal)
+    Help("Debug screenshots: with Log detail on Debug.");
+  }
+
+  Section("Screenshots");
+  if (ImGui::Button("Take a screenshot")) {
+    const std::string file =
+        cod3::shot::Request(cod3::shot::Kind::kAsked, "asked for in F2");
+    status_ = !file.empty() ? "Screenshot: userdata/logs/screenshots/" + file
+              : cod3::shot::Available() ? std::string("One was just taken; try again in a moment.")
+                                        : std::string("Screenshots need the GPU emulation.");
+  }
+  {
+    const auto hd = cod3::GetHdTextures();
+    const bool can_compare = (hd == cod3::HdTextures::kOn || hd == cod3::HdTextures::kCommandLine) &&
+                             !cod3::kMultiplayer && !cod3::hd::IsMultiplayerMode();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!can_compare);
+    if (ImGui::Button("Compare HD textures")) {
+      const std::string stem = cod3::shot::RequestHdCompare(2.0);
+      status_ = stem.empty() ? std::string("A comparison is already under way.")
+                             : "Screenshots: userdata/logs/screenshots/" + stem + "-on.png and -off.png";
+    }
+    ImGui::EndDisabled();
+    Help(can_compare ? "The game's own picture (not this window) to userdata/logs/screenshots/. Compare HD textures "
+                       "takes two of the same view, with and without them: stand still."
+                     : "The game's own picture (not this window) to userdata/logs/screenshots/. Compare HD textures "
+                       "needs HD textures on at start (campaign only).");
+  }
 }
 
 // [claude-9b] 2026-10-27 EMULATION (owner 17:09: "make a emulation tab in the f2 menu for the emulation
 // toggles"): every setting about how the Xbox 360 is emulated, or which of the game's own code runs as native
-// code instead, in one place. Moved here: the native renderer toggle (was Video > Display), the resolve
-// readback (was Video > Accuracy), real 2x MSAA (was Video > Quality), render target emulation and the shader
-// settings (were PERFORMANCE). New rows for settings that had none (the SDK's speed-ups and the native code
-// switches). A row only shows when this build has its setting (Has()), so builds without an SDK patch, the
-// other graphics API and cod3mp all work.
+// code instead, in one place. A row only shows when this build has its setting (Has()), so builds without an SDK
+// patch, the other graphics API and cod3mp all work.
+// [acct2-bro] 2026-11-15 the native renderer switch is reset with the rest; the two waiting rows went to
+// PERFORMANCE > CPU.
 static constexpr const char* kEmulationSettings[] = {
-    "cod3_renderer", "render_target_path_vulkan", "render_target_path_d3d12", "readback_resolve",
-    "readback_resolve_cpu_reads_only", "readback_resolve_cpu_pages_only", "readback_resolve_full_deferred",
-    "native_2x_msaa", "clear_memory_page_state",
+    "cod3_native_vulkan", "cod3_renderer", "render_target_path_vulkan", "render_target_path_d3d12",
+    "readback_resolve", "readback_resolve_cpu_reads_only", "readback_resolve_cpu_pages_only",
+    "readback_resolve_full_deferred", "native_2x_msaa", "clear_memory_page_state",
     // GPU speed-ups (SDK patches)
     "vulkan_reuse_draw_state", "vulkan_skip_unchanged_fetch_constants", "vulkan_sampler_cache",
     "vulkan_reuse_texture_descriptors", "vulkan_dynamic_constant_offsets", "vulkan_resolve_into_textures",
@@ -4495,7 +4680,6 @@ static constexpr const char* kEmulationSettings[] = {
     "store_shaders",
     // Native code
     "cod3_native_crt", "cod3_native_math", "cod3_native_printf", "cod3_native_strtol", "cod3_native_lzo",
-    "cod3_job_wait_sleeps", "cod3_gpu_wait_sleeps",
     // Sound
     "cod3_native_fmod", "cod3_native_fmod_mix", "cod3_native_resampler", "xma_restart_without_reopen",
     "audio_pace_callbacks",
@@ -4506,9 +4690,8 @@ void SettingsWindow::DrawEmulation() {
     for (const char* name : kEmulationSettings) restart_needed_ |= ResetSettings({name});
     dirty_ = true;
   }
-  Help("How the Xbox 360 is emulated, and which parts of the game run as native PC code. The defaults are "
-       "the tested, fastest choices. Change these to compare, or when something looks wrong; most apply "
-       "after a restart.");
+  Help("How the Xbox 360 is emulated, and which of the game's code runs as native PC code. The defaults are the "
+       "tested, fastest ones; most of these apply after a restart.");
   if (!ImGui::BeginTabBar("##emulation_views")) return;
   struct Page {
     const char* label;
@@ -4528,7 +4711,7 @@ void SettingsWindow::DrawEmulation() {
   ImGui::EndTabBar();
 }
 
-// EMULATION > GPU: how the Xbox 360's graphics chip and its memory are emulated.
+// EMULATION > GPU: who draws the game, and how the Xbox 360's graphics chip and its memory are emulated.
 void SettingsWindow::DrawEmulationGpu() {
   // [f2-menus] 2026-11-11 08:16 Who draws, as one switch. The owner (08:15): "the f2 menu still has mentions of the
   // rust renderer. It should be vulkan and the toggle box should be able to be pressed if they desire." and "and
@@ -4546,6 +4729,7 @@ void SettingsWindow::DrawEmulationGpu() {
   constexpr bool kNativeBuilt = false;
 #endif
   if (Has("cod3_native_vulkan")) {
+    Section("Renderer");
     ImGui::BeginDisabled(!kNativeBuilt && !GetBool("cod3_native_vulkan"));  // a saved "on" can still be turned off
     if (CvarCheckbox("Native renderer (Vulkan)", "cod3_native_vulkan", &restart_needed_)) {
       if (Has("cod3_renderer") && Get("cod3_renderer") != "xenos") rex::cvar::SetFlagByName("cod3_renderer", "xenos");
@@ -4561,16 +4745,19 @@ void SettingsWindow::DrawEmulationGpu() {
 #ifdef _WIN32
     else if (GetBool("cod3_native_vulkan") && Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12")
       ImGui::TextDisabled("Needs Video > Display > Graphics API on Vulkan or Automatic, not Direct3D 12.");
-    Help("On: the port's own Vulkan renderer draws the game, and the Xbox 360 GPU emulation is off. Off: the emulated "
-         "Xbox 360 GPU draws it, as the game always has (the default). The Vulkan renderer is still being finished, "
-         "so a few things can look different from the game. It draws through Vulkan, so turning it on also sets "
-         "Video > Display > Graphics API to Vulkan if it was Direct3D 12. Applies after a restart.");
+    Help("Off (the default): the emulated Xbox 360 GPU draws the game, as it always has. On: the port's own Vulkan "
+         "renderer draws it (still being finished, so a few things can look different); it also sets Graphics API to "
+         "Vulkan if it was Direct3D 12. Applies after a restart.");
 #else
-    Help("On: the port's own Vulkan renderer draws the game, and the Xbox 360 GPU emulation is off. Off: the emulated "
-         "Xbox 360 GPU draws it, as the game always has (the default). The Vulkan renderer is still being finished, "
-         "so a few things can look different from the game. Applies after a restart.");
+    Help("Off (the default): the emulated Xbox 360 GPU draws the game, as it always has. On: the port's own Vulkan "
+         "renderer draws it (still being finished, so a few things can look different). Applies after a restart.");
 #endif
+    // [acct2-bro] 2026-11-15 the rows below only matter while the emulated GPU draws
+    if (GetBool("cod3_native_vulkan"))
+      Help("With the native renderer on, the GPU emulation rows below and on GPU speed-ups do nothing.");
   }
+
+  Section("Graphics memory");
   {
     // How the Xbox 360's EDRAM (the GPU's own render memory) is emulated.
     const char* v[] = {"", "fbo", "fsi"};
@@ -4584,44 +4771,40 @@ void SettingsWindow::DrawEmulationGpu() {
     if (Has("render_target_path_d3d12"))
       dirty_ |= CvarCombo("Render target emulation (Direct3D 12)", "render_target_path_d3d12", dv,
                           dn, 3, &restart_needed_);
-    Help("Host render targets draw with the graphics card's own blending, but have to copy pictures "
-         "between render targets whenever the game reuses its video memory (\"transfers\" in the "
-         "frame cost readout). Pixel shader interlock emulates that memory exactly and never copies, "
-         "but every pixel does more work. Busy scenes with many transfers may run faster with it. "
-         "Applies after a restart.");
+    if (Has("render_target_path_vulkan") || Has("render_target_path_d3d12"))
+      Help("Host render targets use the card's own blending but copy pictures when the game reuses its video memory "
+           "(\"transfers\" in the frame cost). Interlock never copies but costs every pixel more. Applies after a "
+           "restart.");
   }
-  dirty_ |= CvarCheckbox("Draw the game's 2x MSAA as real 2x (faster)", "native_2x_msaa",
-                         &restart_needed_);
-  Help("How the game's own 2x MSAA is drawn (it's on whenever it fits the emulated video memory: "
-       "always with Vulkan). On: your GPU's 2x MSAA. Off: 4x MSAA keeping two of the samples, which "
-       "places them exactly like the Xbox 360 but is about twice the work for the GPU. Leave it "
-       "on. Applies after a restart.");
+  dirty_ |= CvarCheckboxHelp("Draw the game's 2x MSAA as real 2x (faster)", "native_2x_msaa",
+                             "On: your GPU's own 2x MSAA. Off: 4x keeping two of the samples, placed exactly as on "
+                             "the Xbox 360 but about twice the GPU work. Applies after a restart.",
+                             &restart_needed_);
 
   Section("Resolve readback");
-  {
+  if (Has("readback_resolve")) {
     const char* v[] = {"none", "fast", "some", "full"};
     const char* n[] = {"Off", "Fast (recommended)", "On cache miss", "Full (accurate, slow)"};
     dirty_ |= CvarCombo("Resolve readback (lens-flare fix)", "readback_resolve", v, n, 4,
                         &restart_needed_);
-    Help("Copies some of the emulated GPU's results back so the game can read them. Without it, "
-         "lens flares and the sun shine through walls. Fast is the best balance; Full is exact but "
-         "slow. If smoke and explosions stutter, try On cache miss or Off and compare.");
+    Help("Copies some of the GPU's results back for the game to read; without it lens flares and the sun shine "
+         "through walls. If smoke and explosions stutter, compare On cache miss or Off.");
   }
-  dirty_ |= CvarCheckbox("Only the results the game reads", "readback_resolve_cpu_reads_only", &restart_needed_);
-  Help("Copies back only the results the game's own code reads, not every one. Off copies them all, as the "
-       "emulator first did (slower, the same picture).");
-  dirty_ |= CvarCheckbox("Only the parts the game reads", "readback_resolve_cpu_pages_only", &restart_needed_);
-  Help("Of those, copies only the pieces of memory the game reads. Off copies each result whole.");
-  dirty_ |= CvarCheckbox("Full readback without waiting", "readback_resolve_full_deferred", &restart_needed_);
-  Help("With Full, the GPU emulation doesn't stop at each copy to wait for the graphics card. Off waits "
-       "there, as before (slower).");
+  dirty_ |= CvarCheckboxHelp("Only the results the game reads", "readback_resolve_cpu_reads_only",
+                             "Off copies back every result, as the emulator first did (slower, the same picture).",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Only the parts the game reads", "readback_resolve_cpu_pages_only",
+                             "Of those, only the pieces of memory the game reads. Off copies each result whole.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Full readback without waiting", "readback_resolve_full_deferred",
+                             "With Full, the GPU emulation doesn't stop at each copy to wait for the card.",
+                             &restart_needed_);
 
   Section("Memory");
-  dirty_ |= CvarCheckbox("Re-send all memory the game wrote, every frame", "clear_memory_page_state",
-                         &restart_needed_);
-  Help("Off (default): only memory the game changed since the last frame is sent to the emulated GPU "
-       "again. On: everything the game's code ever wrote is sent again every frame. Slower; turn it on "
-       "only if something in the world goes missing or stops updating.");
+  dirty_ |= CvarCheckboxHelp("Re-send all memory the game wrote, every frame", "clear_memory_page_state",
+                             "Off (the default) sends only what changed since the last frame. Turn it on only if "
+                             "something in the world goes missing or stops updating (slower).",
+                             &restart_needed_);
 }
 
 // EMULATION > GPU speed-ups: shortcuts our SDK patches added to the GPU emulation. Each one is on by default
@@ -4631,38 +4814,37 @@ void SettingsWindow::DrawEmulationSpeedups() {
     ImGui::TextDisabled("Most of these are Vulkan only, and this build doesn't have them.");
   else if (Has("cod3_graphics_api") && Get("cod3_graphics_api") == "d3d12")
     ImGui::TextDisabled("The Vulkan rows below do nothing with Direct3D 12 (Video > Display > Graphics API).");
-  dirty_ |= CvarCheckbox("Reuse the last draw's state when nothing changed", "vulkan_reuse_draw_state",
-                         &restart_needed_);
-  Help("A draw that changes no setting reuses everything the previous draw set up, instead of setting it "
-       "all up again. The biggest of these: about 9-16% more frames in 4-player split screen.");
-  dirty_ |= CvarCheckbox("Skip slots the game rewrote unchanged", "vulkan_skip_unchanged_fetch_constants",
-                         &restart_needed_);
-  Help("When the game writes a texture or geometry slot with the value it already had, nothing is looked "
-       "up again.");
-  dirty_ |= CvarCheckbox("Cache texture samplers", "vulkan_sampler_cache", &restart_needed_);
-  Help("Keeps each texture filter setting once it's worked out, instead of working it out for every draw.");
-  dirty_ |= CvarCheckbox("Reuse texture sets", "vulkan_reuse_texture_descriptors", &restart_needed_);
-  Help("A draw that uses the same textures as an earlier one in the frame reuses that one's set.");
-  dirty_ |= CvarCheckbox("Draw constants without copying", "vulkan_dynamic_constant_offsets", &restart_needed_);
-  Help("Points the graphics card at each draw's constants with an offset instead of setting up a new "
-       "binding for every draw.");
-  dirty_ |= CvarCheckbox("Copy resolved pictures straight into textures", "vulkan_resolve_into_textures",
-                         &restart_needed_);
-  Help("When the game turns a finished picture into a texture, it's copied there directly instead of "
-       "through the emulated memory.");
-  dirty_ |= CvarCheckbox("Re-check rewritten geometry", "vulkan_vertex_refetch", &restart_needed_);
-  Help("Sends geometry to the graphics card again when the game rewrote it in place, even at the same "
-       "address. Fixes a rare one-frame wrong model.");
-  dirty_ |= CvarCheckbox("Remember each draw's textures", "vulkan_texture_memo", &restart_needed_);
-  Help("When a draw's textures haven't changed since the last draw, the same textures and filters are used "
-       "without looking them up again.");
-  dirty_ |= CvarCheckbox("Load HD textures in the background", "texture_replacement_async", &restart_needed_);
-  Help("Reads the HD texture files on their own thread, so the GPU emulation doesn't stop for them. Off "
-       "reads them on the GPU thread (stutters when new textures appear).");
+  Help("Each was checked to draw the same picture. Untick one only to compare, or for a picture problem.");
+  Section("Draws");  // [acct2-bro] 2026-11-15 a heading like Shaders below, so the page reads as two groups
+  dirty_ |= CvarCheckboxHelp("Reuse the last draw's state when nothing changed", "vulkan_reuse_draw_state",
+                             "The biggest of these: about 9-16% more frames in 4-player split screen.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Skip slots the game rewrote unchanged", "vulkan_skip_unchanged_fetch_constants",
+                             "A texture or geometry slot written with the value it had isn't looked up again.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Cache texture samplers", "vulkan_sampler_cache",
+                             "Each texture filter setting is worked out once, not for every draw.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Reuse texture sets", "vulkan_reuse_texture_descriptors",
+                             "A draw with the same textures as an earlier one in the frame reuses its set.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Draw constants without copying", "vulkan_dynamic_constant_offsets",
+                             "Each draw's constants are pointed at with an offset instead of a new binding.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Copy resolved pictures straight into textures", "vulkan_resolve_into_textures",
+                             "A finished picture the game turns into a texture is copied there directly, not "
+                             "through the emulated memory.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Re-check rewritten geometry", "vulkan_vertex_refetch",
+                             "Geometry the game rewrote in place is sent again. Fixes a rare one-frame wrong model.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Remember each draw's textures", "vulkan_texture_memo",
+                             "Textures that haven't changed since the last draw aren't looked up again.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Load HD textures in the background", "texture_replacement_async",
+                             "HD texture files are read on their own thread, so the GPU emulation doesn't stop for "
+                             "them (off: stutters when new textures appear).", &restart_needed_);
 
   Section("Shaders");
-  unsigned hw = std::max(1u, std::thread::hardware_concurrency());
-  ImGui::Text("Logical CPUs: %u", hw);
+  const unsigned hw = std::max(1u, std::thread::hardware_concurrency());
   for (const char* cvar : {"vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads"}) {
     if (!Has(cvar)) continue;
     int v = GetInt(cvar, -1);
@@ -4678,65 +4860,61 @@ void SettingsWindow::DrawEmulationSpeedups() {
       restart_needed_ = true;
       dirty_ = true;
     }
-    Help("CPU threads that turn the Xbox 360's shaders into your graphics card's the first time a new "
-         "effect appears. Auto uses all but one. Applies after a restart.");
+    // [acct2-bro] 2026-11-15 the CPU count in the help instead of a line of its own above the slider
+    char help[192];
+    std::snprintf(help, sizeof(help), "Threads that build a new effect's shaders the first time it appears. This PC "
+                  "has %u logical CPUs; auto uses all but one. Applies after a restart.", hw);
+    Help(help);
   }
-  dirty_ |= CvarCheckbox("Asynchronous shader compilation", "async_shader_compilation",
-                         &restart_needed_);
-  Help("While a new effect's shader is still being built, keep playing and draw it a moment later, "
-       "instead of pausing the game until it's ready. Fewer stutters the first time you see an "
-       "effect.");
-  if (CvarCheckbox("Store shader cache on disk", "store_shaders", &restart_needed_)) {
-    restart_needed_ = true;  // [acct2-main] 2026-11-13 read only at start (InitializeShaderStorage)
-    dirty_ = true;
+  dirty_ |= CvarCheckboxHelp("Asynchronous shader compilation", "async_shader_compilation",
+                             "A new effect is drawn a moment later while its shader builds, instead of the game "
+                             "pausing for it: fewer stutters the first time.", &restart_needed_);
+  if (Has("store_shaders")) {
+    if (CvarCheckbox("Store shader cache on disk", "store_shaders", &restart_needed_)) {
+      restart_needed_ = true;  // [acct2-main] 2026-11-13 read only at start (InitializeShaderStorage)
+      dirty_ = true;
+    }
+    Help("Built shaders are kept for the next session, so effects you've seen don't stutter again. Applies after a "
+         "restart.");  // [acct2-main] the restart
   }
-  Help("Saves built shaders, so the next session doesn't stutter on effects you've already seen. Applies "
-       "after a restart.");  // [acct2-main] the restart
 }
 
 // EMULATION > Native code: parts of the game's own code that run as hand-written PC code instead of the
 // translated Xbox 360 code. Each one is checked against the game's code; turning one off runs the game's own
 // code there again.
 void SettingsWindow::DrawEmulationNative() {
-  Help("Parts of the game's own code that run as hand-written PC code instead of the translated Xbox 360 "
-       "code. Each gives exactly what the game's code gives (checked against it). Untick one to run the game's "
-       "own code there again, for comparing.");
-  dirty_ |= CvarCheckbox("Memory and text functions", "cod3_native_crt", &restart_needed_);
-  Help("Copying, filling and comparing memory and text (memcpy, memset, strcmp and the like).");
-  dirty_ |= CvarCheckbox("Math functions", "cod3_native_math", &restart_needed_);
-  Help("Square roots, sines, powers and the other math library functions.");
-  dirty_ |= CvarCheckbox("Text formatting", "cod3_native_printf", &restart_needed_);
-  Help("Building text from numbers and words (sprintf and the like).");
-  dirty_ |= CvarCheckbox("Reading numbers from text", "cod3_native_strtol", &restart_needed_);
-  Help("Turning text into numbers (strtol, atoi and the like).");
-  dirty_ |= CvarCheckbox("Level file unpacking", "cod3_native_lzo", &restart_needed_);
-  Help("Unpacking the level files while a level loads (LZO).");
-
-  Section("Waiting");
-  dirty_ |= CvarCheckbox("Sleep while waiting for the game's own jobs", "cod3_job_wait_sleeps",
-                         &restart_needed_);
-  Help("While the game waits for its own jobs (the render job, every frame), its thread sleeps until the "
-       "job queue changes instead of checking it over and over, which leaves CPU time for the rest.");
-  dirty_ |= CvarCheckbox("Sleep while waiting for the GPU emulation", "cod3_gpu_wait_sleeps", &restart_needed_);
-  Help("While the game waits for the graphics emulation, its thread sleeps instead of keeping a CPU core "
-       "busy.");
+  Help("Parts of the game's code that run as hand-written PC code, each checked to give exactly what the game's "
+       "code gives. Untick one to run the game's own code there again, for comparing.");
+  dirty_ |= CvarCheckboxHelp("Memory and text functions", "cod3_native_crt",
+                             "Copying, filling and comparing memory and text (memcpy, memset, strcmp and the like).",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Math functions", "cod3_native_math",
+                             "Square roots, sines, powers and the other math library functions.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Text formatting", "cod3_native_printf",
+                             "Building text from numbers and words (sprintf and the like).", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Reading numbers from text", "cod3_native_strtol",
+                             "Turning text into numbers (strtol, atoi and the like).", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Level file unpacking", "cod3_native_lzo",
+                             "Unpacking the level files while a level loads (LZO).", &restart_needed_);
+  Help("The two \"sleep while waiting\" rows are on PERFORMANCE > CPU.");  // [acct2-bro] 2026-11-15
 }
 
-// EMULATION > Sound: the sound engine's busiest parts as native code, and how the Xbox 360's sound chip is
+// EMULATION > Audio engine: the sound engine's busiest parts as native code, and how the Xbox 360's sound chip is
 // emulated.
 void SettingsWindow::DrawEmulationSound() {
-  dirty_ |= CvarCheckbox("Native reverb (FMOD)", "cod3_native_fmod", &restart_needed_);
-  Help("The sound engine's reverb, which was half of its work, as native code.");
-  dirty_ |= CvarCheckbox("Native mixing (FMOD)", "cod3_native_fmod_mix", &restart_needed_);
-  Help("Mixing each sound into the speakers, as native code.");
-  dirty_ |= CvarCheckbox("Native resampling (FMOD)", "cod3_native_resampler", &restart_needed_);
-  Help("Changing each sound's pitch and rate, as native code.");
-  dirty_ |= CvarCheckbox("Reuse the sound decoder on a restart", "xma_restart_without_reopen", &restart_needed_);
-  Help("When a sound starts again, the emulated sound chip's decoder is reset instead of built again. Much "
-       "less work for the sound thread.");
-  dirty_ |= CvarCheckbox("Steady sound timing", "audio_pace_callbacks", &restart_needed_);
-  Help("Hands sound to your speakers in evenly spaced pieces instead of bursts. Off can make sounds "
-       "repeat.");
+  dirty_ |= CvarCheckboxHelp("Native reverb (FMOD)", "cod3_native_fmod",
+                             "The sound engine's reverb, which was half of its work, as native code.",
+                             &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Native mixing (FMOD)", "cod3_native_fmod_mix",
+                             "Mixing each sound into the speakers, as native code.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Native resampling (FMOD)", "cod3_native_resampler",
+                             "Changing each sound's pitch and rate, as native code.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Reuse the sound decoder on a restart", "xma_restart_without_reopen",
+                             "A sound that starts again resets the emulated sound chip's decoder instead of building "
+                             "a new one: much less work for the sound thread.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Steady sound timing", "audio_pace_callbacks",
+                             "Sound goes to your speakers in evenly spaced pieces instead of bursts. Off can make "
+                             "sounds repeat.", &restart_needed_);
 }
 
 // What the console has saved (seta, and changes to com_maxfps, cg_drawFPS,
@@ -4951,4 +5129,123 @@ bool Cod3MountedCrosshairHook(PPCRegister& r1, uint8_t* base) {
     cod3::ui::NotifyGameCrosshair(0.0f, rgba);
   }
   return !plan.game;
+}
+
+// [acct2-ocr] 2026-11-15 (owner 20:21: "Keep adding these to cod3. There is a grenade countdown crosshair in-game
+// already.") The game's other crosshairs, each its player's choice (f2::xhair::PlanFor; the game's own unless chosen).
+namespace {
+
+// The cooked grenade's countdown: IGOGrenadeCookWidget, six marks round the crosshair. Its update (vfunc 2, each
+// frame for the active local client) shows them while a grenade is cooked, one fewer at each sixth of the fuse (the
+// time left at +0x24 of the fuse at +0x28; cod3mp +0x28 / +0x2C), and sets its hidden byte (+0x2D, cod3mp +0x31) when
+// none is; its draw (vfunc 3) draws the marks unless hidden. A widget is a local player's: the view its update ran
+// for is kept for its draw.
+#if defined(COD3_MP)
+constexpr uint32_t kCookLeft = 0x28, kCookFuse = 0x2C, kCookHidden = 0x31;
+#else
+constexpr uint32_t kCookLeft = 0x24, kCookFuse = 0x28, kCookHidden = 0x2D;
+#endif
+struct CookWidget {
+  std::atomic<uint32_t> widget{0};
+  std::atomic<int> view{0};
+};
+CookWidget g_cook_widgets[8];
+
+int CookWidgetView(uint32_t widget, int set_view) {
+  for (CookWidget& w : g_cook_widgets) {
+    if (w.widget.load(std::memory_order_relaxed) == widget) {
+      if (set_view >= 0) w.view.store(set_view, std::memory_order_relaxed);
+      return w.view.load(std::memory_order_relaxed);
+    }
+  }
+  if (set_view < 0) return 0;
+  for (CookWidget& w : g_cook_widgets) {
+    uint32_t empty = 0;
+    if (w.widget.compare_exchange_strong(empty, widget, std::memory_order_relaxed)) {
+      w.view.store(set_view, std::memory_order_relaxed);
+      return set_view;
+    }
+  }
+  return set_view;  // more widgets than kept: this frame's view
+}
+
+// The vehicles' crosshair: CG_DrawCrosshair's branch for the player's flag 0x100000 (without 0x400000 or a mounted
+// gun's 0x6000) draws its marks only when sub_820A1170 (cod3mp sub_820B12D8) says so; the hook on CG_DrawCrosshair
+// says when that branch is taken, so only that call of it is changed.
+thread_local bool t_vehicle_crosshair = false;
+
+}  // namespace
+
+REX_EXTERN(__imp__IGOGrenadeCookWidget__vfunc_2);
+REX_HOOK_RAW(IGOGrenadeCookWidget__vfunc_2) {
+  const uint32_t widget = ctx.r3.u32;
+  __imp__IGOGrenadeCookWidget__vfunc_2(ctx, base);
+  const int view = CookWidgetView(widget, cod3::ui::ActiveView(base));
+  if (cod3::guest::ReadU8(base, widget + kCookHidden) != 0) return;  // no grenade cooked
+  if (!f2::xhair::PlanFor(view, f2::xhair::kSpecialCountdown).mine) return;
+  const float left = cod3::guest::ReadF32(base, widget + kCookLeft);
+  const float fuse = cod3::guest::ReadF32(base, widget + kCookFuse);
+  cod3::ui::NotifyCountdown(base, fuse > 0.0f ? left / fuse : 0.0f);
+}
+
+REX_EXTERN(__imp__IGOGrenadeCookWidget__vfunc_3);
+REX_HOOK_RAW(IGOGrenadeCookWidget__vfunc_3) {
+  if (!f2::xhair::PlanFor(CookWidgetView(ctx.r3.u32, -1), f2::xhair::kSpecialCountdown).game) return;
+  __imp__IGOGrenadeCookWidget__vfunc_3(ctx, base);
+}
+
+// The tank's reticle (IGOTankReticleWidget's draw, vfunc 3; drawn in a vehicle): a vehicle's.
+REX_EXTERN(__imp__IGOTankReticleWidget__vfunc_3);
+REX_HOOK_RAW(IGOTankReticleWidget__vfunc_3) {
+  const f2::xhair::Plan plan = f2::xhair::PlanFor(cod3::ui::ActiveView(base), f2::xhair::kSpecialVehicle);
+  if (plan.mine && cod3::ui::TankReticleShown(base, ctx.r3.u32)) cod3::ui::NotifyViewCrosshair(base);
+  if (plan.game) __imp__IGOTankReticleWidget__vfunc_3(ctx, base);
+}
+
+#if defined(COD3_MP)
+REX_EXTERN(__imp__sub_8245D9F8);
+REX_HOOK_RAW(sub_8245D9F8) {  // CG_DrawCrosshair (codmp_xenonf.xex)
+  const uint32_t flags = cod3::ui::PlayerFlags(base);
+  t_vehicle_crosshair = (flags & 0x6000u) == 0 && (flags & 0x100000u) != 0 && (flags & 0x400000u) == 0;
+  // [acct2-ocr] 2026-11-15 the infantry cross's spread, for that player's dynamic styles (on foot only)
+  const bool on_foot = (flags & 0x6000u) == 0 && !t_vehicle_crosshair;
+  if (on_foot && f2::xhair::Enabled(cod3::ui::ActiveView(base)))
+    cod3::ui::SetNextSpread(cod3::ui::GameSpread(ctx, base));
+  __imp__sub_8245D9F8(ctx, base);
+  cod3::ui::SetNextSpread(0.0f);
+  t_vehicle_crosshair = false;
+}
+REX_EXTERN(__imp__sub_820B12D8);
+REX_HOOK_RAW(sub_820B12D8) {
+  __imp__sub_820B12D8(ctx, base);
+#else
+REX_EXTERN(__imp__CG_DrawCrosshair);
+REX_HOOK_RAW(CG_DrawCrosshair) {
+  const uint32_t flags = cod3::ui::PlayerFlags(base);
+  t_vehicle_crosshair = (flags & 0x6000u) == 0 && (flags & 0x100000u) != 0 && (flags & 0x400000u) == 0;
+  // [acct2-ocr] 2026-11-15 the infantry cross's spread, for that player's dynamic styles (on foot only)
+  const bool on_foot = (flags & 0x6000u) == 0 && !t_vehicle_crosshair;
+  if (on_foot && f2::xhair::Enabled(cod3::ui::ActiveView(base)))
+    cod3::ui::SetNextSpread(cod3::ui::GameSpread(ctx, base));
+  __imp__CG_DrawCrosshair(ctx, base);
+  cod3::ui::SetNextSpread(0.0f);
+  t_vehicle_crosshair = false;
+}
+REX_EXTERN(__imp__sub_820A1170);
+REX_HOOK_RAW(sub_820A1170) {
+  __imp__sub_820A1170(ctx, base);
+#endif
+  if (!t_vehicle_crosshair || ctx.r3.u32 == 0) return;  // another caller, or the game draws no marks
+#if defined(COD3_MP)
+  // ... nor while the player state's +0x518 is 1 and its +0x514 2 or 10 (the branch then draws nothing; the same
+  // state shows the grenade countdown despite 0x100000)
+  const uint32_t ps = cod3::ui::PlayerState(base);
+  if (ps != 0 && cod3::guest::ReadS32(base, ps + 0x518) == 1) {
+    const int32_t kind = cod3::guest::ReadS32(base, ps + 0x514);
+    if (kind == 2 || kind == 10) return;
+  }
+#endif
+  const f2::xhair::Plan plan = f2::xhair::PlanFor(cod3::ui::ActiveView(base), f2::xhair::kSpecialVehicle);
+  if (plan.mine) cod3::ui::NotifyViewCrosshair(base);
+  if (!plan.game) ctx.r3.u64 = 0;
 }

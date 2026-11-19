@@ -26,6 +26,8 @@
 #define __imp__FEMenuSystem__vfunc_12 __imp__FEMenuSystem__ProcessInput
 #define FEMenuSystem__vfunc_17 FEMenuSystem__HandleButton  // 0x824C48B8 -> 0x824D5A08
 #define __imp__FEMenuSystem__vfunc_17 __imp__FEMenuSystem__HandleButton
+#define FEMultiLineText__vfunc_90 FEMultiLineText__vfunc_96  // 0x824DD928 -> 0x82501168
+#define __imp__FEMultiLineText__vfunc_90 __imp__FEMultiLineText__vfunc_96
 #define FEMultiLineText__vfunc_91 FEMultiLineText__vfunc_97  // 0x824E8098 -> 0x824F75A8
 #define __imp__FEMultiLineText__vfunc_91 __imp__FEMultiLineText__vfunc_97
 #define FEMultiLineText__vfunc_92 FEMultiLineText__vfunc_98  // 0x824DD790 -> 0x824F7410

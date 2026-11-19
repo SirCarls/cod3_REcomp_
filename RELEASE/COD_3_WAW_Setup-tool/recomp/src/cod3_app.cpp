@@ -35,6 +35,7 @@
 
 #include "app_defaults.h"
 #include "util.h"
+#include "user_root.h"  // [rexglue-native-io] 2026-11-16: userdata where it can be written
 #include "game/engine.h"
 #include "game/mouse_look.h"
 #include "game/pc_menu.h"
@@ -213,12 +214,19 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
 #endif
+  // [rexglue-native-io] 2026-11-16: userdata/ and the settings go where they can be written: the game folder as
+  // before, or (a read-only folder, Program Files, Controlled folder access) a folder of the player's own
+  // (user_root.h), instead of ending before the window (Linux) or with a box (Windows). A user_data_root given on
+  // the command line still wins.
+  cod3::user_root::DataRoot() = root;
+  const std::filesystem::path data_root =
+      rex::cvar::GetFlagByName("user_data_root").empty() ? cod3::user_root::Pick(root) : root;
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
-    paths.user_data_root = root / "userdata";
-    paths.cache_root = root / "userdata" / "cache";
+    paths.user_data_root = data_root / "userdata";           // [rexglue-native-io]
+    paths.cache_root = data_root / "userdata" / "cache";     // [rexglue-native-io]
   }
-  userdata_dir_ = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
-  paths.config_path = root / "cod3.toml";
+  userdata_dir_ = paths.user_data_root.empty() ? data_root / "userdata" : paths.user_data_root;  // [rexglue-native-io]
+  paths.config_path = data_root / "cod3.toml";  // [rexglue-native-io]
   config_path_ = paths.config_path;
 
   // Without a log_file the SDK logs into <executable folder>/logs, which is
@@ -230,7 +238,7 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
   // "C:\..." path in cod3.toml (see PathToUtf8Generic in util.h).
   if (const auto source = rex::cvar::GetFlagSource("log_file");
       source != rex::cvar::Source::kCommandLine && source != rex::cvar::Source::kEnvironment) {
-    const auto user_dir = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
+    const auto user_dir = paths.user_data_root.empty() ? data_root / "userdata" : paths.user_data_root;  // [rexglue-native-io]
     std::error_code ec;
     std::filesystem::create_directories(user_dir / "logs", ec);
 #ifdef _WIN32
@@ -247,6 +255,11 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
 void Cod3App::OnPreSetup(rex::RuntimeConfig& config) {
   // F2 > Console > Problems: every warning and error from here on (ui/problem_log.h).
   cod3::ui::ProblemLog::Get().Install();
+  // [rexglue-native-io] 2026-11-16: where the player's files went when the game folder can't be written (user_root.h).
+  if (const std::string note = cod3::user_root::TakeNote(); !note.empty())
+    REXLOG_WARN("cod3: {}", note);
+  else
+    REXLOG_INFO("cod3: userdata {}, settings {}", cod3::PathToUtf8(userdata_dir_), cod3::PathToUtf8(config_path_));
   runtime_config_ = &config;  // its GPU plugin is loaded right after this (render resolution)
   // The game's name in the system's sound settings (PipeWire, PulseAudio:
   // the stream's application name; the SDK's is "rexglue"). SDL reads this

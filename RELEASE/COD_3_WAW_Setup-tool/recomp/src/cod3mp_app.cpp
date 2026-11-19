@@ -77,6 +77,7 @@
 #include "ui/theme.h"
 #include "ui/f2_tour.h"  // [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
 #include "util.h"
+#include "user_root.h"  // [rexglue-native-io] 2026-11-16: as the campaign (cod3_app.cpp)
 #include "generated/codmp/cod3mp_init.h"
 
 // The same name and meaning as the campaign's setting (cod3_app.cpp), so the
@@ -260,14 +261,19 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::voice::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);  // [acct2-ocr]
+  // [rexglue-native-io] 2026-11-16: as the campaign: the game folder, or the player's own folder when it can't be
+  // written (user_root.h; both programs pick the same one, so the campaign's cod3.toml and userdata are there).
+  cod3::user_root::DataRoot() = root;
+  const std::filesystem::path data_root =
+      rex::cvar::GetFlagByName("user_data_root").empty() ? cod3::user_root::Pick(root) : root;
   if (rex::cvar::GetFlagByName("user_data_root").empty()) {
-    paths.user_data_root = root / "userdata";
-    paths.cache_root = root / "userdata" / "cache";
+    paths.user_data_root = data_root / "userdata";           // [rexglue-native-io]
+    paths.cache_root = data_root / "userdata" / "cache";     // [rexglue-native-io]
   }
-  userdata_dir_ = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
+  userdata_dir_ = paths.user_data_root.empty() ? data_root / "userdata" : paths.user_data_root;  // [rexglue-native-io]
   // This program's own changes; the campaign's settings are read in
   // OnPostInitLogging, after this file.
-  paths.config_path = root / "cod3mp.toml";
+  paths.config_path = data_root / "cod3mp.toml";  // [rexglue-native-io]
   config_path_ = paths.config_path;
 
   // Logs go to userdata/logs/cod3mp.log (never into a read-only AppImage
@@ -289,13 +295,13 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
 // The campaign's settings: keys, controls, window, video, audio, network.
 // Read after cod3mp.toml so that anything changed here wins.
 void Cod3MpApp::OnPostInitLogging() {
-  const auto shared = root_dir_ / "cod3.toml";
+  const auto shared = cod3::user_root::DataRoot() / "cod3.toml";  // [rexglue-native-io]
   std::error_code ec;
   if (!std::filesystem::exists(shared, ec)) return;
   try {
     g_shared_settings = toml::parse_file(cod3::PathToUtf8(shared));
     std::error_code own_ec, shared_ec;
-    const auto own_time = std::filesystem::last_write_time(root_dir_ / "cod3mp.toml", own_ec);
+    const auto own_time = std::filesystem::last_write_time(config_path_, own_ec);  // [rexglue-native-io]
     const auto shared_time = std::filesystem::last_write_time(shared, shared_ec);
     g_shared_settings_newer = own_ec || (!shared_ec && shared_time > own_time);
     const int applied = ApplySharedTable(*g_shared_settings, "");
@@ -313,6 +319,11 @@ void Cod3MpApp::OnLoadXexImage(std::string& xex_image) { xex_image = "game:\\cod
 void Cod3MpApp::OnPreSetup(rex::RuntimeConfig& config) {
   // F2 > Console > Problems: every warning and error from here on (ui/problem_log.h).
   cod3::ui::ProblemLog::Get().Install();
+  // [rexglue-native-io] 2026-11-16: where the player's files went when the game folder can't be written (user_root.h).
+  if (const std::string note = cod3::user_root::TakeNote(); !note.empty())
+    REXLOG_WARN("cod3mp: {}", note);
+  else
+    REXLOG_INFO("cod3mp: userdata {}, settings {}", cod3::PathToUtf8(userdata_dir_), cod3::PathToUtf8(config_path_));
   runtime_config_ = &config;  // its GPU plugin is loaded right after this (render resolution)
   // Before the window opens: the guest display shape the port sets for wide
   // pictures (game/ultrawide.h) would otherwise also size the window.
@@ -500,7 +511,7 @@ void Cod3MpApp::OnPostSetup() {
   // relaunch passes the campaign's command line on), else cod3.toml's
   // user_data_root, else the folder's userdata/.
   {
-    std::filesystem::path campaign_userdata = root_dir_ / "userdata";
+    std::filesystem::path campaign_userdata = cod3::user_root::DataRoot() / "userdata";  // [rexglue-native-io]
     const auto source = rex::cvar::GetFlagSource("user_data_root");
     if ((source == rex::cvar::Source::kCommandLine || source == rex::cvar::Source::kEnvironment) &&
         !rex::cvar::GetFlagByName("user_data_root").empty())
@@ -514,7 +525,8 @@ void Cod3MpApp::OnPostSetup() {
   // [f2-menus] 2026-11-11 The language settings (Text, Voices, Console language, Text by kind) follow between the
   // programs: a change made here goes into the campaign's cod3.toml too, and one put back to the game's own there
   // is the game's own here (ui/hud_overlay.h ShareLanguageSettings; owner 14:00).
-  cod3::ui::ShareLanguageSettings(root_dir_ / "cod3.toml", config_path_, g_shared_settings_newer);
+  cod3::ui::ShareLanguageSettings(cod3::user_root::DataRoot() / "cod3.toml", config_path_,  // [rexglue-native-io]
+                                  g_shared_settings_newer);
   cod3::ui::GameConsole::Get().SetUserDir(user_data_root());
   // While the console is open, or one of the windows wants the keyboard or
   // the mouse, the game gets no input.

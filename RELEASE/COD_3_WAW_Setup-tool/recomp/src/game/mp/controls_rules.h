@@ -64,6 +64,7 @@ inline std::optional<std::string> CrosshairInConfig(std::istream& in) {
   std::optional<std::string> value;
   std::string line;
   while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();  // [acct2-main] 2026-11-14 a Windows (CR LF) config
     if (ConfigLineName(line) != kCrosshairDvar) continue;
     std::istringstream ss(line);
     std::string cmd, name, rest;
@@ -86,6 +87,7 @@ inline std::string ConfigWithCrosshair(std::istream& in, const std::string& valu
   bool any = false, replaced = false;
   std::string line;
   while (std::getline(in, line)) {
+    if (!line.empty() && line.back() == '\r') line.pop_back();  // [acct2-main] 2026-11-14 as LoadConfig: one ending
     any = true;
     if (ConfigLineName(line) == kCrosshairDvar) {
       if (replaced) continue;

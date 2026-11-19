@@ -106,6 +106,7 @@
 #include "game/hd_textures.h"
 #include "game/native_memory.h"  // [memory-360] 2026-11-11, taken by [rexglue-native-render] rn48n: CheckGpuRead
 #include "util.h"  // [rexglue-native-render] 2026-11-11 rn48h (from rexglue-native-settings): Utf8ToPath
+#include "user_root.h"  // [rexglue-native-io] 2026-11-16: DataRoot (ScreenshotFolder)
 #include "game/render_resolution.h"  // [rexglue-native] 2026-11-09: the native picture's size (ChooseTargetSize)
 #include "game/screenshot.h"
 #include "render/native_compare.h"  // [rexglue-native] 2026-11-09 rn33: the live A/B compare
@@ -316,11 +317,46 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_shot_matched, false, "cod3/Debug",
 REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_live_shots, 0, "cod3/Debug",
                      "With cod3_native_vulkan and cod3_debug_ngl_side, save this many live native frames in a row as "
                      "shown (0: none), three times, cod3_debug_ngl_side_shot_every frames apart")
-    .range(0, 30)
+    .range(0, 120)  // [rexglue-native flicker 2026-11-16] was 30: a slow pan or a walk needs 1-2 s in a row (60-120)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_live_shot_at, 1800, "cod3/Debug",
                      "The first live native frame cod3_debug_ngl_side_live_shots saves")
     .range(1, 1000000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native flicker 2026-11-16] fl1: the game's picture of each live native frame cod3_debug_ngl_side_live_shots
+// saves (the owner, 11-16 13:26: "Please also take a look at how their testing was done, particularly the flickering
+// testing as it's still a problem with stuff"). The live frames are the worker's, as the window shows them; nothing
+// showed the game's own picture of the same frames, so a part that changed for one frame natively could be ours or the
+// game's (a swaying bush, a muzzle flash). With this and cod3_native_compare on (the emulated GPU draws the game's
+// picture beside the native one), each live frame saved also gets the game's picture of the same frame
+// (report-<date>-<time>-<frame>.png), taken as cod3_debug_ngl_side_shot_matched takes a dump's: at the next list send,
+// once the worker has drawn the frame and the GPU has shown the game's, the game's thread waiting until the file is
+// written (LiveMatchedAsk, TakeMatchedShot). Debug only: each frame saved this way comes about 0.4 s after the one
+// before, so the game's clock runs on between them.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_live_matched, false, "cod3/Debug",
+                    "With cod3_native_compare and cod3_debug_ngl_side_live_shots, the game's own picture of each live "
+                    "native frame saved, taken as cod3_debug_ngl_side_shot_matched takes it (debug: the game waits "
+                    "for each)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native flicker 2026-11-16] fl2: a depth-tie (z-fighting) probe (the owner, 11-14 15:43: the hands and the
+// gun's charging handle "fight for who's on top"). Each draw's depth is moved toward or away from the eye by
+// cod3_debug_ngl_side_ztie_eps of the depth range (the same share at every distance), the way chosen by its kind (its
+// mesh and texture) and turned over every frame: where two kinds' surfaces lie within about that much of each other,
+// the one in front changes every frame, and live frames show those pixels blinking in step with the frames' parity
+// (flicker_std.py's "alternating" count); the same frames with this off show what blinks without it. 1: every draw;
+// 2: only the scene drawn in front of the world (the gun and the arms, rn90a's front scene). 0, the default: off.
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_ztie, 0, "cod3/Debug",
+                     "A depth-tie probe: each draw's depth moved by cod3_debug_ngl_side_ztie_eps, the way set by its "
+                     "kind and turned over every frame (1: every draw, 2: the gun and the arms only; 0: off)")
+    .range(0, 2)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_DOUBLE(cod3_debug_ngl_side_ztie_eps, 0.00001, "cod3/Debug",
+                      "cod3_debug_ngl_side_ztie's step, a share of the depth range (0 to 1)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_ztie_salt, 0, "cod3/Debug",
+                     "cod3_debug_ngl_side_ztie: another number deals the kinds' ways differently (a run with another "
+                     "salt finds the ties between kinds the first one moved the same way)")
+    .range(0, 1000000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_shadow, true, "cod3/Debug",
                     "With cod3_debug_ngl_side, the sun's shadow in the native picture: the soldiers, props and trees "
@@ -1794,6 +1830,9 @@ bool LiveShotFrame(uint64_t frame) {
 bool g_quiet = false;
 // rn42j: the live frame being drawn is saved (LiveShotFrame): its effects' line is logged too
 bool g_live_shot = false;
+// [rexglue-native flicker 2026-11-16] fl1: the last live frame saved (written by the worker, read at the list send
+// after WaitForWorker: LiveMatchedAsk)
+std::atomic<uint64_t> g_live_shot_saved{0};
 // side124: the GPU emulation is off and the native picture is the one in the window (StartNativeVulkan)
 std::atomic<bool> g_native{false};
 // Every frame is drawn natively: in the window (cod3_native_vulkan) or beside the emulated GPU (cod3_ngl_side_live;
@@ -2742,7 +2781,11 @@ void ReadPack(const std::filesystem::path& folder, bool user) {
   std::error_code error;
   if (std::filesystem::file_size(folder / "index.tsv", error) > (size_t(64) << 20) || error) {
     // [acct2-main] 2026-11-14: said, not silent (a pack in use whose index can't be read is a fault)
-    REXLOG_WARN("cod3: ngl side: {} pack not read: {} ({})", user ? "user" : "HD", (folder / "index.tsv").string(),
+    // [rexglue-native-platform] 2026-11-16: paths go into the log as UTF-8 (cod3::PathToUtf8). path::string() is the
+    // ANSI code page on Windows and throws filesystem_error for a character outside it (a pack under a user folder
+    // named outside the code page ended the game as the native renderer read its packs).
+    REXLOG_WARN("cod3: ngl side: {} pack not read: {} ({})", user ? "user" : "HD",
+                cod3::PathToUtf8(folder / "index.tsv"),  // [rexglue-native-platform] 2026-11-16
                 error ? error.message() : std::string("larger than 64 MB"));
     return;
   }
@@ -2770,7 +2813,8 @@ void ReadPack(const std::filesystem::path& folder, bool user) {
     g_pack[key] = entry;  // the user pack is read second, so its file wins
     ++taken;
   }
-  REXLOG_INFO("cod3: ngl side: {} pack: {} textures ({})", user ? "user" : "HD", taken, folder.string());
+  REXLOG_INFO("cod3: ngl side: {} pack: {} textures ({})", user ? "user" : "HD", taken,
+              cod3::PathToUtf8(folder));  // [rexglue-native-platform] 2026-11-16 UTF-8, not path::string()
 }
 
 // [rexglue-native-render] 2026-11-11 rn48h (from rexglue-native-settings): a pack chosen on the command line or in the environment
@@ -7997,6 +8041,9 @@ std::filesystem::path ScreenshotFolder() {
       break;
     }
   }
+  // [rexglue-native-io] 2026-11-16: the pictures go where the game keeps its userdata: the game folder, or the
+  // player's own folder when that one can't be written (user_root.h, chosen in OnConfigurePaths before this runs).
+  if (!cod3::user_root::DataRoot().empty()) root = cod3::user_root::DataRoot();
   std::filesystem::path folder = root / "userdata" / "logs" / "screenshots";
   std::filesystem::create_directories(folder, error);
   return folder;
@@ -8681,6 +8728,77 @@ void Restore(Draws& draws) {
 }
 
 }  // namespace rebase
+
+// [rexglue-native flicker 2026-11-16] fl2: the depth-tie probe (cod3_debug_ngl_side_ztie, debug, off by default).
+// Apply moves each chosen draw's depth by +-eps of the depth range (the view-projection's depth column plus eps times
+// its w column, so z / w gains +-eps all over the draw), the way set by a hash of its mesh and texture and the frame's
+// parity; Restore puts the column back once ngl_vk_set_meshes has copied the draws. Called after rebase::Apply (the
+// draws it moved keep its exact matrices, this step on top) and undone before rebase::Restore. The shadow casters
+// are drawn with the light's matrix, so the sun's shadow map doesn't move.
+namespace ztie {
+
+struct Kept {
+  size_t index;
+  float depth[4];  // the view-projection's depth column (rows 0 to 3) as it was
+};
+thread_local std::vector<Kept> t_kept;
+std::atomic<int> g_lines{0};
+
+// Whether a draw is of the scene drawn in front of the world (rn90a's noted cameras: the gun and the arms)
+bool Front(const ngl_vk_mesh_draw& d) {
+  for (const rebase::Camera& c : rebase::t_cameras) {
+    if (!c.front) continue;
+    if (std::memcmp(d.view_projection, c.around, sizeof c.around) == 0 ||
+        std::memcmp(d.view_projection, c.absolute, sizeof c.absolute) == 0)
+      return true;
+  }
+  return false;
+}
+
+template <typename Draws>
+void Apply(Draws& draws, uint64_t frame) {
+  t_kept.clear();
+  const int mode = REXCVAR_GET(cod3_debug_ngl_side_ztie);
+  if (mode <= 0) return;
+  const float eps = static_cast<float>(std::clamp(static_cast<double>(REXCVAR_GET(cod3_debug_ngl_side_ztie_eps)),
+                                                  0.0, 1.0));
+  const uint32_t salt = static_cast<uint32_t>(REXCVAR_GET(cod3_debug_ngl_side_ztie_salt));
+  size_t nearer = 0;
+  for (size_t i = 0; i < draws.size(); ++i) {
+    ngl_vk_mesh_draw& d = draws[i];
+    if (mode == 2 && !Front(d)) continue;
+    uint32_t h = (d.mesh * 0x9E3779B1u) ^ ((d.texture + 0x7F4A7C15u) * 0x85EBCA77u) ^ (salt * 0xC2B2AE3Du);
+    h ^= h >> 16;
+    h *= 0x7FEB352Du;
+    h ^= h >> 15;
+    const bool away = ((h ^ static_cast<uint32_t>(frame)) & 1u) != 0;
+    Kept k{};
+    k.index = i;
+    for (int row = 0; row < 4; ++row) {
+      k.depth[row] = d.view_projection[4 * row + 2];
+      d.view_projection[4 * row + 2] += (away ? eps : -eps) * d.view_projection[4 * row + 3];
+    }
+    if (!away) ++nearer;
+    t_kept.push_back(k);
+  }
+  if (g_lines.load(std::memory_order_relaxed) < 8) {
+    g_lines.fetch_add(1, std::memory_order_relaxed);
+    REXLOG_INFO("cod3: ngl side: fl2 frame {}: the depth-tie probe {} (eps {:.8f}, salt {}): {} of {} draws moved "
+                "({} nearer, {} farther)",
+                frame, mode == 2 ? "on the gun and the arms" : "on every draw", eps, salt, t_kept.size(),
+                draws.size(), nearer, t_kept.size() - nearer);
+  }
+}
+
+template <typename Draws>
+void Restore(Draws& draws) {
+  for (const Kept& k : t_kept) {
+    for (int row = 0; row < 4; ++row) draws[k.index].view_projection[4 * row + 2] = k.depth[row];
+  }
+  t_kept.clear();
+}
+
+}  // namespace ztie
 
 // [rexglue-native] 2026-11-09: split screen (cod3mp's 2 to 4 local players). Each player's scene has its own
 // projection, and it already puts that player's view in its part of the screen: its row 2's x and y (the scene's
@@ -10387,7 +10505,8 @@ void SaveHostBytes(const void* data, size_t bytes, const std::string& name) {
   const std::filesystem::path path = ScreenshotFolder() / name;
   std::ofstream out(path, std::ios::binary);
   out.write(static_cast<const char*>(data), static_cast<std::streamsize>(bytes));
-  REXLOG_INFO("cod3: ngl side: grass: saved {} bytes to {}", bytes, path.string());
+  REXLOG_INFO("cod3: ngl side: grass: saved {} bytes to {}", bytes,
+              cod3::PathToUtf8(path));  // [rexglue-native-platform] 2026-11-16 UTF-8, not path::string()
 }
 
 // The picture a grass texture is decoded to here (width, height, then BGRA), for the same comparison.
@@ -15748,7 +15867,8 @@ void ColorLookup(uint8_t* base, uint64_t frame) {
       std::ofstream out(path, std::ios::binary);
       out.write(reinterpret_cast<const char*>(bgra.data()), static_cast<std::streamsize>(bgra.size()));
       REXLOG_INFO("cod3: ngl side: post effect 3's table saved to {} ({}x{} bgra); fetch {:08X} {:08X} {:08X} {:08X} "
-                  "{:08X} {:08X}", path.string(), width, height, fetch[0], fetch[1], fetch[2], fetch[3], fetch[4],
+                  "{:08X} {:08X}", cod3::PathToUtf8(path),  // [rexglue-native-platform] 2026-11-16 not path::string()
+                  width, height, fetch[0], fetch[1], fetch[2], fetch[3], fetch[4],
                   fetch[5]);
     }
     uint64_t mean[4] = {};
@@ -17251,7 +17371,9 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
     }
   }
   rebase::Apply(draws, frame);  // [acct2-bro] 2026-11-14 rn90a: about the camera's place while ngl_vk copies them
+  ztie::Apply(draws, frame);  // [rexglue-native flicker 2026-11-16] fl2: the depth-tie probe (debug, off by default)
   ngl_vk_set_meshes(draws.data(), static_cast<uint32_t>(draws.size()));
+  ztie::Restore(draws);  // [rexglue-native flicker 2026-11-16] fl2
   rebase::Restore(draws);  // rn90a: as they were, for what reads them next
   limits::NoteDraws(draws, frame);  // [rexglue-native-limits] 2026-11-11
   flicker::Note(base, draws, frame);  // [acct2-bro] 2026-11-12 rn57a (debug, off by default)
@@ -17310,6 +17432,7 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
   if (g_live_shot && pixels) {  // rn42j: cod3_debug_ngl_side_live_shots (debug only)
     SaveShownPpm(base, ScreenshotFolder(), "ngl-side-live-" + std::to_string(frame) + "-vk", pixels, width, height);
     REXLOG_INFO("cod3: ngl side: rn42j live frame {} saved ({}x{})", frame, width, height);
+    g_live_shot_saved.store(frame, std::memory_order_relaxed);  // [rexglue-native flicker 2026-11-16] fl1
   }
   if (!pictures || !pixels) return;
   const std::filesystem::path path = ScreenshotFolder() / (name + "-vk.ppm");
@@ -17341,7 +17464,8 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
   const std::string shot = matched ? std::string(report) + ".png, at the next list send"
                                    : cod3::shot::Request(cod3::shot::Kind::kReport, "ngl side", report);
   REXLOG_INFO("cod3: ngl side: frame {}: {} quads and glyphs drawn ({} textured) to {}; the game's own: {}", frame,
-              quads.size(), textured, path.string(), shot.empty() ? std::string("not taken") : shot);
+              quads.size(), textured, cod3::PathToUtf8(path),  // [rexglue-native-platform] 2026-11-16 UTF-8
+              shot.empty() ? std::string("not taken") : shot);
 #else
   (void)name;
   if (g_dumps == 1) REXLOG_INFO("cod3: ngl side: this build has no ngl_vk (Vulkan or glslc missing): counts only");
@@ -17391,7 +17515,8 @@ void SaveGuestBytes(uint8_t* base, uint32_t address, uint32_t bytes, const std::
   const std::filesystem::path path = ScreenshotFolder() / name;
   std::ofstream out(path, std::ios::binary);
   out.write(reinterpret_cast<const char*>(g::At(base, address)), bytes);  // [rexglue-native/win-port] g::At
-  REXLOG_INFO("cod3: ngl side: grass: saved {} bytes at {:08X} to {}", bytes, address, path.string());
+  REXLOG_INFO("cod3: ngl side: grass: saved {} bytes at {:08X} to {}", bytes, address,
+              cod3::PathToUtf8(path));  // [rexglue-native-platform] 2026-11-16 UTF-8, not path::string()
 #else
   (void)base;
   REXLOG_INFO("cod3: ngl side: grass: {} not saved ({} bytes at {:08X}): this build has no ngl_vk", name, bytes,
@@ -21508,10 +21633,37 @@ void TrimKeptLights() {
 // [acct2-bro] 2026-11-13 rn83a: defined below, beside KeepModelLight (g61's syntax check: undeclared here)
 void ApplyPendingKeeps();
 
+// [rexglue-native flicker 2026-11-16] fl1 (cod3_debug_ngl_side_live_matched, debug, off by default): at a list send,
+// when the frame the last one posted (g_frames; drawn by now, WaitForWorker) was a live frame saved, the game's picture
+// of that frame is asked for here, as a dump's is, and TakeMatchedShot (right after this) takes it. Only beside the
+// emulated GPU (compare mode), with the frames drawn as posted (not cod3_native_drawn_list, whose frames are drawn a
+// list send later), and never over a dump's own request.
+static void LiveMatchedAsk() {
+  if (!REXCVAR_GET(cod3_debug_ngl_side_live_matched) || !g_matched_report.empty()) return;
+  if (g_native.load(std::memory_order_relaxed) || !cod3::compare::Wanted() || REXCVAR_GET(cod3_native_drawn_list))
+    return;
+  const uint64_t frame = g_frames;
+  if (frame == 0 || g_live_shot_saved.load(std::memory_order_relaxed) != frame) return;
+  const std::time_t now = std::time(nullptr);
+  std::tm local{};
+#if defined(_WIN32)
+  localtime_s(&local, &now);
+#else
+  localtime_r(&now, &local);
+#endif
+  char stamp[24];
+  std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &local);
+  char report[48];
+  std::snprintf(report, sizeof report, "report-%s-%llu", stamp, static_cast<unsigned long long>(frame));
+  g_matched_report = report;
+  g_matched_frame = frame;
+}
+
 void OnListSend(uint8_t* base) {
   WaitForWorker();  // side212: the last frame is drawn before this one counts as sent
   ApplyPendingKeeps();  // [acct2-bro] 2026-11-13 rn83a: the keeps filed since the last send (the worker idle)
   TrimKeptLights();  // [acct2-bro] 2026-11-13 rn80a: (the worker idle)
+  LiveMatchedAsk();  // [rexglue-native flicker 2026-11-16] fl1 (debug, off): or the last live frame's, when it was saved
   TakeMatchedShot(base);  // [rexglue-native-render] 2026-11-11 rn48s (debug, off): the last dump's game picture
   {  // rn47h: the game's draws between the last list send and this one (see g_game_draws_since_send)
     const uint32_t draws = g_game_draws_since_send.exchange(0, std::memory_order_relaxed);

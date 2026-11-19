@@ -149,6 +149,10 @@ void Engine::LoadConfig() {
   std::string line;
   size_t dropped = 0;
   while (std::getline(in, line)) {
+    // [acct2-main] 2026-11-14 A config saved by the Windows build (text mode: each line ends in CR LF) read by the
+    // Linux build: each line kept its CR, so its value kept its quotes and every line was dropped ("loaded 0
+    // archived cvars ... line(s) dropped": 335 runs on the PC so far, their seat configs end lines in CR LF).
+    if (!line.empty() && line.back() == '\r') line.pop_back();
     // seta <name> "<value>"
     std::istringstream ss(line);
     std::string cmd, name;
@@ -208,13 +212,36 @@ void Engine::SaveConfig() {
   if (config_path_.empty()) return;
   std::error_code ec;
   std::filesystem::create_directories(config_path_.parent_path(), ec);
-  std::ofstream out(config_path_, std::ios::trunc);
-  if (!out) {
-    REXLOG_WARN("cod3: could not write {}", cod3::PathToUtf8(config_path_));
-    return;
+  // [rexglue-native-io] 2026-11-16: written whole into a new file, then put in the old one's place. Truncating the
+  // file first and writing it after lost every archived setting when the game ended (crash, killed, power) between
+  // the two, or when the disk was full (the stream's error went unchecked: an empty or cut file, read as "loaded 0
+  // archived cvars" at the next start). Text mode as before (CR LF on Windows; LoadConfig drops a CR).
+  std::string text = "// Call of Duty 3 static recomp - archived cvars (seta). Edit freely.\n";
+  for (auto& [k, v] : archived_) text += "seta " + k + " " + QuoteValue(v) + "\n";
+  std::filesystem::path temp = config_path_;
+  temp += ".new";
+  bool written = false;
+  {
+    std::ofstream out(temp, std::ios::trunc);
+    if (out) {
+      out << text;
+      out.close();
+      written = !out.fail();
+    }
   }
-  out << "// Call of Duty 3 static recomp - archived cvars (seta). Edit freely.\n";
-  for (auto& [k, v] : archived_) out << "seta " << k << " " << QuoteValue(v) << "\n";
+  if (written) {
+    std::filesystem::rename(temp, config_path_, ec);  // replaces the old file (MoveFileExW REPLACE_EXISTING on Windows)
+    if (!ec) return;
+    // Windows: an antivirus or the search indexer holding the old file open can refuse the replace; write in place.
+    REXLOG_WARN("cod3: couldn't replace {} ({}); writing it in place", cod3::PathToUtf8(config_path_), ec.message());
+  }
+  std::filesystem::remove(temp, ec);
+  std::ofstream out(config_path_, std::ios::trunc);
+  if (out) {
+    out << text;
+    out.close();
+  }
+  if (!out) REXLOG_WARN("cod3: could not write {} (read-only, or the disk is full?)", cod3::PathToUtf8(config_path_));
 }
 
 // FOV: Engine::fov() / SetFov() / SetFovScale() ... are in game/fov.cpp.

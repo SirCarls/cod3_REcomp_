@@ -1,0 +1,84 @@
+[acct2-ocr] SDK 0074, 2026-11-12 (the owner, 17:02: "The game window will briefly open on another screen if the
+mouse is focused there. The window will then switch to the other screen. Our display binding logic is flawed.").
+What it does: WindowSDL::OpenImpl makes the window centered on the chosen display (0068's monitor_name / monitor)
+instead of making it with no position and moving it there with SDL_SetWindowPosition before it is shown.
+Why: SDL gives a window made without a position no position hint (X11: no USPosition in WM_NORMAL_HINTS), so when it
+is first shown the window manager places it where new windows go, on the screen the mouse is on, and SDL moves it to
+the chosen screen a moment later. Measured on the owner's PC (X11, two screens, the mouse on screen 1, screen 2
+chosen; a 480x270 test window with the SDK's own SDL 3.5.0, never focused): the old way was first viewable on screen
+1 at 25 ms and on screen 2 at 32 ms; the new way was first viewable on screen 2 and stayed there. Fullscreen resolves
+against the display the window is on, so it now goes fullscreen on the chosen screen from the start too.
+Unchanged: the automatic choice (no position, the system decides), Wayland (the compositor places windows),
+Window::SetDisplayChoice / ApplyNewDisplayChoice (moving an open window when F2's Display row changes), Windows and
+macOS (where a hidden window's position was already used as it is shown).
+
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -265,17 +265,16 @@
+   int initial_width = int(SizeToPhysical(GetDesiredLogicalWidth()));
+   int initial_height = int(SizeToPhysical(GetDesiredLogicalHeight()));
+ #endif
+-  sdl_window_ = SDL_CreateWindow(GetTitle().c_str(), initial_width, initial_height, flags);
+-  if (!sdl_window_) {
+-    REXLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
+-    return false;
+-  }
+-  sdl_window_id_ = SDL_GetWindowID(sdl_window_);
+-  sdl_app_context().RegisterWindow(sdl_window_id_, this);
+-
+-  // Center on the chosen display before fullscreen so SDL resolves
+-  // fullscreen against it (GetDisplayChoice: the monitor_name / monitor
+-  // settings, or what the program set before Open).
++  // The chosen display (GetDisplayChoice: the monitor_name / monitor
++  // settings, or what the program set before Open) is found before the
++  // window is made, and the window is made centered on it, so fullscreen
++  // also resolves against it. Made without a position and moved there
++  // afterwards, a window had no position of its own when it was first shown:
++  // the window manager put it where new windows go (on X11, the screen the
++  // mouse is on) and SDL moved it a moment later, so it showed on the wrong
++  // screen first (0074). Made with the position, it carries it from the
++  // start (X11: USPosition in its size hints).
++  SDL_DisplayID chosen_display = 0;
+   {
+     const std::vector<DisplayInfo> displays = ListDisplays();
+     static bool listed = false;
+@@ -285,15 +284,35 @@
+     }
+     const DisplayChoice& choice = GetDisplayChoice();
+     if (const int32_t index = FindDisplay(choice, displays); index > 0) {
+-      const SDL_DisplayID display = DisplayIdAt(index);
+-      SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED_DISPLAY(display),
+-                            SDL_WINDOWPOS_CENTERED_DISPLAY(display));
++      chosen_display = DisplayIdAt(index);
+       REXLOG_INFO("window: on display {} \"{}\"", index, displays[size_t(index) - 1].name);
+     } else if (!choice.IsAutomatic()) {
+       REXLOG_WARN("window: display \"{}\" (number {}) isn't connected; the system picks one",
+                   choice.name, choice.index);
+     }
+   }
++  if (const SDL_PropertiesID create = SDL_CreateProperties(); create) {
++    SDL_SetStringProperty(create, SDL_PROP_WINDOW_CREATE_TITLE_STRING, GetTitle().c_str());
++    SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, initial_width);
++    SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, initial_height);
++    SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, Sint64(flags));
++    if (chosen_display) {
++      SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_X_NUMBER,
++                            SDL_WINDOWPOS_CENTERED_DISPLAY(chosen_display));
++      SDL_SetNumberProperty(create, SDL_PROP_WINDOW_CREATE_Y_NUMBER,
++                            SDL_WINDOWPOS_CENTERED_DISPLAY(chosen_display));
++    }
++    sdl_window_ = SDL_CreateWindowWithProperties(create);
++    SDL_DestroyProperties(create);
++  } else {
++    sdl_window_ = SDL_CreateWindow(GetTitle().c_str(), initial_width, initial_height, flags);
++  }
++  if (!sdl_window_) {
++    REXLOG_ERROR("SDL_CreateWindow failed: {}", SDL_GetError());
++    return false;
++  }
++  sdl_window_id_ = SDL_GetWindowID(sdl_window_);
++  sdl_app_context().RegisterWindow(sdl_window_id_, this);
+ 
+   // start_in_background: a fullscreen window would cover the screen (and
+   // fullscreen raises it on most systems), so it opens as a window and goes

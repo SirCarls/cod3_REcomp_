@@ -86,6 +86,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/ultrawide.cpp
     ${COD3_SRC}/game/voice_language.cpp  # [acct2-ocr] Voices from another disc (mp/ banks), heard from the next map
     ${COD3_SRC}/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (its own hook of cod3mp's lookup)
+    ${COD3_SRC}/game/text_rekey.cpp  # [acct2-main] 2026-11-15 a text set from a key follows a change of the text language
     ${COD3_SRC}/game/font_fill.cpp  # [acct2-ocr] the glyphs the game's fonts lack, added in memory
     ${COD3_SRC}/ui/text_overlay.cpp  # [acct2-ocr] Russian/Chinese/Japanese/Korean text, drawn by us
     ${COD3_SRC}/ui/text_native.cpp  # [acct2-ocr] the same text drawn through the game's own text path
@@ -173,6 +174,11 @@ endif()
 
 if(MINGW)
     target_link_options(cod3mp PRIVATE -municode)
+endif()
+# [rexglue-native-io] 2026-11-16: the campaign's application manifest (UTF-8 code page, long paths; src/win/).
+if(WIN32)
+    enable_language(RC)  # llvm-mingw's windres (the toolchain file's CMAKE_RC_COMPILER)
+    target_sources(cod3mp PRIVATE ${COD3_SRC}/win/app.rc)
 endif()
 
 if(WIN32)

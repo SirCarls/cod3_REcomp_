@@ -232,3 +232,15 @@ endif()
 if(NOT MSVC)
     set_source_files_properties(src/runtime/bro_fast_sincos.c PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
 endif()
+
+# [waw-decomp] 2026-11-16 Everything the program links but the recompiled C, as one target: the setup tool
+# (c3w/bro.py) builds it while the recompiler is still writing the C, on the processor cores the recompiler leaves
+# idle. Not part of the default build.
+add_custom_target(bro_libraries)
+add_dependencies(bro_libraries xbox_kernel xbox_usb xbox_input platform)
+if(TARGET ngl_vk)
+    add_dependencies(bro_libraries ngl_vk)
+endif()
+if(TARGET bro_f2)
+    add_dependencies(bro_libraries bro_f2)
+endif()

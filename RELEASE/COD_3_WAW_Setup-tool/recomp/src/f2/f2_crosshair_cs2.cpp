@@ -23,6 +23,7 @@ namespace f2::xhair {
 namespace {
 
 constexpr float kPi = 3.14159265358979f;
+constexpr int kCodeGapLimit = 3840;  // a CS2 code's gap, either way (libclient.so 0x1bc5120, 0x1bc4cc0)
 
 // ------------------------------------------------------------------------------------------------- names
 
@@ -34,13 +35,13 @@ const char* const kGrenadeNames[kGrenadeCount] = {"Flash", "Explosive", "Fire", 
 
 // [acct2-ocr] 2026-11-14 the special crosshairs' rows (owner 17:06 / 17:19).
 const char* const kSpecialNames[kSpecialCount] = {"Weapons with a crosshair of their own", "Turrets and mounted guns",
-                                                  "Vehicles", "Scopes", "Aiming mode"};
+                                                  "Vehicles", "Scopes", "Grenade countdown"};
 const char* const kSpecialHelp[kSpecialCount] = {
     "Weapons the game draws a crosshair of their own for, such as World at War's flamethrower.",
     "Mounted machine guns, anti-aircraft guns and gunner seats.",
     "Driving or riding a vehicle, and the vehicle's aiming marks on the HUD.",
     "A scope's picture while aiming, also a scoped turret's. None leaves the zoomed view bare.",
-    "Call of Duty 3's mark at the point you aim at (most likely the mortar's)."};
+    "A cooked grenade's countdown, the marks round the crosshair. Mine: six marks in this crosshair's look."};
 const char* const kSpecialModeNames[kSpecialModeCount] = {"The game's own", "Mine", "Both", "None"};
 
 // Which rows each style uses (CS2's settingsmenu_crosshair script, acct2-decomp's NOTES 11-07 15:56).
@@ -154,6 +155,15 @@ void Coverage(const Shape& sh, int px, int py, float* fill_cov, float* outline_c
       *outline_cov = 0.0f;
       return;
     }
+    f *= SmoothStep(hs + 0.5f / L, hs - 0.5f / L, ad);
+    o *= SmoothStep(hs + (og + 0.5f) / L, hs + (og - 0.5f) / L, ad);
+  }
+  if (sh.kind == 3) {  // [acct2-ocr] 2026-11-15 one arc centered at sh.angle (the grenade countdown's marks)
+    float d = a - sh.angle;
+    while (d > kPi) d -= 2.0f * kPi;
+    while (d < -kPi) d += 2.0f * kPi;
+    const float ad = std::fabs(d), L = std::max(len, 1.0f), hs = sh.span * 0.5f;
+    const float og = Mix(sh.grow0, sh.grow1, h);
     f *= SmoothStep(hs + 0.5f / L, hs - 0.5f / L, ad);
     o *= SmoothStep(hs + (og + 0.5f) / L, hs + (og - 0.5f) / L, ad);
   }
@@ -295,7 +305,7 @@ Settings FromText(std::string_view text) {
     else if (key == "style") s.style = in(0, kStyleCount - 1);
     else if (key == "length") s.length = f(0, 255);
     else if (key == "thickness") s.thickness = f(0, 32);
-    else if (key == "gap") s.gap = f(-10, 128);
+    else if (key == "gap") s.gap = f(-kCodeGapLimit, kCodeGapLimit);  // [acct2-ocr] 11-15: a code's range
     else if (key == "dot") s.dot = on;
     else if (key == "t") s.t_style = on;
     else if (key == "color") ParseColor(val, &s.color);
@@ -311,7 +321,7 @@ Settings FromText(std::string_view text) {
     else if (key == "ads_dot") s.ads_dot = on;
     else if (key == "ads_dot_color") s.ironsight_use_color = on;
     else if (key == "ads_dot_scale") s.ironsight_dot_scale = f(0.1f, 2);
-    else if (key == "screen_height") s.screen_height = in(0, 8640);
+    else if (key == "screen_height") s.screen_height = in(0, 65535);  // [acct2-ocr] 11-15: a code's range
     else if (key == "friendly_warning") s.friendly_warning = on;
     else if (key == "observer") s.observer = on;
     else if (key == "observed_bot") s.observed_bot = on;
@@ -357,8 +367,14 @@ Settings FromText(std::string_view text) {
 
 bool ImportCode(std::string_view code, Settings* s, std::string* why) {
   namespace cs2 = cod3::crosshair_cs2;
-  const std::optional<cs2::Code> c = cs2::Decode(code, why);
+  // [acct2-ocr] 2026-11-15: as CS2's console import (libclient.so 0x1bd4840: the decoder 0x1bc5120, then 0x1bc5a20
+  // makes the settings). An old CSGO- code doesn't carry the iron sight dot's two settings: CS2 keeps the player's.
+  cs2::LegacyFill fill;
+  fill.scope_dot_use_crosshair_color = s->ironsight_use_color;
+  fill.scope_dot_scale = s->ironsight_dot_scale;
+  const std::optional<cs2::Code> c = cs2::Decode(code, why, fill);
   if (!c) return false;
+  // CS2 draws a style over 9 as 9 and an outline mode over 2 as 2 (0x1bc5860); only an old code can carry them.
   s->style = std::min<int>(c->style, kStyleCount - 1);
   s->dot = c->center_dot;
   s->t_style = c->t_style;
@@ -366,16 +382,21 @@ bool ImportCode(std::string_view code, Settings* s, std::string* why) {
   s->outline_color = {c->outline_color[0], c->outline_color[1], c->outline_color[2], c->outline_color[3]};
   s->thickness = float(std::min<int>(c->thickness, 32));
   s->outline = std::min<int>(c->outline_mode, 2);
-  s->gap = float(std::max<int>(c->gap, -10));
+  s->gap = float(std::clamp<int>(c->gap, -kCodeGapLimit, kCodeGapLimit));
   s->length = float(c->length);
   s->spread_limit = c->dynamic_spread_limit;
   s->split_distance = c->split_distance;
-  s->split_inner_alpha = std::min(1.0f, c->InnerSplitAlpha());
+  // An old code can carry split alphas and a ratio a little over 1 (CS2 converts them unchecked); kept to CS2's
+  // own ranges here.
+  s->split_inner_alpha = std::clamp(c->InnerSplitAlpha(), 0.0f, 1.0f);
   s->split_outer_alpha = std::clamp(c->OuterSplitAlpha(), 0.3f, 1.0f);
-  s->split_ratio = std::min(1.0f, c->SplitSizeRatio());
+  s->split_ratio = std::clamp(c->SplitSizeRatio(), 0.0f, 1.0f);
   s->ironsight_use_color = c->scope_dot_use_crosshair_color;
   s->ironsight_dot_scale = std::clamp(c->ScopeDotScale(), 0.1f, 2.0f);
-  s->screen_height = c->screen_height ? c->screen_height : 1080;
+  // The sizes are pixels on a screen this tall. CS2 then rescales them to its own window (0x1bc5bb0: each size times
+  // the window's height over this, rounded, at least 1); here they scale with each view's height when drawn. An old
+  // code can have none: CS2 then takes the sizes as they are for its window; here, for the height set now.
+  if (c->screen_height > 0) s->screen_height = c->screen_height;
   // As CS2: "Crosshair settings were imported, disabling cl_crosshair_recoil".
   s->follow_recoil = false;
   // A CS2 crosshair is one color with a one-pixel outline: shown as in CS2.
@@ -388,9 +409,12 @@ bool ImportCode(std::string_view code, Settings* s, std::string* why) {
 
 std::string ExportCode(const Settings& s) {
   namespace cs2 = cod3::crosshair_cs2;
+  // [acct2-ocr] 2026-11-15: as CS2's encoder (libclient.so 0x1bc4cc0) makes a code of its settings: the same limits,
+  // and the alphas, the ratio and the dot's scale rounded from the same float arithmetic.
+  auto hundredths = [](float v) { return uint8_t(int(std::roundf(v / 0.01f)) & 0x7F); };
   cs2::Code c;
   c.screen_height = uint16_t(std::clamp(s.screen_height, 0, 65535));
-  c.style = uint8_t(std::clamp(s.style, 0, kStyleCount - 1));
+  c.style = uint8_t(std::clamp(s.style, 0, 9));
   c.follow_recoil = s.follow_recoil;
   c.center_dot = s.dot;
   c.t_style = s.t_style;
@@ -398,17 +422,17 @@ std::string ExportCode(const Settings& s) {
   const uint8_t oc[4] = {s.outline_color.r, s.outline_color.g, s.outline_color.b, s.outline_color.a};
   std::memcpy(c.color, col, 4);
   std::memcpy(c.outline_color, oc, 4);
-  c.thickness = uint8_t(std::clamp(Round(s.thickness), 0, 255));
+  c.thickness = uint8_t(std::clamp(Round(s.thickness), 0, 32));
   c.outline_mode = uint8_t(std::clamp(s.outline, 0, 2));
-  c.gap = int8_t(std::clamp(Round(s.gap), -128, 127));
+  c.gap = int16_t(std::clamp(Round(s.gap), -kCodeGapLimit, kCodeGapLimit));
   c.length = uint8_t(std::clamp(Round(s.length), 0, 255));
   c.dynamic_spread_limit = uint8_t(std::clamp(s.spread_limit, 0, 255));
   c.split_distance = uint8_t(std::clamp(s.split_distance, 0, 127));
-  c.inner_split_alpha = uint8_t(std::clamp(Round(s.split_inner_alpha * 100.0f), 0, 127));
-  c.outer_split_alpha = uint8_t(std::clamp(Round((s.split_outer_alpha - 0.3f) * 100.0f), 0, 127));
-  c.split_size_ratio = uint8_t(std::clamp(Round(s.split_ratio * 100.0f), 0, 127));
+  c.inner_split_alpha = hundredths(std::clamp(s.split_inner_alpha, 0.0f, 1.0f));
+  c.outer_split_alpha = hundredths(std::clamp(s.split_outer_alpha, 0.3f, 1.0f) - 0.3f);
+  c.split_size_ratio = hundredths(std::clamp(s.split_ratio, 0.0f, 1.0f));
   c.scope_dot_use_crosshair_color = s.ironsight_use_color;
-  c.scope_dot_scale = uint8_t(std::clamp(Round(s.ironsight_dot_scale * 100.0f) - 10, 0, 255));
+  c.scope_dot_scale = uint8_t(int(std::roundf((std::clamp(s.ironsight_dot_scale, 0.1f, 2.0f) - 0.1f) / 0.01f)));
   return cs2::Encode(c);
 }
 
@@ -839,6 +863,8 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
     if (s.dot || s.style == kDotOnly) rect(cx - h0, cy - h0, cx - h0 + t - 1, cy - h0 + t - 1, 1.0f);
   }
 
+  const size_t main_shapes = out.size();  // [acct2-ocr] the crosshair itself (the countdown goes round it)
+
   // The iron sight dot while the sights are up.
   if (s.ads_dot && caps.sights && v.sights >= 0.5f) {
     const int d = std::max(2, Round(3.0f * scale * s.ironsight_dot_scale));
@@ -902,6 +928,48 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
     for (int i = 0; i < 3; ++i) sh.fill[i] = 0.0f;
     sh.fill[3] = 0.5f;
     out.push_back(sh);
+  }
+
+  // [acct2-ocr] 2026-11-15 (owner 20:21: "There is a grenade countdown crosshair in-game already") a cooked grenade's
+  // time left as six marks round the crosshair, as the game's own countdown shows it: one goes at each sixth of the
+  // fuse (Call of Duty 3's 0.83, 0.67, 0.5, 0.33 and 0.17 of it left), the rest clockwise from the top, in this
+  // crosshair's color, thickness and outline, just outside what the crosshair reaches.
+  if (v.countdown >= 0.0f) {
+    float reach = float(std::max(t, 2));
+    for (size_t i = 0; i < main_shapes; ++i) {
+      const Shape& m = out[i];
+      if (m.kind == 0)
+        reach = std::max({reach, std::fabs(m.x0 - float(cx)), std::fabs(m.x1 + 1.0f - float(cx)),
+                          std::fabs(m.y0 - float(cy)), std::fabs(m.y1 + 1.0f - float(cy))});
+      else
+        reach = std::max(reach, m.x1);
+    }
+    const int ring_t = std::max(1, t);
+    const float radius = reach + float(std::max(2, Round(3.0f * scale))) + float(ring_t);
+    int marks = 6;
+    for (float left : {0.83f, 0.67f, 0.5f, 0.33f, 0.17f})
+      if (v.countdown < left) --marks;
+    const size_t ring_start = out.size();
+    for (int k = 0; k < marks; ++k) {
+      Shape sh;
+      sh.kind = 3;
+      sh.x0 = float(cx) + rc;
+      sh.y0 = float(cy) + rc;
+      sh.x1 = radius;
+      sh.y1 = float(ring_t);
+      sh.span = kPi / 3.0f - 0.24f;  // a sixth of the circle less a small gap
+      sh.angle = float(k) * kPi / 3.0f;
+      sh.grow0 = grow0;
+      sh.grow1 = grow1;
+      for (int i = 0; i < 4; ++i) {
+        sh.fill[i] = fill[i];
+        sh.outline[i] = outline[i];
+      }
+      out.push_back(sh);
+    }
+    if (!v.cross) out.erase(out.begin(), out.begin() + std::ptrdiff_t(ring_start));
+  } else if (!v.cross) {
+    out.clear();
   }
   return out;
 }
@@ -1087,6 +1155,13 @@ void DrawPreviewBox(const Settings& s, int player, float side) {
   const double t = ImGui::GetTime();
   if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-bro] 11-15: not with T
   if (s.style == kStaticCrossShotFeedback) v.seconds_since_shot = std::fmod(t, 0.8);
+  // [acct2-ocr] 2026-11-15 the grenade countdown while it is this player's (Mine or Both): a four-second fuse, a
+  // second's rest between
+  if ((S().caps.special >> kSpecialCountdown & 1u) &&
+      (s.special[kSpecialCountdown] == kMine || s.special[kSpecialCountdown] == kBoth)) {
+    const double cycle = std::fmod(t, 5.0);
+    if (cycle < 4.0) v.countdown = float(1.0 - cycle / 4.0);
+  }
   DrawSettings(dl, s, v, player, true);
   dl->PopClipRect();
   dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
@@ -1159,8 +1234,9 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     static char code_text[96] = "";
     static std::string message;
     ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x * 0.55f, 420.0f));
-    const bool enter = ImGui::InputTextWithHint("##code", "CS2 crosshair code (CS...)", code_text, sizeof(code_text),
-                                                ImGuiInputTextFlags_EnterReturnsTrue);
+    const bool enter =
+        ImGui::InputTextWithHint("##code", "CS2 crosshair code (CS... or an old CSGO-...)", code_text,
+                                 sizeof(code_text), ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::SameLine();
     if (ImGui::Button("Import") || enter) {
       std::string why;

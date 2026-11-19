@@ -47,6 +47,7 @@ static const char *const known_keys[] = {
     "version",
     "display.max_fps", "display.show_fps", "display.fps_log",
     "display.vsync", "display.fullscreen", "display.window", "display.size",
+    "display.monitor",      /* [rexglue-native-monitor] 2026-11-16: the display the window opens on (ngl_present.c) */
     "input.dead_zone", "input.raw_mouse", "input.mouse_sensitivity", "input.mouse_scale_x", "input.mouse_scale_y",
     "input.invert_y", "input.mouse_speed",
     /* the controller's button for each of the pad's inputs (bro_pad.c) */

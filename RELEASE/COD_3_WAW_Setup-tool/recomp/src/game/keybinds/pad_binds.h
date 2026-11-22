@@ -65,5 +65,8 @@ void AfterPoll(PPCContext& ctx, uint8_t* base);
 // [f2-menus] 2026-11-11 F2 > CONTROLS > Controller (any thread): seat 0-3's layout as the game last ran it
 // (layout_text: kButtonCount strings, the bindings as the game has them); false before that seat's first sync.
 bool SeatLayout(int seat, pad::Layout* layout, std::string* layout_text);
+// [acct2-main] 2026-11-21 F2 > CONTROLS > Controller (any thread): the controller (guest user 0-3) seat 0-3 played with
+// at its last sync (the game's own choice; in the campaign the first); -1 before that seat's first sync.
+int SeatPad(int seat);
 
 }  // namespace cod3::binds::padbinds

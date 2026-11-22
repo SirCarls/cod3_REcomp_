@@ -1,6 +1,9 @@
 // cod3 - [memory-360] 2026-11-11 stage 3: the shadow (step 1, a test that moves nothing) and the move (step 2,
 // cod3_native_memory_move, off by default; tested on Linux 11:37-13:17, dev/agents/memory-360/NOTES.md), and stage
 // 5's test (cod3_native_memory_move_pool, off; UNTESTED).
+// [acct2-decomp] 2026-11-21 since then both are tested (stage 5 with the native renderer's reads of the moved pool,
+// 11-12 to 11-21) and on by default (the owner, 11-21 13:14: "On by default"), with the native renderer only
+// (cod3_native_vulkan): with the emulated GPU nothing moves and an info line says so. The notes below keep their dates.
 //
 // Stage 3 moves the game's CPU-only data out of arena 0 (the 370.9 MB the game takes from the Xbox 360's 512 MB of
 // physical memory, native_memory.cpp) into guest virtual memory, which this SDK keeps outside the 512 MB. A block
@@ -47,6 +50,15 @@
 // While the shadow or the move is on, the game's locks of pool resources are logged (D3D's locks hand back the
 // header's own address as the CPU pointer), and the native renderer's reads of the moved pool are counted, not
 // errors.
+//
+// [acct2-decomp] 2026-11-12 the effects pools (cod3_native_effects_pool_scale, 1 = the game's own, 2 the default):
+// memory-360's candidate of 11-11 (rexglue-native's "stage 2a"). The game's set-up (0x82418C80, cod3mp 0x82430A58)
+// makes nine pools of 512 blocks each through 0x820F8D30(blocks, block size), for blocks of 16, 32, 128, 256, 512,
+// 1024, 2048, 4096 and 8192 bytes. When a pool is full the game skips the effect that asked (Falaise and The Mace
+// get there). The hook on 0x820F8D30 asks for 2 to 4 times the blocks, and with that the seven smaller pools join
+// the two big ones on the move's list (kEffectsPoolSites), so bigger pools take nothing from the console's 512 MB.
+// It acts only with the move on. More effects are drawn than the console drew; the owner chose this as the default
+// (2026-11-14 12:33: "On by default").
 #include "game/native_memory.h"
 
 #include <algorithm>
@@ -78,18 +90,18 @@ REXCVAR_DEFINE_BOOL(cod3_native_memory_shadow, false, "cod3/Debug",
                     "vertex and index buffers). Moves nothing; slower. Applies after a restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(cod3_native_memory_move, false, "cod3/Debug",
-                    "Stage 3 of the memory work: the game's allocations that never reach the graphics side (a list "
-                    "made from the shadow test's runs) go to guest virtual memory, outside the console's 512 MB, "
-                    "instead of the game's main arena. Native renderer only. A TEST: leave it off (pictures with it "
-                    "on are still being checked). Applies after a restart")
+REXCVAR_DEFINE_BOOL(cod3_native_memory_move, true, "cod3/Debug",
+                    "The game's memory past the console's 512 MB (on by default since 2026-11-21, the owner's "
+                    "choice): the game's allocations that never reach the graphics side (a list made from the "
+                    "shadow test's runs) go to guest virtual memory instead of the game's main arena. Native "
+                    "renderer only; with the emulated GPU nothing moves. Applies after a restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-REXCVAR_DEFINE_BOOL(cod3_native_memory_move_pool, false, "cod3/Debug",
-                    "Stage 5 of the memory work, a TEST: with cod3_native_memory_move on, the game's streaming pool "
-                    "(its textures and meshes, 240 MB) goes to guest virtual memory too. Needs the native "
-                    "renderer's matching change (it must read those addresses as they are); without it the pictures "
-                    "are wrong. Native renderer only. Applies after a restart")
+REXCVAR_DEFINE_BOOL(cod3_native_memory_move_pool, true, "cod3/Debug",
+                    "With cod3_native_memory_move on, the game's streaming pool (its textures and meshes, 240 MB) "
+                    "goes to guest virtual memory too, outside the console's 512 MB (on by default since "
+                    "2026-11-21). The native renderer reads those addresses as they are. Native renderer only. "
+                    "Applies after a restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DEFINE_BOOL(cod3_native_memory_move_animheap, false, "cod3/Debug",
                     "A TEST of the memory work, for the native renderer's bone reads: with cod3_native_memory_move "
@@ -97,7 +109,22 @@ REXCVAR_DEFINE_BOOL(cod3_native_memory_move_animheap, false, "cod3/Debug",
                     "too. The soldiers are drawn unposed until the native renderer reads that memory. Applies after a "
                     "restart")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+REXCVAR_DEFINE_INT32(cod3_native_effects_pool_scale, 2, "cod3/Debug",
+                     "Effects memory (with cod3_native_memory_move on; native renderer only): each of the "
+                     "game's nine effects pools holds this many times its 512 blocks, outside the console's 512 "
+                     "MB, so a level with many effects at once (Falaise, The Mace) skips none because a pool is "
+                     "full. More effects are drawn than the console drew. 1: the game's own; 2, the default, twice. "
+                     "Applies after a restart")
+    .range(1, 4)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 REXCVAR_DECLARE(bool, cod3_native_vulkan);
+
+// [acct2-decomp] 2026-11-15 the move's and the moved pool's bounds, declared in native_memory.h, whose inline
+// InMovedMemory and InMovedPool read them; the code below uses them by these names.
+namespace cod3::native_memory::detail {
+std::atomic<uint32_t> g_move_lo{0}, g_move_hi{0};
+std::atomic<uint32_t> g_moved_pool_lo{0}, g_moved_pool_hi{0};
+}  // namespace cod3::native_memory::detail
 
 namespace {
 
@@ -297,13 +324,40 @@ constexpr Listed kAnimHeapSite = {{0x820CC21C, 0x8240041C, 0x82344E98, 0, 0, 0},
 constexpr Listed kAnimHeapSite = {{0x820DE728, 0x824182F4, 0x82314260, 0, 0, 0}, "AnimHeap 4 MB (test)"};
 #endif  // the move's room the pool needs (with up to 96 banks and the rest)
 
+// [acct2-decomp] 2026-11-12 the effects pools the move's list doesn't hold: the first seven of the nine the game's
+// set-up makes (blocks of 16 to 2048 bytes, 512 of each: 2 MB together; the 4096 and 8192 byte pools are the list's
+// "particle pool 2 MB" and "4 MB"). The fifth address is the return address of each call of 0x820F8D30 in the
+// set-up (the calls stand 12 bytes apart). They move only with cod3_native_effects_pool_scale above 1.
+#if !defined(COD3_MP)
+constexpr Listed kEffectsPoolSites[] = {
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418CC8, 0x82400398}, "effects pool, 16-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418CD4, 0x82400398}, "effects pool, 32-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418CE0, 0x82400398}, "effects pool, 128-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418CEC, 0x82400398}, "effects pool, 256-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418CF8, 0x82400398}, "effects pool, 512-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D04, 0x82400398}, "effects pool, 1024-byte blocks"},
+    {{0x820CC30C, 0x82522DF4, 0x82418C10, 0x820F8C1C, 0x82418D10, 0x82400398}, "effects pool, 2048-byte blocks"},
+};
+#else
+constexpr Listed kEffectsPoolSites[] = {
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AA0, 0x824182C0}, "effects pool, 16-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AAC, 0x824182C0}, "effects pool, 32-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AB8, 0x824182C0}, "effects pool, 128-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AC4, 0x824182C0}, "effects pool, 256-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AD0, 0x824182C0}, "effects pool, 512-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430ADC, 0x824182C0}, "effects pool, 1024-byte blocks"},
+    {{0x820DE820, 0x82548CE8, 0x82437370, 0x8210AB8C, 0x82430AE8, 0x824182C0}, "effects pool, 2048-byte blocks"},
+};
+#endif
+
 constexpr uint32_t kMoveBytesWanted[] = {512u << 20, 256u << 20, 128u << 20};  // the first that fits
 constexpr uint32_t kMoveMinBytes = 1024;  // smaller requests stay (the game's small-block pools serve them)
 
 std::atomic<int> g_move{-1};             // -1 not read yet, 0 off, 1 on
 std::atomic<uint32_t> g_move_header{0};  // the header in use (0: not made yet)
 std::atomic<bool> g_move_failed{false}, g_move_reserve_tried{false};
-std::atomic<uint32_t> g_move_lo{0}, g_move_hi{0};
+using cod3::native_memory::detail::g_move_hi;  // the move's bounds (defined above, for native_memory.h)
+using cod3::native_memory::detail::g_move_lo;
 std::atomic<uint64_t> g_moved{0}, g_move_fallbacks{0}, g_moved_seen_by_gpu{0};
 // [acct2-decomp] 2026-11-14 the moved sound bank's bounds (0 while it isn't moved), for FMOD's memory check. hi is
 // stored before lo, and lo read first (acquire), as the moved pool's.
@@ -316,8 +370,13 @@ bool MoveOn() {
   m = 0;
   if (REXCVAR_GET(cod3_native_memory_move)) {
     if (!REXCVAR_GET(cod3_native_vulkan)) {
-      REXLOG_WARN("cod3: memory move: cod3_native_memory_move is on, but it is for the native renderer "
-                  "(cod3_native_vulkan); nothing moves");
+      // [acct2-decomp] 2026-11-21 on by default: only someone who turned it on is warned.
+      if (rex::cvar::GetFlagSource("cod3_native_memory_move") == rex::cvar::Source::kDefault)
+        REXLOG_INFO("cod3: memory move: the game's memory stays in the console's 512 MB with the emulated GPU (the "
+                    "move goes with the native renderer, cod3_native_vulkan)");
+      else
+        REXLOG_WARN("cod3: memory move: cod3_native_memory_move is on, but it is for the native renderer "
+                    "(cod3_native_vulkan); nothing moves");
     } else if (kMoveList[0].what == nullptr) {
       REXLOG_WARN("cod3: memory move: cod3_native_memory_move is on, but this program has no list of call sites "
                   "yet; nothing moves");
@@ -342,10 +401,28 @@ uint32_t Reserve();
 // Stage 5's test: the streaming pool's block (wherever it is; noted when the game makes it), and whether it moves.
 std::atomic<int> g_pool{-1};  // -1 not read yet, 0 off, 1 on
 std::atomic<uint32_t> g_pool_lo{0}, g_pool_hi{0};
-std::atomic<uint64_t> g_pool_gpu_reads{0}, g_pool_locks{0};
+std::atomic<uint64_t> g_pool_locks{0};
+// [acct2-decomp] 2026-11-15 the count of the graphics side's reads of the moved pool, which come thousands of times a
+// frame from the native renderer's worker and from the game's Direct3D binds on other threads, has a cache line of
+// its own (PoolReads is 64 bytes; it shared one with the pool's bounds, which every read loads), and each thread adds
+// its reads to it every kPoolReadBatch (CountPoolRead): a log line's total is short by fewer than kPoolReadBatch reads
+// a thread.
+struct alignas(64) PoolReads {
+  std::atomic<uint64_t> count{0};
+};
+PoolReads g_pool_gpu_reads;
+constexpr uint32_t kPoolReadBatch = 4096;
+thread_local uint32_t t_pool_reads = 0;
+
+void CountPoolRead() {
+  if (++t_pool_reads < kPoolReadBatch) return;
+  g_pool_gpu_reads.count.fetch_add(t_pool_reads, std::memory_order_relaxed);
+  t_pool_reads = 0;
+}
 // The pool's bounds once it was moved (GpuName / GpuRoom / InMovedPool): 0 while it isn't. hi is stored before lo,
 // and lo read first (acquire), so a reader that sees lo sees its hi.
-std::atomic<uint32_t> g_moved_pool_lo{0}, g_moved_pool_hi{0};
+using cod3::native_memory::detail::g_moved_pool_hi;  // (defined above, for native_memory.h)
+using cod3::native_memory::detail::g_moved_pool_lo;
 
 bool IsPoolSite(const Key& key) { return std::equal(kPoolSite.pc, kPoolSite.pc + kStackDepth, key.pc); }
 
@@ -360,8 +437,10 @@ bool PoolOn() {
   p = 0;
   if (REXCVAR_GET(cod3_native_memory_move_pool)) {
     if (!MoveOn()) {
-      REXLOG_WARN("cod3: memory move: cod3_native_memory_move_pool is on, but it goes with cod3_native_memory_move "
-                  "(off, or not usable here); the streaming pool stays");
+      // [acct2-decomp] 2026-11-21 on by default: MoveOn has said why already, unless someone turned this on.
+      if (rex::cvar::GetFlagSource("cod3_native_memory_move_pool") != rex::cvar::Source::kDefault)
+        REXLOG_WARN("cod3: memory move: cod3_native_memory_move_pool is on, but it goes with "
+                    "cod3_native_memory_move (off, or not usable here); the streaming pool stays");
     } else if (const uint32_t room = Reserve(); room < kPoolRoomNeeded) {
       REXLOG_WARN("cod3: memory move: the move's room is {} MB, the streaming pool needs {} MB of it; the pool stays",
                   room >> 20, kPoolRoomNeeded >> 20);
@@ -371,9 +450,37 @@ bool PoolOn() {
   }
   int expected = -1;
   if (g_pool.compare_exchange_strong(expected, p) && p == 1)
-    REXLOG_INFO("cod3: memory move: the streaming pool goes to guest virtual memory too (stage 5, a test: the "
-                "native renderer must read its addresses as they are)");
+    REXLOG_INFO("cod3: memory move: the streaming pool goes to guest virtual memory too (the native renderer "
+                "reads its addresses as they are)");
   return g_pool.load(std::memory_order_relaxed) == 1;
+}
+
+// [acct2-decomp] 2026-11-12 how many times its 512 blocks each effects pool gets (cod3_native_effects_pool_scale):
+// 1 unless the move is on and has its room, because the bigger pools live there.
+std::atomic<int> g_effects_scale{0};  // 0 not read yet, else 1 to 4
+uint32_t EffectsPoolScale() {
+  int scale = g_effects_scale.load(std::memory_order_relaxed);
+  if (scale > 0) return uint32_t(scale);
+  scale = 1;
+  const int asked = std::clamp(int(REXCVAR_GET(cod3_native_effects_pool_scale)), 1, 4);
+  if (asked > 1) {
+    if (MoveOn() && Reserve() != 0)
+      scale = asked;
+    else if (rex::cvar::GetFlagSource("cod3_native_effects_pool_scale") == rex::cvar::Source::kDefault)
+      REXLOG_INFO("cod3: memory move: the effects pools stay the game's own: their default scale {} goes "
+                  "with cod3_native_memory_move (off, or not usable here)",
+                  asked);
+    else
+      REXLOG_WARN("cod3: memory move: cod3_native_effects_pool_scale {} left unused: it goes with "
+                  "cod3_native_memory_move (off, or not usable here); the effects pools stay the game's own",
+                  asked);
+  }
+  int expected = 0;
+  if (g_effects_scale.compare_exchange_strong(expected, scale) && scale > 1)
+    REXLOG_INFO("cod3: memory move: each effects pool gets {} times its blocks, in guest virtual memory (more "
+                "effects are drawn than the console drew)",
+                scale);
+  return uint32_t(g_effects_scale.load(std::memory_order_relaxed));
 }
 
 const Listed* OnMoveList(const Key& key) {
@@ -384,6 +491,12 @@ const Listed* OnMoveList(const Key& key) {
   if (std::equal(kAnimHeapSite.pc, kAnimHeapSite.pc + kStackDepth, key.pc) &&
       REXCVAR_GET(cod3_native_memory_move_animheap))
     return &kAnimHeapSite;
+  // [acct2-decomp] 2026-11-12 the seven smaller effects pools, only when bigger pools are asked for.
+  if (EffectsPoolScale() > 1) {
+    for (const Listed& l : kEffectsPoolSites) {
+      if (std::equal(l.pc, l.pc + kStackDepth, key.pc)) return &l;
+    }
+  }
   return nullptr;
 }
 
@@ -483,7 +596,7 @@ uint32_t MoveArena(uint8_t* base) {
 bool ReportIfMoved(uint32_t address, const char* what, bool graphics = true) {
   if (!InMoveArena(address)) return false;
   if (graphics && InPool(address)) {
-    g_pool_gpu_reads.fetch_add(1, std::memory_order_relaxed);
+    CountPoolRead();
     return true;
   }
   if (g_moved_seen_by_gpu.fetch_add(1, std::memory_order_relaxed) < 8)
@@ -611,12 +724,7 @@ uint64_t MoveFallbacks() { return g_move_fallbacks.load(std::memory_order_relaxe
 
 bool MovePoolOn() { return PoolOn(); }
 
-bool InMovedMemory(uint32_t address) { return InMoveArena(address); }
-
-bool InMovedPool(uint32_t address) {
-  const uint32_t lo = g_moved_pool_lo.load(std::memory_order_acquire);
-  return lo && address >= lo && address < g_moved_pool_hi.load(std::memory_order_relaxed);
-}
+// InMovedMemory and InMovedPool: inline in native_memory.h ([acct2-decomp] 2026-11-15).
 
 uint32_t GpuName(uint32_t word, uint32_t mask) {
   if (InMovedPool(word)) return word & (mask | 0xE0000000u);
@@ -637,7 +745,7 @@ PoolStats Pool() {
   s.start = g_pool_lo.load(std::memory_order_relaxed);
   s.end = g_pool_hi.load(std::memory_order_relaxed);
   s.moved = s.start && InMoveArena(s.start);
-  s.graphics_reads = g_pool_gpu_reads.load(std::memory_order_relaxed);
+  s.graphics_reads = g_pool_gpu_reads.count.load(std::memory_order_relaxed);
   s.locks = g_pool_locks.load(std::memory_order_relaxed);
   return s;
 }
@@ -829,4 +937,21 @@ REX_HOOK_RAW(sub_822F15F8) {
   if (ctx.r3.u32 && Watching())
     NotePoolLock(ReadU32(base, ctx.r3.u32 + 0x18), "an index buffer", static_cast<uint32_t>(ctx.lr));
   __imp__sub_822F15F8(ctx, base);
+}
+
+// [acct2-decomp] 2026-11-12 0x820F8D30 (cod3mp 0x8210ACA0; r3 blocks, r4 block size): makes one effects pool. It
+// reads the pools' list (0x8290B560 / 0x82A883F0) and jumps on to the maker (0x820F8BC0 / 0x8210AB30), which takes
+// the pool's memory in one piece (the 4 MB and 2 MB blocks of the move's list), sets the pool up (0x820F8400: block
+// count at +0, block size at +0x14) and adds it to the list. The game's set-up calls it nine times with 512 blocks.
+// With cod3_native_effects_pool_scale above 1 the pool gets that many times the blocks; nothing else changes.
+REX_EXTERN(__imp__sub_820F8D30);
+REX_HOOK_RAW(sub_820F8D30) {
+  const uint32_t scale = EffectsPoolScale();
+  if (scale > 1) {
+    const uint32_t blocks = ctx.r3.u32;
+    ctx.r3.u64 = uint64_t(blocks) * scale;
+    REXLOG_INFO("cod3: memory move: effects pool of {}-byte blocks: {} blocks (the game's {})", ctx.r4.u32,
+                ctx.r3.u32, blocks);
+  }
+  __imp__sub_820F8D30(ctx, base);
 }

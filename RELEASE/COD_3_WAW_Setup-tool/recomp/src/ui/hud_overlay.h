@@ -109,6 +109,9 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   void DrawVideoColors();
   void DrawVideoQuality();
   void DrawSound();
+  // [acct2-decomp] 2026-11-21 LANGUAGE (owner 10:38): Text, Voices and Console language, which were on SOUND.
+  void DrawLanguage();
+  void DrawConsoleLanguage();
   void DrawGame();
   void DrawGamePrompts();  // [claude-9b-think] Game > Prompts
   void DrawSoundOutput();
@@ -121,9 +124,11 @@ class SettingsWindow : public rex::ui::ImGuiDialog {
   void DrawControlsPerWeapon();
   void DrawControlsKeys();
   void DrawInterface();
-  void DrawPerformance();
-  // [claude-9b] 2026-10-27 EMULATION and its subtabs.
-  void DrawEmulation();
+  void DrawPerformance();  // [acct2-bro] 2026-11-21 the SYSTEM tab (was PERFORMANCE)
+  void DrawFrameCost();       // [acct2-bro] 2026-11-21 VIDEO > Frame rate's Frame cost (was on PERFORMANCE)
+  void DrawLogsAndReports();  // [acct2-bro] 2026-11-21 CONSOLE > Logs and reports (was on PERFORMANCE)
+  // [claude-9b] 2026-10-27 EMULATION and its subtabs. [acct2-bro] 2026-11-21 the tab is gone; its pages are drawn
+  // by VIDEO (Gpu as Renderer, Speedups), SYSTEM (Native) and SOUND (Sound).
   void DrawEmulationGpu();
   void DrawEmulationSpeedups();
   void DrawEmulationNative();

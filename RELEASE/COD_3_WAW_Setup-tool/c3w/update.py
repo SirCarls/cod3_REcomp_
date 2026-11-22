@@ -243,7 +243,11 @@ def parse_keys(data: bytes) -> Keys:
     if not isinstance(d, dict) or d.get("format") != FORMAT:
         raise UpdateError("update_keys.json has an unknown format")
     source = d.get("source") or {}
+    if not isinstance(source, dict):   # [acct2-decomp] 2026-11-21: was an AttributeError (a traceback), not a reason
+        raise UpdateError("update_keys.json: the source isn't a table")
     repo, prefix = source.get("repo", ""), source.get("prefix", "")
+    if not isinstance(repo, str):
+        raise UpdateError("update_keys.json: the repository isn't owner/name")
     if repo and not _REPO.match(repo):
         raise UpdateError("update_keys.json: the repository isn't owner/name")
     if not isinstance(prefix, str) or not _PREFIX.match(prefix):

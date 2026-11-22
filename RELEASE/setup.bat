@@ -1,7 +1,7 @@
 :; echo "setup.bat is for Windows. On Linux, run:  sh setup.sh" ; exit 1 #
 @echo off
 rem Starts the COD_3_WAW setup tool (Windows; also runs under Wine). It installs
-rem anything missing (Python here; Rust, compilers and libraries when you press Build).
+rem anything missing (Python here; compilers and libraries when you press Build).
 if not exist "%~dp0COD_3_WAW_Setup-tool\setup.bat" goto not_extracted
 rem One line: an update may replace this file while the tool runs (cmd reads it as it goes).
 call "%~dp0COD_3_WAW_Setup-tool\setup.bat" %* & exit /b

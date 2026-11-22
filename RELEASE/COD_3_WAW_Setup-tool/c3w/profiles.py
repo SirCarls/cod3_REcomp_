@@ -20,7 +20,7 @@ import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
-from . import bro, common, pc_games, upscale, waw
+from . import bro, common, fh, pc_games, upscale, waw
 
 PROFILES_DIR = "profiles"
 FORMAT = "cod3-setup-profile"
@@ -43,6 +43,10 @@ SETTING_TYPES: Dict[str, type] = {
     # [acct2-bro] Big Red One's tab: its disc and the Play page's choices (bro.PlayOptions)
     "bro_source": str, "bro_level": str, "bro_fullscreen": bool, "bro_vsync": bool, "bro_size": str,
     "bro_mouse_look": bool, "bro_mouse_speed": int, "bro_mute": bool,
+    # [acct2-decomp] 2026-11-21 Finest Hour's tab: its disc and the Play page's choices (fh.PlayOptions); without
+    # these a saved profile left them out ("Left out an unknown setting: fh_source")
+    "fh_source": str, "fh_fullscreen": bool, "fh_vsync": bool, "fh_size": str, "fh_language": str,
+    "fh_skip_films": bool,
 }
 # [waw-decomp] World at War, Call of Duty 2 and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py): each
 # one's disc and its Play page's choices (x360_ports.PlayOptions.to_settings).
@@ -66,7 +70,8 @@ for _game in PC_GAME_IDS:
 # Settings that hold paths (a list of paths for waw_map_packs).
 PATH_KEYS = ("cod3_source", "waw_steam", "waw_xbox360", "waw_pc_disc", "output_dir", "work_dir",
              "waw_map_packs") + tuple(f"{g}_{k}" for g in PC_GAME_IDS for k in ("install", "copy_dir")) + \
-    ("bro_source",) + tuple(f"port_{p}_source" for p in PORT_IDS)   # [acct2-bro] [waw-decomp]
+    ("bro_source",) + tuple(f"port_{p}_source" for p in PORT_IDS) + \
+    ("fh_source",)   # [acct2-bro] [waw-decomp] [acct2-decomp]
 # Settings with a fixed set of values.
 ALLOWED: Dict[str, tuple] = {
     "waw_alternative": (waw.XBOX360, waw.PC_DISC),
@@ -75,6 +80,8 @@ ALLOWED: Dict[str, tuple] = {
     "upscale_scale": tuple(upscale.SCALES),
     "bro_level": tuple(key for key, _ in bro.LEVELS),   # [acct2-bro]
     "bro_size": bro.WINDOW_SIZES,
+    "fh_size": fh.WINDOW_SIZES,                       # [acct2-decomp] 2026-11-21
+    "fh_language": tuple(key for key, _ in fh.LANGUAGES),
 }
 for _port in PORT_IDS:   # [waw-decomp]
     ALLOWED[f"port_{_port}_graphics_api"] = ("auto", "vulkan", "d3d12")

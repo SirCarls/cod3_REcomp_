@@ -44,15 +44,20 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 // Every page of the F2 window in its own order: the top tab, then the subtab. A page this program doesn't have
-// (cod3mp has no Cutscenes, Aim or Movement; Server shows only on a host) is skipped after a few frames.
+// (cod3mp has no Aim or Movement; Server shows only on a host) is skipped after a few frames.
+// [acct2-bro] 2026-11-21 the F2 pass (owner 09:01, 09:10): EMULATION's pages are VIDEO/Renderer and VIDEO/GPU
+// speed-ups (Native code is on SYSTEM, Audio engine on SOUND), PERFORMANCE is SYSTEM, its logs are CONSOLE/Logs and
+// reports, and GAME/Cutscenes is gone (its rows are on Prompts and View).
+// [acct2-decomp] 2026-11-21 (owner 10:38) LANGUAGE after SOUND: Text, Voices and Console language were on SOUND.
 constexpr const char* kAllPages[] = {
     "VIDEO/Display",       "VIDEO/Resolution",    "VIDEO/Frame rate",      "VIDEO/Colors",
-    "VIDEO/Quality",       "SOUND",               "GAME/View",             "GAME/Weapon",
-    "GAME/Prompts",        "GAME/Cutscenes",      "GAME/Aim",              "GAME/Movement",
-    "GAME/Server",         "GAME/Player",         "CROSSHAIR",             "CONTROLS/Mouse",
-    "CONTROLS/Controller", "CONTROLS/Per weapon", "CONTROLS/Key bindings", "INTERFACE",
-    "PERFORMANCE",         "EMULATION/GPU",       "EMULATION/GPU speed-ups", "EMULATION/Native code",
-    "EMULATION/Audio engine", "CONSOLE/Console",  "CONSOLE/Problems",      "CONSOLE/Saved settings",
+    "VIDEO/Quality",       "VIDEO/Renderer",      "VIDEO/GPU speed-ups",   "SOUND",
+    "LANGUAGE/Text",       "LANGUAGE/Voices",     "LANGUAGE/Console language",
+    "GAME/View",           "GAME/Weapon",         "GAME/Prompts",          "GAME/Aim",
+    "GAME/Movement",       "GAME/Server",         "GAME/Player",           "CROSSHAIR",
+    "CONTROLS/Mouse",      "CONTROLS/Controller", "CONTROLS/Per weapon",   "CONTROLS/Key bindings",
+    "INTERFACE",           "SYSTEM",              "CONSOLE/Console",       "CONSOLE/Problems",
+    "CONSOLE/Logs and reports", "CONSOLE/Saved settings",
 };
 
 constexpr int kSettleFrames = 3;     // frames for a new tab or scroll to be drawn and laid out

@@ -4,6 +4,7 @@
 
 #include "game/font_fill.h"
 #include "game/guest.h"       // [acct2-ocr] RawTextFor
+#include "game/text_copy_check.h"  // [acct2-main] 2026-11-21
 #include "ui/text_native.h"   // [acct2-ocr] ScriptReady
 #include "ui/text_overlay.h"
 
@@ -41,7 +42,7 @@ REXCVAR_DEFINE_STRING(cod3_text_language, "disc", "cod3/Language",
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [acct2-ocr] 2026-11-05 For tests (devrun --set): "SECONDS:LOCALE" changes cod3_text_language that many seconds
-// after the first text, as F2 > Sound > Text does, to see the lines the game still holds from the language before.
+// after the first text, as F2 > LANGUAGE > Text does, to see the lines the game still holds from the language before.
 // 2026-11-07: several, "60:ja-JP,90:fr-FR,120:ja-JP" (each counted from the first text), to go back and forth.
 REXCVAR_DEFINE_STRING(cod3_test_text_language_at, "", "cod3/Language",
                       "Testing: \"SECONDS:LOCALE\" changes the text language that many seconds after the start; "
@@ -54,7 +55,7 @@ REXCVAR_DEFINE_STRING(cod3_test_raw_line, "", "cod3/Language",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 // [acct2-ocr] Each kind of text can stay in the game's own English while the rest
-// is translated (F2 > Sound > Text by kind); the packs group their rows under
+// is translated (F2 > LANGUAGE > Text > Text by kind); the packs group their rows under
 // "@<kind>" lines.
 REXCVAR_DEFINE_BOOL(cod3_text_menus, true, "cod3/Language",
                     "Translate the menus and the interface (off: the game's own English)")
@@ -231,12 +232,17 @@ uint32_t GuestCopy(uint8_t* base, const std::string& bytes) {
     const uint32_t at = rex::system::kernel_state()->memory()->SystemHeapAlloc(size);
     if (!at) return 0;
     g_arena = at, g_arena_used = 0, g_arena_size = size;
+    cod3::textcopy::NoteOurText(at, size);  // [acct2-main] 2026-11-21 text_copy_check.h
   }
   const uint32_t at = g_arena + g_arena_used;
   std::memcpy(base + at, bytes.c_str(), bytes.size() + 1);
   g_arena_used += need;
   return at;
 }
+
+// [acct2-ocr] 2026-11-21 The port's own words for its in-game rows (kPortWords: the CROSSHAIR page), as "@port" rows.
+#include "game/text_port_words.inc"
+static_assert(sizeof(PortWord::text) / sizeof(PortWord::text[0]) == kLocales.size(), "one text per locale");
 
 // Reads assets/text/<locale>.txt into g_table (g_mutex held).
 void Load(int locale) {
@@ -332,6 +338,19 @@ void Load(int locale) {
     g_table.kind[hash] = kind;
     ++read;
   }
+  // [acct2-ocr] 2026-11-21 the port's own words (kPortWords) where the pack has no row of its own for the key: "@port"
+  // rows of the menus' kind, converted as the pack's are
+  int built_in = 0;
+  for (const PortWord& w : kPortWords) {
+    const char* text = w.text[size_t(locale)];
+    const uint32_t hash = KeyHash(w.key);
+    if (!text || !*text || g_table.text.count(hash)) continue;
+    g_table.port[hash] = true;
+    g_table.text[hash] = !overlay ? ToGameFontBytes(text, fill) : breaks ? WithLineBreaks(text) : std::string(text);
+    g_table.kind[hash] = 0;  // menus
+    ++built_in;
+  }
+  if (built_in) REXLOG_INFO("cod3: text: {} of the port's own rows built in", built_in);
   // [acct2-ocr] cod3_test_raw_line
   if (const std::string t = std::string(REXCVAR_GET(cod3_test_raw_line)); t.find('|') != std::string::npos) {
     const size_t bar = t.find('|');
@@ -797,10 +816,11 @@ bool DrawSettingsRow() {
        "in the game's folder. Changes from the next text the game asks for: open the menu page again, or "
        "load a level. Russian, Chinese, Japanese and Korean are drawn by the port itself, "
        "from text/fonts/overlay/; a change to or between them applies after a restart. The voices have their own "
-       "setting above.");
+       "setting: the Voices tab.");  // [acct2-decomp] 2026-11-21 was "above", on SOUND
   // [acct2-ocr] Kinds of text kept in the game's own English, and the forced ones.
   bool kinds_changed = false;
   ImGui::BeginDisabled(chosen < 0);
+  ImGui::SetNextItemOpen(true, ImGuiCond_FirstUseEver);   // [acct2-decomp] 2026-11-21 its own tab now: open
   if (ImGui::TreeNode("Text by kind")) {
     for (uint8_t k = 0; k < kTickedKinds; ++k) {
       bool on = KindOn(k);

@@ -25,13 +25,15 @@
 //  - stage 1, cod3_native_memory_report (off; started at the arena maker): a host thread reads about 1 KB of the game's memory once a second
 //    and logs how full each budget is, every 30 s, at each level load, and whenever a budget reaches a new high.
 //    It writes nothing.
-//  - stage 2, cod3_native_stream_banks_extra (0, native renderer only): arena 0 is made that many 3 MB banks
+//  - stage 2, cod3_native_stream_banks_extra (0, native renderer only; 0 means 96 in all while stage 5 is on):
+//    arena 0 is made that many 3 MB banks
 //    bigger and num_banks is raised by as many (at most 96 in all), so more level data stays loaded. A start-up
 //    check lowers the number when the console memory left would be too small (see PlanExtraBanks). With stage 3's
 //    move on, the first 10 banks need no console memory: they fit in the room the move makes in arena 0.
 //  - stage 3, moving the game's CPU-only data out of the 512 MB, is in native_memory_shadow.cpp (the shadow test
 //    and cod3_native_memory_move); the report shows the moved data ("moved to guest virtual memory").
-//  - stage 5's test, cod3_native_memory_move_pool (off; with the move), is there too: the streaming pool goes to the
+//  - stage 5, cod3_native_memory_move_pool (on with the move, which is on with the native renderer), is there too:
+//    the streaming pool goes to the
 //    move's room, and then stage 2's banks need no console memory (PlanExtraBanks).
 //
 // Both switches off: the arena maker's hook calls the game's own function and the streaming setup's hook calls the
@@ -72,7 +74,9 @@ REXCVAR_DEFINE_INT32(cod3_native_stream_banks_extra, 0, "cod3/Debug",
                      "Streaming memory (native renderer only): this many more 3 MB streaming banks than the game's "
                      "own (80 in the campaign, 88 in multiplayer; 96 at most), so more level data stays loaded. "
                      "Taken from the Xbox 360's 512 MB; a check at start lowers it when too little would be left. "
-                     "0: the game's own. Applies after a restart")
+                     "0: the game's own, or 96 in all while the streaming pool is outside the 512 MB "
+                     "(cod3_native_memory_move_pool, on by default with the native renderer). Applies "
+                     "after a restart")
     .range(0, 16)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
@@ -182,7 +186,13 @@ struct BankPlan {
 
 BankPlan PlanExtraBanks() {
   BankPlan plan;
-  const int asked = std::clamp(int(REXCVAR_GET(cod3_native_stream_banks_extra)), 0, int(kMaxBanks - kGameBanks));
+  int asked = std::clamp(int(REXCVAR_GET(cod3_native_stream_banks_extra)), 0, int(kMaxBanks - kGameBanks));
+  // [acct2-decomp] 2026-11-21 with the streaming pool moved (on by default with the native renderer) the banks need no
+  // console memory, so a game left at its own count gets the most its masks hold (kMaxBanks): the campaign's 80 and
+  // cod3mp's 88 were what the console's 512 MB allowed.
+  if (asked == 0 && rex::cvar::GetFlagSource("cod3_native_stream_banks_extra") == rex::cvar::Source::kDefault &&
+      REXCVAR_GET(cod3_native_vulkan) && cod3::native_memory::MovePoolOn())
+    asked = int(kMaxBanks - kGameBanks);
   if (asked == 0) return plan;
   if (!REXCVAR_GET(cod3_native_vulkan)) {
     REXLOG_INFO("cod3: memory: cod3_native_stream_banks_extra {} left unused: it works with the native renderer "
@@ -190,12 +200,12 @@ BankPlan PlanExtraBanks() {
                 asked);
     return plan;
   }
-  // Stage 5's test (cod3_native_memory_move_pool): the whole pool goes to the move's room, so its banks need no
+  // Stage 5 (cod3_native_memory_move_pool): the whole pool goes to the move's room, so its banks need no
   // console memory at all.
   if (cod3::native_memory::MovePoolOn()) {
     plan.banks = uint32_t(asked);
     REXLOG_INFO("cod3: memory: {} more streaming banks asked for, {} given ({} of the game's {}), all in the move's "
-                "room with the streaming pool (stage 5's test); no console memory",
+                "room with the streaming pool; no console memory",
                 asked, plan.banks, kGameBanks + plan.banks, kGameBanks);
     return plan;
   }

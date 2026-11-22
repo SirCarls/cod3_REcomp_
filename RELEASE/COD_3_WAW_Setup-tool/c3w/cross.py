@@ -24,6 +24,8 @@ import shutil
 from pathlib import Path
 from typing import Iterable, List
 
+from .common import cmake_quote  # [waw-decomp] 2026-11-16 (rc2-paths) the toolchain file's paths
+
 # Windows DLLs that come with Windows 10 and 11 (the game's minimum). A DLL
 # not in this list, not built with the game and not in llvm-mingw makes
 # packaging stop, so nothing silently goes missing. The graphics DLLs are
@@ -105,21 +107,26 @@ def prepare(work: Path, toolchain_bin: Path, project_headers: Path, sdk_src: Pat
                sysroot(toolchain_bin) / "include", include)
     tc = Path(toolchain_bin)
     toolchain = base / "toolchain.cmake"
+    # [waw-decomp] 2026-11-16 (rc2-paths): every path quoted for CMake (common.cmake_quote), so a "$" in a folder's
+    # name stays itself ("${v}" was read as a variable); the work folder these paths are in is reached through a
+    # plain link when its own path has characters the compilers' shell would read (pipeline.py: build_path).
+    q = cmake_quote
+    flags = q(f'-march=x86-64-v2 -idirafter "{include.as_posix()}"')
     toolchain.write_text(f"""# Written by the COD_3_WAW setup tool: Windows (x86-64) with llvm-mingw.
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
-set(CMAKE_C_COMPILER "{(tc / (TOOLCHAIN_TRIPLE + '-clang')).as_posix()}")
-set(CMAKE_CXX_COMPILER "{(tc / (TOOLCHAIN_TRIPLE + '-clang++')).as_posix()}")
-set(CMAKE_RC_COMPILER "{(tc / (TOOLCHAIN_TRIPLE + '-windres')).as_posix()}")
-set(CMAKE_FIND_ROOT_PATH "{sysroot(tc).as_posix()}")
+set(CMAKE_C_COMPILER {q((tc / (TOOLCHAIN_TRIPLE + '-clang')).as_posix())})
+set(CMAKE_CXX_COMPILER {q((tc / (TOOLCHAIN_TRIPLE + '-clang++')).as_posix())})
+set(CMAKE_RC_COMPILER {q((tc / (TOOLCHAIN_TRIPLE + '-windres')).as_posix())})
+set(CMAKE_FIND_ROOT_PATH {q(sysroot(tc).as_posix())})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY BOTH)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE BOTH)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE BOTH)
 # The SDK's own target CPU level, and the headers llvm-mingw lacks or spells
 # differently (searched last, so they never hide the toolchain's own).
-set(CMAKE_C_FLAGS_INIT "-march=x86-64-v2 -idirafter \\"{include.as_posix()}\\"")
-set(CMAKE_CXX_FLAGS_INIT "-march=x86-64-v2 -idirafter \\"{include.as_posix()}\\"")
+set(CMAKE_C_FLAGS_INIT {flags})
+set(CMAKE_CXX_FLAGS_INIT {flags})
 """, encoding="utf-8")
     return toolchain
 

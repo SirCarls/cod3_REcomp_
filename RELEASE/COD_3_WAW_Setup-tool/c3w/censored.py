@@ -353,6 +353,9 @@ class Status:
     stored: Dict[str, int] = field(default_factory=dict)    # GERMAN / UNCUT: copies waiting in the store
     total: int = 0
     deep: bool = False
+    # [acct2-decomp] 2026-11-21 GERMAN / UNCUT: files that are that version now or have it waiting in the store
+    # (each file once; in_use + stored counted a file twice when the store also had the version in use)
+    can: Dict[str, int] = field(default_factory=dict)
 
     @property
     def censored(self) -> bool:
@@ -361,7 +364,7 @@ class Status:
 
     def ready(self, version: str) -> bool:
         """Every file can be (or already is) `version`."""
-        return self.in_use.get(version, 0) + self.stored.get(version, 0) >= self.total
+        return self.can.get(version, 0) >= self.total
 
     def summary(self) -> str:
         n = self.total
@@ -396,12 +399,16 @@ def status(target: Path, deep: bool = False, cancel: Optional[threading.Event] =
         st.total += 1
         key = st.own if (assets / rel).is_file() else "missing"
         st.in_use[key] = st.in_use.get(key, 0) + 1
+        if key == st.own:
+            st.can[key] = st.can.get(key, 0) + 1
     for p in covered:
         st.total += 1
         live = assets / p.rel
+        waits = []
         for v in (GERMAN, UNCUT):
             if (store / v / p.rel).is_file():
                 st.stored[v] = st.stored.get(v, 0) + 1
+                waits.append(v)
         if not live.is_file():
             key = "missing"
         elif deep:
@@ -419,7 +426,20 @@ def status(target: Path, deep: bool = False, cancel: Optional[threading.Event] =
             else:
                 key = st.own
         st.in_use[key] = st.in_use.get(key, 0) + 1
+        for v in (GERMAN, UNCUT):
+            if key == v or (v in waits and _waiting_ok(store, v, p)):
+                st.can[v] = st.can.get(v, 0) + 1
     return st
+
+
+def _waiting_ok(store: Path, version: str, p: Pair) -> bool:
+    """[acct2-decomp] 2026-11-21: the store's copy of `version` is one set_censored takes (a plain file of the
+    listed size)."""
+    have = store / version / p.rel
+    try:
+        return not have.is_symlink() and have.is_file() and have.stat().st_size == p.known(version).size
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -640,6 +660,96 @@ def set_censored(target: Path, on: bool, log: Log, cancel: Optional[threading.Ev
                  f"are: {', '.join(changed[:5])}{' ...' if len(changed) > 5 else ''}")
     log.info(f"Censored campaign: {moved} files switched, {kept} already {word}.")
     return {"on": on, "moved": moved, "kept": kept, "lacking": lacking, "changed": changed}
+
+
+# ---------------------------------------------------------------------------
+# [acct2-decomp] 2026-11-21 A new build into the same output folder (Pipeline.cod3_assets)
+# ---------------------------------------------------------------------------
+# Taking the game's files off a disc again writes over a file the switch had put in: always after a change of
+# disc (every file is written again), and for the same disc each file whose size differs from the disc's (4 of the
+# 84, and the level copies). The version switched in was lost then: the next switch asked for its disc again, and
+# the box showed a mixed campaign. before_rebuild puts such files into the store first; after_rebuild switches the
+# campaign back as it was when the game is still the same version (USA/Europe and Fr/Es/It are both uncut).
+@dataclass(frozen=True)
+class Before:
+    own: str                 # the version the game in assets/ was
+    was: Optional[str]       # GERMAN or UNCUT: every file the switch covers was that one; None: mixed
+
+
+def before_rebuild(assets: Path, new_xex_sha1: str, overwrite: bool, log: Log,
+                   cancel: Optional[threading.Event] = None) -> Optional[Before]:
+    """Before the game's files are taken from the disc whose default.xex has `new_xex_sha1` (`overwrite`: every
+    file is written again, else only one of another size): each file the switch covers that is either version
+    and will be written over goes into assets/censored/<version>/ when no copy of that version waits there.
+    None when there is nothing of the censored campaign here (no store, or not a game it works with)."""
+    assets = Path(assets)
+    if not (assets / "default.xex").is_file() or not (assets / STORE).exists():
+        return None
+    try:
+        own = own_version(assets)
+        store = _store(assets)
+    except (SetupError, OSError):
+        return None
+    new_disc = disc_files.disc_by_xex(new_xex_sha1 or "")
+    try:
+        new_files = disc_files.known_files(new_disc) if new_disc is not None else {}
+    except SetupError:
+        new_files = {}
+    covered, waiting = entries(assets, own)
+    seen = {own} if waiting else set()
+    kept = 0
+    for p in covered:
+        live = assets / p.rel
+        if live.is_symlink() or not live.is_file() or not is_within(live, assets):
+            seen.add(None)
+            continue
+        v = version_of(live, p, cancel)
+        seen.add(v)
+        coming = new_files.get(p.rel.lower())
+        if v is None or coming is None or not (overwrite or coming.size != live.stat().st_size):
+            continue          # changed by hand, not on the new disc, or kept as it is (the same size)
+        dest = store / v / p.rel
+        if _waiting_ok(store, v, p) or dest.is_symlink() or not is_within(dest.parent, store):
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(live, dest)
+            kept += 1
+        except OSError as e:
+            log.warn(f"Censored campaign: {p.rel} couldn't be put aside ({e}); the disc's file takes its place.")
+    if kept:
+        log.info(f"Censored campaign: {kept} file(s) put aside in {store} before the game's files are written "
+                 "again, so they stay ready to switch.")
+    was = next(iter(seen)) if len(seen) == 1 else None
+    return Before(own, was)
+
+
+def after_rebuild(assets: Path, before: Optional[Before], log: Log,
+                  cancel: Optional[threading.Event] = None) -> None:
+    """After the game's files were taken from a disc: the censored campaign as it was before, when the game is
+    still the same version; otherwise the new disc's own version stays, and the log says so."""
+    if before is None or before.was is None:
+        return
+    try:
+        own = own_version(Path(assets))
+    except (SetupError, OSError):
+        return
+    if before.was == own:
+        return
+    word = "on" if before.was == GERMAN else "off"
+    if own != before.own:
+        log.info(f"Censored campaign: it was {word}; this disc's game has its own version now ("
+                 f"{'censored' if own == GERMAN else 'uncut'}). Switch it on the Textures page: the other "
+                 "version's files wait in assets/censored/.")
+        return
+    try:
+        r = set_censored(Path(assets), before.was == GERMAN, log, cancel)
+    except SetupError as e:
+        log.warn(f"Censored campaign: couldn't switch it {word} again ({e}); switch it on the Textures page.")
+        return
+    if r["lacking"] or r["changed"]:
+        log.warn(f"Censored campaign: switched {word} again, but not every file ({len(r['lacking'])} not in "
+                 f"assets/{STORE}/, {len(r['changed'])} changed by hand).")
 
 
 # ---------------------------------------------------------------------------

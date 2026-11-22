@@ -49,6 +49,8 @@ set(COD3_SOURCES
     src/game/fmod_mix_native.cpp  # [native-fmod-mix] FMOD's channel mix kernels as native code
     src/game/crt_printf_native.cpp  # [native-printf] the C runtime's formatted output, sprintf and the like, as native code
     src/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
+    src/game/text_copy_check.cpp  # [acct2-main] 2026-11-21 dev check: the game's copies of our translated text (cod3_text_copy_check)
+    src/game/text_buffers.cpp  # [acct2-main] 2026-11-21 texts longer than the game's fixed buffers, whole (cod3_text_whole)
     src/game/render_resolution.cpp
     src/game/engine.cpp
     src/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
@@ -149,6 +151,7 @@ set(COD3_SOURCES
     src/ui/game_console.cpp
     src/ui/f2_tour.cpp  # [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
     src/ui/hud_overlay.cpp
+    src/ui/crosshair_texture.cpp  # [acct2-ocr] the game's crosshair drawn sharp (task 125)
     src/ui/problem_log.cpp
     src/ui/qte_spinner.cpp
     src/ui/server_tab.cpp  # [claude-9b] F2 > Game > Server: the match's rules, host only
@@ -212,6 +215,12 @@ if(_cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt" AND (NOT WIN32 OR CO
     else()  # [rexglue-native]
         find_package(Vulkan QUIET)
         set(NGL_VK_VULKAN_INCLUDE_DIR "${Vulkan_INCLUDE_DIR}")  # [rexglue-native] the headers only (as before: the system's)
+        # [acct2-bro] 2026-11-22 (owner 11-21 23:49): a PC without the Vulkan SDK (the user reports of 11-18 and
+        # 11-21): the SDK's own install (CMAKE_PREFIX_PATH) has the headers, as the cross build above takes them
+        if(NOT NGL_VK_VULKAN_INCLUDE_DIR)  # [acct2-bro] 2026-11-22
+            find_path(COD3_NGL_VK_SDK_HEADERS vulkan/vulkan.h NO_SYSTEM_ENVIRONMENT_PATH)  # [acct2-bro] 2026-11-22
+            set(NGL_VK_VULKAN_INCLUDE_DIR "${COD3_NGL_VK_SDK_HEADERS}")  # [acct2-bro] 2026-11-22
+        endif()  # [acct2-bro] 2026-11-22
     endif()  # [rexglue-native]
     find_program(COD3_NGL_VK_GLSLC NAMES glslc HINTS "${Vulkan_GLSLC_EXECUTABLE}")
     if(NGL_VK_VULKAN_INCLUDE_DIR AND COD3_NGL_VK_GLSLC)  # [rexglue-native] (was Vulkan_FOUND: the loader too)
@@ -233,10 +242,34 @@ if(_cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt" AND (NOT WIN32 OR CO
         endif()
     else()
         message(STATUS "cod3: no ngl_vk (Vulkan headers or glslc missing); cod3_debug_ngl_side only counts")
+        set(_cod3_ngl_vk_off ON)  # [acct2-bro] 2026-11-22
+        set(_cod3_ngl_vk_why "vulkan/vulkan.h (${NGL_VK_VULKAN_INCLUDE_DIR}) or glslc (${COD3_NGL_VK_GLSLC})")
     endif()
 else()
     message(STATUS "cod3: no ngl_vk (no ngl_vk/ folder found, or Windows); cod3_debug_ngl_side only counts")
+    if(NOT (WIN32 AND NOT COD3_NGL_VK_WINDOWS))  # [acct2-bro] 2026-11-22 (=OFF: asked for, no stop)
+        set(_cod3_ngl_vk_off ON)  # [acct2-bro] 2026-11-22
+        set(_cod3_ngl_vk_why "the project's ngl_vk/ folder (COD3_NGL_VK_DIR)")  # [acct2-bro] 2026-11-22
+    endif()  # [acct2-bro] 2026-11-22
 endif()
+# [acct2-bro] 2026-11-22 (owner 11-21 23:49 "Please fix the vulkan issue. It shouldn't be able to ship without
+# the native renderer."): a game without the native renderer is not built. Before, a PC without glslc (every Windows PC
+# without the Vulkan SDK) quietly got one. The setup tool gives this build glslc everywhere (Linux: the build
+# packages; Windows: glslc on PATH, else Khronos' glslang through Big Red One's glslc.bat, c3w/pipeline.py
+# _ngl_vk_args) and the headers come from the SDK's install, so a stop here means something is really missing.
+# COD3_REQUIRE_NGL_VK=OFF builds without it on purpose (a test build); COD3_NGL_VK_BUILT says which it was.
+# [acct2-bro] 2026-11-22
+option(COD3_REQUIRE_NGL_VK "Stop when the native renderer (ngl_vk) can't be built into the game" ON)
+if(_cod3_ngl_vk_off AND COD3_REQUIRE_NGL_VK)  # [acct2-bro] 2026-11-22
+    message(FATAL_ERROR "cod3: the native renderer (ngl_vk) can't be built: ${_cod3_ngl_vk_why} wasn't found. "
+        "The setup tool brings both; building by hand, install glslc (Linux: the glslc or shaderc package; "
+        "Windows: the Vulkan SDK) or configure with -DCOD3_REQUIRE_NGL_VK=OFF to build without it.")
+endif()  # [acct2-bro] 2026-11-22
+if(_cod3_ngl_vk_off OR (WIN32 AND NOT COD3_NGL_VK_WINDOWS))  # [acct2-bro] 2026-11-22 (read by the setup tool)
+    set(COD3_NGL_VK_BUILT OFF CACHE INTERNAL "The native renderer (ngl_vk) is in this build")  # [acct2-bro] 2026-11-22
+else()  # [acct2-bro] 2026-11-22
+    set(COD3_NGL_VK_BUILT ON CACHE INTERNAL "The native renderer (ngl_vk) is in this build")  # [acct2-bro] 2026-11-22
+endif()  # [acct2-bro] 2026-11-22
 
 # MinGW (the Windows build made on Linux): the SDK's entry point is wWinMain,
 # which MinGW's C runtime only calls when the program links with -municode.

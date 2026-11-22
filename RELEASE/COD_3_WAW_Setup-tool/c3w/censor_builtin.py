@@ -1055,7 +1055,10 @@ def apply(data_dir: Path, tool_root: Path, s: Settings, log: Log,
             res.kept.append(file)
             continue
         src = _source(data_dir, file, reg)
-        tag = f"{what}@{reg.key}@{_png_size(src)}"    # the source's size: another HD scale makes it again
+        # the source's size: another HD scale makes it again; [acct2-decomp] 2026-11-21 and the source's bytes and
+        # the region (a new upscale of the same size, a region measured again in a tool update, or a change to how
+        # it is painted made nothing again: the picture stayed as first painted)
+        tag = f"{what}@{reg.key}@{_png_size(src)}@{_stamp(src)}@{_region_stamp(reg)}"
         if out.exists():
             mine = manifest.get(file)
             if mine is None or _md5(out) != mine[0]:
@@ -1100,6 +1103,23 @@ def apply(data_dir: Path, tool_root: Path, s: Settings, log: Log,
     for why in res.failed:
         log.warn(f"Built-in censor: {why}")
     return res
+
+
+PAINT_VERSION = 1   # [acct2-decomp] 2026-11-21 one more when paint() draws differently: every picture is made again
+
+
+def _stamp(path: Path) -> str:
+    """[acct2-decomp] 2026-11-21: the first 12 hex digits of a file's MD5, "" when it can't be read."""
+    try:
+        return _md5(path)[:12]
+    except OSError:
+        return ""
+
+
+def _region_stamp(reg: Region) -> str:
+    """[acct2-decomp] 2026-11-21: what is painted for a region, as a short digest (with PAINT_VERSION)."""
+    text = f"{PAINT_VERSION}|{reg.role}|{reg.width}x{reg.height}|" + ";".join(",".join(map(str, r)) for r in reg.rects)
+    return hashlib.md5(text.encode("ascii")).hexdigest()[:8]
 
 
 def _png_size(path: Path) -> str:

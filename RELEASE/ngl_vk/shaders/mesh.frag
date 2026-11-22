@@ -219,6 +219,8 @@ vec3 tint_color(uint t)
 
 const uint DRAW_LIGHT_VEC4S = 20u;          // ngl_vk.c's DRAW_LIGHT_FLOATS / 4
 const uint IRRADIANCE_AT = 4u;              // the irradiance rows' first vec4 in a slot
+// [acct2-bro] 2026-11-21 rn101: row 8's w 1 (with row 0's w 1): the game's own normal map frame (ngl_vk.h
+// game_bump_frame)
 // [rexglue-native] 2026-11-09: the fabric's numbers in a slot (ngl_vk.c place_draw_lights): (the swatch's repeat, the
 // diffuse scale, the highlights' power, 1 when the draw is fabric), then the sheen's three powers and (rn30) the
 // shadow's floor, then the shadow's fade with the view depth and (rn32) 1 for the skin, whose second vec4 holds (the
@@ -624,6 +626,25 @@ void main()
                 bent.xy *= metal_depth;
         }
 #endif
+        // [acct2-bro] 2026-11-21 rn101: the game's own frame (ngl_vk.h game_bump_frame: the slot's ninth irradiance
+        // row's w 1, with row 0's w 1), as CDBAC6026B525050's instructions 28-52 build it (the arms', heads',
+        // helmets' and props' shaders the same; the guns' metal and the K98 from the corners' tangent the same
+        // way): T along dP/du (the slopes' determinant's sign keeps it along rising u), square to the normal, and
+        // B = T x N. The cotangent pair above has B along rising v: the other way round where the coordinates
+        // aren't mirrored (the Garand's stamped letters and the hands' streaks came out raised)
+        uint frame_slot = flags >> 16;
+        uint frame_at = DRAW_LIGHT_VEC4S * (max(frame_slot, 1u) - 1u) + IRRADIANCE_AT;
+        if (!lookup && frame_slot != 0u && draw_lights[frame_at].w > 0.0 && draw_lights[frame_at + 8u].w > 0.0) {
+            float slopes = uv_x.x * uv_y.y - uv_y.x * uv_x.y;
+            vec3 along_u = (slopes < 0.0 ? -1.0 : 1.0) * (along_x * uv_y.y - along_y * uv_x.y);
+
+            along_u -= normal * dot(normal, along_u);
+            if (dot(along_u, along_u) > 0.0) {
+                tangent = normalize(along_u);
+                bitangent = cross(tangent, normal);
+                frame = 1.0;
+            }
+        }
         if (lookup) {   // [waw-decomp] 98A77B2DFA1049B4's instructions 8-12: the normal plus the map's x and y along
                         // the frame's two ways, each of unit length; no z from the map
             // [waw-decomp] 2026-11-11: the frame's two ways run against rising u and v where the slopes' cross
@@ -662,6 +683,30 @@ void main()
                 reflection = textureGrad(metal_cube, vec3(r.x, r.z, r.y),
                                          cube_blur * vec3(0.0, -r.y / across, r.z < 0.0 ? -1.0 : 1.0),
                                          cube_blur / across * vec3(r.y * r.y + r.z * r.z, -r.x * r.z, -r.x * r.y)).rgb;
+            }
+            // [acct2-bro] 2026-11-21 rn102: below 0, the gradients the game's shaders set (ngl_vk.h
+            // metal_cube_game_gradients; CFC45995D1294CCE's 12-15 and 58-90): the base coordinates' slopes as
+            // (du, dv, 0) plus the blur along A and B, two unit ways square to the read direction, each turned to
+            // the slopes' side (sgt - sgt). Above, A and B came scaled by L / |d.y|: blurred without bound where
+            // the reflection runs level along y, and without the slopes.
+            // [acct2-bro] 2026-11-21 rn104: read at d over its longest part, as the emulator reads the game's cube
+            // (its face coordinates come back as a direction whose longest part is 1, and the register gradients
+            // are taken against that); the signs +1 where the dot is 0 (the game's sgt - sgt of the dot plus
+            // c253.w's 1e-16: GLSL's sign(0) left such pixels unblurred).
+            else if (cube_blur < 0.0) {
+                float blur = -cube_blur;
+                vec3 read_at = vec3(r.x, r.z, r.y);
+                float level = length(read_at.yz);
+                float longest = max(max(abs(read_at.x), abs(read_at.y)), abs(read_at.z));
+                if (level > 0.0 && longest > 0.0) {
+                    vec3 a = vec3(0.0, -read_at.z, read_at.y) / level;
+                    vec3 b = vec3(level, -read_at.x * read_at.y / level, -read_at.x * read_at.z / level);
+                    vec3 slope_x = vec3(uv_x, 0.0), slope_y = vec3(uv_y, 0.0);
+                    float s = dot(a, slope_x) + 1e-16 > 0.0 ? 1.0 : -1.0;
+                    float t = dot(b, slope_y) + 1e-16 > 0.0 ? 1.0 : -1.0;
+                    reflection = textureGrad(metal_cube, read_at / longest,
+                                             slope_x + blur * s * a, slope_y + blur * t * b).rgb;
+                }
             }
         }
 #endif

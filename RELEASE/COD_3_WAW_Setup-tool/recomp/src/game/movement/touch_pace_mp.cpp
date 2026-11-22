@@ -18,6 +18,17 @@
 // bump still touches once); N: both run N times (at most 6) with the same arguments. At 60 fps a usercmd passes one
 // mark, as before. It is the host's code: it applies to every player in a match this program hosts.
 // Everything below is cod3mp-only (inside COD3_MP, so tools/mp_aliases.py treats the hooks as this program's own).
+//
+// [acct2-bro] 2026-11-21: only handles whose entity still exists reach 0x82565B80. The function does NOT skip a gone
+// one: it leaves out the two touch events, then still calls the player's touch function with the other entity NULL
+// (0x8255E010 reads NULL + 0x144) and reads NULL + 0x302 for the other's own. The game never hands it one (Pmove's
+// list is from that same usercmd), but the kept handles and the repeated runs here could: an entity freed between two
+// usercmds or by the run before, and a map change (the client keeps its address, so its kept list crossed into the
+// next map). That was cod3mp's crash 1.5 s after a menu map switch at high frame rates (owner 11-15; two-console
+// test fj172, uncapped). So: kept handles are dropped when the usercmd time went back or jumped a second or more (a
+// new level, a restart), and before every run the list keeps only the handles the game's own handle table still names
+// (the test 0x82565B80 makes itself: slot below 4096, the slot's generation, an entity there). At 60 fps nothing
+// changes; with no gone entity nothing changes at any rate.
 
 #include <algorithm>
 #include <array>
@@ -49,8 +60,54 @@ constexpr uint32_t kCommandTime = 32;              // playerState commandTime (p
 constexpr int kTickHz = 60;
 constexpr int kMaxRuns = 6;
 constexpr int kMaxList = 16;  // entities kept for the next run, and the most a list grows to with them
+// [acct2-bro] 2026-11-21: the entity handle table 0x82565B80 looks handles up in (lis -32067 / addi 7616, then +512):
+// 8 bytes a slot, the entity then the generation; a handle is the slot (low 14 bits) and the generation (the rest).
+constexpr uint32_t kHandleTable = 0x82BD1DC0 + 512;
+constexpr uint32_t kHandleSlots = 4096;
+constexpr int32_t kKeptMaxAgeMs = 1000;  // [acct2-bro] kept handles older than this (game ms) are another moment's
 
 bool ValidGuest(uint32_t p) { return p >= 0x10000 && (p & 3) == 0; }
+
+// [acct2-bro] 2026-11-21: does the game's handle table still name this handle's entity (0x82565B80's own test)?
+bool Named(uint8_t* base, uint32_t handle) {
+  const uint32_t slot = handle & 0x3FFF;
+  if (slot >= kHandleSlots) return false;
+  const uint32_t entry = kHandleTable + 8 * slot;
+  return g::ReadU32(base, entry + 4) == (handle >> 14) && g::ReadU32(base, entry) != 0;
+}
+
+// [acct2-bro] 2026-11-21: cod3_debug_move_touch's event lines (each handle left out, each kept list dropped, each
+// usercmd time going back), the first 60 in a run of the program; the 2 s line's counts can be cut by a level change.
+int g_event_lines = 0;
+bool EventLine() {
+  if (!REXCVAR_GET(cod3_debug_move_touch) || g_event_lines >= 60) return false;
+  ++g_event_lines;
+  return true;
+}
+void LogGone(uint8_t* base, const char* where, int run, uint32_t client, int32_t time, uint32_t handle) {
+  if (!EventLine()) return;
+  const uint32_t slot = handle & 0x3FFF;
+  const uint32_t entry = kHandleTable + 8 * (slot < kHandleSlots ? slot : 0);
+  REXLOG_INFO("cod3mp: touch list: handle {:08X} (slot {}, generation {}) left out, its entity gone ({} {}; client "
+              "{:08X}, usercmd time {}); the table's slot: entity {:08X}, generation {}",
+              handle, slot, handle >> 14, where, run, client, time, slot < kHandleSlots ? g::ReadU32(base, entry) : 0,
+              slot < kHandleSlots ? g::ReadU32(base, entry + 4) : 0);
+}
+
+// [acct2-bro] 2026-11-21: keeps the list's named handles, in order, in place; returns how many are left.
+int32_t KeepNamed(uint8_t* base, uint32_t list, int32_t count, int run, uint32_t client, int32_t time) {
+  int32_t kept = 0;
+  for (int32_t i = 0; i < count; ++i) {
+    const uint32_t h = g::ReadU32(base, list + 4 * static_cast<uint32_t>(i));
+    if (!Named(base, h)) {
+      LogGone(base, "in the list before run", run, client, time, h);
+      continue;
+    }
+    if (kept != i) g::WriteU32(base, list + 4 * static_cast<uint32_t>(kept), h);
+    ++kept;
+  }
+  return kept;
+}
 
 // Per player (keyed by the client, entity +512): the usercmd time last counted, the runs of the usercmd being run
 // (both calls of one usercmd use the same count) and the entities kept from usercmds that ran none.
@@ -62,6 +119,7 @@ struct PlayerPace {
   int32_t cached_time = 0;
   int cached_runs = 1;
   int pending = 0;
+  int32_t kept_time = 0;  // [acct2-bro] 2026-11-21: the usercmd time the first kept handle was kept at
   std::array<uint32_t, kMaxList> kept = {};
 };
 std::array<PlayerPace, 64> g_players;
@@ -81,6 +139,10 @@ PlayerPace& PlayerFor(uint32_t client) {
 // How many times this usercmd's touches run: the 1/60 s marks between the player's last usercmd time and this one.
 int RunsFor(PlayerPace& p, int32_t time, bool consume) {
   if (!p.cached || p.cached_time != time) {
+    if (p.have_time && time < p.last_time && EventLine()) {  // [acct2-bro] 2026-11-21: a new level or a restart
+      REXLOG_INFO("cod3mp: touch list: usercmd time went back ({} -> {}, client {:08X}); {} kept handles waiting",
+                  p.last_time, time, p.client, p.pending);
+    }
     int runs = 1;
     if (p.have_time && time >= p.last_time) {
       const int64_t from = static_cast<int64_t>(p.last_time) * kTickHz / 1000;
@@ -117,6 +179,7 @@ struct TouchLog {
   int32_t start = 0;
   uint64_t cmds = 0, ticks = 0, area_asked = 0, area_run = 0, list_asked = 0, list_run = 0, list_full = 0;
   uint64_t lists_kept = 0, ents_added = 0;
+  uint64_t kept_dropped = 0, gone_dropped = 0;  // [acct2-bro] 2026-11-21: kept lists from another moment; gone handles
 };
 TouchLog g_log;
 
@@ -135,9 +198,11 @@ void LogTick(int32_t time) {
   if (time - l.start < 2000) return;
   REXLOG_INFO("cod3mp: touches after the move over {} game ms (cod3_move_touch_per_step {}): {} usercmds, {} ticks; "
               "area touches (0x823B6BA0) {} asked, {} run; touch lists (0x82565B80) {} asked, {} run, {} with "
-              "entities; {} lists kept for the next run, {} entities added to a run",
+              "entities; {} lists kept for the next run, {} entities added to a run; {} kept lists from another "
+              "moment dropped, {} handles of gone entities left out",
               time - l.start, REXCVAR_GET(cod3_move_touch_per_step) ? "on" : "off", l.cmds, l.ticks, l.area_asked,
-              l.area_run, l.list_asked, l.list_run, l.list_full, l.lists_kept, l.ents_added);
+              l.area_run, l.list_asked, l.list_run, l.list_full, l.lists_kept, l.ents_added, l.kept_dropped,
+              l.gone_dropped);
   const int32_t start = time;
   l = TouchLog{};
   l.have = true;
@@ -182,7 +247,8 @@ REX_HOOK_RAW(sub_82565B80) {
   PlayerPace& p = PlayerFor(client);
   const int runs = RunsFor(p, time, true);
   int32_t count = static_cast<int32_t>(ctx.r4.u32);
-  if (count < 0 || count > 64) count = 0;  // not a list we know: leave it to the game
+  const bool known_list = count >= 0 && count <= 64;  // [acct2-bro] 2026-11-21
+  if (!known_list) count = 0;  // not a list we know: leave it to the game
   if (g_log.have) {
     ++g_log.list_asked;
     if (count > 0) ++g_log.list_full;
@@ -196,6 +262,7 @@ REX_HOOK_RAW(sub_82565B80) {
   if (runs == 0) {
     // No 1/60 s mark in this usercmd: keep what Pmove ran into for the next run (each handle once).
     bool kept_any = false;
+    if (p.pending == 0) p.kept_time = time;  // [acct2-bro] 2026-11-21: the moment this kept list starts
     for (int32_t i = 0; i < count && p.pending < kMaxList; ++i) {
       const uint32_t h = g::ReadU32(base, list + 4 * static_cast<uint32_t>(i));
       if (std::find(p.kept.begin(), p.kept.begin() + p.pending, h) == p.kept.begin() + p.pending) {
@@ -207,10 +274,26 @@ REX_HOOK_RAW(sub_82565B80) {
     return;
   }
   // A run: add the kept entities this list doesn't have (up to kMaxList in all), then run it `runs` times.
+  // [acct2-bro] 2026-11-21: a kept list from another moment (the usercmd time went back, or a second or more on: a new
+  // level, a restart) is dropped; a kept handle whose entity is gone is left out.
+  if (p.pending > 0 && (time < p.kept_time || time - p.kept_time >= kKeptMaxAgeMs)) {
+    if (EventLine()) {
+      REXLOG_INFO("cod3mp: touch list: {} kept handles from another moment dropped (client {:08X}: kept at usercmd "
+                  "time {}, now {}; the first {:08X})",
+                  p.pending, client, p.kept_time, time, p.kept[0]);
+    }
+    p.pending = 0;
+    if (g_log.have) ++g_log.kept_dropped;
+  }
   if (p.pending > 0) {
     int32_t added = 0;
     for (int k = 0; k < p.pending && count < kMaxList; ++k) {
       const uint32_t h = p.kept[static_cast<size_t>(k)];
+      if (!Named(base, h)) {  // [acct2-bro] 2026-11-21: freed since it was kept
+        LogGone(base, "kept", 0, client, time, h);
+        if (g_log.have) ++g_log.gone_dropped;
+        continue;
+      }
       bool have = false;
       for (int32_t i = 0; i < count && !have; ++i) have = g::ReadU32(base, list + 4 * static_cast<uint32_t>(i)) == h;
       if (have) continue;
@@ -223,7 +306,22 @@ REX_HOOK_RAW(sub_82565B80) {
     if (g_log.have) g_log.ents_added += static_cast<uint64_t>(added);
   }
   if (g_log.have) g_log.list_run += static_cast<uint64_t>(runs);
-  RunTimes(ctx, runs, [&] { __imp__sub_82565B80(ctx, base); });
+  if (!known_list) {  // [acct2-bro] 2026-11-21: not a list we know: the game's arguments, as before
+    RunTimes(ctx, runs, [&] { __imp__sub_82565B80(ctx, base); });
+    return;
+  }
+  // [acct2-bro] 2026-11-21: each run with the caller's arguments, its list first cut to the handles the game still
+  // names (the run before can free an entity in it); a list left empty is still passed (the game returns at once).
+  const PPCRegister args[8] = {ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10};
+  for (int i = 0; i < runs; ++i) {
+    ctx.r3 = args[0]; ctx.r5 = args[2]; ctx.r6 = args[3];
+    ctx.r7 = args[4]; ctx.r8 = args[5]; ctx.r9 = args[6]; ctx.r10 = args[7];
+    const int32_t named = KeepNamed(base, list, count, i + 1, client, time);
+    if (g_log.have) g_log.gone_dropped += static_cast<uint64_t>(count - named);
+    count = named;
+    ctx.r4.u64 = static_cast<uint32_t>(count);
+    __imp__sub_82565B80(ctx, base);
+  }
 }
 
 #endif  // COD3_MP

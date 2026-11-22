@@ -232,6 +232,8 @@ class Games:
                 play.pack(side="left", padx=(px(6), 0))
                 tip(play, "Start Big Red One.", reason=self._bro_play_reason)
                 self.bro_actions = {"build": build, "play": play}
+            elif g.id == games.FH:   # [acct2-decomp] 2026-11-21 (gui_fh.py)
+                self._fh_make_actions(f, ACTION_LABELS)
             elif g.id in games.X360_PORTS:   # [waw-decomp] Build and Play (gui_ports.py); World at War also rips
                 self._port_make_actions(f, g.id, ACTION_LABELS)
                 if g.id == games.WAW:
@@ -265,6 +267,7 @@ class Games:
     def _action_buttons(self) -> List[ttk.Button]:
         out = [self.btn_build, self.btn_play_bar, self.btn_rip, self.btn_cancel, self.btn_open_out]
         out += list(getattr(self, "bro_actions", {}).values())   # [acct2-bro]
+        out += list(getattr(self, "fh_actions", {}).values())   # [acct2-decomp] 2026-11-21
         out += self._port_action_buttons()   # [waw-decomp]
         for b in self.pc_actions.values():
             out += [b["copy"], b["server"]]
@@ -285,6 +288,12 @@ class Games:
                 self.v_status.set(why)
             else:
                 self._bro_build()
+        elif gid == games.FH:   # [acct2-decomp] 2026-11-21
+            why = self._fh_build_reason()
+            if why:
+                self.v_status.set(why)
+            else:
+                self._fh_build()
         elif gid in games.X360_PORTS:   # [waw-decomp]
             why = self._port_build_reason(gid)
             if why:
@@ -318,6 +327,7 @@ class Games:
         rip_why = "" if busy else self._rip_blocker()
         self.btn_rip.configure(state="disabled" if busy or rip_why else "normal")
         bro_why = self._bro_update_actions(busy)   # [acct2-bro]
+        fh_why = self._fh_update_actions(busy)   # [acct2-decomp] 2026-11-21
         port_why = self._port_update_actions(busy)   # [waw-decomp]
         for gid, b in self.pc_actions.items():
             copy_why = self._pc_copy_reason(gid)
@@ -329,6 +339,8 @@ class Games:
         gid = self.tabs.game
         if gid == games.BRO:   # [acct2-bro]
             reason = bro_why
+        elif gid == games.FH:   # [acct2-decomp] 2026-11-21
+            reason = fh_why
         elif gid in games.X360_PORTS:   # [waw-decomp]
             reason = port_why.get(gid, "")
         elif gid == games.WAW:
@@ -347,6 +359,7 @@ class Games:
         """The reason under the main button was clicked: the page that fixes it."""
         gid = self.tabs.game
         self.show_page({games.COD3: "setup", games.BRO: "bro_setup",   # [acct2-bro]
+                        games.FH: "fh_setup",   # [acct2-decomp] 2026-11-21
                         games.WAW: "waw_setup", games.COD2: "cod2_setup",   # [waw-decomp]
                         games.COD4: "cod4_setup"}.get(gid, f"{gid}_copy"))
 

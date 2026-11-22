@@ -80,6 +80,12 @@ GAME_PALETTES: Dict[str, Theme] = {t.id: t for t in (
         (56, 50, 37), (80, 70, 50), (128, 52, 40), (24, 21, 16), (42, 37, 27), (118, 104, 80), 0.75,
         (234, 226, 206), (162, 152, 128), (196, 54, 42), (232, 108, 90),
         (132, 188, 100), (228, 182, 86), (236, 100, 84))),
+    # [acct2-decomp] 2026-11-21 Finest Hour: winter field gray and blue steel, a teal like a frost-light as the accent.
+    Theme("fh", "Finest Hour", "Field gray, blue steel and frost.", _game(
+        (15, 18, 20), (21, 25, 28), (38, 45, 50), (54, 63, 70), (70, 81, 90),
+        (48, 56, 62), (70, 81, 90), (60, 104, 104), (18, 22, 25), (33, 39, 44), (104, 116, 122), 0.75,
+        (226, 230, 230), (150, 160, 164), (62, 166, 158), (110, 200, 192),
+        (132, 190, 104), (226, 186, 88), (230, 98, 82))),
     # (Its borders are a warm gray, not red: a red box reads as a mistake.)
     Theme("waw", "World at War", "Charcoal, blood red and bone white.", _game(
         (14, 12, 12), (22, 18, 18), (40, 34, 33), (58, 48, 46), (76, 60, 56),
@@ -161,6 +167,10 @@ DISPLAY_FONTS: Dict[str, Tuple[Tuple[str, str], ...]] = {
              ("Segoe UI Black", "normal"), ("Verdana", "bold"),
              ("Saira Condensed", "bold"), ("Roboto Condensed", "bold"), ("Ubuntu Condensed", "normal"),
              ("Liberation Sans Narrow", "bold"), ("DejaVu Sans Condensed", "bold"), ("Arial", "bold")),
+    # [acct2-decomp] 2026-11-21 Finest Hour: typewriter type, as on the dispatches and orders of its briefings.
+    "fh": (("Courier Prime", "bold"), ("Special Elite", "normal"), ("American Typewriter", "bold"),
+           ("Courier New", "bold"), ("Nimbus Mono PS", "bold"), ("Liberation Mono", "bold"),
+           ("DejaVu Sans Mono", "bold"), ("Noto Mono", "bold")),
     # [acct2-bro] Stencil type where the system has it (stenciled crates and vehicles), else a heavy sans.
     "bro": (("Stencil", "normal"), ("Stardos Stencil", "bold"), ("Allerta Stencil", "normal"),
             ("Black Ops One", "normal"), ("Franklin Gothic Heavy", "normal"), ("Franklin Gothic Medium", "normal"),
@@ -434,7 +444,7 @@ def setup_fonts(root, windows: bool = False) -> None:
     tkfont.nametofont("TkHeadingFont", root=root).configure(family=family, size=size, weight="bold")
 
 
-GAME_ORDER = ("cod3", "bro", "waw", "cod2", "cod4", "coduo")   # games.GAME_ORDER [waw-decomp] cod4 (which imports nothing from here)
+GAME_ORDER = ("cod3", "bro", "fh", "waw", "cod2", "cod4", "coduo")   # games.GAME_ORDER [waw-decomp] cod4 (which imports nothing from here)
 _assigned: Dict[int, Dict[str, Tuple[str, str]]] = {}   # per Tk interpreter
 
 

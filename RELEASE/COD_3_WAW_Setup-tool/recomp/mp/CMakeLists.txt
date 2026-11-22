@@ -36,6 +36,8 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/fmod_mix_native.cpp  # [native-fmod-mix] FMOD's channel mix kernels as native code
     ${COD3_SRC}/game/crt_printf_native.cpp  # [native-printf] the C runtime's formatted output, sprintf and the like, as native code
     ${COD3_SRC}/game/crt_strtol_native.cpp  # [native-strtol] the C runtime's atoi, strtol and strtoul as native code
+    ${COD3_SRC}/game/text_copy_check.cpp  # [acct2-main] 2026-11-21 dev check: the game's copies of our translated text (cod3_text_copy_check)
+    ${COD3_SRC}/game/text_buffers.cpp  # [acct2-main] 2026-11-21 texts longer than the game's fixed buffers, whole (cod3_text_whole)
     ${COD3_SRC}/game/diagnostics.cpp
     ${COD3_SRC}/game/engine.cpp
     ${COD3_SRC}/game/anim_clock.cpp  # [claude-9b] animation clocks in real time (cod3_fix_ui_clock, cod3_fix_frame_param)
@@ -120,6 +122,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/mp/server_step_mp.cpp  # [claude-9b] the host's game in fixed updates (cod3mp_server_hz, off until tested)
     ${COD3_SRC}/game/mp/motion_steps_mp.cpp  # [acct2-cod3-motion] how drawn things and the camera move frame to frame, measurement (cod3mp_debug_entity_steps)
     ${COD3_SRC}/game/mp/title_update_hq_mp.cpp  # [rexglue-native] title update 3's Headquarters radio fix, redone on the disc code: cod3_tu_hq_radio
+    ${COD3_SRC}/game/mp/command_guard_mp.cpp  # [waw-decomp] 2026-11-16 no command from a map name or an unshipped .cfg
     ${COD3_SRC}/render/rust_renderer.cpp  # [rust-renderer] the Rust renderer's library, checked at start
     ${COD3_SRC}/render/native_compare.cpp  # [rexglue-native] 2026-11-09 ngl_side.cpp's live compare (cod3mp doesn't attach it yet: off)
     ${COD3_SRC}/test_input.cpp
@@ -131,6 +134,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/ui/game_console.cpp
     ${COD3_SRC}/ui/f2_tour.cpp  # [rexglue-native-f2] 2026-11-11 f2t1 the F2 window's test-only tour (cod3_debug_f2_tour, off)
     ${COD3_SRC}/ui/hud_overlay.cpp
+    ${COD3_SRC}/ui/crosshair_texture.cpp  # [acct2-ocr] the game's crosshair drawn sharp (task 125)
     ${COD3_SRC}/ui/problem_log.cpp
     ${COD3_SRC}/ui/server_tab.cpp  # [acct2-ocr] F2 > Game > Server in cod3mp (matches this PC plays alone)
     ${COD3_SRC}/ui/theme.cpp

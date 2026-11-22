@@ -24,6 +24,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include "game/button_prompts.h"  // [rexglue-native] 2026-11-17 P0 the latch per game frame
 #include "game/color_codes.h"  // [acct2-ocr] codes inside a line
 #include "game/guest.h"
 #include "game/text_language.h"
@@ -72,6 +73,10 @@ struct Line {
   float line_height, ascent;   // the game font's
   uint32_t color;     // D3DCOLOR (alpha in the top byte)
   std::chrono::steady_clock::time_point when;
+  // [rexglue-native] 2026-11-17 P0 the game frame it was drawn in (cod3::prompts::GameFrameIn; 0 unknown) and when the game drew it (a copy
+  // the latch adds keeps both; `when` is its last-seen time)
+  uint32_t frame = 0;
+  std::chrono::steady_clock::time_point drawn{};
 };
 
 std::mutex g_mutex;
@@ -351,6 +356,9 @@ void OnString(uint8_t* base, PPCContext& ctx) {
   line.ascent = float(ReadS32(base, font + kAscent));
   line.color = ctx.r8.u32;
   line.when = std::chrono::steady_clock::now();
+  line.frame = cod3::prompts::GameFrameIn(base);  // [rexglue-native] 2026-11-17 P0
+  line.drawn = line.when;                          // [rexglue-native] 2026-11-17 P0
+  cod3::prompts::PresentProbeAsked(cod3::prompts::ProbeElement::kText, line.frame);  // [rexglue-native flicker 2026-11-17] (debug)
   if (REXCVAR_GET(cod3_debug_text_overlay) && g_logged < 40) {
     ++g_logged;
     REXLOG_INFO("cod3: text layer: \"{}\" at {:.1f},{:.1f} scale {:.3f}/{:.3f} color {:08X} font {:08X} (line {}, "
@@ -373,6 +381,65 @@ void Draw(float ax, float ay, float aw, float ah) {
     em = g_metrics.em;
     ascent = g_metrics.ascent > 0 ? g_metrics.ascent : em * 0.9f;
     const auto now = std::chrono::steady_clock::now();
+    // [rexglue-native] 2026-11-17 P0 (owner 16:48: the lines flickered at low frame rates): the latch per game frame (button_prompts.h
+    // LatchPick). Each line (its text, place and color) that the game's latest complete frame had (or within its
+    // cadence of it: the frames between its newest two copies, 1 to 8) gets a copy last seen now, its frame and draw
+    // time kept, so the kShowFor (50 ms) check below passes until the game's next frame is complete; past the safety
+    // net (OverlaySafetyMs) the copies stop and that check takes over. A copy is added only when the line's newest is
+    // older than half of kShowFor. Off (cod3_overlay_frame_latch) or with the frame unknown: nothing added.
+    if (cod3::prompts::OverlayFrameLatchOn()) {
+      const cod3::prompts::LatchState latch = cod3::prompts::ReadLatchState();
+      constexpr size_t kNone = size_t(-1);
+      struct Copies {
+        size_t newest, before;  // into g_lines: the copy of the highest frame, of the highest frame below that
+        std::chrono::steady_clock::time_point seen;  // the line's newest last-seen time
+      };
+      std::vector<Copies> each;
+      for (size_t i = g_lines.size(); latch.counter != 0 && i-- > 0;) {
+        const Line& l = g_lines[i];
+        if (now - l.when > 4 * kShowFor) break;   // gone at the erase below anyway
+        if (l.frame == 0) continue;
+        const auto same = std::find_if(each.begin(), each.end(), [&](const Copies& c) {
+          const Line& o = g_lines[c.newest];
+          return o.text == l.text && o.x == l.x && o.y == l.y && o.color == l.color;
+        });
+        if (same == each.end()) {
+          each.push_back({i, kNone, l.when});
+          continue;
+        }
+        if (l.when > same->seen) same->seen = l.when;
+        const uint32_t top = g_lines[same->newest].frame;
+        if (int32_t(l.frame - top) > 0) {
+          same->before = same->newest;
+          same->newest = i;
+        } else if (l.frame != top &&
+                   (same->before == kNone || int32_t(l.frame - g_lines[same->before].frame) > 0)) {
+          same->before = i;
+        }
+      }
+      const auto age_ms = [&](const Line& l) {
+        const auto drawn = l.drawn == std::chrono::steady_clock::time_point{} ? l.when : l.drawn;
+        return int64_t(std::chrono::duration_cast<std::chrono::milliseconds>(now - drawn).count());
+      };
+      std::vector<Line> added;
+      for (const Copies& c : each) {
+        const Line& n = g_lines[c.newest];
+        uint32_t cadence = 1;
+        if (c.before != kNone) {
+          const uint32_t since = n.frame - g_lines[c.before].frame;
+          cadence = since >= 1 && since <= 8 ? since : 1;
+        }
+        const cod3::prompts::LatchCopy newest{n.frame, age_ms(n), cadence};
+        cod3::prompts::LatchCopy before{};
+        if (c.before != kNone) before = {g_lines[c.before].frame, age_ms(g_lines[c.before]), cadence};
+        const int pick = cod3::prompts::LatchPick(latch, newest, c.before != kNone ? &before : nullptr, 0);
+        if (pick == 0 || now - c.seen <= kShowFor / 2) continue;
+        Line copy = g_lines[pick == 1 ? c.newest : c.before];
+        copy.when = now;
+        added.push_back(std::move(copy));
+      }
+      for (Line& l : added) g_lines.push_back(std::move(l));
+    }
     std::erase_if(g_lines, [&](const Line& l) { return now - l.when > 4 * kShowFor; });
     // The newest of each line (the game draws the same lines every frame).
     for (auto it = g_lines.rbegin(); it != g_lines.rend(); ++it) {
@@ -382,7 +449,18 @@ void Draw(float ax, float ay, float aw, float ah) {
       });
       if (!seen) lines.push_back(*it);
     }
+    {  // [rexglue-native flicker 2026-11-17] cod3_debug_overlay_latch: the lines shown
+      uint64_t h = 1469598103934665603ull;
+      for (const Line& l : lines) {
+        for (const char ch : l.text) h = (h ^ uint8_t(ch)) * 1099511628211ull;
+        h = (h ^ uint64_t(int64_t(std::lround(l.x * 4.0f)))) * 1099511628211ull;
+        h = (h ^ uint64_t(int64_t(std::lround(l.y * 4.0f)))) * 1099511628211ull;
+        h = (h ^ l.color) * 1099511628211ull;
+      }
+      cod3::prompts::NoteOverlayShown("text layer", h, lines.size());
+    }
   }
+  cod3::prompts::PresentProbeShown(cod3::prompts::ProbeElement::kText, font && !lines.empty());  // [rexglue-native flicker 2026-11-17] (debug)
   if (!font || lines.empty()) return;
   const float sx = aw / 640.0f, sy = ah / 480.0f;
   const float dy = float(REXCVAR_GET(cod3_text_overlay_dy)), user = float(REXCVAR_GET(cod3_text_overlay_scale));

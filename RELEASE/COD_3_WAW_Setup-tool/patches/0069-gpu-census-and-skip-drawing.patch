@@ -183,7 +183,7 @@ new file mode 100644
 index 0000000..d6ed874
 --- /dev/null
 +++ b/src/graphics/gpu_census.cpp
-@@ -0,0 +1,554 @@
+@@ -0,0 +1,561 @@
 +/**
 + * @file        graphics/gpu_census.cpp
 + *
@@ -209,6 +209,7 @@ index 0000000..d6ed874
 +#include <fmt/format.h>
 +
 +#include <rex/cvar.h>
++#include <rex/filesystem.h>  // [rexglue-native] 2026-11-17: rex::to_path, rex::filesystem::OpenFile (WriteFile)
 +#include <rex/graphics/pipeline/shader/shader.h>
 +#include <rex/graphics/register_file.h>
 +#include <rex/graphics/registers.h>
@@ -633,15 +634,21 @@ index 0000000..d6ed874
 +}
 +
 +void WriteFile(const State& s, const std::string& path_text) {
-+  const std::filesystem::path path(path_text);
++  // [rexglue-native] 2026-11-17: the path is built from the setting's UTF-8 text with the SDK's rex::to_path
++  // (UTF-16 on Windows), not read as the ANSI code page, which can't hold a user folder with other characters
++  // (platform_check path-from-utf8).
++  const std::filesystem::path path = rex::to_path(path_text);
 +  std::error_code ec;
 +  if (path.has_parent_path()) {
 +    std::filesystem::create_directories(path.parent_path(), ec);
 +  }
 +  const std::string text = Tables(s, true);
-+  std::FILE* file = std::fopen(path.string().c_str(), "wb");
++  // [rexglue-native] 2026-11-17: opened from the path itself (rex::filesystem::OpenFile: _wfopen on Windows),
++  // not from its narrow ANSI name, so such a folder failed to open (platform_check narrow-open). The warning
++  // names the setting's own text: the narrow name throws on Windows for such a path.
++  std::FILE* file = rex::filesystem::OpenFile(path, "wb");
 +  if (!file) {
-+    REXGPU_WARN("gpu census: can't write {}", path.string());
++    REXGPU_WARN("gpu census: can't write {}", path_text);
 +    return;
 +  }
 +  std::fwrite(text.data(), 1, text.size(), file);

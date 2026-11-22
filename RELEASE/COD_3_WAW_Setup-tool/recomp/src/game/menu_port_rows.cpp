@@ -18,6 +18,7 @@
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 
+#include "f2/f2_crosshair_cs2.h"   // [acct2-ocr] 2026-11-21 the CROSSHAIR page: each player's crosshair
 #include "game/fov.h"              // VehicleScale: the vehicle field of view, per player in cod3mp
 #include "game/keybinds/binds.h"   // KeyboardClient: whose the keyboard and mouse are (cod3mp)
 #include "game/mouse_look.h"       // [f2-menus] ctl 14:50 INVERT MOUSE as the mouse is
@@ -121,7 +122,18 @@ constexpr Info kInfo[kRowCount] = {
     Toggle("COD3_PORT_SHOW_VERSION", "SHOW VERSION", "cod3_show_version", kBoth, false,
            "THE SETUP TOOL'S VERSION, SMALL IN THE TOP RIGHT CORNER"),
     Own("COD3_PORT_SPLIT_HUD", "SPLIT-SCREEN HUD", "cod3_hud_safe_area", kMp),
+    // [acct2-ocr] 2026-11-21 the CROSSHAIR page (the setting: the menu's player's, cod3_crosshair_p1 .. _p4)
+    Own("COD3_PORT_XHAIR_STYLE", "STYLE", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_DOT", "CENTER DOT", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_LENGTH", "LENGTH", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_THICKNESS", "THICKNESS", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_GAP", "GAP", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_OUTLINE", "OUTLINE", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_COLOR", "COLOR", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_ALPHA", "ALPHA", "cod3_crosshair_p1", kBoth),
+    Own("COD3_PORT_XHAIR_T", "T STYLE", "cod3_crosshair_p1", kBoth),
 };
+static_assert(std::size(kInfo) == size_t(kRowCount));
 
 // The weapon hand of players 1 to 4 (game/viewmodel_flip.cpp).
 constexpr const char* kFlipSetting[4] = {"cod3_viewmodel_flip", "cod3_viewmodel_flip_2", "cod3_viewmodel_flip_3",
@@ -318,13 +330,246 @@ bool StepSplitHud(bool right) {
   return next != v && rex::cvar::SetFlagByName("cod3_hud_safe_area", std::to_string(next));
 }
 
+// --- [acct2-ocr] 2026-11-21 the CROSSHAIR page ---------------------------------------------------------------------
+// The menu's player's crosshair (f2/f2_crosshair_cs2.h): read as it is now (a change made here a moment ago
+// included), changed by asking (written into the player's text setting at once, so the save below keeps it; F2 and
+// the crosshair take it in on their next frame). CS2's ranges and steps; its colors' five (cl_crosshaircolor 0-4).
+namespace xh = f2::xhair;
+
+struct Word {
+  const char* key;
+  const char* english;
+};
+constexpr Word kOnWord{"COD3_PORT_V_ON", "ON"};
+constexpr Word kOffWord{"COD3_PORT_V_OFF", "OFF"};
+constexpr Word kGamesWord{"COD3_PORT_V_GAMES", "GAME'S"};
+constexpr Word kStyleWords[xh::kStyleCount] = {
+    {"COD3_PORT_XHAIR_S0", "DYNAMIC CROSS"},  {"COD3_PORT_XHAIR_S1", "DYNAMIC CIRCLE"},
+    {"COD3_PORT_XHAIR_S2", "DYNAMIC CROSS (LEGACY)"}, {"COD3_PORT_XHAIR_S3", "STATIC CIRCLE"},
+    {"COD3_PORT_XHAIR_S4", "STATIC CROSS"},   {"COD3_PORT_XHAIR_S5", "STATIC CROSS (SHOT FEEDBACK)"},
+    {"COD3_PORT_XHAIR_S6", "DOT ONLY"},       {"COD3_PORT_XHAIR_S7", "DYNAMIC QUAD"},
+    {"COD3_PORT_XHAIR_S8", "STATIC SQUARE"},  {"COD3_PORT_XHAIR_S9", "STATIC QUAD"}};
+struct Preset {
+  Word word;
+  uint8_t r, g, b;
+};
+constexpr Preset kPresets[] = {{{"COD3_PORT_XHAIR_C_RED", "RED"}, 250, 50, 50},
+                               {{"COD3_PORT_XHAIR_C_GREEN", "GREEN"}, 50, 250, 50},
+                               {{"COD3_PORT_XHAIR_C_YELLOW", "YELLOW"}, 250, 250, 50},
+                               {{"COD3_PORT_XHAIR_C_BLUE", "BLUE"}, 50, 50, 250},
+                               {{"COD3_PORT_XHAIR_C_CYAN", "CYAN"}, 50, 250, 250}};
+constexpr int kPresetCount = int(std::size(kPresets));
+constexpr Word kCustomWord{"COD3_PORT_XHAIR_C_CUSTOM", "CUSTOM"};
+constexpr Word kOwnColorsWord{"COD3_PORT_XHAIR_C_OWN", "OWN COLORS"};
+constexpr Word kOutlineWords[3] = {kOffWord, {"COD3_PORT_XHAIR_O_FULL", "FULL"}, {"COD3_PORT_XHAIR_O_HALF", "HALF"}};
+constexpr Word kPageWord{"COD3_PORT_XHAIR_PAGE", "CROSSHAIR"};
+constexpr Word kTitleWord{"COD3_PORT_XHAIR_TITLE", "OPTIONS / CROSSHAIR"};
+// The notes.
+constexpr Word kNoteStyleOff{"COD3_PORT_XHAIR_N_STYLE_OFF", "THE GAME'S OWN CROSSHAIR. CHOOSE A STYLE FOR YOUR OWN"};
+constexpr Word kNoteDynamic{"COD3_PORT_XHAIR_N_STYLE_DYNAMIC", "OPENS AND CLOSES WITH THE WEAPON'S SPREAD"};
+constexpr Word kNoteStatic{"COD3_PORT_XHAIR_N_STYLE_STATIC", "KEEPS ITS SIZE WHILE MOVING AND FIRING"};
+constexpr Word kNoteStill{"COD3_PORT_XHAIR_N_STYLE_STILL", "STAYS STILL: T STYLE IS ON"};
+constexpr Word kNoteOff{"COD3_PORT_XHAIR_N_OFF", "FOR YOUR OWN CROSSHAIR, ONCE A STYLE IS CHOSEN"};
+constexpr Word kNoteUnused{"COD3_PORT_XHAIR_N_UNUSED", "NOT USED BY THIS STYLE"};
+constexpr Word kNoteDot{"COD3_PORT_XHAIR_N_DOT", "A DOT IN THE MIDDLE OF THE CROSSHAIR"};
+constexpr Word kNoteLength{"COD3_PORT_XHAIR_N_LENGTH", "HOW LONG EACH LINE IS"};
+constexpr Word kNoteThickness{"COD3_PORT_XHAIR_N_THICKNESS", "HOW THICK THE LINES AND THE DOT ARE"};
+constexpr Word kNoteGap{"COD3_PORT_XHAIR_N_GAP", "THE SPACE BETWEEN THE MIDDLE AND THE LINES"};
+constexpr Word kNoteOutline{"COD3_PORT_XHAIR_N_OUTLINE", "A DARK EDGE AROUND THE CROSSHAIR (HALF: TOP AND LEFT)"};
+constexpr Word kNoteColorGame{"COD3_PORT_XHAIR_N_COLOR_GAME",
+                              "THE GAME'S COLORS: RED OVER AN ENEMY, GREEN OVER A FRIENDLY"};
+constexpr Word kNoteColor{"COD3_PORT_XHAIR_N_COLOR", "ONE COLOR, AS IN CS2 (CUSTOM: THE COLOR SET IN F2)"};
+constexpr Word kNoteColorOwn{"COD3_PORT_XHAIR_N_COLOR_OWN", "YOUR OWN COLOR FOR EACH CASE, SET IN F2"};
+constexpr Word kNoteAlpha{"COD3_PORT_XHAIR_N_ALPHA", "HOW SOLID THE CROSSHAIR IS (255: FULLY)"};
+constexpr Word kNoteAlphaGame{"COD3_PORT_XHAIR_N_ALPHA_GAME", "THE GAME'S COLORS KEEP THE GAME'S OWN FADE"};
+constexpr Word kNoteT{"COD3_PORT_XHAIR_N_T", "NO TOP LINE (A DYNAMIC STYLE THEN STAYS STILL)"};
+
+// The sliders: CS2's ranges in pixels on its 1080-line screen (f2_crosshair_cs2.h), the arrows' steps.
+struct XhairNumber {
+  double min, max, step, typed;
+  int decimals;
+};
+constexpr XhairNumber kLengthNumber{0.0, 255.0, 0.5, 0.5, 1};
+constexpr XhairNumber kThicknessNumber{0.0, 32.0, 0.5, 0.5, 1};
+constexpr XhairNumber kGapNumber{0.0, 128.0, 0.5, 0.5, 1};  // the legacy style from -10, as CS2's
+constexpr double kGapLegacyMin = -10.0;
+constexpr XhairNumber kAlphaNumber{0.0, 255.0, 5.0, 1.0, 0};
+
+bool IsXhairRow(int row) { return row >= kXhairStyle && row <= kXhairT; }
+
+std::string Say(const Word& w, bool english) { return english ? std::string(w.english) : Words(w.key, w.english); }
+
+// COLOR's place: 0 GAME'S, 1-5 the presets, 6 CUSTOM (a color of F2's that isn't one of them), 7 OWN COLORS.
+constexpr int kColorCustom = 1 + kPresetCount, kColorOwn = kColorCustom + 1;
+int ColorPlace(const xh::Settings& s) {
+  if (s.color_from == xh::kColorGame) return 0;
+  if (s.color_from == xh::kColorOwnPerCase) return kColorOwn;
+  for (int i = 0; i < kPresetCount; ++i)
+    if (s.color.r == kPresets[i].r && s.color.g == kPresets[i].g && s.color.b == kPresets[i].b) return 1 + i;
+  return kColorCustom;
+}
+
+double GapMin(const xh::Settings& s) { return s.style == xh::kDynamicCrossLegacy ? kGapLegacyMin : kGapNumber.min; }
+
+bool XhairNumberOf(const xh::Settings& s, int row, XhairNumber* n, double* value) {
+  switch (row) {
+    case kXhairLength:
+      *n = kLengthNumber;
+      *value = s.length;
+      break;
+    case kXhairThickness:
+      *n = kThicknessNumber;
+      *value = s.thickness;
+      break;
+    case kXhairGap:
+      *n = kGapNumber;
+      n->min = GapMin(s);
+      *value = s.gap;
+      break;
+    case kXhairAlpha:
+      *n = kAlphaNumber;
+      *value = s.color_from == xh::kColorOwnPerCase ? s.case_color[xh::kCaseNormal].a : s.color.a;
+      break;
+    default: return false;
+  }
+  *value = std::clamp(*value, n->min, n->max);
+  return true;
+}
+
+// `row`'s number set to `v` (already in range); false when nothing changes.
+bool SetXhairNumber(xh::Settings* s, int row, double v) {
+  const float f = float(v);
+  const uint8_t a = uint8_t(std::lround(std::clamp(v, 0.0, 255.0)));
+  switch (row) {
+    case kXhairLength: if (s->length == f) return false; s->length = f; return true;
+    case kXhairThickness: if (s->thickness == f) return false; s->thickness = f; return true;
+    case kXhairGap: if (s->gap == f) return false; s->gap = f; return true;
+    case kXhairAlpha:
+      if (s->color_from == xh::kColorOwnPerCase) {
+        bool changed = false;
+        for (xh::Rgba& c : s->case_color) {
+          changed |= c.a != a;
+          c.a = a;
+        }
+        return changed;
+      }
+      if (s->color.a == a) return false;
+      s->color.a = a;
+      return true;
+    default: return false;
+  }
+}
+
+std::string XhairValue(int player, int row, bool english) {
+  const xh::Settings s = xh::PlayerCopy(player);
+  switch (row) {
+    case kXhairStyle:
+      return !s.enabled ? Say(kGamesWord, english)
+                        : Say(kStyleWords[std::clamp(s.style, 0, xh::kStyleCount - 1)], english);
+    case kXhairDot: return Say(s.dot ? kOnWord : kOffWord, english);
+    case kXhairT: return Say(s.t_style ? kOnWord : kOffWord, english);
+    case kXhairOutline: return Say(kOutlineWords[std::clamp(s.outline, 0, 2)], english);
+    case kXhairColor: {
+      const int at = ColorPlace(s);
+      if (at == 0) return Say(kGamesWord, english);
+      if (at == kColorOwn) return Say(kOwnColorsWord, english);
+      return Say(at == kColorCustom ? kCustomWord : kPresets[at - 1].word, english);
+    }
+    default: {
+      XhairNumber n{};
+      double v = 0;
+      if (!XhairNumberOf(s, row, &n, &v)) return {};
+      return fmt::format("{:.{}f}", v, n.decimals);
+    }
+  }
+}
+
+std::string XhairNote(int player, int row) {
+  const xh::Settings s = xh::PlayerCopy(player);
+  if (row == kXhairStyle) {
+    if (!s.enabled) return Say(kNoteStyleOff, false);
+    if (!xh::StyleIsDynamic(s.style)) return Say(kNoteStatic, false);
+    return Say(s.t_style && xh::StyleUsesT(s.style) ? kNoteStill : kNoteDynamic, false);
+  }
+  if (!s.enabled) return Say(kNoteOff, false);
+  const bool used = row == kXhairDot      ? xh::StyleUsesDot(s.style)
+                    : row == kXhairLength ? xh::StyleUsesLength(s.style)
+                    : row == kXhairGap    ? xh::StyleUsesGap(s.style)
+                    : row == kXhairT      ? xh::StyleUsesT(s.style)
+                                          : true;
+  if (!used) return Say(kNoteUnused, false);
+  switch (row) {
+    case kXhairDot: return Say(kNoteDot, false);
+    case kXhairLength: return Say(kNoteLength, false);
+    case kXhairThickness: return Say(kNoteThickness, false);
+    case kXhairGap: return Say(kNoteGap, false);
+    case kXhairOutline: return Say(kNoteOutline, false);
+    case kXhairColor: {
+      const int at = ColorPlace(s);
+      return Say(at == 0 ? kNoteColorGame : at == kColorOwn ? kNoteColorOwn : kNoteColor, false);
+    }
+    case kXhairAlpha: return Say(s.color_from == xh::kColorGame ? kNoteAlphaGame : kNoteAlpha, false);
+    case kXhairT: return Say(kNoteT, false);
+  }
+  return {};
+}
+
+bool StepXhair(int player, int row, bool right) {
+  xh::Settings s = xh::PlayerCopy(player);
+  const std::string was = xh::Text(s);
+  switch (row) {
+    case kXhairStyle: {  // GAME'S, then CS2's ten, going round
+      const int now = s.enabled ? std::clamp(s.style, 0, xh::kStyleCount - 1) : -1;
+      const int last = xh::kStyleCount - 1;
+      const int next = right ? (now + 1 > last ? -1 : now + 1) : (now - 1 < -1 ? last : now - 1);
+      s.enabled = next >= 0;
+      if (next >= 0) s.style = next;
+      break;
+    }
+    case kXhairDot: s.dot = !s.dot; break;
+    case kXhairT: s.t_style = !s.t_style; break;
+    case kXhairOutline: s.outline = (std::clamp(s.outline, 0, 2) + (right ? 1 : 2)) % 3; break;
+    case kXhairColor: {  // GAME'S, CS2's five, CUSTOM (only while it is the color), OWN COLORS, going round
+      const int now = ColorPlace(s);
+      int next = now;
+      do {
+        next = (next + (right ? 1 : kColorOwn)) % (kColorOwn + 1);
+      } while (next == kColorCustom && now != kColorCustom);
+      if (next == 0) {
+        s.color_from = xh::kColorGame;
+      } else if (next == kColorOwn) {
+        s.color_from = xh::kColorOwnPerCase;
+      } else {
+        s.color_from = xh::kColorConstant;
+        if (next != kColorCustom) {
+          s.color.r = kPresets[next - 1].r;
+          s.color.g = kPresets[next - 1].g;
+          s.color.b = kPresets[next - 1].b;
+        }
+      }
+      break;
+    }
+    default: {
+      XhairNumber n{};
+      double v = 0;
+      if (!XhairNumberOf(s, row, &n, &v)) return false;
+      SetXhairNumber(&s, row, NextStep(v, n.step, right, n.min, n.max));
+      break;
+    }
+  }
+  if (xh::Text(s) == was) return false;
+  xh::AskSetPlayer(player, s);
+  return true;
+}
+
 bool CanChange(int player, int row) {
   return ValidRow(row) && ValidPlayer(player) && Available(row) && !(kInfo[row].mouse && !KeyboardPlayer(player));
 }
 
 void Saved(int player, int row, const char* how) {
   protected_dvars::SaveSettings();
-  REXLOG_INFO("cod3: Options: {} = {} (player {}{})", LabelText(row), ValueFor(player, row), player + 1, how);
+  REXLOG_INFO("cod3: Options: {} = {} (player {}{})", LabelText(row),
+              IsXhairRow(row) ? XhairValue(player, row, true) : ValueFor(player, row), player + 1, how);
 }
 
 }  // namespace
@@ -334,6 +579,22 @@ bool Available(int row) {
 }
 
 const char* LabelKey(int row) { return ValidRow(row) ? kInfo[row].key : kInfo[0].key; }
+
+const char* CrosshairButtonKey() { return kPageWord.key; }  // [acct2-ocr] 2026-11-21
+const char* CrosshairTitleKey() { return kTitleWord.key; }
+
+std::string Words(const char* key, const char* english) {
+  auto* ks = rex::system::kernel_state();
+  uint8_t* base = ks && ks->memory() ? ks->memory()->virtual_membase() : nullptr;
+  if (base && key) {
+    if (const uint32_t text = text::PortText(base, key)) {
+      const char* s = reinterpret_cast<const char*>(base + text);
+      const size_t len = strnlen(s, 512);
+      if (len > 0 && len < 512) return std::string(s, len);
+    }
+  }
+  return english ? english : "";
+}
 const char* LabelText(int row) { return ValidRow(row) ? kInfo[row].label : ""; }
 
 std::string LabelShown(uint8_t* base, int row) {
@@ -367,6 +628,7 @@ std::string ValueFor(int player, int row) {
     case Kind::kOwn:
       break;
   }
+  if (IsXhairRow(row)) return XhairValue(player, row, false);  // [acct2-ocr] 2026-11-21
   switch (row) {
     case kUseHold: return UseHoldText(player, use_hold::OwnSettingMs(player));
     case kLeftHanded: return GetBool(FlipSetting(player)) ? "ON" : "OFF";
@@ -389,6 +651,7 @@ std::string NoteFor(int player, int row) {
   const Info& in = kInfo[row];
   if (in.mouse && !KeyboardPlayer(player)) return "THE KEYBOARD AND MOUSE PLAYER'S";
   if (in.kind != Kind::kOwn) return in.note;
+  if (IsXhairRow(row)) return XhairNote(player, row);  // [acct2-ocr] 2026-11-21
   switch (row) {
     case kUseHold:
       if (player > 0 && use_hold::OwnSettingMs(player) == -1)
@@ -481,6 +744,9 @@ std::string StepFor(int player, int row, bool right) {
           break;
         }
         case kSplitHud: changed = StepSplitHud(right); break;
+        default:
+          if (IsXhairRow(row)) changed = StepXhair(player, row, right);  // [acct2-ocr] 2026-11-21
+          break;
       }
       break;
   }
@@ -502,6 +768,12 @@ bool NumberOfFor(int player, int row, menuslider::Number* n, double* value) {
     *value = fov::VehicleScale(player);
     return true;
   }
+  if (IsXhairRow(row)) {  // [acct2-ocr] 2026-11-21 LENGTH, THICKNESS, GAP, ALPHA
+    XhairNumber x{};
+    if (!XhairNumberOf(xh::PlayerCopy(player), row, &x, value)) return false;
+    *n = menuslider::Number{x.min, x.max, x.typed, 1.0, x.decimals, ""};
+    return true;
+  }
   return false;
 }
 
@@ -514,6 +786,14 @@ std::string SetNumberFor(int player, int row, double value) {
     changed = SetText(in.cvar, NumberText(std::clamp(typed, in.min, in.max), in.integer));
   } else if (row == kVehicleFov) {
     changed = SetVehicle(player, kVehicleMin + std::round((value - kVehicleMin) / kVehicleStep) * kVehicleStep);
+  } else if (IsXhairRow(row)) {  // [acct2-ocr] 2026-11-21
+    xh::Settings s = xh::PlayerCopy(player);
+    XhairNumber x{};
+    double now = 0;
+    if (!XhairNumberOf(s, row, &x, &now)) return "";
+    const double typed = std::clamp(x.min + std::round((value - x.min) / x.typed) * x.typed, x.min, x.max);
+    changed = SetXhairNumber(&s, row, typed);
+    if (changed) xh::AskSetPlayer(player, s);
   } else {
     return "";
   }
@@ -526,6 +806,8 @@ uint32_t Localize(uint8_t* base, const char* key) {
   if (!key || std::strncmp(key, "COD3_PORT_", 10) != 0) return 0;
   for (const Info& in : kInfo)
     if (std::strcmp(key, in.key) == 0) return FixedText(base, in.key, in.label);
+  for (const Word& w : {kPageWord, kTitleWord})  // [acct2-ocr] 2026-11-21 the CROSSHAIR page's button and title
+    if (std::strcmp(key, w.key) == 0) return FixedText(base, w.key, w.english);
   return 0;
 }
 

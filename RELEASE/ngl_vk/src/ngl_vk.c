@@ -321,6 +321,11 @@ static struct {
     VkPipeline mesh_add_pipeline;       /* and added (NGL_VK_BLEND_ADD), taken away (NGL_VK_BLEND_SUBTRACT) */
     VkPipeline mesh_subtract_pipeline;
     VkPipeline mesh_multiply_pipeline;  /* [waw-decomp] 2026-11-10: multiplied (NGL_VK_BLEND_MULTIPLY: decals) */
+    VkPipeline mesh_decal_pipeline;     /* [rexglue-native stlo 2026-11-16] the scene decal list's (NGL_VK_BLEND_DECAL) */
+    VkPipeline mesh_decal_alpha_pipeline;   /* [rexglue-native stlo 2026-11-16] the decal list's blended ones (NGL_VK_BLEND_DECAL_ALPHA) */
+    VkPipeline mesh_decal_depth_pipeline;   /* [rexglue-native stlo 2026-11-17] the depth-writing ones (NGL_VK_BLEND_DECAL_DEPTH) */
+    float decal_depth_constant;             /* [rexglue-native stlo 2026-11-17] ngl_vk_set_decal_depth_bias */
+    float decal_depth_slope;                /* [rexglue-native stlo 2026-11-17] */
     VkBuffer mesh_corners, mesh_indices;
     VkDeviceMemory mesh_corner_memory, mesh_index_memory;
     float *mesh_corner_data;        /* mapped, when the corners are in memory the host sees (side220: not by default) */
@@ -1981,6 +1986,49 @@ static int make_mesh_pipeline(void)
         blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
         blend_attachment.colorBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
     }
+    /* [rexglue-native stlo 2026-11-16] the scene decal list's surfaces (NGL_VK_BLEND_DECAL): not blended, no depth
+     * written (as the blended pipelines), pulled toward the eye as the multiplied one, red, green and blue only; not made:
+     * drawn by the blended pipeline instead */
+    if (result == VK_SUCCESS) {
+        VkPipelineColorBlendAttachmentState kept_decal = blend_attachment;
+
+        blend_attachment.blendEnable = VK_FALSE;
+        blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+        raster.depthBiasEnable = VK_TRUE;
+        raster.depthBiasConstantFactor = -1.0f;
+        raster.depthBiasSlopeFactor = 0.0f;
+        /* [rexglue-native stlo 2026-11-17] their depth bias set as they are bound (ngl_vk_set_decal_depth_bias) */
+        VkDynamicState decal_states[3] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+                                           VK_DYNAMIC_STATE_DEPTH_BIAS };
+        VkPipelineDynamicStateCreateInfo decal_dynamic = dynamic;
+
+        decal_dynamic.dynamicStateCount = 3;
+        decal_dynamic.pDynamicStates = decal_states;
+        info.pDynamicState = &decal_dynamic;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_decal_pipeline) != VK_SUCCESS)
+            vk.mesh_decal_pipeline = VK_NULL_HANDLE;
+        /* [rexglue-native stlo 2026-11-17] NGL_VK_BLEND_DECAL_DEPTH: as NGL_VK_BLEND_DECAL, writing depth */
+        depth.depthWriteEnable = VK_TRUE;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_decal_depth_pipeline) !=
+            VK_SUCCESS)
+            vk.mesh_decal_depth_pipeline = VK_NULL_HANDLE;
+        depth.depthWriteEnable = VK_FALSE;  /* [rexglue-native stlo 2026-11-17] as before, for what follows */
+        /* [rexglue-native stlo 2026-11-16] NGL_VK_BLEND_DECAL_ALPHA: blended as the plain blended pipeline, the rest as above */
+        blend_attachment.blendEnable = VK_TRUE;
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+        blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+        blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_decal_alpha_pipeline) !=
+            VK_SUCCESS)
+            vk.mesh_decal_alpha_pipeline = VK_NULL_HANDLE;
+        info.pDynamicState = &dynamic;    /* [rexglue-native stlo 2026-11-17] as before, for what follows */
+        raster.depthBiasEnable = VK_FALSE;  /* as before, for what follows */
+        raster.depthBiasConstantFactor = 0.0f;
+        blend_attachment = kept_decal;
+    }
     /* [rexglue-native-fx] 2026-11-11 fx1: the heat haze's mask (NGL_VK_BLEND_HEAT_MASK): what is there x (1 - alpha),
      * every channel; without it no heat haze */
     if (result == VK_SUCCESS) {         /* [rexglue-native-fx] */
@@ -2547,6 +2595,11 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[16 + 4 * row + 2] = d->irradiance[row][2];
     }
     slot[16 + 3] = rows ? 1.0f : 0.0f;
+    /* [acct2-bro] 2026-11-21 rn101: the game's own normal map frame (ngl_vk.h game_bump_frame): the ninth row's
+     * w 1 (mesh.frag reads it only with row 0's w 1; the light grid below fills these vec4s on its own draws,
+     * with row 0's w 0) */
+    if (rows && d->game_bump_frame)
+        slot[16 + 4 * 8 + 3] = 1.0f;
     /* [waw-decomp] the rows' third-degree term (ngl_vk.h irradiance_cubic): row 1's w 1, and at METAL_FLOATS_AT its
      * three axes, each with one part of its color as its w. Not for the draws whose own numbers are there. */
     if (rows && !fabric && !lens && !water && !grid &&
@@ -2593,6 +2646,9 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[FABRIC_FLOATS_AT + 11] = metal_scratched(d) ? 1.0f : 0.0f;
         /* [rexglue-native-guns] 2026-11-11: the game's blur of the reflection (0: none) */
         slot[FABRIC_FLOATS_AT + 9] = d->metal_cube_blur;
+        /* [acct2-bro] 2026-11-21 rn102: below 0, the game's own gradients (ngl_vk.h metal_cube_game_gradients) */
+        if (d->metal_cube_game_gradients && d->metal_cube_blur > 0.0f)
+            slot[FABRIC_FLOATS_AT + 9] = -d->metal_cube_blur;
         slot[METAL_FLOATS_AT] = d->metal_rim[0];
         slot[METAL_FLOATS_AT + 1] = d->metal_rim[1];
         slot[METAL_FLOATS_AT + 2] = d->metal_rim[2];
@@ -2831,6 +2887,13 @@ static int inverted(const float m[16], double out[16])
             out[row * 4 + column] = cofactor[column * 4 + row] / determinant;
     }
     return 1;
+}
+
+/* [rexglue-native stlo 2026-11-17] */
+void ngl_vk_set_decal_depth_bias(float constant_factor, float slope_factor)
+{
+    vk.decal_depth_constant = constant_factor;
+    vk.decal_depth_slope = slope_factor;
 }
 
 void ngl_vk_set_sun_shadow(const float light_view_projection[16], const float camera_view_projection[16])
@@ -3225,6 +3288,16 @@ static void draw_meshes(int part)
                 VkPipeline wanted = d->blend == NGL_VK_BLEND_ADD ? vk.mesh_add_pipeline
                                   : d->blend == NGL_VK_BLEND_SUBTRACT ? vk.mesh_subtract_pipeline
                                   : d->blend == NGL_VK_BLEND_MULTIPLY ? vk.mesh_multiply_pipeline  /* [waw-decomp] */
+                                  /* [rexglue-native stlo 2026-11-16] */
+                                  : d->blend == NGL_VK_BLEND_DECAL && vk.mesh_decal_pipeline ? vk.mesh_decal_pipeline
+                                  /* [rexglue-native stlo 2026-11-17] */
+                                  : d->blend == NGL_VK_BLEND_DECAL_DEPTH && vk.mesh_decal_depth_pipeline
+                                      ? vk.mesh_decal_depth_pipeline
+                                  : d->blend == NGL_VK_BLEND_DECAL_DEPTH && vk.mesh_decal_pipeline  /* [rexglue-native stlo 2026-11-17] */
+                                      ? vk.mesh_decal_pipeline
+                                  /* [rexglue-native stlo 2026-11-16] */
+                                  : d->blend == NGL_VK_BLEND_DECAL_ALPHA && vk.mesh_decal_alpha_pipeline
+                                      ? vk.mesh_decal_alpha_pipeline
                                                                       : vk.mesh_blend_pipeline;
                 if (d->blend == NGL_VK_BLEND_HEAT_MASK)     /* [rexglue-native-fx] 2026-11-11 fx1 */
                     wanted = vk.mesh_heat_pipeline;                                 /* [rexglue-native-fx] */
@@ -3232,6 +3305,9 @@ static void draw_meshes(int part)
                 if (wanted != pipeline) {
                     pipeline = wanted;
                     vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+                    if (pipeline == vk.mesh_decal_pipeline || pipeline == vk.mesh_decal_alpha_pipeline ||  /* [rexglue-native stlo 2026-11-17] */
+                        (pipeline == vk.mesh_decal_depth_pipeline && pipeline))  /* [rexglue-native stlo 2026-11-17] */
+                        vkCmdSetDepthBias(vk.commands, vk.decal_depth_constant, 0.0f, vk.decal_depth_slope);
                     bound[0] = bound[1] = bound[2] = VK_NULL_HANDLE;
                     fabric_bound[0] = fabric_bound[1] = fabric_bound[2] = VK_NULL_HANDLE;
                 }
@@ -3295,6 +3371,12 @@ static void draw_meshes(int part)
                              (int32_t)(d->corners ? d->corners - 1u : vk.meshes[d->mesh].first_corner),
                              (d->tint & MESH_TINT) | shading << MESH_SHADING_SHIFT | (textured ? MESH_TEXTURED : 0u) |
                              (d->alpha == NGL_VK_ALPHA_TEST ? MESH_ALPHA_TEST : 0u) |
+                             /* [rexglue-native stlo 2026-11-16] a decal list's cut-out surface */
+                             (d->blend == NGL_VK_BLEND_DECAL && d->decal_alpha == NGL_VK_ALPHA_TEST ? MESH_ALPHA_TEST
+                                                                                                    : 0u) |
+                             /* [rexglue-native stlo 2026-11-17] and a depth-writing one's */
+                             (d->blend == NGL_VK_BLEND_DECAL_DEPTH && d->decal_alpha == NGL_VK_ALPHA_TEST ? MESH_ALPHA_TEST
+                                                                                                          : 0u) |
                              (d->light_once ? MESH_LIGHT_ONCE : 0u));
         }
     }
@@ -6866,6 +6948,9 @@ void ngl_vk_shutdown(void)
         vkDestroyPipeline(vk.device, vk.mesh_add_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_subtract_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_multiply_pipeline, NULL);  /* [waw-decomp] */
+        vkDestroyPipeline(vk.device, vk.mesh_decal_pipeline, NULL);     /* [rexglue-native stlo 2026-11-16] */
+        vkDestroyPipeline(vk.device, vk.mesh_decal_alpha_pipeline, NULL);   /* [rexglue-native stlo 2026-11-16] */
+        vkDestroyPipeline(vk.device, vk.mesh_decal_depth_pipeline, NULL);   /* [rexglue-native stlo 2026-11-17] */
         vkDestroyPipeline(vk.device, vk.mesh_heat_pipeline, NULL);      /* [rexglue-native-fx] 2026-11-11 fx1 */
         vkDestroyPipeline(vk.device, vk.mesh_shadow_pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.mesh_layout, NULL);

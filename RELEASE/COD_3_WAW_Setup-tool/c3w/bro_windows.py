@@ -94,10 +94,15 @@ def _prog(folder: Path, name: str) -> Path:
 
 
 def console_python() -> str:
-    """The Python to hand CMake: on Windows the tool may run under pythonw.exe, which has no console output."""
+    """The Python to hand CMake: on Windows the tool may run under pythonw.exe, which has no console output.
+    [waw-decomp] 2026-11-16: through a link to its folder when that folder's path has characters a build tool chokes
+    on (common.alias_path): setup.bat's Python lives in the project folder (work\\tools\\python), and this path goes
+    into the build's files and into glslc.bat."""
     exe = Path(sys.executable)
     if IS_WINDOWS and exe.name.lower() == "pythonw.exe" and exe.with_name("python.exe").is_file():
-        return str(exe.with_name("python.exe"))
+        exe = exe.with_name("python.exe")
+    if common.awkward_path(str(exe.parent)):
+        exe = common.alias_path(exe.parent, "python-" + common.path_digest(exe.parent)) / exe.name
     return str(exe)
 
 
@@ -242,13 +247,15 @@ def fetch_toolchain(tools: Path, runner: Runner, log: Log, cancel: threading.Eve
 def toolchain_file_text(toolchain_bin: Path, extra_roots: Sequence[Path] = ()) -> str:
     """A CMake toolchain file for Windows x86-64 with llvm-mingw (the same on Linux and on Windows)."""
     tc = Path(toolchain_bin)
-    roots = " ".join(f'"{p.as_posix()}"' for p in [cross.sysroot(tc), *map(Path, extra_roots)])
+    # [waw-decomp] 2026-11-16: quoted for CMake (common.cmake_quote), so a "$" in a folder's name stays itself
+    q = common.cmake_quote
+    roots = " ".join(q(p.as_posix()) for p in [cross.sysroot(tc), *map(Path, extra_roots)])
     return (f"# Written by the COD_3_WAW setup tool for Big Red One's Windows version (llvm-mingw).\n"
             f"set(CMAKE_SYSTEM_NAME Windows)\n"
             f"set(CMAKE_SYSTEM_PROCESSOR x86_64)\n"
-            f'set(CMAKE_C_COMPILER "{_prog(tc, TRIPLE + "-clang").as_posix()}")\n'
-            f'set(CMAKE_CXX_COMPILER "{_prog(tc, TRIPLE + "-clang++").as_posix()}")\n'
-            f'set(CMAKE_RC_COMPILER "{_prog(tc, TRIPLE + "-windres").as_posix()}")\n'
+            f'set(CMAKE_C_COMPILER {q(_prog(tc, TRIPLE + "-clang").as_posix())})\n'
+            f'set(CMAKE_CXX_COMPILER {q(_prog(tc, TRIPLE + "-clang++").as_posix())})\n'
+            f'set(CMAKE_RC_COMPILER {q(_prog(tc, TRIPLE + "-windres").as_posix())})\n'
             f"set(CMAKE_FIND_ROOT_PATH {roots})\n"
             "set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n"
             "set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n"
@@ -268,9 +275,26 @@ def generator_args(ninja: Optional[Path]) -> List[str]:
 # glslc
 # ---------------------------------------------------------------------------
 def glslc_wrapper_text(python: str, glslang: Path) -> str:
-    """glslc.bat: bro_glslc.py with glslang, where the build calls glslc."""
-    script = Path(__file__).resolve().with_name("bro_glslc.py")
-    return (f'@"{python}" -I "{script}" --glslang "{glslang}" %*\r\n')
+    """glslc.bat: bro_glslc.py with glslang, where the build calls glslc.
+    [waw-decomp] 2026-11-16 (rc2-paths): cmd expands %NAME% even inside quotes, so every % in a path is doubled; the
+    script is the copy next to glslc.bat (%~dp0: the folder cmd started it from), so the setup tool's own folder,
+    whatever its name, isn't in the file; Python and glslang come through plain links (console_python, the work
+    folder's link)."""
+    def bat(text: object) -> str:
+        return str(text).replace("%", "%%")
+    return f'@"{bat(python)}" -I "%~dp0{GLSLC_SCRIPT}" --glslang "{bat(glslang)}" %*\r\n'
+
+
+GLSLC_SCRIPT = "bro_glslc.py"   # [waw-decomp] 2026-11-16 copied next to glslc.bat (glslc_wrapper_text)
+
+
+def bat_bytes(text: str) -> bytes:
+    """[waw-decomp] 2026-11-16: a .bat file's bytes: cmd reads it in the console's (OEM) code page, as pipeline.py
+    writes Launcher.bat; UTF-8 where that code page can't spell it (or off Windows, which has no "oem" codec)."""
+    try:
+        return text.encode("oem")
+    except (UnicodeEncodeError, LookupError):
+        return text.encode("utf-8")
 
 
 def ensure_glslc(tools: Path, found: Optional[Path], log: Log, cancel: threading.Event) -> Path:
@@ -288,7 +312,10 @@ def ensure_glslc(tools: Path, found: Optional[Path], log: Log, cancel: threading
     wrapper.parent.mkdir(parents=True, exist_ok=True)
     # [rexglue-native-platform] 2026-11-16: the bytes as they are (write_text's newline= needs Python 3.10, and the
     # tool supports 3.9: a TypeError there)
-    wrapper.write_bytes(glslc_wrapper_text(console_python(), glslang).encode("utf-8"))
+    # [waw-decomp] 2026-11-16: the script beside the .bat, the .bat in cmd's code page (glslc_wrapper_text), still
+    # written as bytes
+    shutil.copyfile(Path(__file__).resolve().with_name(GLSLC_SCRIPT), wrapper.with_name(GLSLC_SCRIPT))
+    wrapper.write_bytes(bat_bytes(glslc_wrapper_text(console_python(), glslang)))
     return wrapper
 
 

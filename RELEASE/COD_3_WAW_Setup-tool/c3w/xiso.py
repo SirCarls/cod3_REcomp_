@@ -26,6 +26,9 @@ PARTITIONS = [
 ATTR_DIRECTORY = 0x10
 CHUNK = 8 * 1024 * 1024
 MAX_DEPTH = 32   # folder levels (game discs use a handful)
+# [acct2-decomp] 2026-11-21 The most of one folder's table read (real ones are a few KB). A damaged image's size
+# (up to 4 GB) was asked for whole; a MemoryError there isn't caught when the input folder is scanned at start.
+MAX_DIR_BYTES = 16 * 1024 * 1024
 
 
 @dataclass
@@ -40,8 +43,12 @@ class XisoImage:
     def __init__(self, path: Path):
         self.path = Path(path)
         self._f: BinaryIO = open(self.path, "rb")
-        self.kind, self.base, root_sector, root_size = self._find_partition()
-        self.entries: List[Entry] = list(self._walk(root_sector, root_size, ""))
+        try:
+            self.kind, self.base, root_sector, root_size = self._find_partition()
+            self.entries: List[Entry] = list(self._walk(root_sector, root_size, ""))
+        except BaseException:
+            self._f.close()   # [acct2-decomp] 2026-11-21 not left open (on Windows an open file can't be moved)
+            raise
 
     def close(self) -> None:
         self._f.close()
@@ -66,7 +73,7 @@ class XisoImage:
         if size == 0:
             return
         self._f.seek(self.base + sector * SECTOR)
-        data = self._f.read(size)
+        data = self._f.read(min(size, MAX_DIR_BYTES))
         stack, seen = [0], set()
         while stack:
             off = stack.pop()
@@ -125,9 +132,12 @@ class XisoImage:
         return self._f.read(e.size if limit is None else min(limit, e.size))
 
     def extract(self, dest: Path, log: Log, cancel: threading.Event,
-                only: Optional[Callable[[str], bool]] = None) -> None:
+                only: Optional[Callable[[str], bool]] = None, overwrite: bool = False) -> None:
         """Copies the image's files into `dest`. `only`, if given, picks the
-        files to copy by their relative path."""
+        files to copy by their relative path. A file already in `dest` at the
+        same size is kept, unless `overwrite` ([acct2-decomp] 2026-11-21: for
+        a `dest` holding another disc's files, where the same size doesn't
+        mean the same bytes)."""
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
         wanted = [e for e in self.files if only is None or only(e.path)]
@@ -148,7 +158,7 @@ class XisoImage:
             if not is_within(out, dest):
                 raise SetupError(f"Unsafe path in image: {e.path}")
             out.parent.mkdir(parents=True, exist_ok=True)
-            if out.exists() and out.stat().st_size == e.size:
+            if not overwrite and out.exists() and out.stat().st_size == e.size:
                 done += e.size
                 continue
             tmp = out.with_name(out.name + ".part")

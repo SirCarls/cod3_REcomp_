@@ -27,10 +27,13 @@ class GameTableTests(unittest.TestCase):
     def test_six_tabs_in_order(self):
         # [acct2-bro] Big Red One's tab second, beside Call of Duty 3: both build a game from your disc.
         # [waw-decomp] Call of Duty 4 after Call of Duty 2.
-        self.assertEqual(games.GAME_ORDER, ["cod3", "bro", "waw", "cod2", "cod4", "coduo"])
+        # [acct2-decomp] 2026-11-21 Finest Hour's after Big Red One's: both original Xbox games built from your disc.
+        self.assertEqual(games.GAME_ORDER, ["cod3", "bro", "fh", "waw", "cod2", "cod4", "coduo"])
         self.assertEqual([g.tab for g in games.GAMES],
-                         ["Call of Duty 3", "Big Red One", "World at War", "Call of Duty 2", "Call of Duty 4",
-                          "United Offensive"])
+                         ["Call of Duty 3", "Big Red One", "Finest Hour", "World at War", "Call of Duty 2",
+                          "Call of Duty 4", "United Offensive"])
+        self.assertEqual(PAGES["fh"], ["fh_setup", "fh_play", "fh_status", "log"])
+        self.assertEqual(games.game("fh").actions, ("build", "play"))
         self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_status", "log"])
         self.assertEqual(games.game("bro").actions, ("build", "play"))
         self.assertEqual(theme.GAME_ORDER, tuple(games.GAME_ORDER))
@@ -81,7 +84,7 @@ class GameTableTests(unittest.TestCase):
         self.assertEqual(games.game("nope").id, games.DEFAULT_GAME)
 
     def test_port_status_rows(self):
-        for gid in ("bro", "waw", "cod2", "cod4", "coduo"):
+        for gid in ("bro", "fh", "waw", "cod2", "cod4", "coduo"):
             rows = games.PORT_STATUS[gid]
             self.assertTrue(rows)
             for m in rows:
@@ -701,15 +704,18 @@ class LookTests(unittest.TestCase):
         self.assertLess(r - min(g, b), 30)
 
     def test_each_game_gets_its_own_title_type(self):
-        linux = ["DejaVu Sans", "DejaVu Serif", "Liberation Sans", "Liberation Serif", "Barlow Semi Condensed"]
+        # [acct2-decomp] 2026-11-21 DejaVu Sans Mono for Finest Hour (7 tabs: 6 fonts and the UI font)
+        linux = ["DejaVu Sans", "DejaVu Serif", "Liberation Sans", "Liberation Serif", "Barlow Semi Condensed",
+                 "DejaVu Sans Mono"]
         fonts = theme.assign_display_fonts(games.GAME_ORDER, linux, "UI")
         self.assertEqual(len({f for f, _ in fonts.values()}), len(games.GAMES), fonts)   # [waw-decomp] 6
         self.assertEqual(fonts["cod3"], ("Barlow Semi Condensed", "bold"))
         windows = ["Impact", "Georgia", "Palatino Linotype", "Bahnschrift", "Arial"]
         fonts = theme.assign_display_fonts(games.GAME_ORDER, windows, "UI")
         # [waw-decomp] Call of Duty 4 (5th) finds none of its own among these five and shares Arial with Big Red One.
-        self.assertEqual([fonts[g][0] for g in games.GAME_ORDER], ["Bahnschrift", "Arial", "Impact", "Georgia",
-                                                                   "Arial", "Palatino Linotype"])
+        # [acct2-decomp] 2026-11-21 Finest Hour (3rd) has none of these five: the UI font.
+        self.assertEqual([fonts[g][0] for g in games.GAME_ORDER], ["Bahnschrift", "Arial", "UI", "Impact",
+                                                                   "Georgia", "Arial", "Palatino Linotype"])
         bare = theme.assign_display_fonts(games.GAME_ORDER, ["DejaVu Serif"], "UI")
         self.assertEqual(bare["cod3"], ("UI", "bold"))      # nothing of its own: the UI font
 

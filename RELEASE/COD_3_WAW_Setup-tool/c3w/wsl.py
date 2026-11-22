@@ -71,9 +71,14 @@ def parse_distro_list(text: str) -> List[str]:
 
 
 def to_wsl_path(p: Path) -> str:
-    """C:\\Games\\out -> /mnt/c/Games/out (WSL's default drive mounts)."""
-    w = PureWindowsPath(str(p))
-    if not w.drive or not w.drive.endswith(":"):
+    """C:\\Games\\out -> /mnt/c/Games/out (WSL's default drive mounts). [acct2-decomp] 2026-11-21 (owner 11:18
+    "review everything"): an extended-length or device path (\\\\?\\C:\\Games, \\\\.\\C:\\Games) is the same folder as
+    C:\\Games, and became /mnt/\\/Games before; a network share (\\\\?\\UNC\\server\\share) is still turned down."""
+    text = str(p)
+    if text[:4] in ("\\\\?\\", "\\\\.\\") and text[4:8].upper() != "UNC\\":
+        text = text[4:]
+    w = PureWindowsPath(text)
+    if len(w.drive) != 2 or w.drive[1] != ":" or not w.drive[0].isalpha():
         raise SetupError(f"{p} isn't on a drive letter, so the Linux build inside WSL can't reach it. "
                          "Pick an output folder on a local drive (for example C:).")
     rest = "/".join(part for part in w.parts[1:])

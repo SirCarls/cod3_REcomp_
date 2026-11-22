@@ -28,7 +28,7 @@
 // Kinds [acct2-ocr]: a pack's rows are grouped under "@menus", "@prompts",
 // "@objectives", "@subtitles", "@loading" and "@credits" lines (rows before any
 // such line are menus). Each kind has a setting (cod3_text_<kind>, default on;
-// F2 > Sound > Text by kind); a kind that is off keeps the game's own English.
+// F2 > LANGUAGE > Text > Text by kind); a kind that is off keeps the game's own English.
 // Forced text (cod3_text_film_cards: the films' burned-in title cards and
 // legal screens, rows under "@films", keys FILMCARD_<FILM>_<n>) is shown
 // whatever those settings; its layer is still to come.
@@ -129,7 +129,7 @@ uint32_t RawTextFor(uint8_t* base, uint32_t text);
 // become a stand-in (with_fill: the glyphs font_fill adds are kept) or '?'.
 std::string ToGameFontBytes(std::string_view utf8, bool with_fill);
 
-// F2 > Sound, under Voices: the Text row. Returns true when the player changed
+// F2 > LANGUAGE > Text (was on SOUND, under Voices): the Text row. Returns true when the player changed
 // it (the caller saves the settings at once).
 bool DrawSettingsRow();
 

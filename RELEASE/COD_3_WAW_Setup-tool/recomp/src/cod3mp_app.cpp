@@ -167,6 +167,11 @@ bool IsPerProgramSetting(std::string_view name) {
         "video_mode_height", "window_width", "window_height", "guest_vblank_rate",
         "display_output_transfer", "kernel_display_gamma_type", "kernel_display_gamma_power"})
     if (name == own) return true;
+  // [waw-decomp] 2026-11-16 (MP safety review rc2-mpsafe): test switches are this program's own too. The campaign's
+  // cod3.toml is shared and edited by hand, and in cod3mp the cod3_test_ settings host or join matches, press menu
+  // rows and pads by themselves (cod3_test_syslink, cod3_test_autojoin, cod3_test_menu_input ...); they come from
+  // cod3mp's own command line or cod3mp.toml only.
+  if (name.rfind("cod3_test_", 0) == 0) return true;
   return name.rfind("texture_replacement", 0) == 0;
 }
 

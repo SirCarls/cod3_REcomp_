@@ -10,7 +10,9 @@ separators both work.
 from __future__ import annotations
 
 import hashlib
+import http.client   # [acct2-decomp] 2026-11-21 download(): HTTPException isn't an OSError
 import json
+import ntpath   # [waw-decomp] 2026-11-16 awkward_path: Windows' rules on any system
 import os
 import platform
 import shutil
@@ -152,24 +154,46 @@ def build_path(work: Path) -> Path:
     On Windows, letters outside plain ASCII (a user folder named José) count as a
     problem too: tools that use the ANSI code page can't open such paths. And
     the Microsoft Store's Python keeps what it writes in AppData to itself, so
-    with it the link goes to the system drive's root instead."""
-    work = Path(work)
-    if not awkward_path(str(work)):
-        return work
+    with it the link goes to the system drive's root instead.
+
+    [waw-decomp] 2026-11-16: any character outside PLAIN_PATH_CHARACTERS counts
+    (awkward_path); the link is alias_path's. [waw-decomp] 2026-11-17 (S9): its
+    name carries a short digest of the work folder's path (work-<8 hex>-link,
+    c3w-work-<8 hex>), so two awkward work folders building at once never
+    repoint each other's link."""
+    return alias_path(work, work_link_name(work))
+
+
+def work_link_name(work: Path) -> str:
+    """[waw-decomp] 2026-11-17 (S9): the name alias_path gives the work folder's link (also shown on the Set up page
+    and in pc_check's note)."""
+    return "work-" + path_digest(Path(work))
+
+
+def alias_path(target: Path, name: str) -> Path:
+    """[waw-decomp] 2026-11-16 (rc2-paths; owner 14:33 "make sure ANY character that windows supports within a path
+    is allowed"): build_path's link, for any folder whose path goes to the build tools (the work folder, the
+    project folder, Python's folder). `target` itself when its path is plain (awkward_path), else a link to it with
+    a plain name: <cache>/<name>-link or /var/tmp/cod3-waw-setup-<user>-<name> on Linux (symbolic links),
+    %LOCALAPPDATA%\\c3w-<name> or <system drive>\\c3w-<name> on Windows (directory junctions; neither needs admin
+    rights). The folder keeps the name the user gave it; if no link can be made, `target` is used as it is."""
+    target = Path(target)
+    if not awkward_path(str(target)):
+        return target
     if IS_WINDOWS:
         local = _env_path("LOCALAPPDATA")
-        candidates = [local / "c3w-work"] if local and not store_python() else []
-        candidates.append(Path(os.environ.get("SystemDrive", "C:") + os.sep) / "c3w-work")
+        candidates = [local / f"c3w-{name}"] if local and not store_python() else []
+        candidates.append(Path(os.environ.get("SystemDrive", "C:") + os.sep) / f"c3w-{name}")
     else:
-        candidates = [cache_dir() / "work-link"]
+        candidates = [cache_dir() / f"{name}-link"]
         user = os.environ.get("USER") or os.environ.get("LOGNAME") or "user"
-        candidates.append(Path("/var/tmp") / f"{APP_ID}-{user}-work")
-    work.mkdir(parents=True, exist_ok=True)
+        candidates.append(Path("/var/tmp") / f"{APP_ID}-{user}-{name}")
+    target.mkdir(parents=True, exist_ok=True)
     for link in candidates:
         if awkward_path(str(link)):
             continue
         try:
-            if _points_to(link, work):
+            if _points_to(link, target):
                 return link
             if link.is_symlink() or (IS_WINDOWS and _is_junction(link)):
                 _remove_link(link)
@@ -178,20 +202,63 @@ def build_path(work: Path) -> Path:
             link.parent.mkdir(parents=True, exist_ok=True)
             if IS_WINDOWS:
                 import _winapi  # CPython on Windows; junctions need no admin rights
-                _winapi.CreateJunction(str(work), str(link))
+                _winapi.CreateJunction(str(target), str(link))
             else:
-                link.symlink_to(work, target_is_directory=True)
+                link.symlink_to(target, target_is_directory=True)
             return link
         except (OSError, ImportError, AttributeError):
             continue
-    return work
+    return target
 
 
-def awkward_path(text: str) -> bool:
-    """A path some build tools choke on: one with spaces; on Windows also one
-    longer than 60 characters (the build's own paths add up to 200 more, and
-    Windows' limit is 260) or with letters outside plain ASCII."""
-    return " " in text or (IS_WINDOWS and (len(text) > 60 or not text.isascii()))
+def project_link() -> Path:
+    """[waw-decomp] 2026-11-16: project_dir() as the build tools are given it (alias_path): its bro/, ngl_vk/,
+    engine/ and the setup tool's recomp/src go into CMake's files and the compilers' command lines. The link's name
+    carries a short digest of the folder's path, so two copies of the project building at once never share one."""
+    return alias_path(project_dir(), "project-" + path_digest(project_dir()))
+
+
+def path_digest(path: Path) -> str:
+    """[waw-decomp] 2026-11-16: 8 hex digits that tell one folder's path from another's (for links' names)."""
+    return hashlib.sha1(str(path).encode("utf-8", "surrogatepass")).hexdigest()[:8]
+
+
+# [waw-decomp] 2026-11-16 (rc2-paths): the ASCII characters every build tool takes in a path as they are. A path with
+# any other ASCII character (Windows allows all but < > : " / \ | ? * in names) reaches the build tools through a
+# link (alias_path): CMake splits lists at ";" and expands "${...}" in the files the tool writes for it, make and
+# ninja give "$" "#" and ":" a meaning, shells quotes "$" and "`", .bat files and cmd "%" "!" "^" and "&", the
+# linker's -Wl, options ",". Letters outside ASCII are plain on Linux (UTF-8 throughout) but not on Windows, whose
+# ANSI code page has no room for most of them.
+PLAIN_PATH_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/._-+~")
+
+
+def awkward_path(text: str, windows: Optional[bool] = None) -> bool:
+    """A path some build tools choke on: one with an ASCII character outside
+    PLAIN_PATH_CHARACTERS (a space included); on Windows also one with any
+    letter outside ASCII or longer than 60 characters (the build's own paths
+    add up to 200 more, and Windows' limit is 260); its drive letter and
+    backslashes are plain there. [waw-decomp] 2026-11-16: was spaces only
+    (and on Windows letters outside ASCII and the length). `windows`: judge
+    it by Windows' rules (None: this system's; the tests check both)."""
+    text = str(text)
+    if windows is None:
+        windows = IS_WINDOWS
+    if windows:
+        if len(text) > 60:
+            return True
+        drive, text = ntpath.splitdrive(text)
+        if drive and not (len(drive) == 2 and drive[1] == ":" and drive[0].isascii() and drive[0].isalpha()):
+            return True   # \\server\share: through a link as well
+        text = text.replace("\\", "/")
+        return any(c not in PLAIN_PATH_CHARACTERS for c in text)
+    return any(c.isascii() and c not in PLAIN_PATH_CHARACTERS for c in text)
+
+
+def cmake_quote(text: str) -> str:
+    """[waw-decomp] 2026-11-16: `text` as a CMake quoted argument for the files the tool writes for CMake (toolchain
+    files): \\ " and $ escaped, so "${v}" in a folder's name is read back as it is, not as a variable. A ";" still
+    makes a list where CMake uses the value: such paths reach CMake through alias_path's links."""
+    return '"' + str(text).replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$") + '"'
 
 
 def store_python() -> bool:
@@ -685,7 +752,13 @@ def download(url: str, dest: Path, log: Log, cancel: threading.Event, sha256: Op
                     last = now
                     log.progress(done / total if total else None,
                                  f"{dest.name}: {human(done)}" + (f" / {human(total)}" if total else ""))
-    except (OSError, ValueError) as e:   # URLError, timeouts, a dropped connection, no space
+            # [acct2-decomp] 2026-11-21: a connection that closes early ends read() without an error, so a
+            # download cut off halfway looked finished (and, without a checksum, was kept as the file).
+            if total and done != total:
+                raise ValueError(f"cut off after {human(done)} of {human(total)}")
+    # URLError, timeouts, a dropped connection, no space; [acct2-decomp] 2026-11-21 http.client's own errors too
+    # (IncompleteRead when a chunked reply ends early: an HTTPException, not an OSError, so it was a traceback).
+    except (OSError, ValueError, http.client.HTTPException) as e:
         tmp.unlink(missing_ok=True)
         raise SetupError(f"Download failed: {url} ({e}). Check the internet connection and build again.")
     if sha256 and h.hexdigest().lower() != sha256.lower():
@@ -747,9 +820,12 @@ def _check_member(dest: Path, name: str) -> None:
 # Copying with progress
 # ---------------------------------------------------------------------------
 def copy_tree(src: Path, dst: Path, log: Log, cancel: threading.Event, label: str,
-              hardlink: bool = False, skip: Callable[[Path], bool] = lambda p: False) -> None:
+              hardlink: bool = False, skip: Callable[[Path], bool] = lambda p: False,
+              overwrite: bool = False) -> None:
     """Copy (or hard-link) a folder, skipping files that already match in size.
-    Never touches `src`."""
+    Never touches `src`. [acct2-decomp] 2026-11-21 `overwrite`: every file is
+    written again, also one of the same size (for `dst` holding another copy's
+    files: a file of the same size can hold other bytes)."""
     src, dst = Path(src), Path(dst)
     files = []
     for root, dirs, names in os.walk(src):
@@ -769,7 +845,7 @@ def copy_tree(src: Path, dst: Path, log: Log, cancel: threading.Event, label: st
             raise Cancelled()
         s, d = src / rel, dst / rel
         size = s.stat().st_size
-        if d.exists() and d.stat().st_size == size:
+        if d.exists() and d.stat().st_size == size and (not overwrite or _same_file(s, d)):
             done += size
             continue
         d.parent.mkdir(parents=True, exist_ok=True)
@@ -793,6 +869,14 @@ def copy_tree(src: Path, dst: Path, log: Log, cancel: threading.Event, label: st
     log.progress(1.0, f"{label}: done ({human(total)})")
 
 
+def _same_file(a: Path, b: Path) -> bool:
+    """[acct2-decomp] 2026-11-21: `a` and `b` are one file (a hard link made by an earlier copy_tree)."""
+    try:
+        return os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -801,10 +885,14 @@ def write_json(path: Path, data: dict) -> None:
 
 
 def read_json(path: Path) -> dict:
+    """A JSON file's object: {} when the file is missing, unreadable, not JSON, or holds something else (a list, a
+    string, null). [acct2-decomp] 2026-11-21 (owner 11:18 "review everything"): every caller takes a dict, and a
+    settings.json holding null, a string or a list of values stopped the window before it opened."""
     try:
-        return json.loads(Path(path).read_text(encoding="utf-8"))
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
+    return data if isinstance(data, dict) else {}
 
 
 def foreign_path(value: object) -> bool:

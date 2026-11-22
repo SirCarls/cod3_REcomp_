@@ -297,12 +297,13 @@ SETTINGS: List[Setting] = [
             "choice", ((1, "English"), (3, "German"), (4, "French"), (5, "Spanish"), (6, "Italian")),
             default=1),
     # [acct2-ocr] 2026-11-07 (owner 09:49: "the setup tool audio and subtle options need to reflect our changes"): the
-    # text's language and what it covers, as F2 > Sound > Text has them (recomp/src/game/text_language.cpp,
+    # text's language and what it covers, as F2 > LANGUAGE > Text has them (recomp/src/game/text_language.cpp,
     # game/font_fill.cpp). cod3mp takes them from cod3.toml too, so they're for both programs.
     Setting("cod3_text_language", "Text",
             "The language of the game's text: menus, button prompts, objectives, subtitles, loading screens and "
             "credits, in both the campaign and multiplayer. The game's own is the disc's text. It can be changed "
-            "while playing too (F2 > Sound > Text); the texts on screen change as the game asks for them again.",
+            "while playing too (F2 > LANGUAGE > Text); the texts on screen change as the game asks for them "
+            "again.",  # [acct2-decomp] 2026-11-21 was F2 > Sound > Text
             "choice", (("disc", "The game's own"), ("en-US", "English (United States)"),
                        ("en-GB", "English (United Kingdom)"), ("fr-FR", "Français (France)"),
                        ("fr-CA", "Français (Canada)"), ("fr-BE", "Français (Belgique)"), ("de-DE", "Deutsch"),
@@ -311,7 +312,7 @@ SETTINGS: List[Setting] = [
                        ("zh-Hans", "Chinese (Simplified)"), ("zh-Hant-TW", "Chinese (Traditional, Taiwan)"),
                        ("zh-Hant-HK", "Chinese (Traditional, Hong Kong)"), ("ja-JP", "Japanese"),
                        ("ko-KR", "Korean")), default="disc"),
-    # [acct2-ocr] F2 > Sound > Text by kind: each kind in the language above, or off for the game's own text.
+    # [acct2-ocr] F2 > LANGUAGE > Text by kind: each kind in the language above, or off for the game's own text.
     Setting("cod3_text_subtitles", "Subtitles in that language",
             "The subtitles and the soldiers' lines on screen in the Text language. Off: the game's own text.",
             "bool", default=True),
@@ -778,9 +779,11 @@ def _windows_tasks() -> List[str]:
     """Image names of the running programs (tasklist; Wine has one too)."""
     flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     try:
-        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, timeout=15,
-                             creationflags=flags).stdout
-    except (OSError, subprocess.SubprocessError):
+        # [acct2-decomp] 2026-11-21: errors="replace": tasklist writes in the console's code page, and a running
+        # program whose name that page can't spell stopped this with a UnicodeDecodeError (the game's are ASCII).
+        out = subprocess.run(["tasklist", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace",
+                             timeout=15, creationflags=flags).stdout
+    except (OSError, ValueError, subprocess.SubprocessError):
         return []
     names = []
     for row in csv.reader(io.StringIO(out)):

@@ -30,7 +30,7 @@ ERROR, WARN, INFO = "error", "warn", "info"
 PYTHON_ORG = "https://www.python.org/downloads/windows/"
 VS_BUILD_TOOLS_PAGE = "https://visualstudio.microsoft.com/visual-cpp-build-tools/"
 # The short folder the build reaches a long work folder through (common.build_path).
-SHORT_LINK_HINT = r"C:\c3w-work"
+SHORT_LINK_HINT = r"C:\c3w-work-<8 hex digits>"   # [waw-decomp] 2026-11-17 (rc2-paths S9): one per work folder
 # Space a first full build takes, roughly: the SDK and the game's objects in
 # the work folder (pipeline.WORK_NEEDED_RECOMP plus the ripper's), and the
 # rips and the game in the output folder.
@@ -327,7 +327,7 @@ def system_notes(work: Path, out: Optional[Path] = None) -> List[Note]:
             notes.append(Note(INFO, f"The work folder's path has {', '.join(trouble)}",
                               "Some build tools choke on that, and Windows limits most paths to 260 characters.",
                               f"Nothing to do: the build reaches it through a short link ({SHORT_LINK_HINT} or "
-                              "c3w-work in your AppData\\Local folder), made without admin rights. If that link "
+                              "c3w-work-... in your AppData\\Local folder), made without admin rights. If that link "
                               "can't be made, move the project folder to a short plain path like C:\\Games\\COD3."))
         lp = long_paths_enabled()
         if lp is False:

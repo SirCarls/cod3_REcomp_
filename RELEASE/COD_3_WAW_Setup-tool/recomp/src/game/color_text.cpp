@@ -15,6 +15,7 @@
 
 #include "game/color_codes.h"
 #include "game/guest.h"
+#include "game/text_copy_check.h"  // [acct2-main] 2026-11-21
 
 REXCVAR_DEFINE_BOOL(cod3_color_codes_in_text, true, "cod3/Game",
                     "Draw ^0-^9 and ^: (rainbow) color codes anywhere in a line, as World at War does (names in the "
@@ -38,7 +39,10 @@ std::unordered_set<std::string> g_logged;
 // A NUL-terminated copy of `s` in the guest ring; 0 when there is no ring.
 uint32_t RingCopy(uint8_t* base, std::string_view s) {
   const uint32_t need = (uint32_t(s.size()) + 1 + 3) & ~3u;
-  if (!g_ring) g_ring = rex::system::kernel_state()->memory()->SystemHeapAlloc(kRing);
+  if (!g_ring) {
+    g_ring = rex::system::kernel_state()->memory()->SystemHeapAlloc(kRing);
+    if (g_ring) cod3::textcopy::NoteOurText(g_ring, kRing);  // [acct2-main] 2026-11-21 text_copy_check.h
+  }
   if (!g_ring || need > kRing) return 0;
   if (g_ring_at + need > kRing) g_ring_at = 0;
   const uint32_t at = g_ring + g_ring_at;

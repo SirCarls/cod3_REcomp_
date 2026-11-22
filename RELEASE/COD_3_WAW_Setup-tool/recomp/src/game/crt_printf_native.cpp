@@ -73,6 +73,8 @@
 #include <rex/ppc.h>
 #include <rex/system/kernel_state.h>
 
+#include "game/text_copy_check.h"  // [acct2-main] 2026-11-21
+
 #include "game/program.h"
 
 REXCVAR_DEFINE_BOOL(cod3_native_printf, true, "cod3/Performance",
@@ -1398,8 +1400,10 @@ REXCVAR_DEFINE_COMMAND_ARGS(cod3_native_printf_test, TestCommand, "cod3/Performa
 // code. A checked call runs the original (its result stays) and compares.
 // ---------------------------------------------------------------------------
 
-// _output_l (cod3mp sub_82323758).
-REX_HOOK_RAW(sub_82353B58) {
+namespace {
+
+// _output_l, native or the game's code (the hook's own body before 2026-11-21).
+void OutputL(PPCContext& ctx, uint8_t* base) {
   if (Use(ctx, base)) {
     Counters& c = Mine();
     Out o;
@@ -1427,4 +1431,36 @@ REX_HOOK_RAW(sub_82353B58) {
     Bump(c.guest[why]);
   }
   __imp__sub_82353B58(ctx, base);
+}
+
+// [acct2-main] 2026-11-21 The text-copy check (game/text_copy_check.h), when it is on: what the call will write and
+// whether it reads our text, from Format's own reading (it writes nothing to guest memory), before the call runs.
+void CheckedOutputL(PPCContext& ctx, uint8_t* base) {
+  Out o;
+  const uint32_t stream = ctx.r3.u32;
+  const Why why = (stream && ctx.r4.u32) ? Format(base, ctx.r1.u32, stream, ctx.r4.u32, ctx.r6.u32, &o) : kNullArg;
+  const bool string_stream = why != kNullArg && why != kFileStream && why != kStdStream && o.ptr != 0;
+  if (!string_stream || o.count_only) {
+    OutputL(ctx, base);
+    return;
+  }
+  bool ours = false;
+  for (int k = 0; k < o.reads && !ours; ++k) ours = cod3::textcopy::IsOurs(o.read_begin[k], o.read_size[k]);
+  const bool sized = why == kNative || why == kFull;  // Format made the whole output
+  const uint32_t out = o.ptr;
+  cod3::textcopy::BeforePrintf(ctx, base, out, sized ? o.n : 0, sized, o.cnt, ours, sized ? o.buf : nullptr);
+  OutputL(ctx, base);
+  const uint32_t after = LdW(Host(base, stream) + kFilePtr);
+  cod3::textcopy::AfterPrintf(out, after > out ? after - out : 0, ours);
+}
+
+}  // namespace
+
+// _output_l (cod3mp sub_82323758).
+REX_HOOK_RAW(sub_82353B58) {
+  if (cod3::textcopy::On()) {  // [acct2-main] 2026-11-21
+    CheckedOutputL(ctx, base);
+    return;
+  }
+  OutputL(ctx, base);
 }

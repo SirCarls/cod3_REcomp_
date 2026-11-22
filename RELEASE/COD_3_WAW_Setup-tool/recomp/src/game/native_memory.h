@@ -4,10 +4,20 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
 namespace cod3::native_memory {
+
+// [acct2-decomp] 2026-11-15 the bounds InMovedMemory and InMovedPool (below) read, set by native_memory_shadow.cpp
+// (0 while nothing is moved there). They are declared here so that the two checks are inline: the native renderer
+// makes them for nearly every graphics word it checks, and with the streaming pool moved the out-of-line calls took
+// about 8% of its worker's time (cod3mp, no frame limit).
+namespace detail {
+extern std::atomic<uint32_t> g_move_lo, g_move_hi;                // the move's guest virtual memory
+extern std::atomic<uint32_t> g_moved_pool_lo, g_moved_pool_hi;    // the moved streaming pool (hi stored first)
+}  // namespace detail
 
 // For the native renderer (game/ngl_side.cpp): a guest address it reads graphics data from (0xA0000000 view or
 // physical). Checked against the game's arena-0 allocations while cod3_native_memory_shadow is on, and against the
@@ -31,7 +41,10 @@ bool MovePoolOn();
 // For the native renderer (game/ngl_side.cpp): whether a guest address is in the move's guest virtual memory (mapped
 // and readable as it is, like the 0xA0000000 views; false while nothing was moved). Its Readable() / Physical()
 // checks skip such addresses today, so data moved there (e.g. bone matrices) is not drawn. Two relaxed atomic loads.
-bool InMovedMemory(uint32_t address);
+inline bool InMovedMemory(uint32_t address) {
+  const uint32_t lo = detail::g_move_lo.load(std::memory_order_relaxed);
+  return lo && address >= lo && address < detail::g_move_hi.load(std::memory_order_relaxed);
+}
 
 // Stage 5 (cod3_native_memory_move_pool), for the native renderer's reads of graphics data (semantics asked by
 // rexglue-native-mem, board 2026-11-11 14:45). While the streaming pool isn't moved, each returns exactly what
@@ -47,7 +60,10 @@ bool InMovedMemory(uint32_t address);
 // Each is a few relaxed atomic loads; any thread.
 uint32_t GpuName(uint32_t word, uint32_t mask);
 size_t GpuRoom(uint32_t name);
-bool InMovedPool(uint32_t address);
+inline bool InMovedPool(uint32_t address) {
+  const uint32_t lo = detail::g_moved_pool_lo.load(std::memory_order_acquire);
+  return lo && address >= lo && address < detail::g_moved_pool_hi.load(std::memory_order_relaxed);
+}
 
 // The streaming pool's block as the game made it (0 before that, or while neither the shadow nor the move is on),
 // whether it was moved, the graphics reads of it the moved pool had (the native renderer's, Direct3D's binds) and the

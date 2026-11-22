@@ -1,5 +1,5 @@
 """The game tabs across the top of the setup tool's window: Call of Duty 3,
-Big Red One, World at War, Call of Duty 2, Call of Duty 4 and United Offensive. Each tab has its own
+Big Red One, Finest Hour, World at War, Call of Duty 2, Call of Duty 4 and United Offensive. Each tab has its own
 sidebar of pages, its own look (theme.py has the colors) and its own main
 action in the bottom bar.
 
@@ -15,6 +15,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 COD3, BRO, WAW, COD2, CODUO = "cod3", "bro", "waw", "cod2", "coduo"
 COD4 = "cod4"   # [waw-decomp]
+FH = "fh"       # [acct2-decomp] 2026-11-21 Call of Duty: Finest Hour (c3w/fh.py, c3w/gui_fh.py)
 # [waw-decomp] The tabs whose game is recompiled from its Xbox 360 disc on Call of Duty 3's SDK (c3w/x360_ports.py):
 # their Set up and Play pages and Build / Play buttons are gui_ports.py's.
 X360_PORTS = (WAW, COD2, COD4)
@@ -41,6 +42,7 @@ PAGE_LABELS: Dict[str, str] = {
     "setup": "Set up", "play": "Play", "textures": "Textures & censoring", "tools": "Tools", "log": "Log",
     "about": "About",
     "bro_setup": "Set up", "bro_play": "Play", "bro_status": "Port status",   # [acct2-bro]
+    "fh_setup": "Set up", "fh_play": "Play", "fh_status": "Port status",   # [acct2-decomp] 2026-11-21
     "waw_setup": "Set up", "waw_play": "Play", "cod2_setup": "Set up", "cod2_play": "Play",   # [waw-decomp]
     "cod4_setup": "Set up", "cod4_play": "Play", "cod4_status": "Port status",
     "waw_content": "Content", "maps": "Mods & maps", "waw_status": "Port status",
@@ -57,6 +59,11 @@ GAMES: Tuple[Game, ...] = (
     Game(BRO, "Call of Duty 2: Big Red One", "Big Red One", "BRO", ("CALL OF DUTY 2", "BIG RED ONE"),
          "The Xbox original, recompiled for PC from your own disc", "bro",
          ("bro_setup", "bro_play", "bro_status", "log"), ("build", "play")),
+    # [acct2-decomp] 2026-11-21 (owner 11:18: "add finest hour to the tabs"): Call of Duty: Finest Hour, the original Xbox
+    # game, built like Big Red One (c3w/fh.py; the port in fh/ is acct2-fh's).
+    Game(FH, "Call of Duty: Finest Hour", "Finest Hour", "FH", ("CALL OF DUTY", "FINEST HOUR"),
+         "The Xbox original, recompiled for PC from your own disc", "fh",
+         ("fh_setup", "fh_play", "fh_status", "log"), ("build", "play")),
     # [waw-decomp] 2026-11-09: World at War and Call of Duty 2 recompiled from the Xbox 360 disc on Call of Duty 3's
     # SDK (owner 11-07 11:49: "the setup tool says rust, but it should be the same as cod3's SDK"); Call of Duty 4
     # new. World at War keeps its Content page (the rip for Call of Duty 3).
@@ -242,6 +249,17 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
         Milestone("Windows", NEXT, "Builds on Linux for now."),
         Milestone("Multiplayer", LATER, "Not started."),
     ),
+    FH: (   # [acct2-decomp] 2026-11-21 from fh/README.md and fh/config/discs.tsv (the port is acct2-fh's)
+        Milestone("Recompile", READY, "Your default.xbe to C with xboxrecomp: the Europe disc."),
+        Milestone("Picture", TESTING, "Drawn natively with Vulkan: menus, levels, models, films."),
+        Milestone("Controls", TESTING, "A gamepad, or the keyboard as an Xbox pad."),
+        Milestone("Levels", TESTING, "Levels load; a level change restarts the game, as on the console."),
+        Milestone("Settings", TESTING, "The F2 window and a console, saved in fh.toml."),
+        Milestone("Sound and music", NEXT, "The game's DirectSound is not done yet."),
+        Milestone("USA disc", NEXT, "Its level loader is at another address: not built yet."),
+        Milestone("Windows", NEXT, "Builds on Linux for now."),
+        Milestone("Multiplayer", LATER, "Not started."),
+    ),
     # [waw-decomp] 2026-11-09, from the second account's notes (dev/agents/acct2-waw, acct2-cod2, acct2-cod4)
     WAW: (
         Milestone("Recompile", READY, "Your Xbox 360 default.xex on Call of Duty 3's SDK, Linux and Windows."),
@@ -269,6 +287,7 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
 # The documents behind each status page (in the project folder).
 STATUS_DOCS: Dict[str, Tuple[Tuple[str, str], ...]] = {
     BRO: (("bro/README.md", "About the port"),),   # [acct2-bro]
+    FH: (("fh/README.md", "About the port"),),     # [acct2-decomp] 2026-11-21
     WAW: (("docs/WAW_DECOMP.md", "Decompile notes"),),
     COD2: (("docs/NEW_COPY.md", "New copy"), ("docs/PC_SERVER.md", "LAN server"),
            ("docs/PC_MULTIPLAYER.md", "Cross-play")),

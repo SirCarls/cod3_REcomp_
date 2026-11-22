@@ -78,6 +78,9 @@
 #include <rex/ppc.h>
 #include <rex/system/kernel_state.h>
 
+#include "game/text_copy_check.h"  // [acct2-main] 2026-11-21
+#include "game/text_buffers.h"     // [acct2-main] 2026-11-21 LevelInfoCopied
+
 REXCVAR_DEFINE_BOOL(cod3_native_crt, true, "cod3/Performance",
                     "memcpy, memset, memmove, XMemCpy and the string functions (_stricmp, "
                     "strncmp, strcpy, strncpy, strchr, strstr, _strnicmp, strrchr, strncat, "
@@ -1374,6 +1377,7 @@ inline bool Use(Fn f, PPCContext& ctx, uint8_t* base) {
 // ---------------------------------------------------------------------------
 
 REX_HOOK_RAW(memcpy_guest) {
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kMemcpy, ctx, base);  // [acct2-main] text_copy_check.h
   if (Use(kMemcpy, ctx, base)) {
     const uint32_t n = ctx.r5.u32;
     if (NativeMemcpy(ctx, base)) {
@@ -1398,6 +1402,7 @@ REX_HOOK_RAW(memset_guest) {
 }
 
 REX_HOOK_RAW(memmove_guest) {
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kMemmove, ctx, base);  // [acct2-main] text_copy_check.h
   if (Use(kMemmove, ctx, base)) {
     const uint32_t n = ctx.r5.u32;
     if (NativeMemmove(ctx, base)) {
@@ -1411,6 +1416,7 @@ REX_HOOK_RAW(memmove_guest) {
 
 // XMemCpy: the Xbox 360's own fast copy (VMX, cache line clears).
 REX_HOOK_RAW(sub_82343548) {
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kXMemCpy, ctx, base);  // [acct2-main] text_copy_check.h
   if (Use(kXMemCpy, ctx, base)) {
     const uint32_t n = ctx.r5.u32;
     if (NativeXMemCpy(ctx, base)) {
@@ -1447,11 +1453,16 @@ REX_HOOK_RAW(strncmp_guest) {
 }
 
 REX_HOOK_RAW(strcpy_guest) {
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kStrcpy, ctx, base);  // [acct2-main] text_copy_check.h
   if (!StringNative<NativeStrcpy>(kStrcpy, ctx, base)) __imp__strcpy_guest(ctx, base);
 }
 
 REX_HOOK_RAW(strncpy_guest) {
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kStrncpy, ctx, base);  // [acct2-main] text_copy_check.h
+  // [acct2-main] 2026-11-21 the level's loading-screen text, given whole after its 163-byte copy (text_buffers.h).
+  const uint32_t whole_src = uint32_t(ctx.lr) == cod3::textbuf::kLevelInfoReturn ? ctx.r4.u32 : 0;  // [acct2-main]
   if (!StringNative<NativeStrncpy>(kStrncpy, ctx, base)) __imp__strncpy_guest(ctx, base);
+  if (whole_src) cod3::textbuf::LevelInfoCopied(ctx, base, whole_src);  // [acct2-main]
 }
 
 REX_HOOK_RAW(strchr_guest) {
@@ -1472,6 +1483,7 @@ REX_HOOK_RAW(sub_8234E890) {  // strrchr
 }
 
 REX_HOOK_RAW(sub_8234E600) {  // strncat
+  if (cod3::textcopy::On()) cod3::textcopy::Before(cod3::textcopy::kStrncat, ctx, base);  // [acct2-main] text_copy_check.h
   if (!StringNative<NativeStrncat>(kStrncat, ctx, base)) __imp__sub_8234E600(ctx, base);
 }
 

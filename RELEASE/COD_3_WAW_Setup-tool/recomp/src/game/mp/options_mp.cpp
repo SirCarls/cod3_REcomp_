@@ -515,11 +515,11 @@ constexpr op::Menu kMenu = op::Menu::kMultiplayerPause;
 constexpr int kMatchStock = 10;
 constexpr int kMatchOptions = 9;
 constexpr int kMatchReset = 9;
-constexpr int kMaxCategories = 6;
+constexpr int kMaxCategories = 7;  // [acct2-ocr] 2026-11-21 was 6: CROSSHAIR (game/options_pages.cpp)
 constexpr int kSlots = 10;  // the panel's rows, slot_01 to slot_10
-constexpr int kItemFirst = kMatchStock;                // 10..15: GAMEPLAY, CONTROLS ...
-constexpr int kRowFirst = kItemFirst + kMaxCategories;  // 16..25: a page's rows
-constexpr int kNoteEntry = kRowFirst + kSlots;          // 26: the note
+constexpr int kItemFirst = kMatchStock;                // 10..16: GAMEPLAY, CONTROLS ... [acct2-ocr] 11-21 was 10..15
+constexpr int kRowFirst = kItemFirst + kMaxCategories;  // 17..26: a page's rows
+constexpr int kNoteEntry = kRowFirst + kSlots;          // 27: the note
 constexpr int kMatchAll = kNoteEntry + 1;
 
 constexpr uint32_t kPageAddItem = 16;      // vtbl: (index, label, 0), as Init adds RESTORE DEFAULTS

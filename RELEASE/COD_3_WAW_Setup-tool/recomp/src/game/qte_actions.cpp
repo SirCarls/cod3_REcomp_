@@ -42,6 +42,7 @@
 #include <vector>  // [rexglue-native qte] cod3_test_qte_input
 
 #include "game/addresses.h"
+#include "game/button_prompts.h"  // [rexglue-native] 2026-11-17 P0 GameFrameNow, OverlaySafetyMs (the spinner through a hitch)
 #include "game/guest.h"
 #include "game/mouse_look.h"  // [rexglue-native qte] cod3_test_qte_input hands its motion to the mouse aim
 #include "game/qte_math.h"
@@ -270,6 +271,7 @@ struct Action {
   bool demo = false;
   uint32_t serial = 0;
   int64_t last_update_ns = 0;
+  uint32_t last_update_frame = 0;  // [rexglue-native] 2026-11-17 P0 the game frame of the last update (cod3::prompts::GameFrameNow; 0 unknown)
   float update_interval = 0.016f;  // wall seconds between two updates (smoothed)
   // What the game measured this frame.
   float rate = 0.0f;
@@ -328,6 +330,17 @@ bool Alive(const Action& a, int64_t now) {
   // mouse goes back to the view until the action runs again. (Stop ends an
   // action at once; this only covers updates that stop without it.)
   const int64_t timeout = std::max<int64_t>(400 * kMs, int64_t(3.0f * a.update_interval * 1e9f));
+  // [rexglue-native] 2026-11-17 P0 (owner 16:52: every HUD element at every frame rate): with the latch on (cod3_overlay_frame_latch), also
+  // alive while the game has made at most 2 frames since the last update and that update is inside the overlays'
+  // safety net. A hitch (one game frame longer than the timeout) no longer takes the spinner away until the next
+  // update; a paused game (frames go on without updates) still does, after 2 frames and the timeout.
+  if (a.last_update_frame != 0 && cod3::prompts::OverlayFrameLatchOn()) {
+    const uint32_t counter = cod3::prompts::GameFrameNow();
+    const int32_t frames = int32_t(counter - a.last_update_frame);
+    if (counter != 0 && frames >= 0 && frames <= 2 &&
+        now - a.last_update_ns <= int64_t(cod3::prompts::OverlaySafetyMs()) * kMs)
+      return true;
+  }
   return now - a.last_update_ns < timeout;
 }
 
@@ -639,6 +652,7 @@ void Begin(Action& a, uint32_t receiver, const Definition& def, Kind kind, bool 
   a.demo = demo;
   a.serial = ++g_serial;
   a.last_update_ns = NowNs();
+  a.last_update_frame = cod3::prompts::GameFrameNow();  // [rexglue-native] 2026-11-17 P0
   a.started_ns = a.last_update_ns;  // [rexglue-native qte] cod3_debug_qte
   g_cursor_kind.store(kind, std::memory_order_relaxed);
   g_cursor_on.store(kind != Kind::kNone, std::memory_order_relaxed);
@@ -1428,6 +1442,7 @@ void OnReceiverUpdate(uint8_t* base, uint32_t receiver, float dt) {
       a.update_interval += (interval - a.update_interval) * 0.2f;
     }
     a.last_update_ns = now;
+    a.last_update_frame = cod3::prompts::GameFrameNow();  // [rexglue-native] 2026-11-17 P0
     a.ready = ReadF32(base, receiver + kRcvrElapsed) > ReadF32(base, receiver + kRcvrAcceptAfter);
     a.rate = Finite(ReadF32(base, receiver + kRcvrRate));
     a.phase = Finite(ReadF32(base, receiver + kRcvrPhase));

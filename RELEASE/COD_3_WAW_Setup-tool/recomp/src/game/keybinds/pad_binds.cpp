@@ -121,6 +121,21 @@ std::mutex g_seat_mutex;
 std::array<pad::Layout, kPlayers> g_seat_layout;
 std::array<std::array<std::string, pad::kButtonCount>, kPlayers> g_seat_text;
 std::array<bool, kPlayers> g_seat_have{};
+// [acct2-main] 2026-11-21 the controller (guest user) each seat played with at its last Sync, for F2 (SeatPad).
+std::array<int, kPlayers> g_seat_pad{-1, -1, -1, -1};
+
+// [rexglue-native] 2026-11-17 Also builds on an SDK installed without patch 0078 (waw-decomp 11-16 23:14: an SDK built
+// before it has ControllerFamily and PadFamily but no kGameCube). The test is made in a template, where a missing
+// enumerator makes the requires-expression false instead of an error. With 0078 it is the same comparison as before;
+// without it no controller is ever a GameCube one, so the GameCube defaults below never apply.
+template <typename Family>
+bool IsGameCubeFamily(Family family) {
+  if constexpr (requires { Family::kGameCube; }) {
+    return family == Family::kGameCube;
+  } else {
+    return false;
+  }
+}
 
 // [rexglue-native-input] 2026-11-16 (owner 20:00 via main 20:03: "GameCube D-pad: put the actions a GameCube pad has
 // no button for ... on the D-pad ... only in the GameCube profile, only where the D-pad has no use in the game's
@@ -134,7 +149,8 @@ bool SeatPadIsGameCube(uint8_t* base, uint32_t cl) {
   auto* kernel = REX_KERNEL_STATE();
   auto* runtime = kernel ? kernel->emulator() : nullptr;
   auto* input = runtime ? static_cast<rex::input::InputSystem*>(runtime->input_system()) : nullptr;
-  return input && input->PadFamily(cod3::binds::PadOfPlayer(base, cl)) == rex::input::ControllerFamily::kGameCube;
+  // [rexglue-native] 2026-11-17 through IsGameCubeFamily (above): was `... == rex::input::ControllerFamily::kGameCube`.
+  return input && IsGameCubeFamily(input->PadFamily(cod3::binds::PadOfPlayer(base, cl)));
 }
 
 pad::PadSet GameCubeDefaults(const pad::Layout& layout, const std::array<std::string, pad::kButtonCount>& text,
@@ -237,6 +253,7 @@ void Sync(PPCContext& ctx, uint8_t* base, uint32_t cl, bool log) {
     g_seat_layout[seat] = layout;
     g_seat_text[seat] = p.layout;
     g_seat_have[seat] = true;
+    g_seat_pad[seat] = int(PadOfPlayer(base, cl) & 3);  // [acct2-main] 2026-11-21 SeatPad
   }
   for (int b = 0; b < pad::kButtonCount; ++b) {
     const auto button = static_cast<pad::Button>(b);
@@ -529,6 +546,13 @@ bool SeatLayout(int seat, pad::Layout* layout, std::string* layout_text) {
   if (layout_text)
     for (int b = 0; b < pad::kButtonCount; ++b) layout_text[b] = g_seat_text[seat][b];
   return true;
+}
+
+// [acct2-main] 2026-11-21 (pad_binds.h)
+int SeatPad(int seat) {
+  if (seat < 0 || seat >= kPlayers) return -1;
+  std::lock_guard<std::mutex> lock(g_seat_mutex);
+  return g_seat_pad[seat];
 }
 
 }  // namespace cod3::binds::padbinds

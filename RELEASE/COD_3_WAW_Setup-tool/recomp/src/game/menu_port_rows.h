@@ -20,6 +20,14 @@
 //
 // The rows' texts: labels by key (COD3_PORT_*), answered by the Localize hooks (a pack's "@port" row in the chosen
 // language first, game/text_language.h PortText; else the English here); values and notes in English.
+//
+// [acct2-ocr] 2026-11-21 The CROSSHAIR page (owner 10:43: "These settings really need to look and feel official, and
+// integrate perfectly/seemlessly"; 10:50: "Please do the same for MP and the various splitscreen views too"; asked
+// where and how, he chose the game's Options and F2, CS2's layout in CoD3's skin): nine rows in CS2's order, each the
+// menu's player's own crosshair (f2/f2_crosshair_cs2.h, the same one as F2 > CROSSHAIR; a split-screen player's own
+// once changed here, player 1's until then): STYLE (GAME'S first: the game's own crosshair; then CS2's ten), CENTER
+// DOT, LENGTH, THICKNESS, GAP, OUTLINE, COLOR (GAME'S, CS2's five, CUSTOM, OWN COLORS), ALPHA, T STYLE. Their
+// labels, values and notes are in the chosen language (the port's own words, text_port_words.inc, or a pack's row).
 
 #pragma once
 
@@ -52,6 +60,16 @@ enum Row : int {
   kColorCodes,        // COLORS IN NAMES       cod3_color_codes_in_text
   kShowVersion,       // SHOW VERSION          cod3_show_version
   kSplitHud,          // SPLIT-SCREEN HUD      cod3_hud_safe_area (cod3mp)
+  // [acct2-ocr] 2026-11-21 the CROSSHAIR page: the menu's player's crosshair (cod3_crosshair_p1 .. _p4)
+  kXhairStyle,        // STYLE
+  kXhairDot,          // CENTER DOT
+  kXhairLength,       // LENGTH                a slider
+  kXhairThickness,    // THICKNESS             a slider
+  kXhairGap,          // GAP                   a slider
+  kXhairOutline,      // OUTLINE               OFF / FULL / HALF
+  kXhairColor,        // COLOR
+  kXhairAlpha,        // ALPHA                 a slider
+  kXhairT,            // T STYLE
   kRowCount
 };
 
@@ -61,6 +79,16 @@ inline constexpr int kCampaignGameplay[] = {kSkipCutscenes, kSkipHold,    kCutsc
                                             kVehicleFov,    kTextLanguage, kVoices,      kVolume};
 inline constexpr int kCampaignController[] = {kKeyPrompts, kKeyCaps,  kButtonStyle,   kRawMouse,
                                               kInvertMouse, kMouseAds, kMouseSmoothing};
+
+// [acct2-ocr] 2026-11-21 The CROSSHAIR page, both programs (game/menu_fov.cpp; game/options_pages.cpp for cod3mp).
+inline constexpr int kCrosshairPage[] = {kXhairStyle,  kXhairDot,   kXhairLength, kXhairThickness, kXhairGap,
+                                         kXhairOutline, kXhairColor, kXhairAlpha,  kXhairT};
+// Its page button ("CROSSHAIR") and title ("OPTIONS / CROSSHAIR") keys, answered by Localize below.
+const char* CrosshairButtonKey();
+const char* CrosshairTitleKey();
+// The text of one of this file's keys as the game shows it: the chosen language's (a pack's "@port" row or the port's
+// own words) when it has one, else `english`. Any thread.
+std::string Words(const char* key, const char* english);
 
 // Whether this program has the row.
 bool Available(int row);
@@ -77,7 +105,7 @@ std::string NoteFor(int player, int row);
 // One step left or right (game thread); the new value's text, or "" when it doesn't change.
 std::string StepFor(int player, int row, bool right);
 // The rows with numbers (sliders, game/menu_slider.h): HOLD TO SKIP, VEHICLE FOV SCALE, MASTER VOLUME, MOUSE
-// SENSITIVITY, MOUSE ADS SCALE.
+// SENSITIVITY, MOUSE ADS SCALE; [acct2-ocr] 2026-11-21 the crosshair's LENGTH, THICKNESS, GAP and ALPHA.
 bool NumberOfFor(int player, int row, menuslider::Number* n, double* value);
 std::string SetNumberFor(int player, int row, double value);
 

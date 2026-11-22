@@ -26,15 +26,29 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
     fi
     # No Windows Python yet: setup.bat installs it (winget) and starts the
     # tool. MSYS turns a lone "/c" into a path, so it gets "//c" there.
+    # [acct2-decomp] 2026-11-21: "call" first: when what follows /c starts
+    # with a quote, cmd drops that quote and the last one on the line unless
+    # the quoted path is plain (no ( ) & ^ @ < > |, no other quotes), so a
+    # folder like "cod3 (1)" or any quoted argument broke the start.
     echo "Python for Windows isn't installed yet; setup.bat installs it..."
     case "$(uname -s)" in
-      CYGWIN*) exec cmd.exe /c "$(winpath "$HERE/setup.bat")" "$@" ;;
-      *) exec cmd.exe //c "$(winpath "$HERE/setup.bat")" "$@" ;;
+      CYGWIN*) exec cmd.exe /c call "$(winpath "$HERE/setup.bat")" "$@" ;;
+      *) exec cmd.exe //c call "$(winpath "$HERE/setup.bat")" "$@" ;;
     esac
     ;;
 esac
 
+# [acct2-decomp] 2026-11-21: a Python 3.9+ that has Tkinter first, also the
+# system's own /usr/bin/python3 when another python3 comes first on PATH
+# (pyenv or conda builds often lack Tkinter, and the package manager adds it
+# to the system's Python only); without one, the first Python 3.9+.
+WITH_TK='import sys, tkinter; sys.exit(sys.version_info < (3, 9))'
 find_python() {
+  for c in python3 python /usr/bin/python3; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c "$WITH_TK" 2>/dev/null; then
+      echo "$c"; return 0
+    fi
+  done
   for c in python3 python; do
     if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys; sys.exit(sys.version_info < (3, 9))' 2>/dev/null; then
       echo "$c"; return 0
@@ -83,7 +97,10 @@ if [ -z "$PY" ] || ! "$PY" -c 'import tkinter' 2>/dev/null; then
   elif command -v steamos-readonly >/dev/null 2>&1 && [ ! -e /run/.containerenv ]; then
     container_hint  # SteamOS: the system is read-only and reset by updates
   elif command -v apt-get >/dev/null 2>&1; then
-    $SUDO apt-get update && $SUDO apt-get install -y python3 python3-tk
+    # [acct2-decomp] 2026-11-21: one broken extra repository makes "update"
+    # fail; the install still works from the lists already there.
+    $SUDO apt-get update || true
+    $SUDO apt-get install -y python3 python3-tk
   elif command -v dnf >/dev/null 2>&1; then
     $SUDO dnf install -y python3 python3-tkinter
   elif command -v pacman >/dev/null 2>&1; then
@@ -95,7 +112,13 @@ if [ -z "$PY" ] || ! "$PY" -c 'import tkinter' 2>/dev/null; then
   else
     container_hint
   fi
-  PY="$(find_python)"
+  # [acct2-decomp] 2026-11-21: say so instead of stopping without a word (set -e).
+  PY="$(find_python || true)"
+  if [ -z "$PY" ] || ! "$PY" -c 'import tkinter' 2>/dev/null; then
+    echo "The packages were installed, but no Python 3.9+ with Tkinter is found yet${PY:+ ($PY has no Tkinter)}."
+    echo "Open a new terminal and run  sh setup.sh  again, or install Tkinter for that Python yourself."
+    exit 1
+  fi
 fi
 
 exec "$PY" "$HERE/cod3_waw_setup.py" "$@"

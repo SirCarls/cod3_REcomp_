@@ -36,7 +36,7 @@ REXCVAR_DEFINE_INT32(cod3_film_text_plate, 255, "cod3/Language",
 REXCVAR_DEFINE_BOOL(cod3_debug_film_text, false, "cod3/Language",
                     "Log each film the layer sees, and the card lines it draws")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DECLARE(bool, cod3_text_film_cards);   // game/text_language.cpp (F2 > Sound > Text > Forced)
+REXCVAR_DECLARE(bool, cod3_text_film_cards);   // game/text_language.cpp (F2 > LANGUAGE > Text > Forced)
 
 namespace cod3::film_text {
 

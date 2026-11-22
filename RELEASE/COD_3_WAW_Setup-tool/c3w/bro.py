@@ -1587,6 +1587,14 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
         raise SetupError(f"The work folder {work} and the output folder {lay.out.parent} are inside each other: "
                          "pick two separate folders.")
     common.claim_work_dir(work)
+    # [waw-decomp] 2026-11-16 (rc2-paths; owner 14:33 "make sure ANY character that windows supports within a path
+    # is allowed"): the compilers, CMake and xboxrecomp reach the work folder and the project folder through links
+    # with plain names when their paths have characters a build tool chokes on (common.alias_path: a ";" split
+    # bro/CMakeLists.txt's lists of sources). The output folder is only written by this tool's own Python.
+    lay = layout(lay.out.parent, common.build_path(work), common.project_link())
+    if lay.tools.parent != work:
+        log.info(f"The work folder {work} and the project folder are reached through the links {lay.tools.parent} "
+                 f"and {lay.repo} (their paths have characters some build tools can't take).")
     check_room(disc, lay, windows=IS_WINDOWS or o.windows, cache=not o.cleanup)   # [waw-decomp] 2026-11-16 cache
     # The build's log is also kept in <output>/bro/logs/build.log (the one before as build.previous.log).
     try:

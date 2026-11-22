@@ -38,6 +38,7 @@ from .common import (IS_LINUX, IS_WINDOWS, Log, SetupError, copy_tree, dir_size,
                      write_json)
 from .pipeline import (BINARIES_SIZE, TOOL_VERSION, WORK_NEEDED_RECOMP, BuildOptions, Pipeline, Step,
                        linux_launcher)
+from .common import project_link  # [waw-decomp] 2026-11-16 (rc2-paths)
 from .xiso import XisoImage
 
 
@@ -365,7 +366,11 @@ class PortPipeline(Pipeline):
 
     def _extra_args(self) -> List[str]:
         """Call of Duty 3's recomp/src for the ports that build its test pad from there."""
-        return [f"-DCOD3_RECOMP_SRC={(self.tool_root / 'recomp' / 'src').as_posix()}"] if self.port.uses_cod3_src \
+        # [waw-decomp] 2026-11-16 (rc2-paths): through the project folder's plain link (common.project_link) when its
+        # path has characters a build tool chokes on: the port's CMakeLists.txt lists sources under it unquoted, so a
+        # ";" in a folder's name split them
+        tool_root = project_link() / self.tool_root.name
+        return [f"-DCOD3_RECOMP_SRC={(tool_root / 'recomp' / 'src').as_posix()}"] if self.port.uses_cod3_src \
             else []
 
     def _projects(self) -> List[Tuple[str, List[Program]]]:

@@ -32,6 +32,7 @@
 #include "game/color_codes.h"
 #include "game/guest.h"
 #include "game/text_language.h"
+#include "game/text_buffers.h"  // [acct2-main] 2026-11-21 kMaxText: a line read whole
 #include "ui/text_overlay.h"
 
 REXCVAR_DEFINE_BOOL(cod3_text_native, true, "cod3/Language",
@@ -606,12 +607,16 @@ void NoteNotOurs(const std::string& s, const char* why, uint32_t font, bool any_
   REXLOG_INFO("cod3: text not drawn as ours ({}, {}, font {:08X}): \"{}\"", chosen, why, font, shown);
 }
 
+// [acct2-main] 2026-11-21 (owner 11:20, 11:21: our translations whole, no length caps): the line is read up to
+// cod3::textbuf::kMaxText (was 1024 bytes here and in Measure), so a long line is drawn and measured whole and its key
+// caps go where it really ends.
 bool DrawLine(uint8_t* base, PPCContext& ctx, DrawFn draw) {
   const uint32_t font = ctx.r3.u32, text = ctx.r4.u32;
   if (text < 0x40000000u || text >= 0xF0000000u) return false;
   std::string s;
   bool partial = false;
-  if (const std::string whole = cod3::guest::ReadString(base, text, 1024); !OursToDraw(whole, &s, &partial)) {
+  if (const std::string whole = cod3::guest::ReadString(base, text, cod3::textbuf::kMaxText);
+      !OursToDraw(whole, &s, &partial)) {
     NoteEnglish(whole);
     NoteNotOurs(whole, "not valid", font, false);  // [acct2-ocr]
     return false;
@@ -633,7 +638,7 @@ bool DrawLine(uint8_t* base, PPCContext& ctx, DrawFn draw) {
   }
   if (REXCVAR_GET(cod3_debug_text_native)) {   // [acct2-ocr] how often the game hands over a cut line
     static int cut_lines = 0;
-    const uint32_t whole = uint32_t(cod3::guest::ReadString(base, text, 1024).size());
+    const uint32_t whole = uint32_t(cod3::guest::ReadString(base, text, cod3::textbuf::kMaxText).size());
     if (whole != s.size() && cut_lines < 40 && (++cut_lines <= 10 || cut_lines % 10 == 0))
       REXLOG_INFO("cod3: native text: a cut line ({} bytes, {} drawn): \"{}\"", whole, s.size(), s);
   }
@@ -730,7 +735,7 @@ bool Measure(uint8_t* base, uint32_t font, uint32_t text, float sx, float sy, ui
   if (text < 0x40000000u || text >= 0xF0000000u) return false;
   std::string s;
   bool partial = false;  // [acct2-ocr] measured as drawn: cut ends left out, a lone cut character 0 wide
-  if (!OursToDraw(cod3::guest::ReadString(base, text, 1024), &s, &partial)) return false;
+  if (!OursToDraw(cod3::guest::ReadString(base, text, cod3::textbuf::kMaxText), &s, &partial)) return false;
   std::lock_guard lock(g_mutex);
   FontSet* set = nullptr;
   if (!Ready(base, font, s, &set)) return false;

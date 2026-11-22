@@ -13,8 +13,12 @@
 // four arcs), and Render() shades every pixel with CS2's own pixel shader, worked on the CPU (fill over outline, the
 // strongest of each layer, CS2's mix), then hands the pixels to Dear ImGui as runs of one color. So see-through
 // colors and outlines come out as in CS2, which drawing the outline and then the fill with ImGui does not.
-// Place()'s sizes for the styles CS2 added in 2025-2026 (the circles, quads and square) are this file's reading of
-// CS2's menu; CS2's own placement code (CCsgoCrosshairTileRenderer in libclient.so) is still to be read.
+// [acct2-ocr] 2026-11-21 Place() is CS2's own placement code, read from libclient.so (CS2 of 11-19; owner 11-21 10:43
+// "These settings really need to look and feel official"): every style's builder, where each bar, ring and arc
+// starts and ends to the pixel, the spread's soft limit, the sizes rescaled to the screen as CS2 does at draw time,
+// the split of the legacy style, shot feedback's kick and the dynamic quad's ring and arcs. What CS2 takes from its
+// weapons (the inaccuracy behind the alpha fade and the quad's arcs, a gun's kick) comes from the game's spread here;
+// cs2-crosshair/PLACEMENT.md (dev) says how, field by field.
 //
 // [acct2-ocr] 2026-11-14 17:40 Special crosshairs (owner 17:06 / 17:19): turrets, vehicles, scopes, weapons the game
 // gives a crosshair of their own and Call of Duty 3's aiming mode keep the game's own unless the player chooses Mine,
@@ -112,7 +116,8 @@ struct Settings {
   Rgba color{0, 255, 0, 255};  // cl_crosshaircolor_r/_g/_b/_a
   int outline = kOutlineFull;  // cl_crosshair_drawoutline
   Rgba outline_color{0, 0, 0, 255};  // cl_crosshairoutline_r/_g/_b/_a
-  int spread_limit = 0;            // cl_crosshair_dynamic_spread_limit, 0-255 (0: no limit)
+  int spread_limit = 0;            // cl_crosshair_dynamic_spread_limit, 0-255: the spread eases to a stop at 64 + this
+                                   // pixels ([acct2-ocr] 11-21 as CS2 draws it; 0 is 64, not "no limit")
   int split_distance = 7;          // cl_crosshair_dynamic_splitdist, 0-127
   float split_inner_alpha = 1.0f;  // cl_crosshair_dynamic_splitalpha_innermod, 0-1
   float split_outer_alpha = 0.5f;  // cl_crosshair_dynamic_splitalpha_outermod, 0.3-1
@@ -212,6 +217,14 @@ struct View {
   // crosshair this frame, only its countdown).
   float countdown = -1;
   bool cross = true;
+  // [acct2-ocr] 2026-11-21 for CS2's dynamic styles: the spread with the weapon at rest (the least it has as the player
+  // stands now), in `spread`'s units; < 0: not known (DrawView then takes the least it saw in the last ten seconds).
+  // Above it the dynamic styles fade and the dynamic quad opens into arcs, as CS2's do above a weapon's resting
+  // inaccuracy.
+  float spread_rest = -1;
+  // [acct2-ocr] 2026-11-21 shot feedback's kick, in CS2's units (each shot adds to it, at most 25, and it runs down at
+  // 42 a second; the lines move out kick / 1200 of the screen's height); < 0: DrawView works it out from the shots.
+  float shot_kick = -1;
 };
 
 // The port's settings from player 1's crosshair, as near as they can say it (for a game whose own menus still set the
@@ -236,6 +249,18 @@ bool Enabled(int player);
 // the player's own crosshair is off, every kind is the game's own; kHipFire is then the game's, else theirs.
 Plan PlanFor(int player, int kind);
 
+// [acct2-ocr] 2026-11-21 For the game's own Options pages (game/menu_port_rows.h, on the game's thread): `player`'s
+// crosshair as it is now, a change asked below included. Any thread.
+Settings PlayerCopy(int player);
+// ... and a change to it: written into `player`'s text setting at once (so the menu's save keeps it), taken in by the
+// next Sync (player 1's old names too). Any thread.
+void AskSetPlayer(int player, const Settings& s);
+// Which rows a style uses (CS2's menu offers only those): the length, the gap, T style, the center dot.
+bool StyleUsesLength(int style);
+bool StyleUsesGap(int style);
+bool StyleUsesT(int style);
+bool StyleUsesDot(int style);
+
 // The game says what its hook gives (once, or when it changes).
 void SetCaps(const Caps& caps);
 const Caps& GetCaps();
@@ -250,6 +275,10 @@ void DrawView(ImDrawList* dl, int player, const View& view);
 bool DrawPage(int* selected, const std::function<bool()>& game_rows = {});
 // The preview alone: `player`'s crosshair at its size in the game, in a box `side` pixels square.
 void DrawPreview(int player, float side);
+// [acct2-ocr] 2026-11-21 The preview for a game's own menu (Call of Duty 3's Pause > Options CROSSHAIR page):
+// `player`'s crosshair with its middle at (cx, cy), in the window's pixels, at its size in a view `height` pixels tall,
+// moving as the preview above does, and dimmed while it is off (the game's own is in use then). The UI thread.
+bool DrawPreviewAt(ImDrawList* dl, int player, float cx, float cy, float height);
 
 // ---- for tests and for the preview
 

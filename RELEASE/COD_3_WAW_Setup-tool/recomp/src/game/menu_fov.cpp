@@ -782,7 +782,14 @@ constexpr int kAdvGameplayItem = kAdvAimItem + 1;
 // CONTROLLER), after GAMEPLAY's item (only added when GAMEPLAY was). Its page: SENSITIVITY LIMIT, STICK DEAD ZONE,
 // VIBRATE WITH KEYBOARD (game/menu_controller.h; owner 22:22: "a controller tab in every settings menu").
 constexpr int kAdvControllerItem = kAdvGameplayItem + 1;
-constexpr int kAdvItemsAll = kAdvControllerItem + 1;
+// [acct2-ocr] 2026-11-21 CROSSHAIR (26): a sixth page button (owner 10:43: the game's Options, CS2's layout in CoD3's
+// skin), after CONTROLLER's item (only added when CONTROLLER was). With it the six page buttons take two lines of
+// three under FOV SCALE (GAMEPLAY, VIDEO, MOVEMENT; AIM, CONTROLLER, CROSSHAIR), as VIDEO and MOVEMENT OPTIONS once
+// took two, so Reset stays where it is. Its page: the CS2 crosshair's nine rows (game/menu_port_rows.h
+// kCrosshairPage), laid out as AIM's (each value right after its label) with the preview at the top right; AIM then
+// keeps its sensitivity rows only, so the crosshair is set in one place.
+constexpr int kAdvCrosshairItem = kAdvControllerItem + 1;
+constexpr int kAdvItemsAll = kAdvCrosshairItem + 1;
 namespace br = cod3::addr::brightness;
 
 bool IsSubRow(int item) { return item >= kAdvVideoFirst && item < kAdvVideoFirst + kAdvSubRows; }
@@ -844,6 +851,21 @@ const SubPage kGameplayPage = {kGameplayPageRows, GameplayLabelKey,     Gameplay
 const SubPage kMovementPage = {mm::kRows, mm::LabelKey, mm::Value, mm::Note, mm::Step, mm::TitleKey};
 const SubPage kAimPage = {am::kRows,  am::LabelKey, am::Value,    am::Note,
                           am::Step,   am::TitleKey, am::NumberOf, am::SetNumber};  // [claude-9b]
+// [acct2-ocr] 2026-11-21 AIM with CROSSHAIR on the line: its second group only (MOUSE SENSITIVITY, SENSITIVITY FOR,
+// FROM THE HIP, AIMING DOWN SIGHTS); the crosshair is on CROSSHAIR. Row i is AIM's row i + am::kSecondGroup.
+constexpr int kAimSensRows = am::kRows - am::kSecondGroup;
+const char* AimSensLabelKey(int i) { return am::LabelKey(i + am::kSecondGroup); }
+std::string AimSensValue(int i) { return am::Value(i + am::kSecondGroup); }
+std::string AimSensNote(int i) { return am::Note(i + am::kSecondGroup); }
+std::string AimSensStep(PPCContext& ctx, uint8_t* base, int i, bool right) {
+  return am::Step(ctx, base, i + am::kSecondGroup, right);
+}
+bool AimSensNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  return am::NumberOf(i + am::kSecondGroup, n, value);
+}
+std::string AimSensSetNumber(int i, double value) { return am::SetNumber(i + am::kSecondGroup, value); }
+const SubPage kAimSensPage = {kAimSensRows, AimSensLabelKey, AimSensValue,    AimSensNote,
+                              AimSensStep,  am::TitleKey,    AimSensNumberOf, AimSensSetNumber};
 // [acct2-ocr] 2026-11-07 CONTROLLER: game/menu_controller.h's three rows, then the port's (pr::kCampaignController):
 // KEYS IN PROMPTS, KEYS AS KEY CAPS, BUTTON PICTURES, RAW MOUSE, INVERT MOUSE, MOUSE ADS SCALE, EVEN MOUSE TURNING.
 int ControllerPort(int i) {
@@ -875,11 +897,25 @@ std::string ControllerSetNumber(int i, double value) {
 }
 const SubPage kControllerPage = {kControllerPageRows, ControllerLabelKey, ControllerValue,    ControllerNote,
                                  ControllerStep,      cm::TitleKey,       ControllerNumberOf, ControllerSetNumber};
+// [acct2-ocr] 2026-11-21 CROSSHAIR: pr::kCrosshairPage, player 1's crosshair (the campaign's one player).
+constexpr int kCrosshairPageRows = int(std::size(pr::kCrosshairPage));
+int CrosshairPort(int i) { return pr::kCrosshairPage[std::clamp(i, 0, kCrosshairPageRows - 1)]; }
+const char* CrosshairLabelKey(int i) { return pr::LabelKey(CrosshairPort(i)); }
+std::string CrosshairValue(int i) { return pr::ValueFor(0, CrosshairPort(i)); }
+std::string CrosshairNote(int i) { return pr::NoteFor(0, CrosshairPort(i)); }
+std::string CrosshairStep(PPCContext&, uint8_t*, int i, bool right) { return pr::StepFor(0, CrosshairPort(i), right); }
+bool CrosshairNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  return pr::NumberOfFor(0, CrosshairPort(i), n, value);
+}
+std::string CrosshairSetNumber(int i, double value) { return pr::SetNumberFor(0, CrosshairPort(i), value); }
+const SubPage kCrosshairSubPage = {kCrosshairPageRows, CrosshairLabelKey,    CrosshairValue,    CrosshairNote,
+                                   CrosshairStep,      pr::CrosshairTitleKey, CrosshairNumberOf, CrosshairSetNumber};
 constexpr int kPageVideo = 0;
 constexpr int kPageMovement = 1;
 constexpr int kPageAim = 2;  // [claude-9b]
 constexpr int kPageGameplay = 3;  // [claude-9b-think]
 constexpr int kPageController = 4;  // [acct2-ocr] 2026-11-07
+constexpr int kPageCrosshair = 5;   // [acct2-ocr] 2026-11-21
 
 // [claude-9b] Slider rows (game/menu_slider.h; owner 2026-10-20 21:09: "the
 // arrows should be next to the sliders and the sliders need to reflect the
@@ -959,6 +995,8 @@ struct AdvRows {
   uint32_t gameplay_label = 0;       // [claude-9b-think] GAMEPLAY (a copy of Reset's label)
   bool has_controller = false;       // [acct2-ocr] 2026-11-07 CONTROLLER, last on the page buttons' line
   uint32_t controller_label = 0;     // [acct2-ocr] CONTROLLER (a copy of Reset's label)
+  bool has_crosshair = false;        // [acct2-ocr] 2026-11-21 CROSSHAIR, and the page buttons on two lines
+  uint32_t crosshair_label = 0;      // [acct2-ocr] CROSSHAIR (a copy of Reset's label)
   int button = 0;                    // [claude-9b] the page button last on (kAdvVideoItem when 0)
   FovRow vrow[kAdvSubRows];          // the sub page's rows (copies of the ADS row)
   uint32_t note = 0;                 // the line under them (a copy of Reset's label)
@@ -1000,19 +1038,31 @@ void PutAdv(uint32_t self, const AdvRows& r) {
 
 // [movement] The sub page shown (or last shown).
 const SubPage& PageOf(const AdvRows& r) {
+  if (r.page == kPageCrosshair) return kCrosshairSubPage;  // [acct2-ocr] 2026-11-21
   if (r.page == kPageController) return kControllerPage;  // [acct2-ocr]
   if (r.page == kPageGameplay) return kGameplayPage;  // [claude-9b-think]
-  if (r.page == kPageAim) return kAimPage;  // [claude-9b]
+  if (r.page == kPageAim) return r.has_crosshair ? kAimSensPage : kAimPage;  // [claude-9b] [acct2-ocr] 11-21
   return r.page == kPageMovement ? kMovementPage : kVideoPage;
 }
 // [claude-9b] The page buttons on one line (with AIM): which item, which page.
 bool IsButton(int item) {
   return item == kAdvVideoItem || item == kAdvMovementItem || item == kAdvAimItem ||
          item == kAdvGameplayItem ||  // [claude-9b-think]
-         item == kAdvControllerItem;  // [acct2-ocr]
+         item == kAdvControllerItem ||  // [acct2-ocr]
+         item == kAdvCrosshairItem;     // [acct2-ocr] 2026-11-21
+}
+// [acct2-ocr] 2026-11-21 With CROSSHAIR the page buttons are two lines of three: GAMEPLAY, VIDEO, MOVEMENT; AIM,
+// CONTROLLER, CROSSHAIR (CROSSHAIR is only added after the other five). An item's place, 0-5 (-1: not a button).
+constexpr int kButtonGrid[6] = {kAdvGameplayItem, kAdvVideoItem,      kAdvMovementItem,
+                                kAdvAimItem,      kAdvControllerItem, kAdvCrosshairItem};
+int GridPlace(int item) {
+  for (int i = 0; i < 6; ++i)
+    if (kButtonGrid[i] == item) return i;
+  return -1;
 }
 int ButtonItem(const AdvRows& r) { return IsButton(r.button) ? r.button : kAdvVideoItem; }
 int PageItem(int page) {
+  if (page == kPageCrosshair) return kAdvCrosshairItem;  // [acct2-ocr] 2026-11-21
   if (page == kPageController) return kAdvControllerItem;  // [acct2-ocr]
   if (page == kPageGameplay) return kAdvGameplayItem;  // [claude-9b-think]
   return page == kPageAim ? kAdvAimItem : page == kPageMovement ? kAdvMovementItem : kAdvVideoItem;
@@ -1137,6 +1187,24 @@ void AimPreviewBox(uint8_t* base, const AdvRows& r) {
   if (!logged) {
     logged = true;
     REXLOG_INFO("cod3: Options > Aim: crosshair preview at {:.1f},{:.1f}-{:.1f},{:.1f} (labels x {:.1f}, values x {:.1f}, row {:.1f})",
+                right - side, top, right, top + side, ReadF32(base, r.invert[0] + fe::kTextX), value_x, r.pitch);
+  }
+}
+
+// [acct2-ocr] 2026-11-21 CROSSHAIR's preview: five rows high, from its second row (CENTER DOT) down to its sixth
+// (OUTLINE), with AIM's right side: the rows whose values are words that can be long (STYLE, COLOR) are above and
+// below it, the sliders beside it as on AIM.
+void CrosshairPreviewBox(uint8_t* base, const AdvRows& r) {
+  const float value_x = ReadF32(base, r.invert[1] + fe::kTextX);
+  const float side = 5.0f * r.pitch;
+  const float top = ReadF32(base, r.invert[0] + fe::kTextY) + 0.75f * r.pitch;
+  const float right = value_x + 5.4f * r.pitch;
+  am::ShowPreview(right - side, top, right, top + side);
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    REXLOG_INFO("cod3: Options > Crosshair: preview at {:.1f},{:.1f}-{:.1f},{:.1f} (labels x {:.1f}, values x {:.1f}, "
+                "row {:.1f})",
                 right - side, top, right, top + side, ReadF32(base, r.invert[0] + fe::kTextX), value_x, r.pitch);
   }
 }
@@ -1436,8 +1504,13 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   float label_step = r.pitch;
   // [claude-9b] With AIM the three page buttons take one line, a row and
   // a quarter under FOV SCALE, and Reset the line under them.
-  const bool button_line = r.has_aim && r.has_movement;
-  if (button_line) {
+  const bool grid = r.has_crosshair;  // [acct2-ocr] 2026-11-21 two lines of three, VIDEO and MOVEMENT's old spacing
+  const bool button_line = r.has_aim && r.has_movement && !grid;
+  if (grid) {
+    const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
+    label_step = std::max((reset_y - scale_y) / 3.0f, 0.75f * r.pitch);
+    reset_y = scale_y + 3.0f * label_step;
+  } else if (button_line) {
     const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
     label_step = std::max((reset_y - scale_y) / 2.0f, r.pitch);
     reset_y = scale_y + 2.0f * label_step;
@@ -1448,7 +1521,16 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   }
   cod3::guest::WriteF32(base, r.reset + fe::kTextY, reset_y);
   if (!r.has_video) return;
-  if (button_line) {  // [claude-9b] VIDEO, MOVEMENT, AIM: centered on Reset, a quarter of the row apart
+  if (grid) {  // [acct2-ocr] 2026-11-21 three to a line, as the three were when they shared one
+    const float cx = ReadF32(base, r.reset + fe::kTextX);
+    const float dx = 0.55f * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+    const uint32_t labels[6] = {r.gameplay_label, r.video_label,      r.movement_label,
+                                r.aim_label,      r.controller_label, r.crosshair_label};
+    for (int i = 0; i < 6; ++i) {
+      FollowText(base, r.reset, labels[i], -label_step * float(2 - i / 3));
+      cod3::guest::WriteF32(base, labels[i] + fe::kTextX, cx + dx * float(i % 3 - 1));
+    }
+  } else if (button_line) {  // [claude-9b] VIDEO, MOVEMENT, AIM: centered on Reset, a quarter of the row apart
     // [claude-9b-think] With GAMEPLAY first: four, a little closer (0.45 of Reset's distance from the labels' column
     // apart instead of 0.55; GAMEPLAY and MOVEMENT are the long ones).
     const float cx = ReadF32(base, r.reset + fe::kTextX);
@@ -1478,10 +1560,13 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
     FollowQuad(base, r.invert[2], r.vrow[i].arrow_left, dy);
     FollowQuad(base, r.invert[3], r.vrow[i].arrow_right, dy);
   }
-  if (r.video && r.page == kPageAim) {  // [claude-9b] values next to the labels, a gap between the groups
+  // [claude-9b] values next to the labels, a gap between the groups; [acct2-ocr] 2026-11-21 CROSSHAIR the same, and
+  // AIM without its crosshair group (CROSSHAIR on the line) one group, so no gap
+  const bool aim_groups = r.page == kPageAim && !r.has_crosshair;
+  if (r.video && (r.page == kPageAim || r.page == kPageCrosshair)) {
     const float dx = -AimValueShift(base, r);
     for (int i = 0; i < kAdvSubRows; ++i) {
-      const float dy = i >= am::kSecondGroup ? kAimGroupGap * r.pitch : 0.0f;
+      const float dy = aim_groups && i >= am::kSecondGroup ? kAimGroupGap * r.pitch : 0.0f;
       ShiftXY(base, r.vrow[i].text_a, false, 0.0f, dy);
       ShiftXY(base, r.vrow[i].text_b, false, dx, dy);
       ShiftXY(base, r.vrow[i].arrow_left, true, dx, dy);
@@ -1494,7 +1579,7 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   const int rows = PageOf(r).rows + (r.has_bright && r.page == kPageVideo ? 1 : 0);
   const float note_y = ReadF32(base, r.invert[0] + fe::kTextY) + r.pitch * float(rows + 1);
   FollowText(base, r.reset, r.note, note_y - ReadF32(base, r.reset + fe::kTextY));
-  if (r.video && r.page == kPageAim) ShiftXY(base, r.note, false, 0.0f, kAimGroupGap * r.pitch);  // [claude-9b]
+  if (r.video && aim_groups) ShiftXY(base, r.note, false, 0.0f, kAimGroupGap * r.pitch);  // [claude-9b]
   FollowSliderArrows(base, r);  // [claude-9b] the slider rows' own arrows
 }
 
@@ -1556,6 +1641,7 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   if (page == kPageAim && !r.has_aim) return;  // [claude-9b]
   if (page == kPageGameplay && !r.has_gameplay) return;  // [claude-9b-think]
   if (page == kPageController && !r.has_controller) return;  // [acct2-ocr]
+  if (page == kPageCrosshair && !r.has_crosshair) return;  // [acct2-ocr] 2026-11-21
   r.page = page;
   const int count = static_cast<int16_t>(ReadU16(base, self + fe::kItemCount));
   for (int i = 0; i < count && i < kAdvItemsAll; ++i) {
@@ -1582,7 +1668,8 @@ void EnterAdvVideo(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r, in
   AdvSelect(ctx, base, self, kAdvVideoFirst);
   ShowAdvNote(ctx, base, self, r);
   REXLOG_INFO("cod3: pause menu: {} options",
-              page == kPageController ? "controller"  // [acct2-ocr]
+              page == kPageCrosshair ? "crosshair"  // [acct2-ocr] 2026-11-21
+              : page == kPageController ? "controller"  // [acct2-ocr]
               : page == kPageGameplay ? "gameplay"  // [claude-9b-think]
               : page == kPageAim    ? "aim"
               : page == kPageMovement ? "movement"
@@ -1795,6 +1882,32 @@ int AddAdvControllerRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& 
   FollowTank(base, r);
   REXLOG_INFO("cod3: in-game options: CONTROLLER added, last on the page buttons' line (x {:.1f})",
               ReadF32(base, r.controller_label + fe::kTextX));
+  return kAdvCrosshairItem;  // [acct2-ocr] 2026-11-21 was kAdvItemsAll (CROSSHAIR comes after)
+}
+
+// [acct2-ocr] 2026-11-21 Adds CROSSHAIR (Init, after CONTROLLER): one more copy of Reset's label; the six page
+// buttons then take two lines. Returns the page's item count.
+int AddAdvCrosshairRow(PPCContext& ctx, uint8_t* base, uint32_t self, AdvRows& r) {
+  auto valid = [](uint32_t p) { return p >= 0x10000 && (p & 3) == 0; };
+  if (!r.has_controller) return kAdvCrosshairItem;
+  r.crosshair_label = CopyElement(ctx, base, r.reset, false, 0.0f);  // owned by the page (dtor hook)
+  if (!valid(r.crosshair_label) ||
+      !AddLabelItem(ctx, base, self, kAdvCrosshairItem, r.crosshair_label, pr::CrosshairButtonKey())) {
+    REXLOG_WARN("cod3: in-game options: CROSSHAIR not added (the crosshair stays on AIM and in F2 > Crosshair)");
+    if (valid(r.crosshair_label)) SetVisible(ctx, base, r.crosshair_label, false);
+    return kAdvCrosshairItem;
+  }
+  r.has_crosshair = true;
+  FollowTank(base, r);
+  float x[6] = {}, y[2] = {};
+  const uint32_t labels[6] = {r.gameplay_label, r.video_label,      r.movement_label,
+                              r.aim_label,      r.controller_label, r.crosshair_label};
+  for (int i = 0; i < 6; ++i) x[i] = ReadF32(base, labels[i] + fe::kTextX);
+  y[0] = ReadF32(base, labels[0] + fe::kTextY);
+  y[1] = ReadF32(base, labels[3] + fe::kTextY);
+  REXLOG_INFO("cod3: in-game options: CROSSHAIR added; page buttons at x {:.1f} {:.1f} {:.1f}, y {:.1f} and {:.1f}; "
+              "Reset y {:.1f}",
+              x[0], x[1], x[2], y[0], y[1], ReadF32(base, r.reset + fe::kTextY));
   return kAdvItemsAll;
 }
 
@@ -1942,6 +2055,7 @@ REX_HOOK_RAW(sub_824E60E8) {
       if (used == kAdvAimItem) used = AddAdvAimRow(ctx, base, self, r);  // [claude-9b]
       if (used == kAdvGameplayItem) used = AddAdvGameplayRow(ctx, base, self, r);  // [claude-9b-think]
       if (used == kAdvControllerItem) used = AddAdvControllerRow(ctx, base, self, r);  // [acct2-ocr]
+      if (used == kAdvCrosshairItem) used = AddAdvCrosshairRow(ctx, base, self, r);  // [acct2-ocr] 2026-11-21
       if (used >= kAdvGameplayItem) AddSliders(ctx, base, panel, r);  // [claude-9b] slider rows (with or without GAMEPLAY)
     }
   }
@@ -1971,7 +2085,9 @@ REX_HOOK_RAW(AdvancedOptionsMenu__dtor) {
   const FovRow& sc = r.row[1];
   copies.insert(copies.end(), {sc.text_a, sc.text_b, sc.arrow_left, sc.arrow_right, r.video_label, r.note,
                                r.movement_label, r.aim_label,
-                               r.gameplay_label, r.controller_label});  // [movement] [claude-9b] aim_label [claude-9b-think] gameplay [acct2-ocr] controller
+                               r.gameplay_label, r.controller_label,
+                               r.crosshair_label});  // [movement] [claude-9b] aim_label [claude-9b-think] gameplay [acct2-ocr] controller
+  // [acct2-ocr] 2026-11-21 and crosshair
   for (const FovRow& v : r.vrow)
     copies.insert(copies.end(), {v.text_a, v.text_b, v.arrow_left, v.arrow_right});
   copies.insert(copies.end(), {r.bright_label, r.bright_back, r.bright_fill});  // [menus-brightness]
@@ -2079,7 +2195,8 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_14) {
       if (r.vrow[i].text_b && !SliderShown(base, self, r, kSlotSub + i))  // [claude-9b] else in its box
         VCall(ctx, base, r.vrow[i].text_b, fe::kElemDraw);
     }
-    if (r.page == kPageAim) AimPreviewBox(base, r);  // [claude-9b] the crosshair preview, top right
+    if (r.page == kPageAim && !r.has_crosshair) AimPreviewBox(base, r);  // [claude-9b] the crosshair preview, top right
+    if (r.page == kPageCrosshair) CrosshairPreviewBox(base, r);  // [acct2-ocr] 2026-11-21
     if (BrightShown(r) && !r.has_sliders)  // [menus-brightness] BRIGHTNESS's gauge: frame, then fill
       for (uint32_t e : {r.bright_back, r.bright_fill})
         if (e) VCall(ctx, base, e, fe::kElemDraw);
@@ -2105,6 +2222,22 @@ REX_HOOK_RAW(sub_824C41B8) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.has_crosshair) {  // [acct2-ocr] 2026-11-21 two lines of buttons: down by column, then Reset
+      const int col = std::max(GridPlace(ButtonItem(r)), 0) % 3;
+      const int at = GridPlace(sel);
+      int to = -1;
+      if (sel == kAdvScaleItem)
+        to = kButtonGrid[col];
+      else if (at >= 0)
+        to = at < 3 ? kButtonGrid[at + 3] : adv::kResetItem;
+      if (to >= 0) {
+        if (IsButton(to)) {
+          r.button = to;
+          PutAdv(self, r);
+        }
+        return AdvSelect(ctx, base, self, to);
+      }
+    }
     if (r.has_aim && sel == kAdvScaleItem) return AdvSelect(ctx, base, self, ButtonItem(r));  // [claude-9b]
     if (r.has_aim && IsButton(sel)) return AdvSelect(ctx, base, self, adv::kResetItem);  // [claude-9b]
     if (sel == adv::kTankItem) return AdvSelect(ctx, base, self, kAdvFovItem);
@@ -2131,6 +2264,22 @@ REX_HOOK_RAW(sub_824C4218) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.has_crosshair) {  // [acct2-ocr] 2026-11-21 two lines of buttons: up by column, then FOV SCALE
+      const int col = std::max(GridPlace(ButtonItem(r)), 0) % 3;
+      const int at = GridPlace(sel);
+      int to = -1;
+      if (sel == adv::kResetItem)
+        to = kButtonGrid[3 + col];
+      else if (at >= 0)
+        to = at >= 3 ? kButtonGrid[at - 3] : kAdvScaleItem;
+      if (to >= 0) {
+        if (IsButton(to)) {
+          r.button = to;
+          PutAdv(self, r);
+        }
+        return AdvSelect(ctx, base, self, to);
+      }
+    }
     if (r.has_aim && sel == adv::kResetItem) return AdvSelect(ctx, base, self, ButtonItem(r));  // [claude-9b]
     if (r.has_aim && IsButton(sel)) return AdvSelect(ctx, base, self, kAdvScaleItem);  // [claude-9b]
     if (sel == adv::kResetItem)
@@ -2198,6 +2347,16 @@ REX_HOOK_RAW(sub_824DC1C0) {
   }
   // [claude-9b] The page buttons' line: left and right move along it.
   if (IsButton(sel) && GetAdv(base, self, r) && r.has_aim && !r.video) {
+    if (r.has_crosshair) {  // [acct2-ocr] 2026-11-21 two lines of three: along the button's own line
+      const int at = std::max(GridPlace(sel), 0);
+      const int next = kButtonGrid[at / 3 * 3 + std::clamp(at % 3 + (right ? 1 : -1), 0, 2)];
+      if (next != sel) {
+        r.button = next;
+        PutAdv(self, r);
+        AdvSelect(ctx, base, self, next);
+      }
+      return;
+    }
     // [claude-9b-think] GAMEPLAY first on the line when it is there.
     // [acct2-ocr] 2026-11-07 and CONTROLLER last when it is there.
     static constexpr int kLine[5] = {kAdvGameplayItem, kAdvVideoItem, kAdvMovementItem, kAdvAimItem,
@@ -2247,6 +2406,9 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_19) {
       PutAdv(self, r);
     } else if (item == kAdvControllerItem && r.has_controller && !r.video) {  // [acct2-ocr] 2026-11-07
       EnterAdvVideo(ctx, base, self, r, kPageController);
+      PutAdv(self, r);
+    } else if (item == kAdvCrosshairItem && r.has_crosshair && !r.video) {  // [acct2-ocr] 2026-11-21
+      EnterAdvVideo(ctx, base, self, r, kPageCrosshair);
       PutAdv(self, r);
     }
     if (IsButton(item) && r.has_aim) {  // [claude-9b] B comes back to this button

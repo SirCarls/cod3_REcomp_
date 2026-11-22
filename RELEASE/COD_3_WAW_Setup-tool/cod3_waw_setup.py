@@ -16,6 +16,7 @@ playable Call of Duty 3 recompilation. It installs whatever is missing.
     python3 cod3_waw_setup.py discs [<output folder>] [--table]  # which options need which disc
     python3 cod3_waw_setup.py update [--check] [--yes] [--undo] [--allow|--deny]  # this tool's own updates
     python3 cod3_waw_setup.py bro check|build|play "<Big Red One disc image or folder>"  # Call of Duty 2: Big Red One
+    python3 cod3_waw_setup.py fh check|build|play "<Finest Hour disc image or folder>"   # Call of Duty: Finest Hour
     python3 cod3_waw_setup.py cod2|waw|cod4 check|build|play "<Xbox 360 disc image or folder>"  # on CoD3's SDK
 
 Versions: by default the one for this system. --linux and --windows pick
@@ -477,6 +478,51 @@ def cmd_port(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_fh(a: argparse.Namespace) -> int:
+    """[acct2-decomp] 2026-11-21 Call of Duty: Finest Hour from your own original Xbox disc (c3w/fh.py): check the disc,
+    build the port, or start it. The disc is only read."""
+    from c3w import fh
+    from c3w.pipeline import TOOL_VERSION
+    if a.action == "check":
+        disc, line = fh.check_disc(a.source or "")
+        print(line)
+        return 0 if disc else 1
+    if a.action == "play":
+        opts = fh.PlayOptions(fullscreen=a.fullscreen, skip_films=a.skip_films, language=a.language or "")
+        problems = opts.problems()
+        if problems:
+            print("; ".join(problems) + ". Languages: " + ", ".join(k for k, _ in fh.LANGUAGES if k))
+            return 2
+        cmd, why = fh.play_command(Path(a.output))
+        if cmd is None:
+            print(why)
+            return 1
+        import subprocess
+        return subprocess.call(cmd, env=fh.play_env(opts))
+    if not a.source:
+        print("Give the disc: fh build \"<the .iso, or a folder copied from the disc>\"")
+        return 2
+    opts = fh.BuildOptions(source=a.source, output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
+                           jobs=a.jobs or common.recommended_jobs(), install_deps=not a.no_install_deps,
+                           cleanup=not a.no_cleanup, tool_version=TOOL_VERSION)
+    log = _cli_log()
+    cancel = threading.Event()
+    common.APPROVAL.ask = _cli_approval(a.yes)
+    try:
+        log.info(fh.run_build(opts, common.Runner(log, cancel), log, cancel))
+    except KeyboardInterrupt:
+        cancel.set()
+        log.error("Canceled. Run the same command again to continue where it stopped.")
+        return 130
+    except common.Cancelled:
+        log.error("Canceled.")
+        return 130
+    except common.SetupError as e:
+        log.error(str(e))
+        return 1
+    return 0
+
+
 def cmd_bro(a: argparse.Namespace) -> int:
     """[acct2-bro] Call of Duty 2: Big Red One from your own original Xbox disc (c3w/bro.py): check the disc,
     build the port, or start it. The disc is only read."""
@@ -681,6 +727,23 @@ def main() -> int:
     br.add_argument("--fullscreen", action="store_true", help="play: fullscreen")
     br.add_argument("--mute", action="store_true", help="play: no sound")
     br.set_defaults(func=cmd_bro)
+
+    # [acct2-decomp] 2026-11-21 Call of Duty: Finest Hour (c3w/fh.py)
+    fp = sub.add_parser("fh", help="Call of Duty: Finest Hour from your own Xbox disc: check, build or play")
+    fp.add_argument("action", choices=["check", "build", "play"])
+    fp.add_argument("source", nargs="?", help="the disc image (.iso) or a folder copied from the disc")
+    fp.add_argument("--output", default=str(common.default_output_dir()),
+                    help="where the game goes, in its fh/ folder (default: output/ here)")
+    fp.add_argument("--work", help="temporary build folder (default: work/ here; its fh/ is deleted afterwards)")
+    fp.add_argument("--jobs", type=int, help="build threads (default: based on CPU cores and RAM)")
+    fp.add_argument("--no-cleanup", action="store_true", help="keep the recompiled C and the build in the work folder")
+    fp.add_argument("--no-install-deps", action="store_true", help="never install missing packages")
+    fp.add_argument("--yes", action="store_true",
+                    help="approve the downloads and installs without asking (they are still listed)")
+    fp.add_argument("--fullscreen", action="store_true", help="play: fullscreen")
+    fp.add_argument("--skip-films", action="store_true", help="play: every film stops as soon as it starts")
+    fp.add_argument("--language", help="play: english, french, spanish or italian (default: fh.toml's)")
+    fp.set_defaults(func=cmd_fh)
 
     # [waw-decomp] Call of Duty 2, World at War and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py)
     from c3w import x360_ports

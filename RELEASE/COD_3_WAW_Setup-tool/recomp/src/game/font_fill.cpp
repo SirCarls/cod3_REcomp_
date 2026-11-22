@@ -20,6 +20,7 @@
 #include <rex/system/xmemory.h>
 
 #include "game/guest.h"
+#include "game/native_memory.h"  // [acct2-decomp] stage 5: GpuName
 
 REXCVAR_DEFINE_BOOL(cod3_font_fill, true, "cod3/Language",
                     "Add the letters and signs the game's fonts lack (« » „ “ ‘ ’ – ª º Ã Õ), made from "
@@ -262,7 +263,10 @@ bool Apply(uint8_t* base, uint32_t font, const FontFill& f) {
   auto* memory = rex::system::kernel_state()->memory();
   // Through the guest's own view of physical memory, as the game writes it,
   // so the texture cache's write watch sees it.
-  uint8_t* atlas = memory->TranslateVirtual<uint8_t*>(0xA0000000u | (phys & 0x1FFFFFFFu));
+  // [acct2-decomp] 2026-11-12 stage 5: with the streaming pool moved (cod3_native_memory_move_pool) an atlas in it is
+  // where its header says, not at that address cut to the console's 29 bits (GpuName; otherwise it returns the
+  // 0xA0000000 view as before).
+  uint8_t* atlas = memory->TranslateVirtual<uint8_t*>(cod3::native_memory::GpuName(phys, 0x1FFFFFFFu));
   for (const Glyph& g : f.glyphs) {
     // Whole blocks from the glyph's top left (placed on a block corner); texels
     // round it in those blocks are 0.

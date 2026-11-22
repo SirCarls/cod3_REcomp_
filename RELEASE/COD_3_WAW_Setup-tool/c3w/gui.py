@@ -33,6 +33,7 @@ from typing import Callable, Dict, List, Optional
 from . import common, fonts, games, inputs, map_packs, pc_games, theme, upscale, waw, widgets
 from .common import IS_LINUX, IS_WINDOWS, Log, SetupError
 from .gui_games import HERO_H, Games
+from .gui_fh import FhPages   # [acct2-decomp] 2026-11-21 the Finest Hour tab
 from .gui_ports import Ports  # [waw-decomp] World at War, Call of Duty 2 and Call of Duty 4 on CoD3's SDK
 from .gui_log import LogPage
 from .gui_pages import Pages, clean_path_text  # [acct2-decomp] clean_path_text
@@ -115,7 +116,7 @@ def format_duration(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
-class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
+class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-decomp] Ports
     def __init__(self, root: tk.Tk, launcher: bool):
         self.root = root
         self.launcher = launcher
@@ -228,6 +229,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
         self.v_theme = tk.StringVar(value=theme.theme_label(self.tabs.theme_for(self.tabs.game)))
         self._init_pc_settings(s)
         self._init_bro_settings(s)   # [acct2-bro]
+        self._init_fh_settings(s)   # [acct2-decomp] 2026-11-21
         self._init_port_settings(s)   # [waw-decomp]
         self._last_out = self.v_out.get().strip()
 
@@ -258,6 +260,9 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
                     # [acct2-bro] Big Red One (gui_games.py, c3w/bro.py)
                     "bro_setup": self._page_bro_setup, "bro_play": self._page_bro_play,
                     "bro_status": lambda t: self._page_status(t, games.BRO),
+                    # [acct2-decomp] 2026-11-21 Finest Hour (gui_fh.py, c3w/fh.py)
+                    "fh_setup": self._page_fh_setup, "fh_play": self._page_fh_play,
+                    "fh_status": lambda t: self._page_status(t, games.FH),
                     "cod4_status": lambda t: self._page_status(t, games.COD4)}   # [waw-decomp]
         for gid in games.X360_PORTS:   # [waw-decomp] (gui_ports.py, c3w/x360_ports.py)
             builders[f"{gid}_setup"] = lambda t, g=gid: self._page_port_setup(t, g)
@@ -277,6 +282,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
             v.trace_add("write", lambda *a: self._validate_waw())
         self._validate_iso()
         self._bro_check_disc()   # [acct2-bro]
+        self._fh_check_disc()   # [acct2-decomp] 2026-11-21
         for gid in games.X360_PORTS:   # [waw-decomp]
             self._port_check_disc(gid)
         self._set_packs(self.packs)
@@ -1432,6 +1438,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
             "cod3_windowed": self.v_cod3_windowed.get(), "cod3_args": self.v_cod3_args.get(),
             **self._pc_settings(),
             **self._bro_settings(),   # [acct2-bro]
+            **self._fh_settings(),   # [acct2-decomp] 2026-11-21
             **self._port_settings(),   # [waw-decomp]
         }
 
@@ -1460,6 +1467,7 @@ class App(Pages, LogPage, Games, Ports, Updates, Addons):   # [waw-decomp] Ports
             self._set_packs([p for p in s["waw_map_packs"] if isinstance(p, str) and p])
         self._pc_apply_settings(s)
         self._bro_apply_settings(s)   # [acct2-bro]
+        self._fh_apply_settings(s)   # [acct2-decomp] 2026-11-21
         self._port_apply_settings(s)   # [waw-decomp]
         self._update_versions()
         self._update_upscale()

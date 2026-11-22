@@ -139,6 +139,16 @@ class CompareDrawer final : public rex::ui::UIDrawer {
       std::lock_guard<std::mutex> lock(g_ready_mutex);
       if (g_ready.number > shown_ && !g_ready.pixels.empty()) std::swap(g_ready, taken_);
     }
+    // [rexglue-native flicker 2026-11-17] fz: with the line at the right edge (split 1.0: the game's picture alone, as
+    // the flicker runs have it) nothing of the native picture is drawn, so the drawer's End(), which uploads a new
+    // texture and frees its upload buffer, isn't reached; the next frame's texture replaced this one with its upload
+    // still pending, and rexglue-sdk's VulkanImmediateDrawer::OnImmediateTextureDestroyed drops a pending upload
+    // without freeing its buffer: 1280 x 720 x 4 bytes of host memory a native frame, until allocations failed about
+    // 7000 frames in (at any frame cap), the emulated GPU's own upload buffers too. No texture while none is drawn.
+    if (split_now >= 1.0 && taken_.number > shown_) {
+      texture_.reset();
+      shown_ = taken_.number;
+    }
     if (taken_.number > shown_) {
       texture_ = drawer_->CreateTexture(taken_.width, taken_.height, rex::ui::ImmediateTextureFilter::kLinear, false,
                                         reinterpret_cast<const uint8_t*>(taken_.pixels.data()));

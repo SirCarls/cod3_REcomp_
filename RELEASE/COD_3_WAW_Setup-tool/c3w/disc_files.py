@@ -289,7 +289,10 @@ def check(target: Path, disc: Optional[Disc] = None, deep: bool = True,
         others = [(d, known_files(d)) for d in DISCS if d is not disc]
         made = _censored_copies(src)
         have = {rel.lower(): (rel, size) for rel, size in src.files()}
-        total = sum(size for rel, size in have.values()) if deep else 0
+        # [acct2-decomp] 2026-11-21: only the files that are read (on this disc or another known one) count, so the
+        # bar ends at 100% (with the tool's own or other extra files it stood short of the end)
+        hashed = [low for low in have if low in known or any(low in o for _, o in others)]
+        total = sum(have[low][1] for low in hashed) if deep else 0
         done = 0
         for low, (rel, size) in sorted(have.items()):
             if cancel is not None and cancel.is_set():

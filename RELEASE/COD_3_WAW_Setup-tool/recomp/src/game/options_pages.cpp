@@ -48,6 +48,12 @@ constexpr Row kMpAudio[] = {Port(pr::kVolume), Port(pr::kVoices)};
 constexpr Row kMpInterface[] = {Port(pr::kTextLanguage), Port(pr::kKeyPrompts),  Port(pr::kKeyCaps),
                                 Port(pr::kButtonStyle),  Port(pr::kButtonColors), Port(pr::kColorCodes),
                                 Port(pr::kShowVersion)};
+// [acct2-ocr] 2026-11-21 CROSSHAIR (owner 10:43 / 10:50: the game's Options, each split-screen player, CS2's layout
+// in CoD3's skin): pr::kCrosshairPage's nine rows, the page's player's own crosshair; a row free for the note.
+constexpr Row kMpCrosshair[] = {Port(pr::kXhairStyle),   Port(pr::kXhairDot),   Port(pr::kXhairLength),
+                                Port(pr::kXhairThickness), Port(pr::kXhairGap),   Port(pr::kXhairOutline),
+                                Port(pr::kXhairColor),   Port(pr::kXhairAlpha), Port(pr::kXhairT)};
+static_assert(std::size(kMpCrosshair) == std::size(pr::kCrosshairPage));
 
 constexpr const char* kGameplayKey = "COD3_OPTIONS_GAMEPLAY";
 constexpr const char* kControlsKey = "COD3_OPTIONS_CONTROLS";
@@ -74,6 +80,8 @@ constexpr Page kMpPause[] = {
     MakePage(Category::kVideo, kVideoKey, kVideoTitleKey, kMpVideo),
     MakePage(Category::kAudio, kAudioKey, kAudioTitleKey, kMpAudio),                  // [acct2-ocr] 2026-11-07
     MakePage(Category::kInterface, kInterfaceKey, kInterfaceTitleKey, kMpInterface),  // [acct2-ocr]
+    // [acct2-ocr] 2026-11-21 its keys are game/menu_port_rows.h's (their words in every language)
+    MakePage(Category::kCrosshair, "COD3_PORT_XHAIR_PAGE", "COD3_PORT_XHAIR_TITLE", kMpCrosshair),
 };
 
 struct Text {
@@ -93,6 +101,8 @@ constexpr Text kTexts[] = {
     {kInterfaceKey, "INTERFACE"},                     // [acct2-ocr]
     {kAudioTitleKey, "OPTIONS / AUDIO"},              // [acct2-ocr]
     {kInterfaceTitleKey, "OPTIONS / INTERFACE"},      // [acct2-ocr]
+    {"COD3_PORT_XHAIR_PAGE", "CROSSHAIR"},             // [acct2-ocr] 2026-11-21 (the English; pr::Words has the rest)
+    {"COD3_PORT_XHAIR_TITLE", "OPTIONS / CROSSHAIR"},  // [acct2-ocr]
 };
 
 struct Pages {

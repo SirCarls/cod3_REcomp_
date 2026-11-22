@@ -110,8 +110,8 @@ game code: [COD3_LIBRARIES.md](COD3_LIBRARIES.md).
   files) recognises the disc by its `default.xex` SHA-1 and copies its voice files (the banks under
   `sp/` and `mp/`, the movies' sound tracks; not the legal screens) into the game's `assets/` next to
   its own. The file names never clash and nothing already there is overwritten.
-- The setting `cod3_voice_language` (`disc`, `en`, `de`, `fr`, `es`, `it`; Play page > Game settings
-  and F2 > Game > Sound > Voices) makes the hook on 0x82478B80 register, in place of the game's bank,
+- The setting `cod3_voice_language` (`disc`, `en`, `de`, `fr`, `es`, `it`; Play page > Game settings > Language,
+  and F2 > LANGUAGE > Voices) makes the hook on 0x82478B80 register, in place of the game's bank,
   the chosen language's whole bank in the same slot, or else its split pair (`.wul` in slot 5, the
   speech in the game's language slot); without either, the game's own bank. A mid-asm hook right
   after the XGetLanguage call (0x824EEDD0) gives the movies the chosen language. The text stays the

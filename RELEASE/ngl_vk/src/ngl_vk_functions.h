@@ -139,6 +139,7 @@
     F(vkCmdPushConstants) \
     F(vkCmdSetViewport) \
     F(vkCmdSetScissor) \
+    F(vkCmdSetDepthBias) /* [rexglue-native stlo 2026-11-17] */ \
     F(vkCmdDraw) \
     F(vkCmdDrawIndexed) \
     F(vkCmdPipelineBarrier) \

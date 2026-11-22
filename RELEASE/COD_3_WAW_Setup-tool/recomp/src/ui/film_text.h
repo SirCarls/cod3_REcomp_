@@ -22,7 +22,7 @@
 //     FilmText). The picture fills the game's 640x480 screen, i.e. the HUD area
 //     (ui/hud_overlay.cpp), mapped as the other overlay pieces.
 // Shown when the chosen text language has the row and cod3_text_film_cards is
-// on (F2 > Sound > Text > Forced), whatever the other text kinds are set to.
+// on (F2 > LANGUAGE > Text > Forced), whatever the other text kinds are set to.
 // Russian, Chinese, Japanese and Korean use the text layer's font
 // (ui/text_overlay.h); the Latin languages ImGui's own.
 //

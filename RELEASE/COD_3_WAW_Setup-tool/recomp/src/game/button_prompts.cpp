@@ -61,6 +61,7 @@
 #include <cstring>
 #include <filesystem>  // [claude-9b-think] userdata/prompt_text_kbm.tsv
 #include <fstream>
+#include <memory>  // [acct2-main] 2026-11-21 NamedSlots
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -73,6 +74,7 @@
 #include <rex/cvar.h>
 #include <rex/hook.h>
 #include <rex/input/input_system.h>  // [mp-menus] PadFamily (SDK patch 0067)
+#include <rex/input/device_assignment.h>  // [acct2-main] 2026-11-21 the pads' names (NamedSlots)
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 #include <rex/ui/ui_event.h>
@@ -88,6 +90,7 @@
 #include "game/rumble.h"  // [rumble]
 #include "game/text_language.h"  // [acct2-ocr]
 #include "game/text_rekey.h"  // [acct2-main] 2026-11-15 a text set from a key follows the text language
+#include "game/text_buffers.h"  // [acct2-main] 2026-11-21 texts longer than the game's fixed buffers, whole
 #include "game/use_hold.h"  // [acct2-decomp] cod3_use_hold_ms: the Use hold's words in the hints
 #include "game/pc_menu.h"
 
@@ -103,7 +106,8 @@ REXCVAR_DEFINE_BOOL(cod3_key_prompts, true, "cod3/Mouse",
 REXCVAR_DEFINE_STRING(cod3_glyph_style, "auto", "cod3/Interface",
                       "Controller buttons in the game's prompts: auto (each player's own controller: "
                       "an Xbox pad the game's pictures, a PlayStation pad the PS4/5 style, a Nintendo "
-                      "pad its own), xbox (the game's own pictures), playstation (PS4/5), playstation2 "
+                      "pad and a GameCube controller their own, with the letters the SDK reads their A B X "
+                      "Y by, input_nintendo_buttons), xbox (the game's own pictures), playstation (PS4/5), playstation2 "
                       "(PS2), nintendo or gamecube (pictures of our own while cod3_key_caps is on, else "
                       "the button names)")
     .allowed({"auto", "xbox", "playstation", "playstation2", "nintendo", "gamecube"});
@@ -132,7 +136,25 @@ REXCVAR_DEFINE_BOOL(cod3_debug_key_caps, false, "cod3",
                     "frame) and as the overlay shows them, and the prompts that still name a stick or show a "
                     "button picture while keys are shown")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native] 2026-11-17 P0 the overlays latched per game frame (button_prompts.h OverlayFrameLatchOn)
+REXCVAR_DEFINE_BOOL(cod3_overlay_frame_latch, true, "cod3/Display",
+                    "Key prompts, crosshairs and our text over the game stay until the game's next frame replaces "
+                    "them, at any frame rate and through hitches; off: each is kept a fixed time on the clock, as "
+                    "before (they flicker at 20 fps and under)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native flicker 2026-11-17] (debug, off by default) the P0 test's probe: what the latched overlays show, in the log
+REXCVAR_DEFINE_BOOL(cod3_debug_overlay_latch, false, "cod3",
+                    "Log each change of what the overlays latched to the game's frames show (the key caps' set, the "
+                    "text layer's lines, each view's crosshair and countdown, the menu's preview) with the game's "
+                    "frame counter, and flag a second change within one game frame")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+// [rexglue-native flicker 2026-11-17] (debug, off by default) P0's proof: each present, the overlays drawn against what the game asked (button_prompts.h)
+REXCVAR_DEFINE_BOOL(cod3_debug_overlay_presents, false, "cod3",
+                    "Log every 5 s, for the key caps, our text layer and the crosshair, the presents where the game's "
+                    "latest complete frame asked for them and they weren't drawn (the overlay flicker), with the "
+                    "latch on or off")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 namespace {
 
 namespace bp = cod3::addr::prompts;
@@ -438,8 +460,17 @@ void WatchPad(uint8_t* base, uint32_t state) {
 // ---------------------------------------------------------------------------
 // The game's own pictures (kXbox), a controller's button names, or keys.
 // [claude-9b-think] kPlayStation the PS4/5 style, kPlayStation2 the PS2 style.
-enum class Mode : uint8_t { kXbox, kPlayStation, kNintendo, kGameCube, kPlayStation2, kMenuKeys, kPlayKeys };
-constexpr uint32_t kModeCount = 7;
+// [acct2-main] 2026-11-21 kNintendoLabel, kGameCubeLabel: those pads with their A B X Y read by the letters printed on
+// them (the SDK's input_nintendo_buttons "label", InputSystem::PadFacesByLabel): the game's A is then the button
+// printed A, so its prompts name it so (by position, the default, the game's A is the bottom button: B on a Switch
+// pad). Appended, so the other modes keep their numbers (the name slots below are per mode).
+enum class Mode : uint8_t {
+  kXbox, kPlayStation, kNintendo, kGameCube, kPlayStation2, kMenuKeys, kPlayKeys, kNintendoLabel, kGameCubeLabel
+};
+constexpr uint32_t kModeCount = 9;
+bool IsNintendo(Mode m) { return m == Mode::kNintendo || m == Mode::kNintendoLabel; }
+bool IsGameCube(Mode m) { return m == Mode::kGameCube || m == Mode::kGameCubeLabel; }
+bool ByLabel(Mode m) { return m == Mode::kNintendoLabel || m == Mode::kGameCubeLabel; }
 
 bool IsKeys(Mode m) { return m == Mode::kMenuKeys || m == Mode::kPlayKeys; }
 // Every mode but the game's own pictures writes names in the text's font.
@@ -447,7 +478,7 @@ bool IsText(Mode m) { return m != Mode::kXbox; }
 // [claude-9b-think] 2026-10-27 UNTESTED A controller style drawn as pictures of our own (cod3_key_caps on): the room
 // the game keeps for a button is a short "{code}" (PictureCode), the overlay draws the picture over it.
 bool PadPictures(Mode m) {
-  return (m == Mode::kPlayStation || m == Mode::kPlayStation2 || m == Mode::kNintendo || m == Mode::kGameCube) &&
+  return (m == Mode::kPlayStation || m == Mode::kPlayStation2 || IsNintendo(m) || IsGameCube(m)) &&
          REXCVAR_GET(cod3_key_caps);
 }
 // The lines whose names the overlay draws (key caps, mouse and controller pictures): the game draws them invisibly.
@@ -458,8 +489,10 @@ cod3::prompts::Look LookOf(Mode m) {
   switch (m) {
     case Mode::kPlayStation: return Look::kPlayStation;
     case Mode::kPlayStation2: return Look::kPlayStation2;
-    case Mode::kNintendo: return Look::kNintendo;
-    case Mode::kGameCube: return Look::kGameCube;
+    case Mode::kNintendo:
+    case Mode::kNintendoLabel: return Look::kNintendo;
+    case Mode::kGameCube:
+    case Mode::kGameCubeLabel: return Look::kGameCube;
     case Mode::kXbox: return Look::kXbox;
     default: return Look::kKeys;
   }
@@ -501,26 +534,175 @@ Mode PadMode(uint8_t* base, uint32_t player) { return UserPadMode(PadUser(base, 
 
 // [acct2-decomp] The same for a controller (guest user) itself: PadMode's
 // part that needs no guest memory, so the overlay can ask (FirstPlayerLook).
+// [acct2-main] 2026-11-21 (owner 12:28: "on the glyphs we now have more controller support, we should have automatic
+// glyph detection as well"): every family the SDK names (patch 0078 added GameCube controllers: the Wii U adapter,
+// Mayflash's, the Switch 2 GameCube pad), and whether the pad's A B X Y go by their printed letters. Built also on an
+// SDK without patch 0078 (no kGameCube, no PadFacesByLabel), as pad_binds.cpp's IsGameCubeFamily: the test is made in
+// a template, where a missing member makes the requires-expression false instead of an error.
+template <typename Family>
+bool IsGameCubePad(Family family) {
+  if constexpr (requires { Family::kGameCube; }) {
+    return family == Family::kGameCube;
+  } else {
+    return false;
+  }
+}
+template <typename Input>
+bool PadFacesByLabelOf(const Input* input, uint32_t user) {
+  if constexpr (requires { input->PadFacesByLabel(user); }) {
+    return input && input->PadFacesByLabel(user);
+  } else {
+    return false;
+  }
+}
+
+// A Nintendo or GameCube style for the controller guest user `user` holds: its by-label variant when that pad's A B
+// X Y go by their letters (only Nintendo and GameCube pads ever do; any other pad, and no pad, is by position).
+Mode WithLabels(Mode m, uint32_t user) {
+  if (!IsNintendo(m) && !IsGameCube(m)) return m;
+  auto* input = g_input_system.load(std::memory_order_acquire);
+  const bool label = user < 4 && PadFacesByLabelOf(input, user);
+  if (IsNintendo(m)) return label ? Mode::kNintendoLabel : Mode::kNintendo;
+  return label ? Mode::kGameCubeLabel : Mode::kGameCube;
+}
+
+// [acct2-main] 2026-11-21 (owner 13:12: "for our controller detection I had linked that one github with a lot of
+// controller support": SDL_GameControllerDB, which SDK patch 0078 loads): each pad's name, as SDL or that database
+// gives it ("PS3 Controller", "Nintendo Switch Pro Controller", "Mayflash GameCube Adapter"), and its GUID (USB vendor
+// and product), which the SDK's InputSystem keeps to itself. The SDK hands every pad's DeviceInfo to its device
+// assignment; SetInputSystem puts this one in its place, which assigns exactly as the SDK's own (SlotAssignment:
+// controller N plays as player N) and keeps a copy of the list. Its lock covers only that copy.
+std::mutex g_pads_mutex;
+std::vector<rex::input::DeviceInfo> g_pads;
+class NamedSlots final : public rex::input::DeviceAssignment {
+ public:
+  void OnDevicesChanged(const std::vector<rex::input::DeviceInfo>& devices) override {
+    std::lock_guard lock(g_pads_mutex);
+    slots_.OnDevicesChanged(devices);
+    g_pads = devices;
+  }
+  void DevicesForUser(uint32_t user_index, std::vector<rex::input::DeviceId>& out) const override {
+    slots_.DevicesForUser(user_index, out);
+  }
+  // The pad the prompts name for `user`: among its pads, the first of the family the SDK reports for it.
+  bool PadOf(uint32_t user, rex::input::ControllerFamily family, rex::input::DeviceInfo* out) const {
+    std::lock_guard lock(g_pads_mutex);
+    std::vector<rex::input::DeviceId> ids;
+    slots_.DevicesForUser(user, ids);
+    const rex::input::DeviceInfo* first = nullptr;
+    for (const auto id : ids)
+      for (const auto& d : g_pads)
+        if (d.id == id && !d.synthetic) {
+          if (d.family == family) {
+            *out = d;
+            return true;
+          }
+          if (!first) first = &d;
+        }
+    if (!first) return false;
+    *out = *first;
+    return true;
+  }
+
+ private:
+  rex::input::SlotAssignment slots_;
+};
+NamedSlots* g_named_slots = nullptr;  // owned by the input system once set
+
+bool PadInfo(uint32_t user, rex::input::DeviceInfo* out) {
+  auto* input = g_input_system.load(std::memory_order_acquire);
+  if (!input || !g_named_slots || user >= 4) return false;
+  return g_named_slots->PadOf(user, input->PadFamily(user), out);
+}
+
+// USB vendor and product from an SDL GUID ("030000004c0500006802000011010000": bytes 4-5 and 8-9, little end first).
+bool GuidIds(const std::string& guid, uint16_t* vendor, uint16_t* product) {
+  if (guid.size() < 20) return false;
+  auto byte = [&](size_t i) -> int {
+    const auto hex = [](char c) { return c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                                                               : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1; };
+    const int hi = hex(guid[2 * i]), lo = hex(guid[2 * i + 1]);
+    return hi < 0 || lo < 0 ? -1 : hi * 16 + lo;
+  };
+  const int v0 = byte(4), v1 = byte(5), p0 = byte(8), p1 = byte(9);
+  if (v0 < 0 || v1 < 0 || p0 < 0 || p1 < 0) return false;
+  *vendor = uint16_t(v0 | v1 << 8);
+  *product = uint16_t(p0 | p1 << 8);
+  return true;
+}
+
+bool NameHas(const std::string& name, std::string_view word) {
+  if (word.size() > name.size()) return false;
+  for (size_t i = 0; i + word.size() <= name.size(); ++i)
+    if (SameText(std::string_view(name).substr(i, word.size()), word)) return true;
+  return false;
+}
+
+// `word` in `name` with no letter or digit on either side ("PS2 Adapter" has PS2; "PS10" has no PS1).
+bool NameHasWord(const std::string& name, std::string_view word) {
+  for (size_t i = 0; i + word.size() <= name.size(); ++i) {
+    if (!SameText(std::string_view(name).substr(i, word.size()), word)) continue;
+    const bool open = i == 0 || !std::isalnum(static_cast<unsigned char>(name[i - 1]));
+    const size_t e = i + word.size();
+    const bool close = e == name.size() || !std::isalnum(static_cast<unsigned char>(name[e]));
+    if (open && close) return true;
+  }
+  return false;
+}
+
+// A PlayStation pad older than the PS4 (START / SELECT, not OPTIONS / SHARE): a DualShock 3 or SIXAXIS (Sony
+// 054C:0268, or a name that says PS3), or a PS1 / PS2 pad on an adapter (its name says so).
+bool OldPlayStation(const rex::input::DeviceInfo& d) {
+  uint16_t vendor = 0, product = 0;
+  if (GuidIds(d.guid, &vendor, &product) && vendor == 0x054C && product == 0x0268) return true;
+  return NameHasWord(d.name, "PS3") || NameHas(d.name, "PLAYSTATION(R)3") || NameHasWord(d.name, "DualShock 3") ||
+         NameHasWord(d.name, "SIXAXIS") || NameHasWord(d.name, "PS2") || NameHasWord(d.name, "PlayStation 2") ||
+         NameHasWord(d.name, "PS1") || NameHasWord(d.name, "PSX");
+}
+
+// The controller guest user `user` holds, as the SDK names it (logged, and F2's Controls tab).
+const char* FamilyWords(rex::input::ControllerFamily family) {
+  using rex::input::ControllerFamily;
+  if (IsGameCubePad(family)) return "a GameCube";
+  switch (family) {
+    case ControllerFamily::kPlayStation: return "a PlayStation";
+    case ControllerFamily::kNintendo: return "a Nintendo Switch";
+    case ControllerFamily::kXbox: return "an Xbox";
+    default: return "an unnamed";
+  }
+}
+
 Mode UserPadMode(uint32_t user) {
   using rex::input::ControllerFamily;
   auto* input = g_input_system.load(std::memory_order_acquire);
   const ControllerFamily family = input ? input->PadFamily(user) : ControllerFamily::kUnknown;
-  static std::atomic<uint8_t> last[4];  // ControllerFamily; static: starts at kUnknown
-  if (user < 4 && last[user].exchange(uint8_t(family), std::memory_order_relaxed) != uint8_t(family)) {
-    const char* kind = family == ControllerFamily::kPlayStation ? "a PlayStation"
-                       : family == ControllerFamily::kNintendo  ? "a Nintendo"
-                       : family == ControllerFamily::kXbox      ? "an Xbox"
-                                                                : "an unnamed";
-    REXLOG_INFO("cod3: controller {} is {} pad: its player's prompts show {} buttons", user + 1, kind,
-                family == ControllerFamily::kPlayStation ? "PlayStation"
-                : family == ControllerFamily::kNintendo  ? "Nintendo"
-                                                         : "Xbox");
+  Mode mode = Mode::kXbox;
+  if (IsGameCubePad(family))
+    mode = Mode::kGameCube;
+  else if (family == ControllerFamily::kPlayStation)
+    mode = Mode::kPlayStation;
+  rex::input::DeviceInfo pad;
+  const bool named = PadInfo(user, &pad);
+  // [acct2-main] 2026-11-21 a PS3 pad (or a PS1 / PS2 one on an adapter): START / SELECT, the PS2 style's names.
+  if (named && (family == ControllerFamily::kPlayStation || family == ControllerFamily::kUnknown) && OldPlayStation(pad))
+    mode = Mode::kPlayStation2;
+  else if (family == ControllerFamily::kNintendo)
+    mode = Mode::kNintendo;
+  mode = WithLabels(mode, user);
+  // Logged once per change of the pad's family or of how its letters are read.
+  static std::atomic<uint16_t> last[4] = {0xFFFF, 0xFFFF, 0xFFFF, 0xFFFF};
+  const uint16_t now = uint16_t(uint8_t(family)) | uint16_t(ByLabel(mode) ? 0x100 : 0) | uint16_t(uint8_t(mode) << 9);
+  if (user < 4 && last[user].exchange(now, std::memory_order_relaxed) != now && family != ControllerFamily::kUnknown) {
+    REXLOG_INFO("cod3: controller {} is {} pad{}: its player's prompts show {} buttons{}", user + 1,
+                FamilyWords(family), named && !pad.name.empty() ? " (\"" + pad.name + "\")" : std::string(),
+                IsGameCube(mode)                 ? "GameCube"
+                : IsNintendo(mode)               ? "Nintendo"
+                : mode == Mode::kPlayStation     ? "PlayStation 4 / 5"
+                : mode == Mode::kPlayStation2    ? "PlayStation (START / SELECT)"
+                                                 : "Xbox",
+                ByLabel(mode) ? " (A B X Y by their printed letters)" : "");
   }
-  switch (family) {
-    case ControllerFamily::kPlayStation: return Mode::kPlayStation;
-    case ControllerFamily::kNintendo: return Mode::kNintendo;
-    default: return Mode::kXbox;
-  }
+  return mode;
 }
 
 Mode Wanted(uint8_t* base, uint32_t player) {
@@ -534,8 +716,8 @@ Mode Wanted(uint8_t* base, uint32_t player) {
     case Style::kXbox: return Mode::kXbox;
     case Style::kPlayStation: return Mode::kPlayStation;
     case Style::kPlayStation2: return Mode::kPlayStation2;  // [claude-9b-think]
-    case Style::kNintendo: return Mode::kNintendo;
-    case Style::kGameCube: return Mode::kGameCube;
+    case Style::kNintendo: return WithLabels(Mode::kNintendo, PadUser(base, player));  // [acct2-main] 2026-11-21
+    case Style::kGameCube: return WithLabels(Mode::kGameCube, PadUser(base, player));  // [acct2-main] 2026-11-21
     default: return PadMode(base, player);
   }
 }
@@ -562,8 +744,8 @@ struct Button {
 };
 constexpr Button kButtons[] = {
     {'"', 0, "ENTER", "A", "CROSS", "CROSS", "B", "A"},
-    {'%', 1, "ESC", "B", "CIRCLE", "CIRCLE", "A", "B"},
-    {'#', 2, nullptr, "X", "SQUARE", "SQUARE", "Y", "X"},
+    {'%', 1, "ESC", "B", "CIRCLE", "CIRCLE", "A", "X"},   // [acct2-main] 2026-11-21 GameCube by position: X
+    {'#', 2, nullptr, "X", "SQUARE", "SQUARE", "Y", "B"},  // (east), B (west); by label NameFor gives B, X
     {'$', 3, nullptr, "Y", "TRIANGLE", "TRIANGLE", "X", "Y"},
     {'&', 4, nullptr, "LT", "L2", "L2", "ZL", "L"},
     {'!', 5, nullptr, "RT", "R2", "R2", "ZR", "R"},
@@ -667,12 +849,20 @@ std::string FourKeys(int up) {
   return joined;
 }
 
+// [acct2-main] 2026-11-21 A B X Y (the four face buttons).
+bool IsFace(const Button& b) { return b.glyph == '"' || b.glyph == '%' || b.glyph == '#' || b.glyph == '$'; }
+
 std::string NameFor(const Button& b, Mode mode) {
   switch (mode) {
     case Mode::kPlayStation: return b.playstation ? b.playstation : b.xbox;
     case Mode::kPlayStation2: return b.playstation2 ? b.playstation2 : b.xbox;  // [claude-9b-think]
     case Mode::kNintendo: return b.nintendo ? b.nintendo : b.xbox;
     case Mode::kGameCube: return b.gamecube ? b.gamecube : b.xbox;
+    // [acct2-main] 2026-11-21 by label: the game's A B X Y are the buttons printed A B X Y.
+    case Mode::kNintendoLabel:
+      return IsFace(b) ? b.xbox : (b.nintendo ? b.nintendo : b.xbox);
+    case Mode::kGameCubeLabel:
+      return IsFace(b) ? b.xbox : (b.gamecube ? b.gamecube : b.xbox);
     case Mode::kXbox: return b.xbox;
     default: break;
   }
@@ -1043,14 +1233,44 @@ struct DrawnCaps {
 };
 std::mutex g_cap_mutex;
 std::unordered_map<uint32_t, DrawnCaps> g_caps;  // by line
+// [rexglue-native] 2026-11-17 P0 each line's copy before its newest, when from an earlier game frame: the copy the latch shows while the
+// line is being drawn again in the game's current frame (LatchedKeyCaps)
+std::unordered_map<uint32_t, DrawnCaps> g_caps_before;
 // [claude-9b-think] 2026-10-27 UNTESTED (owner 10:27: "keycap glyphs aren't fading out in time with their objectives
 // at the same time, It's a little delayed"). A cap stayed on screen for 50 ms of the clock after its line's last draw
 // (CurrentKeyCaps(50)): ten frames at 200 fps at the line's last opacity, and as long for a line laid out again at
 // another address (its old entry stayed beside the new one, the older and more opaque cap on top during a fade). Now
 // a cap shows only while its line was drawn in the game's newest frame or within its own cadence of it.
 std::atomic<uint32_t> g_cap_latest_frame{0};  // the newest game frame a line was drawn in (or the pads read)
+// [rexglue-native] 2026-11-17 P0 the overlays' latch per game frame (button_prompts.h LatchPick): guest memory for the overlay's reads of
+// the game's frame counter, the moments the counter moves (the game's frame intervals, its last 8: the safety net
+// and the stall test follow them; one frame's share when the counter is seen several frames on) and the game's
+// last draw.
+constexpr int kFrameIntervals = 8;
+std::atomic<uint8_t*> g_frame_base{nullptr};
+std::atomic<int64_t> g_game_drew_ms{0};
+std::mutex g_interval_mutex;
+uint32_t g_interval_frame = 0;  // the counter at its last move seen
+int64_t g_interval_ms = 0;      // and when (0: not yet)
+int64_t g_intervals[kFrameIntervals] = {};
+int g_interval_next = 0;
+void NoteFrameInterval(uint32_t frame) {
+  const int64_t now = NowMs();
+  std::lock_guard lock(g_interval_mutex);
+  const int32_t ahead = int32_t(frame - g_interval_frame);
+  if (g_interval_ms != 0 && ahead == 0) return;
+  if (g_interval_ms != 0 && ahead < 0 && ahead > -600) return;  // an older read seen late (another thread)
+  if (g_interval_ms != 0 && ahead > 0 && ahead < 600) {
+    g_intervals[g_interval_next] = std::min<int64_t>((now - g_interval_ms) / ahead, 60000);
+    g_interval_next = (g_interval_next + 1) % kFrameIntervals;
+  }
+  g_interval_frame = frame;  // the first, a move, or a counter 600 or more away (starts over)
+  g_interval_ms = now;
+}
 void NoteGameFrame(uint8_t* base) {
   const uint32_t frame = ReadU32(base, cod3::addr::pc_menu::kFrameCount);
+  g_frame_base.store(base, std::memory_order_release);  // [rexglue-native] 2026-11-17 P0
+  NoteFrameInterval(frame);                             // [rexglue-native] 2026-11-17 P0
   uint32_t seen = g_cap_latest_frame.load(std::memory_order_relaxed);
   while (int32_t(frame - seen) > 0 &&
          !g_cap_latest_frame.compare_exchange_weak(seen, frame, std::memory_order_relaxed)) {
@@ -1151,7 +1371,7 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float x_scale, flo
   bool has_text = true;  // [claude-9b-think] visible characters besides the names (unknown: as if there were)
   float max_shift = 0.0f;  // [claude-9b-think] the largest move into a visible gap's middle (menu units)
   if (n > 0 && n <= 64 && Valid(segments) && Valid(string)) {
-    const std::string text = ReadString(base, string + bp::kStringChars, 512);
+    const std::string text = ReadString(base, string + bp::kStringChars, cod3::textbuf::kMaxText);  // [acct2-main] was 512
     std::string words = text;  // [claude-9b-think] the line with its names blanked out
     const float x = cod3::guest::ReadF32(base, line + pm::kLineX);
     const float y = cod3::guest::ReadF32(base, line + pm::kLineY);
@@ -1232,6 +1452,14 @@ void NoteKeyCaps(uint8_t* base, uint32_t line, uint32_t font, float x_scale, flo
                   line, drawn.frame, drawn.cadence, drawn.caps.size(), alpha, text_alpha, button_alpha,
                   has_text ? "" : ", names only", max_shift, x_scale);
   }
+  // [rexglue-native] 2026-11-17 P0 the copy it replaces, when from an earlier game frame (the latch); old ones go as old lines do
+  if (auto it = g_caps.find(line); it != g_caps.end() && it->second.frame != drawn.frame)
+    g_caps_before[line] = it->second;
+  if (g_caps_before.size() > 512) {
+    const int64_t now = drawn.ms;
+    std::erase_if(g_caps_before, [now](const auto& kv) { return now - kv.second.ms > 1000; });
+  }
+  cod3::prompts::PresentProbeAsked(cod3::prompts::ProbeElement::kKeyCaps, drawn.frame);  // [rexglue-native flicker 2026-11-17] (debug)
   g_caps[line] = std::move(drawn);
 }
 
@@ -1262,15 +1490,15 @@ void SetText(PPCContext& ctx, uint8_t* base, uint32_t slot, bool string_arg, F&&
   call.width = ctx.r5.u32;
   if (string_arg) {
     const uint32_t str = Valid(ctx.r4.u32) ? ReadU32(base, ctx.r4.u32) : 0;
-    if (Valid(str)) call.text = ReadString(base, str + bp::kStringChars, 2048);
+    if (Valid(str)) call.text = ReadString(base, str + bp::kStringChars, cod3::textbuf::kMaxText);  // [acct2-main] was 2048
   } else if (Valid(ctx.r4.u32)) {
-    call.text = ReadString(base, ctx.r4.u32, 2048);
+    call.text = ReadString(base, ctx.r4.u32, cod3::textbuf::kMaxText);  // [acct2-main] was 2048
   }
 #if defined(COD3_MP)
   // [acct2-decomp] The Use hold's words (UseHoldWording): cod3mp's "[ACTION]" pass is inside the call (the
   // campaign's is hooked, 0x824DE290). A text call (not a String) takes our copy; call.text stays the game's, so a
   // text laid out again (Refresh comes back through here) follows the setting.
-  if (!string_arg && !call.text.empty() && call.text.size() < 2047) {  // a whole text, not one cut at 2048
+  if (!string_arg && !call.text.empty() && call.text.size() < cod3::textbuf::kMaxText - 1) {  // a whole text, not one cut short
     const std::string pressed = UseHoldWording(ctx, base, call.text);
     if (pressed != call.text)
       if (const uint32_t at = CallText(base, pressed)) ctx.r4.u64 = at;
@@ -1549,7 +1777,7 @@ uint32_t KeyHash(std::string_view key) {
 std::mutex g_kbm_mutex;
 std::unordered_map<uint32_t, std::string> g_kbm_text;    // key hash -> our keyboard-and-mouse text
 std::unordered_map<std::string, uint32_t> g_kbm_key_of;  // the game's text (as the tables hold it) -> its key hash
-uint32_t g_kbm_buffer = 0;                               // guest copy of our text for the "[ACTION]" pass
+// [acct2-main] 2026-11-21 g_kbm_buffer (a 512-byte guest copy for the "[ACTION]" pass) is now text_buffers.h's PutText.
 // [acct2-ocr] The same in other languages: rows "KEY[,KEY..]@lang" (lang a locale or its start: "ru", "zh-Hant"), our
 // own words in UTF-8, used while that language's text is shown (game/text_language.h): language -> key hash -> text.
 // Its texts are noted by the lookup below in g_kbm_loc_key_of (the chosen language's text -> its key hash).
@@ -1880,6 +2108,12 @@ void Detach(rex::ui::Window* window) {
 }
 
 void SetInputSystem(rex::input::InputSystem* input) {
+  // [acct2-main] 2026-11-21 the SDK's own slot assignment, keeping the pads' names (NamedSlots).
+  if (input && !g_named_slots) {
+    auto slots = std::make_unique<NamedSlots>();
+    g_named_slots = slots.get();
+    input->SetDeviceAssignment(std::move(slots));
+  }
   g_input_system.store(input, std::memory_order_release);
 }
 
@@ -1936,12 +2170,68 @@ Look FirstPlayerLook() {
   return LookOf(mode);  // [claude-9b-think] PS2 too
 }
 
+// [acct2-main] 2026-11-21 F2's Controls tab and the overlay's skip button (button_prompts.h): a controller's own
+// style, as the prompts choose it for that controller (keys aside).
+namespace {
+Mode StyleMode(uint32_t user) {
+  switch (g_style.load(std::memory_order_relaxed)) {
+    case Style::kXbox: return Mode::kXbox;
+    case Style::kPlayStation: return Mode::kPlayStation;
+    case Style::kPlayStation2: return Mode::kPlayStation2;
+    case Style::kNintendo: return WithLabels(Mode::kNintendo, user);
+    case Style::kGameCube: return WithLabels(Mode::kGameCube, user);
+    default: return UserPadMode(user);
+  }
+}
+}  // namespace
+
+std::string PadDescription(uint32_t user) {
+  using rex::input::ControllerFamily;
+  auto* input = g_input_system.load(std::memory_order_acquire);
+  const ControllerFamily family = input && user < 4 ? input->PadFamily(user) : ControllerFamily::kUnknown;
+  if (family == ControllerFamily::kUnknown || family == ControllerFamily::kKeyboardMouse) {
+    rex::input::DeviceInfo pad;
+    if (family == ControllerFamily::kUnknown && PadInfo(user, &pad) && !pad.name.empty())
+      return "\"" + pad.name + "\" (a controller of no known kind: Xbox names" +
+             std::string(OldPlayStation(pad) ? ", or PlayStation's START / SELECT by its name" : "") + ")";
+    return "no controller (or the keyboard alone)";
+  }
+  std::string out = std::string(FamilyWords(family)) + " controller";
+  rex::input::DeviceInfo pad;
+  if (PadInfo(user, &pad) && !pad.name.empty()) out += " (\"" + pad.name + "\")";
+  if (PadFacesByLabelOf(input, user)) out += ", A B X Y by their printed letters";
+  return out;
+}
+
+const char* PadStyleName(uint32_t user) {
+  switch (StyleMode(user)) {
+    case Mode::kPlayStation: return "PlayStation 4 / 5";
+    case Mode::kPlayStation2: return "PlayStation 2 / PS3 (START / SELECT)";
+    case Mode::kNintendo: return "Nintendo Switch";
+    case Mode::kNintendoLabel: return "Nintendo Switch (by letter)";
+    case Mode::kGameCube: return "GameCube";
+    case Mode::kGameCubeLabel: return "GameCube (by letter)";
+    default: return "Xbox 360 (the game's own)";
+  }
+}
+
+bool PadStyleIsAuto() { return g_style.load(std::memory_order_relaxed) == Style::kAuto; }
+
+std::string PadButtonName(uint32_t user, int game_key) {
+  const Mode mode = StyleMode(user);
+  for (const Button& b : kButtons)
+    if (b.bind >= 0 && PadKeyFor(b.glyph) == game_key) return NameFor(b, mode);
+  return "";
+}
+
 void NotePadState(uint16_t buttons, uint8_t left_trigger, uint8_t right_trigger, const int16_t axes[4]) {
   const uint8_t triggers[2] = {left_trigger, right_trigger};
   WatchPadValues(buttons, triggers, axes);
 }
 
 std::vector<KeyCap> CurrentKeyCaps(int max_age_ms) {
+  // [rexglue-native] 2026-11-17 P0 while the latch is on and the game's frame is known: the set latched to the game's latest complete frame
+  if (OverlayFrameLatchOn() && GameFrameNow() != 0) return LatchedKeyCaps(max_age_ms);
   std::vector<KeyCap> out;
   const int64_t now = NowMs();
   // [claude-9b-think] 2026-10-27 UNTESTED also only lines drawn in the game's newest frame, or within their own
@@ -1967,6 +2257,240 @@ std::vector<KeyCap> CurrentKeyCaps(int max_age_ms) {
       REXLOG_INFO("cod3: key caps: overlay shows {} lines ({} caps), the oldest drawn {} ms ago; {} lines left out "
                   "(not drawn in the game's newest frame {})",
                   lines, out.size(), oldest_ms, stale, latest);
+    }
+  }
+  return out;
+}
+
+// [rexglue-native] 2026-11-17 P0 the overlays' latch per game frame (see button_prompts.h)
+bool OverlayFrameLatchOn() { return REXCVAR_GET(cod3_overlay_frame_latch); }
+
+uint32_t GameFrameNow() {
+  uint8_t* base = g_frame_base.load(std::memory_order_acquire);
+  if (!base) return 0;
+  const uint32_t frame = ReadU32(base, cod3::addr::pc_menu::kFrameCount);
+  NoteFrameInterval(frame);
+  return frame;
+}
+
+uint32_t GameFrameIn(uint8_t* base) {
+  if (base) g_frame_base.store(base, std::memory_order_release);
+  g_game_drew_ms.store(NowMs(), std::memory_order_relaxed);
+  return GameFrameNow();
+}
+
+LatchState ReadLatchState() {
+  LatchState s;
+  s.counter = GameFrameNow();
+  const int64_t now = NowMs();
+  int64_t longest = 0, moved = 0;
+  {
+    std::lock_guard lock(g_interval_mutex);
+    for (const int64_t ms : g_intervals) longest = std::max(longest, ms);
+    moved = g_interval_ms;
+  }
+  s.still_ms = moved ? std::max<int64_t>(0, now - moved) : 0;
+  s.stall_ms = std::max<int64_t>(500, 3 * longest);
+  s.safety_ms = std::clamp<int64_t>(3 * longest, 1000, 20000);
+  s.drawing_still = moved != 0 && s.still_ms > s.stall_ms &&
+                    g_game_drew_ms.load(std::memory_order_relaxed) > moved + s.stall_ms;
+  return s;
+}
+
+int LatchPick(const LatchState& s, const LatchCopy& newest, const LatchCopy* before, int fallback_ms) {
+  if (s.counter == 0 || newest.frame == 0) return newest.age_ms <= fallback_ms ? 1 : 0;  // the element's own clock
+  if (s.drawing_still) {
+    // a loading screen: the game draws while its counter stands still. What it draws now holds by the clock, and
+    // nothing from before the counter stopped.
+    const bool since = newest.age_ms < s.still_ms - s.stall_ms;
+    return since && newest.age_ms <= std::max<int64_t>(fallback_ms, s.stall_ms) ? 1 : 0;
+  }
+  const bool newest_done = int32_t(s.counter - newest.frame) >= 1;  // the counter has moved past its frame
+  const LatchCopy* pick = newest_done ? &newest : before;
+  if (!pick || pick->frame == 0) return 0;
+  const int32_t behind = int32_t(s.counter - pick->frame);  // 1: the latest complete frame had it
+  const int32_t cadence = int32_t(std::clamp<uint32_t>(pick->cadence, 1, 8));
+  if (behind < 1 || behind > cadence) return 0;
+  if (pick->age_ms > s.safety_ms) return 0;  // the safety net: the game stopped making frames
+  return newest_done ? 1 : 2;
+}
+
+int OverlaySafetyMs() { return int(ReadLatchState().safety_ms); }
+
+void FrameLatch::Note() {
+  const uint32_t frame = GameFrameNow();
+  const int64_t now = NowMs();
+  std::lock_guard lock(mutex_);
+  if (newest_ms_ != 0 && frame != newest_.frame) {  // a new game frame: the last one's copy becomes the one before
+    before_ = newest_;
+    before_ms_ = newest_ms_;
+    const uint32_t since = frame - newest_.frame;
+    newest_.cadence = since >= 1 && since <= 8 ? since : 1;
+  }
+  newest_.frame = frame;
+  newest_ms_ = now;
+}
+
+bool FrameLatch::Holds() const {
+  if (!OverlayFrameLatchOn()) return false;
+  const LatchState s = ReadLatchState();
+  if (s.counter == 0) return false;  // the frame unknown: the element's own clock alone
+  const int64_t now = NowMs();
+  std::lock_guard lock(mutex_);
+  if (newest_ms_ == 0) return false;
+  LatchCopy newest = newest_, before = before_;
+  newest.age_ms = now - newest_ms_;
+  before.age_ms = now - before_ms_;
+  return LatchPick(s, newest, before_ms_ != 0 ? &before : nullptr, 0) != 0;
+}
+
+void NoteOverlayShown(const char* what, uint64_t hash, size_t count, const LatchState& s) {  // [rexglue-native flicker 2026-11-17]
+  if (!REXCVAR_GET(cod3_debug_overlay_latch)) return;
+  struct Last {
+    uint64_t hash = 0;
+    uint32_t counter = 0;
+    int64_t ms = 0;
+    bool seen = false;
+  };
+  static std::mutex mutex;
+  static std::unordered_map<std::string, Last> last;
+  static int lines = 0;
+  const int64_t now = NowMs();
+  std::lock_guard lock(mutex);
+  Last& l = last[what];
+  if (l.seen && l.hash == hash) return;
+  const bool again = l.seen && l.counter == s.counter;
+  if (lines++ < 20000)
+    REXLOG_INFO("cod3: overlay latch: {} now {} ({:016X}) at counter {}{} (the last change {} ms ago at counter {}; "
+                "the counter still for {} ms, safety {} ms{})",
+                what, count, hash, s.counter, again ? ", A SECOND CHANGE IN ONE GAME FRAME" : "", l.seen ? now - l.ms : -1,
+                l.counter, s.still_ms, s.safety_ms, s.drawing_still ? ", drawing still" : "");
+  l = Last{hash, s.counter, now, true};
+}
+
+void NoteOverlayShown(const char* what, uint64_t hash, size_t count) {  // [rexglue-native flicker 2026-11-17]
+  if (!REXCVAR_GET(cod3_debug_overlay_latch)) return;
+  NoteOverlayShown(what, hash, count, ReadLatchState());
+}
+
+// [rexglue-native flicker 2026-11-17] cod3_debug_overlay_presents (button_prompts.h). The frames each element was asked for in: a ring
+// of the last 256 (frame + 1 at frame % 256; 0 none).
+namespace {
+constexpr int kProbeElements = 3;
+constexpr uint32_t kProbeRing = 256;
+const char* const kProbeNames[kProbeElements] = {"key caps", "text layer", "crosshair"};
+std::atomic<uint32_t> g_probe_asked[kProbeElements][kProbeRing];
+struct ProbeSums {
+  int64_t start_ms = 0;
+  uint64_t presents = 0, asked = 0, drawn = 0, missing = 0, missing_frames = 0, unasked = 0, skipped = 0;
+  uint32_t first_counter = 0, missing_counter = 0;
+  int details = 0;
+};
+std::mutex g_probe_mutex;
+ProbeSums g_probe[kProbeElements];
+bool ProbeAskedIn(int element, uint32_t frame) {
+  return frame != 0 && g_probe_asked[element][frame % kProbeRing].load(std::memory_order_relaxed) == frame + 1;
+}
+}  // namespace
+
+void PresentProbeAsked(ProbeElement element, uint32_t frame) {
+  if (frame == 0 || !REXCVAR_GET(cod3_debug_overlay_presents)) return;
+  g_probe_asked[int(element)][frame % kProbeRing].store(frame + 1, std::memory_order_relaxed);
+}
+
+void PresentProbeShown(ProbeElement element, bool shown) {
+  if (!REXCVAR_GET(cod3_debug_overlay_presents)) return;
+  const int e = int(element);
+  const LatchState s = ReadLatchState();
+  const int64_t now = NowMs();
+  const bool latch = OverlayFrameLatchOn();
+  std::lock_guard lock(g_probe_mutex);
+  ProbeSums& p = g_probe[e];
+  if (p.start_ms == 0) {
+    p.start_ms = now;
+    p.first_counter = s.counter;
+  }
+  if (s.counter < 2 || s.still_ms > s.stall_ms || s.drawing_still) {
+    ++p.skipped;  // no game frames now (not started, a loading screen, a stall): nothing to hold
+  } else {
+    ++p.presents;
+    const bool asked = ProbeAskedIn(e, s.counter - 1);  // the latest complete frame asked for it
+    p.asked += asked;
+    p.drawn += shown;
+    if (asked && !shown) {
+      ++p.missing;
+      if (p.missing_counter != s.counter) {
+        ++p.missing_frames;
+        p.missing_counter = s.counter;
+      }
+      if (p.details < 20) {
+        ++p.details;
+        REXLOG_INFO("cod3: overlay presents: {} not drawn at counter {} though frame {} asked for it (the counter "
+                    "still for {} ms; latch {})",
+                    kProbeNames[e], s.counter, s.counter - 1, s.still_ms, latch ? "on" : "off");
+      }
+    }
+    if (shown && !asked && !ProbeAskedIn(e, s.counter - 2)) ++p.unasked;
+  }
+  if (now - p.start_ms < 5000) return;
+  REXLOG_INFO("cod3: overlay presents: {} over {:.1f} s, latch {}: {} presents in {} game frames ({} more while no "
+              "game frames came); the latest complete frame asked for it in {}, drawn in {}, MISSING {} (in {} "
+              "game frames); drawn with neither of the last two frames asking {}",
+              kProbeNames[e], double(now - p.start_ms) / 1000.0, latch ? "on" : "off", p.presents,
+              s.counter - p.first_counter, p.skipped, p.asked, p.drawn, p.missing, p.missing_frames, p.unasked);
+  const int details = p.details;
+  p = ProbeSums{};
+  p.start_ms = now;
+  p.first_counter = s.counter;
+  p.details = details;
+}
+
+std::vector<KeyCap> LatchedKeyCaps(int fallback_ms) {
+  std::vector<KeyCap> out;
+  const int64_t now = NowMs();
+  size_t lines = 0, older = 0, left = 0;
+  std::lock_guard lock(g_cap_mutex);
+  // under the lock: a line stored after this read has a frame no newer than the counter read here
+  const LatchState s = ReadLatchState();
+  for (const auto& [line, drawn] : g_caps) {
+    const LatchCopy newest{drawn.frame, now - drawn.ms, drawn.cadence};
+    const auto it = g_caps_before.find(line);
+    const bool has_before = it != g_caps_before.end();
+    LatchCopy before{};
+    if (has_before) before = {it->second.frame, now - it->second.ms, it->second.cadence};
+    const int pick = LatchPick(s, newest, has_before ? &before : nullptr, fallback_ms);
+    if (pick == 0) {
+      ++left;
+      continue;
+    }
+    const DrawnCaps& shown = pick == 1 ? drawn : it->second;
+    ++lines;
+    if (pick == 2) ++older;
+    out.insert(out.end(), shown.caps.begin(), shown.caps.end());
+  }
+  if (REXCVAR_GET(cod3_debug_overlay_latch)) {  // [rexglue-native flicker 2026-11-17] the set shown, for the P0 test
+    uint64_t h = 0;  // each cap's own hash, summed: the same set in any order (g_caps is unordered)
+    for (const KeyCap& c : out) {
+      uint64_t one = 1469598103934665603ull;
+      const auto mix = [&one](uint64_t v) { one = (one ^ v) * 1099511628211ull; };
+      for (const char ch : c.name) mix(uint8_t(ch));
+      mix(uint64_t(int64_t(std::lround(c.x0 * 4.0f))));
+      mix(uint64_t(int64_t(std::lround(c.y0 * 4.0f))));
+      mix(uint64_t(int64_t(std::lround(c.x1 * 4.0f))));
+      mix(uint64_t(int64_t(std::lround(c.alpha * 255.0f))));
+      h += one;
+    }
+    NoteOverlayShown("key caps", h, out.size(), s);
+  }
+  if (REXCVAR_GET(cod3_debug_key_caps) && (lines || left)) {
+    static int64_t last = 0;
+    if (now - last >= 250) {
+      last = now;
+      REXLOG_INFO("cod3: key caps: latched to the game's frame {} (counter {}, still {} ms, stall {} ms, safety {} "
+                  "ms{}): {} lines ({} caps; {} of them the copy before), {} lines left out",
+                  s.counter - 1, s.counter, s.still_ms, s.stall_ms, s.safety_ms,
+                  s.drawing_still ? ", the game draws with its counter standing still" : "", lines, out.size(), older,
+                  left);
     }
   }
   return out;
@@ -2104,6 +2628,7 @@ REX_HOOK_RAW(sub_824D7D88) {
   const uint32_t line = ctx.r3.u32;
   cod3::pcmenu::NoteLineDrawn(base, line, ctx.f3.f64);  // footer prompts can be clicked (pc_menu.h)
   NoteGameFrame(base);  // [claude-9b-think] any line drawn: the key caps' newest game frame
+  g_game_drew_ms.store(NowMs(), std::memory_order_relaxed);  // [rexglue-native] 2026-11-17 P0 the game drew (the latch's stall test)
   bool names;
   bool fitted_rooms = false;  // [claude-9b-think] laid out with rooms of filler (FittedRoom): never shown as text
   Mode mode = Mode::kXbox;
@@ -2184,7 +2709,7 @@ REX_HOOK_RAW(sub_824DE290) {
     std::string kbm;
     bool localized = false;  // [acct2-ocr] the chosen language's text: its own row (KEY@lang), never the English one
     {
-      const std::string source = ReadString(base, ctx.r3.u32, 512);
+      const std::string source = ReadString(base, ctx.r3.u32, cod3::textbuf::kMaxText);  // [acct2-main] was 512
       std::lock_guard lock(g_kbm_mutex);
       if (auto it = g_kbm_loc_key_of.find(source); it != g_kbm_loc_key_of.end()) {
         key = it->second;
@@ -2197,11 +2722,10 @@ REX_HOOK_RAW(sub_824DE290) {
     if (localized) kbm = cod3::text::ForChosenFonts(KbmRowForChosen(key));
     if (!kbm.empty()) {
       ++t_tokens;
-      if (IsKeys(LayoutMode(base)) && ReadU32(base, bp::kLanguageMode) == 0 && kbm.size() < 511) {
-        if (!g_kbm_buffer) g_kbm_buffer = rex::system::kernel_state()->memory()->SystemHeapAlloc(512);
-        if (g_kbm_buffer) {
-          std::memcpy(base + g_kbm_buffer, kbm.c_str(), kbm.size() + 1);
-          ctx.r3.u64 = g_kbm_buffer;
+      // [acct2-main] 2026-11-21 any length (was: a 512-byte buffer, and a longer row was not used)
+      if (IsKeys(LayoutMode(base)) && ReadU32(base, bp::kLanguageMode) == 0) {
+        if (const uint32_t at = cod3::textbuf::PutText(base, cod3::textbuf::kPromptsIn, kbm)) {
+          ctx.r3.u64 = at;
           ours = true;
         }
       }
@@ -2209,15 +2733,21 @@ REX_HOOK_RAW(sub_824DE290) {
   }
   // [acct2-decomp] The Use hold's words (UseHoldWording), on whichever text goes in (ours or the game's).
   if (Valid(ctx.r3.u32)) {
-    const std::string in = ReadString(base, ctx.r3.u32, 512);
-    const std::string pressed = in.size() < 511 ? UseHoldWording(ctx, base, in) : in;  // a whole text only
+    const std::string in = ReadString(base, ctx.r3.u32, cod3::textbuf::kMaxText);  // [acct2-main] was 512
+    const std::string pressed = in.size() < cod3::textbuf::kMaxText - 1 ? UseHoldWording(ctx, base, in) : in;  // a whole text only
     if (pressed != in)
       if (const uint32_t at = CallText(base, pressed)) ctx.r3.u64 = at;
   }
-  __imp__sub_824DE290(ctx, base);
+  // [acct2-main] 2026-11-21 The game's pass on the whole text, however long (game/text_buffers.h): its own buffer
+  // holds 509 characters and cut the rest.
+  ctx.r3.u64 = cod3::textbuf::ExpandWhole(base, ctx.r3.u32, [&](uint32_t text) {
+    ctx.r3.u64 = text;
+    __imp__sub_824DE290(ctx, base);
+    return ctx.r3.u32;
+  });
   const uint32_t buf = ctx.r3.u32;
   if (!Valid(buf)) return;
-  const std::string shown = ReadString(base, buf, 512);
+  const std::string shown = ReadString(base, buf, cod3::textbuf::kMaxText);  // [acct2-main] was 512
   // [claude-9b-think] our placeholders (<MOVE>, <BIND:..> ...) -> key tokens, after the game's "[ACTION]" pass.
   const std::string text = ours ? ExpandPlaceholders(base, shown) : shown;
   if (ours && REXCVAR_GET(cod3_debug_key_caps)) {
@@ -2243,7 +2773,9 @@ REX_HOOK_RAW(sub_824DE290) {
       REXLOG_INFO("cod3: prompts: stick words left with keys ({}): \"{}\"", mode == Mode::kPlayKeys ? "play" : "menu",
                   out);
   }
-  if (out != shown && out.size() < 510) std::memcpy(base + buf, out.c_str(), out.size() + 1);
+  // [acct2-main] 2026-11-21 in a buffer that holds it (was: the game's, and a result of 510 bytes or more was dropped)
+  if (out != shown)
+    if (const uint32_t at = cod3::textbuf::PutText(base, cod3::textbuf::kPromptsOut, out)) ctx.r3.u64 = at;
 }
 
 // [claude-9b-think] 2026-10-27 UNTESTED The string tables' lookup by key hash (r3 the tables, r4 the hash; Localize's
@@ -2264,7 +2796,7 @@ REX_HOOK_RAW(sub_82527FD0) {
     std::lock_guard lock(g_kbm_mutex);
     if (!g_kbm_loc_hashes.count(hash)) return;
     if (g_kbm_loc_key_of.size() > 4096) g_kbm_loc_key_of.clear();
-    g_kbm_loc_key_of[ReadString(base, text, 512)] = hash;
+    g_kbm_loc_key_of[ReadString(base, text, cod3::textbuf::kMaxText)] = hash;  // [acct2-main] was 512
     return;
   }
   if (!Valid(ctx.r3.u32)) return;
@@ -2273,7 +2805,7 @@ REX_HOOK_RAW(sub_82527FD0) {
   std::lock_guard lock(g_kbm_mutex);
   if (g_kbm_text.find(hash) == g_kbm_text.end()) return;
   if (g_kbm_key_of.size() > 4096) g_kbm_key_of.clear();
-  g_kbm_key_of[ReadString(base, text, 512)] = hash;
+  g_kbm_key_of[ReadString(base, text, cod3::textbuf::kMaxText)] = hash;  // [acct2-main] was 512
 }
 #else
 // [mp-menus] cod3mp's "[ACTION]" -> its sentence is FEMultiLineText's slot 94
@@ -2307,7 +2839,13 @@ REX_HOOK_RAW(FEMultiLineText__vfunc_19) {
 // The set-text calls (SetTextKey and the hint widget's SetText end here).
 REX_EXTERN(__imp__FEMultiLineText__vfunc_36);
 REX_HOOK_RAW(FEMultiLineText__vfunc_36) {
-  SetText(ctx, base, bp::kSetText, false, [&] { __imp__FEMultiLineText__vfunc_36(ctx, base); });
+  // [acct2-main] 2026-11-21 the game's slot 36 without its 256-byte line buffer (game/text_buffers.h)
+  SetText(ctx, base, bp::kSetText, false, [&] {
+    if (cod3::textbuf::On())
+      cod3::textbuf::SetLines(ctx, base);
+    else
+      __imp__FEMultiLineText__vfunc_36(ctx, base);
+  });
 }
 
 REX_EXTERN(__imp__FEMultiLineText__vfunc_91);

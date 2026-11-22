@@ -58,6 +58,8 @@
 #define __imp__sub_820CBF58 __imp__sub_820DE470
 #define sub_820CDC30 sub_820E0158  // 0x820CDC30 -> 0x820E0158
 #define __imp__sub_820CDC30 __imp__sub_820E0158
+#define sub_820F8D30 sub_8210ACA0  // 0x820F8D30 -> 0x8210ACA0
+#define __imp__sub_820F8D30 __imp__sub_8210ACA0
 #define sub_821258C8 sub_82137910  // 0x821258C8 -> 0x82137910
 #define __imp__sub_821258C8 __imp__sub_82137910
 #define sub_82127A20 sub_8213F780  // 0x82127A20 -> 0x8213F780

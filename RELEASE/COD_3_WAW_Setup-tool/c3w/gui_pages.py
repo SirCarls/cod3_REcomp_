@@ -52,18 +52,26 @@ GS_GROUPS = [
     ("Graphics", ["swap_post_effect", "anisotropic_override", "cod3_shadow_quality",
                   "cod3_depth_of_field", "cod3_motion_blur",  # [post-effects]
                   "cod3_hd_textures", "cod3_user_textures", "cod3_graphics_api"]),
-    ("Sound and controls", ["cod3_volume", "cod3_voice_language", "user_language", "cod3_glyph_style",  # [voice]
-                            "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
-                            "cod3_use_hold_ms"]),  # [acct2-decomp] 2026-11-05 the Use hold (game/use_hold.h)
-    # [acct2-ocr] 2026-11-07 the text's language and its kinds (F2 > Sound > Text), after the voices' rows
-    ("Text and subtitles", ["cod3_text_language", "cod3_text_subtitles", "cod3_text_menus", "cod3_text_prompts",
-                            "cod3_text_objectives", "cod3_text_loading", "cod3_text_credits",
-                            "cod3_text_film_cards", "cod3_font_fill"]),
+    # [acct2-decomp] 2026-11-21 (owner 10:38: "f2 and setup tool for languages needs organization/grouping/tabbing";
+    # asked how, he chose the groups as tabs, with one for every language row): "Sound and controls" had the voices
+    # and the console language beside the volume and the prompts, and the text was a group of its own.
+    ("Sound", ["cod3_volume"]),
+    # [voice] the voices; [acct2-ocr] 2026-11-07 the text's language and its kinds (F2 > LANGUAGE > Text); the
+    # console language last (what the game is told; Voices and Text come before it). Headings: GS_HEADINGS.
+    ("Language", ["cod3_voice_language", "cod3_text_language", "cod3_text_subtitles", "cod3_text_menus",
+                  "cod3_text_prompts", "cod3_text_objectives", "cod3_text_loading", "cod3_text_credits",
+                  "cod3_text_film_cards", "cod3_font_fill", "user_language"]),
+    ("Controls", ["cod3_glyph_style",
+                  "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
+                  "cod3_use_hold_ms"]),  # [acct2-decomp] 2026-11-05 the Use hold (game/use_hold.h)
     # [acct2-decomp] the cutscene rows had been under "Sound and controls"
     ("Cutscenes", ["cod3_skip_movies", "cod3_letterbox", "cod3_skip_prompt_position",
                    "cod3_skip_hold_ms"]),  # [claude-9b-think]
     ("Player", ["user_name", "user_name_2", "user_name_3", "user_name_4"]),  # [claude-9b] SDK patches 0070, 0074
 ]
+# [acct2-decomp] 2026-11-21 Headings inside a tab: the setting a heading comes before.
+GS_HEADINGS = {"cod3_voice_language": "Voices", "cod3_text_language": "Text", "cod3_text_subtitles": "Text by kind",
+               "user_language": "Console language"}
 
 
 def clean_path_text(text: str) -> str:
@@ -132,6 +140,10 @@ class Pages:
             self._validate_waw()
         elif key == "bro_setup":   # [acct2-bro]
             self._bro_check_disc()
+        elif key == "fh_setup":   # [acct2-decomp] 2026-11-21
+            self._fh_check_disc()
+        elif key == "fh_play":
+            self._update_actions()
         elif key.endswith("_setup") and key[:-6] in games.X360_PORTS:   # [waw-decomp]
             self._port_check_disc(key[:-6])
         elif key.endswith("_play") and key[:-5] in games.X360_PORTS:
@@ -190,13 +202,8 @@ class Pages:
         tip(e, "For testing: passed to the game as they are, for each start from here. They win over the game "
                "settings for that start and are never saved in them. Quote a value with spaces "
                "(--name=\"My Name\"). Leave empty normally.")
-        # [voice] Another disc's voices (c3w/voices.py); Voices under Game settings picks the language.
-        vb = ttk.Button(g, text="Add voices from another disc...", command=self._add_voices)
-        vb.grid(row=3, column=0, columnspan=3, sticky="w", pady=(px(10), 0))
-        tip(vb, "Needs another disc: German voices come from the German disc; French, Spanish and Italian from the "
-                "Europe (Fr, Es, It) disc; English from the USA/Europe disc. Copies them from its .iso into the "
-                "game, next to its own; then choose them with Voices under Game settings, or in F2 > Game > "
-                "Sound.")  # [acct2-decomp] which disc gives which language
+        # [voice] Another disc's voices (c3w/voices.py): [acct2-decomp] 2026-11-21 the button is under Voices now, in
+        # Game settings > Language (_gs_row); it was here, row 3.
         # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): the censored campaign's
         # box moved, unchanged, to the Textures & censoring page (_page_textures), with the built-in censor.
         # [acct2-decomp] Which options need which disc, and where this game stands (c3w/disc_needs.py;
@@ -546,7 +553,7 @@ class Pages:
         name = disc_needs.LANGUAGE_NAMES.get(code, code)
         needs = disc_needs.RELEASES[disc_needs.VOICE_DISC.get(code, disc_needs.USA)].short
         self.v_voice_note.set(f"{name} isn't in this game yet: it needs {needs} (Add voices from another disc, "
-                              "above). Until then the game's own voices play.")
+                              "below). Until then the game's own voices play.")  # [acct2-decomp] 2026-11-21 was above
 
     def _update_text_note(self) -> None:
         """[f2-menus] 2026-11-11 Under Text, as under Voices: the chosen language when the game's folder has no text
@@ -693,13 +700,7 @@ class Pages:
         grouped = [(title, [shown[k] for k in keys if k in shown]) for title, keys in GS_GROUPS]
         placed = {st.key for _, group in grouped for st in group}
         grouped.append(("More", [st for k, st in shown.items() if k not in placed]))
-        for title, group in grouped:
-            if not group:
-                continue
-            ttk.Label(s, text=title, style="Accent.TLabel").grid(row=r, column=0, sticky="w", pady=(px(12), px(2)))
-            r += 1
-            for st in group:
-                r = self._gs_row(s, st, r)
+        r = self._gs_tabs(s, [(title, group) for title, group in grouped if group], r)
         bar = ttk.Frame(s)
         bar.grid(row=r, column=1, columnspan=2, sticky="w", pady=(px(14), px(4)))
         self.btn_gs_save = ttk.Button(bar, text="Save game settings", style="Accent.TButton",
@@ -723,6 +724,45 @@ class Pages:
         if not shown:
             for b in (self.btn_gs_save, self.btn_gs_undo, self.btn_gs_defaults):
                 b.configure(state="disabled")
+
+    def _gs_tabs(self, s, tabs, r: int) -> int:
+        """[acct2-decomp] 2026-11-21 (owner 10:38; he chose tabs): the groups of settings as tabs, one shown at a
+        time: a row of buttons (the selected one in the accent colour) over a frame for each group, with the
+        headings of GS_HEADINGS inside. Returns the next free row of `s`."""
+        bar = ttk.Frame(s)
+        bar.grid(row=r, column=0, columnspan=3, sticky="w", pady=(px(10), px(4)))
+        self._gs_tab_frames: Dict[str, ttk.Frame] = {}
+        self._gs_tab_buttons: Dict[str, ttk.Button] = {}
+        for title, group in tabs:
+            f = ttk.Frame(s)
+            self._grid_cols(f)
+            f.grid(row=r + 1, column=0, columnspan=3, sticky="nsew")
+            rr = 0
+            for st in group:
+                heading = GS_HEADINGS.get(st.key)
+                if heading:
+                    ttk.Label(f, text=heading, style="Accent.TLabel").grid(row=rr, column=0, columnspan=3, sticky="w",
+                                                                         pady=(px(12 if rr else 4), px(2)))
+                    rr += 1
+                rr = self._gs_row(f, st, rr)
+            b = ttk.Button(bar, text=title, style="Ghost.TButton", command=lambda t=title: self._gs_show_tab(t))
+            b.pack(side="left", padx=(0, px(4)))
+            self._gs_tab_frames[title] = f
+            self._gs_tab_buttons[title] = b
+        if tabs:
+            self._gs_show_tab(tabs[0][0])
+        return r + 2
+
+    def _gs_show_tab(self, title: str) -> None:
+        """[acct2-decomp] 2026-11-21 Shows one tab of Game settings."""
+        for t, f in self._gs_tab_frames.items():
+            if t == title:
+                f.grid()
+            else:
+                f.grid_remove()
+        for t, b in self._gs_tab_buttons.items():
+            b.configure(style="Accent.TButton" if t == title else "Ghost.TButton")
+        self._gs_tab = title
 
     def _gs_row(self, s, st, r: int) -> int:
         """One game setting: label | control, help under the control."""
@@ -759,7 +799,14 @@ class Pages:
             hint(s, var=self.v_voice_note, style="Warn.TLabel", wrap=560).grid(row=r + 2, column=1, columnspan=2,
                                                                               sticky="w")
             var.trace_add("write", lambda *a: self._update_voice_note())
-            return r + 3
+            # [acct2-decomp] 2026-11-21 the button that gives Voices its languages, under it (it was in the Play box)
+            vb = ttk.Button(s, text="Add voices from another disc...", command=self._add_voices)
+            vb.grid(row=r + 3, column=1, columnspan=2, sticky="w", pady=(px(6), 0))
+            tip(vb, "Needs another disc: German voices come from the German disc; French, Spanish and Italian from "
+                    "the Europe (Fr, Es, It) disc; English from the USA/Europe disc. Copies them from its .iso into "
+                    "the game, next to its own; then choose them with Voices above, or in F2 > LANGUAGE > "
+                    "Voices.")  # [acct2-decomp] which disc gives which language
+            return r + 4
         if st.key == "cod3_text_language":   # [f2-menus] 2026-11-11 a text language the game's folder has no file for
             self.v_text_note = tk.StringVar(value="")
             hint(s, var=self.v_text_note, style="Warn.TLabel", wrap=560).grid(row=r + 2, column=1, columnspan=2,
@@ -1648,9 +1695,9 @@ class Pages:
             rows.append(("Build packages (compilers, libraries)", "/usr (the system)",
                          "Installed by your package manager, which can only put them there; listed for approval "
                          "first, then it asks for your password."))
-            if " " in str(work):
-                rows.append(("Build link", str(common.cache_dir() / "work-link"),
-                             "Only a link to the work folder (its path has spaces, which some build tools can't "
+            if common.awkward_path(str(work)):   # [waw-decomp] 2026-11-17 (rc2-paths S9): the link's own name
+                rows.append(("Build link", str(common.cache_dir() / f"{common.work_link_name(work)}-link"),
+                             "Only a link to the work folder (its path has characters some build tools can't "
                              "take); the files stay in the work folder."))
         if IS_WINDOWS:
             rows.append(("Python (from setup.bat)", str(common.project_dir() / "work" / "tools" / "python"),

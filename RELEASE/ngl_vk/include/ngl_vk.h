@@ -724,6 +724,33 @@ struct ngl_vk_mesh_draw {
     float k98_tint[3];
     float k98_specular[3];
     float k98_light_scale;
+    /* [rexglue-native stlo 2026-11-16] with blend NGL_VK_BLEND_DECAL (below): how the draw's pixels use its texture's alpha
+     * (NGL_VK_ALPHA_OPAQUE or NGL_VK_ALPHA_TEST), as an opaque draw's `alpha` says. 0 (memset draws): opaque. */
+    uint32_t decal_alpha;
+    /* [acct2-bro] 2026-11-21 rn101: the normal map's frame on a bumped draw with the nine irradiance rows
+     * (irradiance_rows 9), as Call of Duty 3's per-pixel model shaders build it. 0 (memset draws): the two
+     * cotangents from the screen slopes, as before (along the slopes of u and of v). 1: the game's (its pixel
+     * shader CDBAC6026B525050's instructions 28-52 and its kin; the guns' metal and the K98 the same way from the
+     * corners' tangent): T along dP/du (the coordinates' slopes' determinant's sign keeps it along rising u),
+     * made square to the normal, and B = T x N, both of unit length, in the mesh's own space (where the game's
+     * shaders work). Where the coordinates aren't mirrored B runs along falling v, so the map's green bends the
+     * other way from the cotangent pair's. NGL_VK_GAME_BUMP_FRAME tells a caller that this header has the
+     * field. */
+#define NGL_VK_GAME_BUMP_FRAME 1
+    uint32_t game_bump_frame;
+    /* [acct2-bro] 2026-11-21 rn102: a metal_cube draw's reflection read with the gradients Call of Duty 3's metal
+     * shaders set (CFC45995D1294CCE's instructions 12-15 and 58-90, read whole; 687855C9BA600FC3, 5CA91BD2CD3CBA09,
+     * 565BDF8642BC64BC, D680A2FF7F96DC2E and CC31EB0C3D04DBEF the same). 0 (memset draws): metal_cube_blur's shape
+     * as before. 1 (with metal_cube_blur above 0): with d the way the cube is read at (R.x, R.z, R.y),
+     * L = sqrt(d.y^2 + d.z^2), A = (0, -d.z, d.y) / L and B = (L, -d.x d.y / L, -d.x d.z / L) (both square to d),
+     * the horizontal gradient is (du/dx, dv/dx, 0) + s metal_cube_blur A and the vertical (du/dy, dv/dy, 0) +
+     * t metal_cube_blur B, u and v the base coordinates, s and t the signs of A and B against those slopes.
+     * [acct2-bro] 2026-11-21 rn104: 1 reads the cube at d over its longest part (the direction the emulator
+     * makes of the game's face coordinates, so the gradients span what they span there), s and t +1 where the
+     * dot is 0 (the game's sgt - sgt of it plus 1e-16).
+     * NGL_VK_METAL_CUBE_GAME_GRADIENTS tells a caller that this header has the field. */
+#define NGL_VK_METAL_CUBE_GAME_GRADIENTS 1
+    uint32_t metal_cube_game_gradients;
 };
 /* [acct2-bro] 2026-11-13 rn69a: ngl_vk_mesh_draw's cull */
 enum {
@@ -887,6 +914,29 @@ void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, flo
  * alpha; left out where there is no effect layer); the screen warp then shows where that mask lies. Kept apart from the
  * NGL_VK_BLEND_* list's numbers. */
 #define NGL_VK_BLEND_HEAT_MASK 16u                          /* [rexglue-native-fx] 2026-11-11 fx1 */
+/* [rexglue-native stlo 2026-11-16] Call of Duty 3's scene decal list (scene +0x34C: the surfaces that lie on others, as
+ * Saint-Lo's papers on a crate and the barbed wire along its hedges). A blended mesh draw (NGL_VK_ALPHA_BLEND) whose
+ * `blend` is NGL_VK_BLEND_DECAL is drawn in the blended part in the order given, as the game's scene render draws
+ * that list: not blended (cut out where decal_alpha is NGL_VK_ALPHA_TEST), not writing depth, pulled toward the eye
+ * (the decal depth bias, NGL_VK_DECAL_DEPTH_BIAS below), writing red, green and blue only. Kept apart from the
+ * NGL_VK_BLEND_* list's numbers. */
+#define NGL_VK_BLEND_DECAL 17u
+/* [rexglue-native stlo 2026-11-16] A blended mesh draw whose `blend` is NGL_VK_BLEND_DECAL_ALPHA is blended as NGL_VK_BLEND_ALPHA, red,
+ * green and blue only, not writing depth and pulled toward the eye as NGL_VK_BLEND_DECAL: the scene decal list's
+ * blended surfaces (SRC_ALPHA / 1-SRC_ALPHA at their game draws: wall blasts, scorch marks, craters), which lie on
+ * another surface. Without its pipeline, as NGL_VK_BLEND_ALPHA. */
+#define NGL_VK_BLEND_DECAL_ALPHA 18u
+/* [rexglue-native stlo 2026-11-17] A blended mesh draw whose `blend` is NGL_VK_BLEND_DECAL_DEPTH is drawn as NGL_VK_BLEND_DECAL (in
+ * the blended part in the order given, not blended, cut out where decal_alpha is NGL_VK_ALPHA_TEST, red, green and blue
+ * only, with the decal depth bias) but writing depth: the scene decal list's surfaces whose game pass writes depth
+ * (Call of Duty 3's RB_DEPTHCONTROL 0x766 at their draws: Saint-Lo's barbed wire strands, bushline and camo net).
+ * Without its pipeline, as NGL_VK_BLEND_DECAL. */
+#define NGL_VK_BLEND_DECAL_DEPTH 19u
+/* [rexglue-native stlo 2026-11-17] The depth bias of the NGL_VK_BLEND_DECAL, _DECAL_ALPHA and _DECAL_DEPTH draws, as Vulkan's (the constant in
+ * steps of the depth format, the slope as Direct3D 9's SlopeScaleDepthBias), set as their pipelines are bound. 0 and 0
+ * until set. */
+#define NGL_VK_DECAL_DEPTH_BIAS 1
+void ngl_vk_set_decal_depth_bias(float constant_factor, float slope_factor);
 #define NGL_VK_WARP_MOST_CORNERS 4096u                      /* [rexglue-native-fx] 2026-11-11 fx1 */
 /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp for the next ngl_vk_draw_quads: one triangle strip of `count`
  * corners (at most NGL_VK_WARP_MOST_CORNERS; past that it is dropped), four floats each: where the corner goes on the

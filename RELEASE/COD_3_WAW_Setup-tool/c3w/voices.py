@@ -247,7 +247,8 @@ def add_voices(source: Path, target: Path, log: Log, cancel: Optional[threading.
         log.info(f"Nothing new: the game already has this disc's voices ({already} files).")
     log.info("Voices the game can use now: " +
              ", ".join(f"{LANGUAGES[c]} ({n} banks)" for c, n in have.items() if n) +
-             ". Pick one with Voices on the Play page or in F2 > Game > Sound.")
+             ". Pick one with Voices on the Play page (Game settings > Language) or in F2 > LANGUAGE > "
+             "Voices.")  # [acct2-decomp] 2026-11-21 was F2 > Game > Sound
     return {"disc": name, "copied": len(picked), "bytes": sum(f.size for f in picked),
             "already": already, "languages": have}
 

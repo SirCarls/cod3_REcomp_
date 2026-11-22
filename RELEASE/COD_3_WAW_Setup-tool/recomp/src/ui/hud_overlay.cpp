@@ -70,6 +70,7 @@
 #include "game/use_hold.h"  // [acct2-ocr] 2026-11-07 the Use hold per split-screen player
 #include "ui/text_overlay.h"  // [acct2-ocr]
 #include "ui/film_text.h"  // [acct2-ocr]
+#include "ui/crosshair_texture.h"  // [acct2-ocr] 2026-11-21 task 125: the game's crosshair drawn sharp
 #include "game/frame_rate.h"
 #include "game/perf_stats.h"
 #include "game/machine_profile.h"  // [hw-scaling]
@@ -263,6 +264,10 @@ struct GameCrosshairView {
   std::atomic<int64_t> countdown_ns{0};
   // [acct2-ocr] 2026-11-15 (owner 20:59) the game's own spread for the dynamic styles, in its 640 x 480 HUD units
   std::atomic<float> spread{0.0f};
+  // [rexglue-native] 2026-11-17 P0 the game frames the crosshair and the countdown were asked for in (button_prompts.h FrameLatch): while
+  // the game's latest complete frame had them, the overlay refreshes ns / countdown_ns before its 150 ms check
+  cod3::prompts::FrameLatch cross_latch;
+  cod3::prompts::FrameLatch countdown_latch;
 };
 GameCrosshairView g_crosshair_views[kCrosshairViews];
 // The view the next NotifyGameCrosshair is for (SetGameCrosshairView, same guest thread).
@@ -592,6 +597,9 @@ void NotifyGameCrosshair(float aim_fraction, const float rgba[4]) {
   v.aim.store(std::clamp(aim_fraction, 0.0f, 1.0f), std::memory_order_relaxed);
   v.spread.store(g_next_spread, std::memory_order_relaxed);  // [acct2-ocr] 2026-11-15
   v.ns.store(NowNs(), std::memory_order_relaxed);
+  v.cross_latch.Note();  // [rexglue-native] 2026-11-17 P0
+  if (&v == &g_crosshair_views[0])  // [rexglue-native flicker 2026-11-17] (debug) cod3_debug_overlay_presents
+    cod3::prompts::PresentProbeAsked(cod3::prompts::ProbeElement::kCrosshair, cod3::prompts::GameFrameNow());
   // The next call is player 1's whole picture again unless its hook says otherwise.
   g_next_view = 0;
   g_next_rect[0] = g_next_rect[1] = 0.0f;
@@ -600,6 +608,8 @@ void NotifyGameCrosshair(float aim_fraction, const float rgba[4]) {
 
 bool GameCrosshairVisible() {
   const int64_t now = NowNs();
+  for (auto& v : g_crosshair_views)  // [rexglue-native] 2026-11-17 P0 the latch's refresh (see GameCrosshairView)
+    if (v.cross_latch.Holds()) v.ns.store(now, std::memory_order_relaxed);
   for (const auto& v : g_crosshair_views)
     if (now - v.ns.load(std::memory_order_relaxed) <= kCrosshairShownNs) return true;
   return false;
@@ -608,6 +618,7 @@ bool GameCrosshairVisible() {
 // [claude-9b] The crosshair preview's box (hud_overlay.h), in menu space.
 namespace {
 std::atomic<int64_t> g_preview_ns{0};
+cod3::prompts::FrameLatch g_preview_latch;  // [rexglue-native] 2026-11-17 P0 the game frames the menu asked for the preview in
 std::array<std::atomic<float>, 4> g_preview_box{};
 }  // namespace
 
@@ -615,6 +626,7 @@ void ShowCrosshairPreview(float x0, float y0, float x1, float y1) {
   const float box[4] = {x0, y0, x1, y1};
   for (int i = 0; i < 4; ++i) g_preview_box[i].store(std::isfinite(box[i]) ? box[i] : 0.0f, std::memory_order_relaxed);
   g_preview_ns.store(NowNs(), std::memory_order_relaxed);
+  g_preview_latch.Note();  // [rexglue-native] 2026-11-17 P0
 }
 
 CrosshairStyle CurrentCrosshair() {
@@ -754,6 +766,9 @@ void NotifyViewCrosshair(uint8_t* base) {
   v.aim.store(0.0f, std::memory_order_relaxed);
   v.spread.store(0.0f, std::memory_order_relaxed);
   v.ns.store(NowNs(), std::memory_order_relaxed);
+  v.cross_latch.Note();  // [rexglue-native] 2026-11-17 P0
+  if (&v == &g_crosshair_views[0])  // [rexglue-native flicker 2026-11-17] (debug) cod3_debug_overlay_presents
+    cod3::prompts::PresentProbeAsked(cod3::prompts::ProbeElement::kCrosshair, cod3::prompts::GameFrameNow());
 }
 
 // That view's player's cooked grenade: `left` of its fuse left (1 to 0).
@@ -761,6 +776,7 @@ void NotifyCountdown(uint8_t* base, float left) {
   GameCrosshairView& v = NameActiveView(base);
   v.countdown.store(std::isfinite(left) ? std::clamp(left, 0.0f, 1.0f) : 0.0f, std::memory_order_relaxed);
   v.countdown_ns.store(NowNs(), std::memory_order_relaxed);
+  v.countdown_latch.Note();  // [rexglue-native] 2026-11-17 P0
 }
 
 // [acct2-ocr] 2026-11-15 The local client's player state, as the IGO widgets read it: its entity (campaign
@@ -877,6 +893,41 @@ float GameSpread(PPCContext& ctx, uint8_t* base) {
 
 // For the CG_DrawCrosshair hook: the spread the next NotifyGameCrosshair passes on (0 for none).
 void SetNextSpread(float spread) { g_next_spread = std::isfinite(spread) && spread > 0.0f ? spread : 0.0f; }
+
+// [acct2-ocr] 2026-11-21 (owner 11:15: "for scoped bolt action rifles please force the crosshair to follow the default
+// on/off view of the crosshair when moving") The game's cross fades as the player moves (and fires): its color function
+// (campaign 0x824394A8, cod3mp 0x82452BD0) gives it the alpha CG_DrawCrosshair worked out (cg_crosshairAlpha's, by the
+// scope's fade) times 1 - the player state's aim spread scale (+0x504, cod3mp +0x524) times the game's 1/255
+// (0x8207C65C, cod3mp 0x820852E0), at least cg_crosshairAlphaMin (vmCvar 0x82A0F730, cod3mp 0x82BA0AE0). The color the
+// infantry hook reads off the stack is from before that, so the custom crosshair stayed on where the game's goes off.
+// For a weapon with a scope (the game's own test, 0x82439828 / cod3mp 0x82452FA0: the weapon's +0x650 names an
+// overlay or its +0x654 is set) this is that alpha, so the custom crosshair shows and hides as the game's would;
+// `alpha` as it was for any other weapon, or when something can't be read. It only reads.
+float ScopedCrosshairAlpha(uint8_t* base, float alpha) {
+#if defined(COD3_MP)
+  constexpr uint32_t kCgWeapon = 0x82C7E70C, kCgStride = 0x18E0, kAimSpreadScale = 0x524;
+  constexpr uint32_t kOne = 0x8206178C, kPerScale = 0x820852E0, kAlphaMinVmCvar = 0x82BA0AE0;
+#else
+  constexpr uint32_t kCgWeapon = 0x82A99E2C, kCgStride = 0x16D0, kAimSpreadScale = 0x504;
+  constexpr uint32_t kOne = 0x82064200, kPerScale = 0x8207C65C, kAlphaMinVmCvar = 0x82A0F730;
+#endif
+  constexpr uint32_t kOverlayName = 0x650, kOverlayType = 0x654;
+  auto valid = [](uint32_t a) { return a >= 0x10000000u && a < 0xF0000000u; };
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  const uint32_t ps = PlayerState(base);
+  if (client >= 4 || ps == 0) return alpha;
+  const uint32_t weapon = cod3::guest::ReadU32(base, kCgWeapon + client * kCgStride);
+  if (!valid(weapon)) return alpha;
+  const uint32_t overlay = cod3::guest::ReadU32(base, weapon + kOverlayName);
+  const bool scoped = (valid(overlay) && cod3::guest::ReadU8(base, overlay) != 0) ||
+                      cod3::guest::ReadS32(base, weapon + kOverlayType) != 0;
+  if (!scoped) return alpha;
+  const float moved = cod3::guest::ReadF32(base, ps + kAimSpreadScale) * cod3::guest::ReadF32(base, kPerScale);
+  const float faded = (cod3::guest::ReadF32(base, kOne) - moved) * alpha;
+  const float least = cod3::guest::ReadF32(base, kAlphaMinVmCvar + cod3::addr::crosshair::kVmCvarValue);
+  if (!std::isfinite(faded) || !std::isfinite(least)) return alpha;
+  return std::clamp(std::max(faded, least), 0.0f, 1.0f);
+}
 
 }  // namespace
 
@@ -1390,7 +1441,10 @@ static void DrawPadButton(ImDrawList* dl, ImFont* font, float text_size, ImVec2 
     cod3::prompts::KeyCap cap{};
     cap.look = look;
     cap.picture = true;
-    cap.name = look == Look::kNintendo ? "B" : look == Look::kGameCube ? "A" : "x";
+    // [acct2-main] 2026-11-21 the game's A as the prompts name it for the first controller (a Switch pad read by its
+    // printed letters: A; by position: B).
+    cap.name = look == Look::kNintendo || look == Look::kGameCube ? cod3::prompts::PadButtonName(0, 212) : "x";
+    if (cap.name.empty()) cap.name = look == Look::kNintendo ? "B" : "A";
     DrawPromptPicture(dl, cap, ImVec2(center.x - radius, center.y - radius), ImVec2(center.x + radius, center.y + radius),
                       a, scale);
     return;
@@ -1507,6 +1561,7 @@ static void DrawPromptKeyCaps(ImGuiIO& io) {
   // [claude-9b] Only lines drawn in the last few frames (was 150 ms: a prompt that went away left
   // its key cap on screen alone for a moment).
   const std::vector<cod3::prompts::KeyCap> caps = cod3::prompts::CurrentKeyCaps(50);
+  cod3::prompts::PresentProbeShown(cod3::prompts::ProbeElement::kKeyCaps, !caps.empty());  // [rexglue-native flicker 2026-11-17] (debug)
   if (caps.empty()) return;
   const HudArea area = CurrentHudArea(io);
   if (area.width < 1.0f || area.height < 1.0f) return;
@@ -1569,6 +1624,10 @@ static void DrawPromptKeyCaps(ImGuiIO& io) {
 // right edge, top and height from the menu and is as wide as it is tall on
 // the screen (owner 2026-10-20 21:15: "please also make sure the menu scales").
 static void DrawMenuCrosshairPreview(ImGuiIO& io) {
+  // [rexglue-native] 2026-11-17 P0 while the game's latest complete frame had the preview, its last-seen time is now (the latch)
+  if (g_preview_latch.Holds()) g_preview_ns.store(NowNs(), std::memory_order_relaxed);
+  cod3::prompts::NoteOverlayShown("menu crosshair preview",  // [rexglue-native flicker 2026-11-17]
+                                  NowNs() - g_preview_ns.load(std::memory_order_relaxed) <= 150'000'000, 1);
   if (NowNs() - g_preview_ns.load(std::memory_order_relaxed) > 150'000'000) return;
   const HudArea a = CurrentHudArea(io);
   if (a.width < 1.0f || a.height < 1.0f) return;
@@ -1591,8 +1650,13 @@ static void DrawMenuCrosshairPreview(ImGuiIO& io) {
   dl->AddRectFilled(p0, p1, IM_COL32(12, 10, 8, 215));
   dl->AddRect(p0, p1, IM_COL32(160, 130, 70, 200), 0.0f, 0, std::max(1.0f, unit * 0.75f));
   dl->PushClipRect(p0, p1, true);
-  DrawCrosshairPreviewShape(dl, ImVec2(std::floor((p0.x + p1.x) * 0.5f), std::floor((p0.y + p1.y) * 0.5f)),
-                            std::max(0.5f, io.DisplaySize.y / 1080.0f));
+  // [acct2-ocr] 2026-11-21 player 1's CS2 crosshair (f2/f2_crosshair_cs2.h, the CROSSHAIR page's), at its size on
+  // this screen, its middle on the box's (dimmed while it is off); the old shape only if the module can't draw it.
+  // The menu's box is the campaign's (one player).
+  const ImVec2 mid((p0.x + p1.x) * 0.5f, (p0.y + p1.y) * 0.5f);
+  if (!f2::xhair::DrawPreviewAt(dl, 0, mid.x, mid.y, io.DisplaySize.y))
+    DrawCrosshairPreviewShape(dl, ImVec2(std::floor(mid.x), std::floor(mid.y)),
+                              std::max(0.5f, io.DisplaySize.y / 1080.0f));
   dl->PopClipRect();
 }
 
@@ -1997,14 +2061,28 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     if (!f2::xhair::Enabled(view)) continue;
     // [acct2-ocr] 2026-11-15 the cooked grenade's countdown in this player's look (Mine or Both) is drawn too while
     // the game shows its countdown, with the crosshair or without it (the countdown alone: the game drew no crosshair)
+    // [rexglue-native] 2026-11-17 P0 while the game's latest complete frame had them, their last-seen time is now (the latch)
+    if (v.cross_latch.Holds()) v.ns.store(now, std::memory_order_relaxed);
+    if (v.countdown_latch.Holds()) v.countdown_ns.store(now, std::memory_order_relaxed);
     const bool cross = now - v.ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
     const bool countdown = now - v.countdown_ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
+    {  // [rexglue-native flicker 2026-11-17] cod3_debug_overlay_latch: this view's crosshair and countdown shown
+      static const char* const kViewNames[kCrosshairViews] = {"crosshair view 1", "crosshair view 2",
+                                                              "crosshair view 3", "crosshair view 4"};
+      cod3::prompts::NoteOverlayShown(kViewNames[view], (cross ? 1u : 0u) | (countdown ? 2u : 0u), size_t(view));
+    }
+    if (view == 0) cod3::prompts::PresentProbeShown(cod3::prompts::ProbeElement::kCrosshair, cross);  // [rexglue-native flicker 2026-11-17] (debug)
     if (!cross && !countdown) continue;
     const float aim = cross ? v.aim.load(std::memory_order_relaxed) : 0.0f;
     const float fade = std::clamp(1.0f - 2.0f * aim, 0.0f, 1.0f);
     const float rx = v.rect[0].load(std::memory_order_relaxed), ry = v.rect[1].load(std::memory_order_relaxed);
     const float rw = v.rect[2].load(std::memory_order_relaxed), rh = v.rect[3].load(std::memory_order_relaxed);
-    ImVec2 c(std::floor(io.DisplaySize.x * 0.5f), std::floor(io.DisplaySize.y * 0.5f));
+    // [acct2-ocr] 2026-11-21 (owner 11:16 "make sure the crosshair center is actually the center of the screen", 11:18
+    // "please account for splitscreen too") each view's exact middle, not cut down to a whole pixel here: the crosshair
+    // module puts the crosshair's own middle on it (f2::xhair::Place: on its middle pixel or line, whichever the
+    // thickness has), also where the middle falls between pixels (a view an odd number of pixels across, a scaled
+    // window, where cutting it here was up to a pixel off).
+    ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
     float view_h = io.DisplaySize.y;
     if (rw < 0.99f || rh < 0.99f) {
       if (!picture_known) {
@@ -2013,8 +2091,8 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
         picture_known = true;
       }
       view_h = float(picture.height) * rh;
-      c = ImVec2(std::floor(float(picture.x) + float(picture.width) * (rx + rw * 0.5f)),
-                 std::floor(float(picture.y) + float(picture.height) * (ry + rh * 0.5f)));
+      c = ImVec2(float(picture.x) + float(picture.width) * (rx + rw * 0.5f),
+                 float(picture.y) + float(picture.height) * (ry + rh * 0.5f));
     }
     f2::xhair::View xv;
     xv.cx = c.x;
@@ -2356,6 +2434,28 @@ static void DrawGlyphPreview() {
   ImGui::Dummy(ImVec2(w, h + 2 * pad));
 }
 
+// [acct2-bro] 2026-11-21 the EMULATION tab's settings (claude-9b's kEmulationSettings) split by the tab they are
+// on now (owner 09:01: Video and Emulation/Native joined, each row under its right tab): each tab's reset covers its
+// own. A name this build doesn't have is skipped by ResetSettings.
+static constexpr const char* kRendererSettings[] = {  // VIDEO > Renderer and VIDEO > GPU speed-ups
+    "cod3_native_vulkan", "cod3_renderer", "render_target_path_vulkan", "render_target_path_d3d12",
+    "readback_resolve", "readback_resolve_cpu_reads_only", "readback_resolve_cpu_pages_only",
+    "readback_resolve_full_deferred", "native_2x_msaa", "clear_memory_page_state",
+    // GPU speed-ups (SDK patches)
+    "vulkan_reuse_draw_state", "vulkan_skip_unchanged_fetch_constants", "vulkan_sampler_cache",
+    "vulkan_reuse_texture_descriptors", "vulkan_dynamic_constant_offsets", "vulkan_resolve_into_textures",
+    "vulkan_vertex_refetch", "vulkan_texture_memo", "texture_replacement_async",
+    "vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads", "async_shader_compilation",
+    "store_shaders",
+};
+static constexpr const char* kNativeCodeSettings[] = {  // SYSTEM > Native code
+    "cod3_native_crt", "cod3_native_math", "cod3_native_printf", "cod3_native_strtol", "cod3_native_lzo",
+};
+static constexpr const char* kAudioEngineSettings[] = {  // SOUND > Audio engine
+    "cod3_native_fmod", "cod3_native_fmod_mix", "cod3_native_resampler", "xma_restart_without_reopen",
+    "audio_pace_callbacks",
+};
+
 void SettingsWindow::DrawVideo() {
   if (ResetButton("reset_video", "video settings")) {
     auto& engine = cod3::Engine::Get();
@@ -2376,6 +2476,11 @@ void SettingsWindow::DrawVideo() {
 #if defined(COD3_MP)
     restart_needed_ |= ResetSettings({"cod3mp_split_shadows"});  // [claude-9b-think] F2 > Video > Shadows
 #endif
+    // [acct2-bro] 2026-11-21 the renderer and the GPU emulation's rows (they were the EMULATION tab's) reset with
+    // the rest of Video now
+    for (const char* name : kRendererSettings) restart_needed_ |= ResetSettings({name});  // [acct2-bro]
+    for (const char* name : {"cod3_perf_overlay", "cod3_perf_log"})  // [acct2-bro] 2026-11-21 Frame rate > Frame cost
+      restart_needed_ |= ResetSettings({name});
     if (engine.GameReady()) {
       engine.SetMaxFps(REXCVAR_GET(cod3_max_fps));
       engine.SetDrawFps(0);
@@ -2397,6 +2502,12 @@ void SettingsWindow::DrawVideo() {
       {"Colors", &SettingsWindow::DrawVideoColors},
       {"Quality", &SettingsWindow::DrawVideoQuality},
       // [claude-9b] 2026-10-27 "Accuracy" (the resolve readback) moved to EMULATION > GPU.
+      // [acct2-bro] 2026-11-21 (owner 09:01 "Video settings and Emulation/Native tabs should be joined"): who draws
+      // the game (the native renderer or the emulated GPU) and the emulated GPU's own rows, then its speed-ups, as
+      // Video's last two subtabs. The EMULATION tab's other two pages went where they belong: Native code to
+      // SYSTEM (was PERFORMANCE), Audio engine to SOUND.
+      {"Renderer", &SettingsWindow::DrawEmulationGpu},           // [acct2-bro]
+      {"GPU speed-ups", &SettingsWindow::DrawEmulationSpeedups},  // [acct2-bro]
   };
   for (const Page& page : kPages) {
     if (!ImGui::BeginTabItem(page.label)) continue;
@@ -2878,6 +2989,7 @@ void SettingsWindow::DrawVideoFrameRate() {
          "in milliseconds and the current limit. Green: at the limit (or 60+), yellow: 30+, red: "
          "below 30.");
   }
+  DrawFrameCost();  // [acct2-bro] 2026-11-21 from PERFORMANCE (owner 09:10)
 }
 
 // Video > Colors: the picture's colors and HDR.
@@ -3209,6 +3321,16 @@ void SettingsWindow::DrawGame() {
            "bikes, their guns), on top of the FOV scale above; the mouse turns to match. 1 is the game's "
            "own view. In the ~ console: cod3_vehicle_fov_scale.");
     }
+#if !defined(COD3_MP)
+    // [acct2-bro] 2026-11-21 F2 pass (owner 09:01 "the prompts tab should have the glyphs and the cutscene skipping
+    // settings"): the skipping rows went to Prompts, so the Cutscenes subtab kept only this view row; it is here now.
+    Section("Cutscenes");  // [acct2-bro]
+    // [claude-9b-think] 2026-10-27 UNTESTED (owner 13:19) game/ultrawide.cpp cod3_letterbox.
+    dirty_ |= CvarCheckbox("Black bars in in-game cutscenes", "cod3_letterbox", &restart_needed_);  // [acct2-decomp]
+    Help("The black bars at the top and bottom of the screen during the levels' scripted in-game scenes. Off: "
+         "the scene fills the screen; the scene itself is unchanged (the HUD stays hidden, the weapon put away, "
+         "the subtitles where the game puts them).");
+#endif
     ImGui::EndTabItem();
   }
   // [claude-9b] Weapon position with Counter-Strike 2's commands (game/viewmodel.h),
@@ -3279,48 +3401,8 @@ void SettingsWindow::DrawGame() {
     ImGui::EndTabItem();
   }
 #if !defined(COD3_MP)  // [mp] multiplayer plays no films; aim assist is per profile there (later)
-  if (ImGui::BeginTabItem("Cutscenes")) {
-    dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
-    Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
-         "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
-         "level has loaded). Without it, hold Space, Enter or Escape, the left mouse button or the "
-         "controller's A to skip one (Hold to skip, below).");
-    // [claude-9b-think] 2026-10-27 UNTESTED (owner 13:19) game/ultrawide.cpp cod3_letterbox.
-    dirty_ |= CvarCheckbox("Black bars in in-game cutscenes", "cod3_letterbox", &restart_needed_);  // [acct2-decomp]
-    Help("The black bars at the top and bottom of the screen during the levels' scripted in-game scenes. Off: "
-         "the scene fills the screen; the scene itself is unchanged (the HUD stays hidden, the weapon put away, "
-         "the subtitles where the game puts them).");
-    // [acct2-decomp] The skip prompt's rows (they were on the Prompts tab): greyed out while they do nothing.
-    const bool auto_skip = GetBool("cod3_skip_movies");
-    Section("Skip prompt and hold");
-    if (auto_skip) ImGui::TextDisabled("Skip cutscenes automatically is on: there is nothing to hold or show.");
-    ImGui::BeginDisabled(auto_skip);
-    dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
-    Help("Shows \"SPACE Skip\" (a controller's button while you use one) while a level's briefing can be "
-         "skipped: for 4 seconds when it starts and again for 4 seconds after any key or button press.");
-    {
-      const char* v[] = {"corner", "bottom_center"};
-      const char* n[] = {"Bottom-right corner", "Bottom center"};
-      ImGui::BeginDisabled(!GetBool("cod3_skip_prompt"));
-      dirty_ |= CvarCombo("Skip prompt position", "cod3_skip_prompt_position", v, n, 2, &restart_needed_);
-      ImGui::EndDisabled();
-      Help("The corner keeps it out of the subtitles' way; bottom center is where it was.");
-    }
-    if (Has("cod3_skip_hold_ms")) {
-      int ms = std::clamp(GetInt("cod3_skip_hold_ms", 1000), 0, 5000);
-      if (SliderIntBox("Hold to skip", &ms, 0, 5000, "%d ms")) {
-        rex::cvar::SetFlagByName("cod3_skip_hold_ms", std::to_string(std::clamp(ms, 0, 5000)));
-        dirty_ = true;
-      }
-      Help("How long Space, Enter, Escape, the left mouse button or the controller's A / START is held to skip; "
-           "the prompt fills while you hold, and letting go early cancels. While the prompt is hidden, the first "
-           "press only shows it. 0: a press skips at once.");
-      if (!GetBool("cod3_skip_prompt") && ms > 0)
-        ImGui::TextDisabled("The prompt is off: the hold still counts, with no fill to show it (0 skips on a press).");
-    }
-    ImGui::EndDisabled();
-    ImGui::EndTabItem();
-  }
+  // [acct2-bro] 2026-11-21 the Cutscenes subtab is gone: its skipping rows are on Prompts (DrawGamePrompts), its
+  // black bars row on View (owner 09:01).
   if (ImGui::BeginTabItem("Aim")) {
     if (auto on = cod3::AimAssistEnabled()) {
       bool v = *on;
@@ -3513,11 +3595,17 @@ void SettingsWindow::DrawGamePrompts() {
     const char* n[] = {"Each controller's own", "Xbox 360 (the game's own)", "PlayStation 4 / 5",
                        "PlayStation 2", "Nintendo Switch", "GameCube"};
     dirty_ |= CvarCombo("Controller button style", "cod3_glyph_style", v, n, 6, &restart_needed_);
+    // [acct2-main] 2026-11-21 (owner 12:28): auto names GameCube controllers too, and a Switch or GameCube pad read by
+    // its printed letters (input_nintendo_buttons label) shows those letters.
     Help("How the prompts show controller buttons. Each controller's own: every player sees the "
          "buttons of the controller in their hands (an Xbox pad the game's pictures, a "
-         "PlayStation pad the PlayStation 4 / 5 style, a Switch pad its own). The other choices "
-         "show one style to everyone. PlayStation, Nintendo and GameCube buttons are simple "
-         "pictures of our own (with \"Keys as key caps\" on; else their names).");
+         "PlayStation pad the PlayStation 4 / 5 style (a PS3 pad, or a PS1 / PS2 one on an adapter, the "
+         "PlayStation 2 style: START and SELECT), a Switch pad its own, a GameCube controller "
+         "its own, as SDL and the controller database (SDL_GameControllerDB) name it; a Switch or GameCube pad whose A B X Y are read by their printed letters shows "
+         "those letters), detected again whenever a player picks up another controller. The other "
+         "choices show one style to everyone. PlayStation, Nintendo and GameCube buttons are simple "
+         "pictures of our own (with \"Keys as key caps\" on; else their names). Controls > "
+         "Controller shows each player's controller and its button names.");
   }
   {
     // [claude-setup] 2026-11-03 (owner ~09:55: by default the buttons as the original, a toggle for customized
@@ -3561,7 +3649,46 @@ void SettingsWindow::DrawGamePrompts() {
   ImGui::TextDisabled("Every color above back to its default.");
   DrawGlyphPreview();
   dirty_ |= DrawQteSettings();  // Battle actions (ui/qte_spinner.h): the stick actions' prompts
-  // [acct2-decomp] The cutscene skip prompt's rows are on the Cutscenes tab now, next to the automatic skip.
+#if !defined(COD3_MP)  // [mp] multiplayer plays no films
+  // [acct2-bro] 2026-11-21 (owner 09:01 "the prompts tab should have the glyphs and the cutscene skipping
+  // settings"): the automatic skip, the skip prompt and the hold, moved here from the Cutscenes subtab as they were
+  // (the rows greyed out while the automatic skip leaves nothing to hold or show).
+  Section("Cutscene skipping");  // [acct2-bro]
+  dirty_ |= CvarCheckbox("Skip cutscenes automatically", "cod3_skip_movies", &restart_needed_);
+  Help("Skips the logos at start, each level's briefing film and the level's opening intro as "
+       "soon as the game allows it (the legal screen stays 5 seconds; a briefing only once the "
+       "level has loaded). Without it, hold Space, Enter or Escape, the left mouse button or the "
+       "controller's A to skip one (Hold to skip, below).");
+  {
+    const bool auto_skip = GetBool("cod3_skip_movies");
+    if (auto_skip) ImGui::TextDisabled("Skip cutscenes automatically is on: there is nothing to hold or show.");
+    ImGui::BeginDisabled(auto_skip);
+    dirty_ |= CvarCheckbox("Show the skip prompt", "cod3_skip_prompt", &restart_needed_);
+    Help("Shows \"SPACE Skip\" (a controller's button while you use one) while a level's briefing can be "
+         "skipped: for 4 seconds when it starts and again for 4 seconds after any key or button press.");
+    {
+      const char* v[] = {"corner", "bottom_center"};
+      const char* n[] = {"Bottom-right corner", "Bottom center"};
+      ImGui::BeginDisabled(!GetBool("cod3_skip_prompt"));
+      dirty_ |= CvarCombo("Skip prompt position", "cod3_skip_prompt_position", v, n, 2, &restart_needed_);
+      ImGui::EndDisabled();
+      Help("The corner keeps it out of the subtitles' way; bottom center is where it was.");
+    }
+    if (Has("cod3_skip_hold_ms")) {
+      int ms = std::clamp(GetInt("cod3_skip_hold_ms", 1000), 0, 5000);
+      if (SliderIntBox("Hold to skip", &ms, 0, 5000, "%d ms")) {
+        rex::cvar::SetFlagByName("cod3_skip_hold_ms", std::to_string(std::clamp(ms, 0, 5000)));
+        dirty_ = true;
+      }
+      Help("How long Space, Enter, Escape, the left mouse button or the controller's A / START is held to skip; "
+           "the prompt fills while you hold, and letting go early cancels. While the prompt is hidden, the first "
+           "press only shows it. 0: a press skips at once.");
+      if (!GetBool("cod3_skip_prompt") && ms > 0)
+        ImGui::TextDisabled("The prompt is off: the hold still counts, with no fill to show it (0 skips on a press).");
+    }
+    ImGui::EndDisabled();
+  }
+#endif
   // [acct2-decomp] 2026-11-05 (owner 08:50: "reduce or completely eliminate the need to "press and hold""): how
   // long Use is held (game/use_hold.h), both programs.
   if (Has("cod3_use_hold_ms")) {
@@ -3628,6 +3755,8 @@ void SettingsWindow::DrawGamePrompts() {
 void SettingsWindow::DrawSound() {
   if (ResetButton("reset_sound", "sound settings")) {
     ResetSettings({"cod3_volume", "audio_device", "audio_output_layout"});  // [acct2-decomp] + speakers
+    // [acct2-bro] 2026-11-21 the audio engine's rows (from EMULATION) are on this page now; most apply at a restart
+    for (const char* name : kAudioEngineSettings) restart_needed_ |= ResetSettings({name});  // [acct2-bro]
     Save();  // at once, as a picked sound output is (DrawSoundOutput)
   }
   if (Has("cod3_volume")) {
@@ -3641,31 +3770,59 @@ void SettingsWindow::DrawSound() {
   }
   DrawSoundOutput();
   DrawSpeakerLayout();  // [acct2-decomp]
-  if (cod3::voice::DrawSettingsRow()) Save();  // [voice] saved at once, as the sound output is
-  if (cod3::text::DrawSettingsRow()) Save();  // [acct2-ocr] the text language, next to the voices
-  // [f2-menus] 2026-11-11 The console language (the SDK's user_language, what XGetLanguage answers): the setup
-  // tool's "Console language", which F2 had no row for (owner 14:00: the language options in F2, the setup tool
-  // and in-game change each other).
-  if (Has("user_language")) {
-    static const char* const kConsoleValues[] = {"1", "3", "4", "5", "6"};
-    static const char* const kConsoleNames[] = {"English", "German", "French", "Spanish", "Italian"};
-    const std::string now = Get("user_language");
-    if (std::find_if(std::begin(kConsoleValues), std::end(kConsoleValues),
-                     [&](const char* v) { return now == v; }) == std::end(kConsoleValues))
-      ImGui::TextDisabled("Console language now: %s (set outside this list)", now.c_str());
-    if (CvarCombo("Console language", "user_language", kConsoleValues, kConsoleNames, 5, &restart_needed_)) Save();
-#if defined(COD3_MP)
-    Help("The console's language, the setup tool's Console language (the same setting, kept with the campaign's). "
-         "Multiplayer plays no films. On the French, Spanish and Italian disc the campaign also takes its own "
-         "text and voices from it (Spanish, Italian, else French) at its next start.");
-#else
-    Help("The console's language, the setup tool's Console language (the same setting). The films play their "
-         "sound in it from the next film on while Voices is the game's own (a film without that language plays "
-         "English). On the French, Spanish and Italian disc the game also takes its own text and voices from it "
-         "(Spanish, Italian, else French) after a restart; on the USA and German discs they stay the disc's, and "
-         "Voices and Text above choose others.");
-#endif
+  // [acct2-decomp] 2026-11-21 Voices, Text and Console language are on LANGUAGE now (DrawLanguage).
+  // [acct2-bro] 2026-11-21 (owner 09:01: the Emulation/Native rows under their right tabs) EMULATION > Audio engine,
+  // below the sound settings it serves.
+  Section("Audio engine");  // [acct2-bro]
+  Help("How the game's sound engine runs: its busiest parts as native PC code, and how the Xbox 360's sound chip is "
+       "emulated. Each was checked to sound the same; untick one only to compare. Most apply after a restart.");
+  DrawEmulationSound();  // [acct2-bro]
+}
+
+// [acct2-decomp] 2026-11-21 LANGUAGE, right after SOUND (owner 10:38: "f2 and setup tool for languages needs
+// organization/grouping/tabbing"; asked how, he chose a tab of its own with Text, Voices and Console): the three
+// language rows had been on SOUND between the speakers and the audio engine. Each is saved at once, as before.
+void SettingsWindow::DrawLanguage() {
+  if (!ImGui::BeginTabBar("##language_views")) return;
+  if (ImGui::BeginTabItem("Text")) {
+    Help("The words on screen: menus, prompts, hints, objectives, subtitles, loading screens and credits. What the "
+         "soldiers speak is under Voices.");
+    if (cod3::text::DrawSettingsRow()) Save();  // [acct2-ocr]
+    ImGui::EndTabItem();
   }
+  if (ImGui::BeginTabItem("Voices")) {
+    if (cod3::voice::DrawSettingsRow()) Save();  // [voice]
+    ImGui::EndTabItem();
+  }
+  if (Has("user_language") && ImGui::BeginTabItem("Console language")) {
+    DrawConsoleLanguage();
+    ImGui::EndTabItem();
+  }
+  ImGui::EndTabBar();
+}
+
+// [f2-menus] 2026-11-11 The console language (the SDK's user_language, what XGetLanguage answers): the setup
+// tool's "Console language", which F2 had no row for (owner 14:00: the language options in F2, the setup tool
+// and in-game change each other). [acct2-decomp] 2026-11-21 moved from SOUND to LANGUAGE > Console language.
+void SettingsWindow::DrawConsoleLanguage() {
+  static const char* const kConsoleValues[] = {"1", "3", "4", "5", "6"};
+  static const char* const kConsoleNames[] = {"English", "German", "French", "Spanish", "Italian"};
+  const std::string now = Get("user_language");
+  if (std::find_if(std::begin(kConsoleValues), std::end(kConsoleValues),
+                   [&](const char* v) { return now == v; }) == std::end(kConsoleValues))
+    ImGui::TextDisabled("Console language now: %s (set outside this list)", now.c_str());
+  if (CvarCombo("Console language", "user_language", kConsoleValues, kConsoleNames, 5, &restart_needed_)) Save();
+#if defined(COD3_MP)
+  Help("The console's language, the setup tool's Console language (the same setting, kept with the campaign's). "
+       "Multiplayer plays no films. On the French, Spanish and Italian disc the campaign also takes its own "
+       "text and voices from it (Spanish, Italian, else French) at its next start.");
+#else
+  Help("The console's language, the setup tool's Console language (the same setting). The films play their "
+       "sound in it from the next film on while Voices is the game's own (a film without that language plays "
+       "English). On the French, Spanish and Italian disc the game also takes its own text and voices from it "
+       "(Spanish, Italian, else French) after a restart; on the USA and German discs they stay the disc's, and "
+       "the Voices and Text tabs here choose others.");
+#endif
 }
 
 // The sound output device (SDK patch 0032, rex/audio/output_device.h). The
@@ -4106,6 +4263,15 @@ bool PadButtonsSeat(int seat) {
   const bool have = cod3::binds::padbinds::SeatLayout(seat, &layout, layout_text);
   bool changed = false;
   ImGui::PushID(name);
+  // [acct2-main] 2026-11-21 (owner 12:28: "Please make sure the controls tab also knows"): the controller this seat
+  // plays with as the prompts see it, and the buttons below in its names (cod3_glyph_style; auto: its own).
+  const int seat_pad = cod3::binds::padbinds::SeatPad(seat);
+  const uint32_t pad_user = seat_pad >= 0 ? uint32_t(seat_pad) : uint32_t(seat);
+  const char* pad_style = cod3::prompts::PadStyleName(pad_user);
+  const bool xbox_names = std::string_view(pad_style).substr(0, 4) == "Xbox";
+  ImGui::TextWrapped("Controller %u: %s. Buttons shown as %s%s.", pad_user + 1,
+                     cod3::prompts::PadDescription(pad_user).c_str(), pad_style,
+                     cod3::prompts::PadStyleIsAuto() ? " (its own)" : " (Game > Prompts sets one style for all)");
   if (!have) {
     ImGui::TextDisabled("Start a level to change these: the game's button layout is read then.");
     ImGui::BeginDisabled();
@@ -4124,7 +4290,16 @@ bool PadButtonsSeat(int seat) {
       ImGui::TableNextRow();
       ImGui::TableNextColumn();
       ImGui::AlignTextToFramePadding();
-      ImGui::TextUnformatted(pad::ButtonLabel(button));
+      {
+        // [acct2-main] 2026-11-21 the button as this controller names it, the game's (Xbox) name after it.
+        const int key = pad::GameKey(button);
+        const bool dpad = key >= 154 && key <= 157;
+        const std::string own = xbox_names || dpad ? std::string() : cod3::prompts::PadButtonName(pad_user, key);
+        if (own.empty())
+          ImGui::TextUnformatted(pad::ButtonLabel(button));
+        else
+          ImGui::Text("%s (%s)", own.c_str(), pad::ButtonLabel(button));
+      }
       const pad::ButtonBinds now = pad::Effective(set, layout, button);
       for (int s = 0; s < pad::kPadSlots; ++s) {
         ImGui::TableNextColumn();
@@ -4425,8 +4600,9 @@ static bool ApplyLowEndPreset() {
       {"cod3_gpu_wait_sleeps", "true"},
       {"global_lock_spin_us", "-1"},  // automatic: no spinning below 6 logical CPUs
       {"gpu_idle_spin_count", "-1"},  // same
-      // The GPU emulation's speed-ups and the native code back on (they're on by default; F2 > EMULATION can
-      // turn them off for a comparison).
+      // The GPU emulation's speed-ups and the native code back on (they're on by default; F2 > Video > GPU
+      // speed-ups and System > Native code can turn them off for a comparison). [acct2-bro] 2026-11-21 tabs
+
       {"vulkan_reuse_draw_state", "true"},
       {"vulkan_skip_unchanged_fetch_constants", "true"},
       {"vulkan_sampler_cache", "true"},
@@ -4502,14 +4678,18 @@ static bool CvarCheckboxHelp(const char* label, const char* cvar, const char* he
   return changed;
 }
 
-static constexpr const char* kPerformanceSettings[] = {
-    "cod3_perf_overlay", "cod3_perf_log", "cod3_job_wait_sleeps", "cod3_gpu_wait_sleeps", "cod3_log_detail",
-    "cod3_debug_screenshots",
-};
+// [acct2-bro] 2026-11-21 (owner 09:10 "I think the performance tab should be either re-named or merged with other
+// tabs"): PERFORMANCE is SYSTEM now, the PC's side of things: the low-end setup, how the CPU waits and the native
+// code (from EMULATION). Its frame cost rows went to VIDEO > Frame rate (DrawFrameCost), next to the frame rate
+// limit and the FPS counter they explain; its logs, report and screenshots to CONSOLE > Logs and reports
+// (DrawLogsAndReports). Each page's reset covers the rows on it (kPerformanceSettings split three ways).
+static constexpr const char* kSystemSettings[] = {"cod3_job_wait_sleeps", "cod3_gpu_wait_sleeps"};
+static constexpr const char* kLogSettings[] = {"cod3_log_detail", "cod3_debug_screenshots"};
 
-void SettingsWindow::DrawPerformance() {
-  if (ResetButton("reset_perf", "performance settings")) {
-    for (const char* name : kPerformanceSettings) restart_needed_ |= ResetSettings({name});
+void SettingsWindow::DrawPerformance() {  // the SYSTEM tab (the function keeps its name)
+  if (ResetButton("reset_perf", "system settings")) {
+    for (const char* name : kSystemSettings) restart_needed_ |= ResetSettings({name});
+    for (const char* name : kNativeCodeSettings) restart_needed_ |= ResetSettings({name});  // [acct2-bro] 2026-11-21
     dirty_ = true;
   }
   Section("Quick setup");
@@ -4527,7 +4707,7 @@ void SettingsWindow::DrawPerformance() {
     ImGui::BulletText("Model shadows off (the sunlight stays); depth of field and motion blur off");
     if (cod3::kMultiplayer) ImGui::BulletText("Split screen: grass drawn to 60%% of its distance");
     ImGui::BulletText("Waiting threads sleep instead of spinning, so the GPU emulation keeps its core");
-    ImGui::BulletText("Every EMULATION speed-up and native code switch on; test checks off");
+    ImGui::BulletText("Every GPU speed-up (Video) and native code switch (below) on; test checks off");  // [acct2-bro]
     ImGui::BulletText("Frame cost overlay off, normal log detail");
     ImGui::TextDisabled("The game's speed, the frame rate limit, V-Sync and the lens-flare fix "
                         "don't change.");
@@ -4540,9 +4720,27 @@ void SettingsWindow::DrawPerformance() {
     if (ImGui::Button("Cancel")) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
-  Help("Turns down what costs most on a slow PC (in Video, EMULATION and here), with the list shown first. If "
-       "something in the world then stops updating, turn on EMULATION > GPU > \"Re-send all memory\".");
+  // [acct2-bro] 2026-11-21 EMULATION's pages are in Video and here now
+  Help("Turns down what costs most on a slow PC (in Video and here), with the list shown first. If "
+       "something in the world then stops updating, turn on Video > Renderer > \"Re-send all memory\".");
 
+  // [acct2-bro] 2026-11-15 moved here from EMULATION > Native code: they decide how much CPU waiting costs.
+  Section("CPU");
+  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the game's own jobs", "cod3_job_wait_sleeps",
+                             "The game's thread sleeps until its jobs are done instead of checking over and over, "
+                             "which leaves CPU time for the rest.", &restart_needed_);
+  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the GPU emulation", "cod3_gpu_wait_sleeps",
+                             "The game's thread sleeps while the graphics emulation works, instead of keeping a CPU "
+                             "core busy.", &restart_needed_);
+  // [acct2-bro] 2026-11-21 EMULATION > Native code, next to the CPU rows (owner 09:01: Emulation/Native under the
+  // right tabs): it decides which of the game's code runs as native PC code.
+  Section("Native code");  // [acct2-bro]
+  DrawEmulationNative();   // [acct2-bro]
+
+}
+
+// [acct2-bro] 2026-11-21 VIDEO > Frame rate's Frame cost section (was PERFORMANCE > Frame cost; owner 09:10).
+void SettingsWindow::DrawFrameCost() {
   Section("Frame cost");
   dirty_ |= CvarCheckboxHelp("Show what each frame costs", "cod3_perf_overlay",
                              "Under the frame rate: the game thread's time, the GPU emulation's draws and waits, the "
@@ -4599,16 +4797,15 @@ void SettingsWindow::DrawPerformance() {
     ImGui::TextUnformatted(pc.c_str());
     ImGui::TreePop();
   }
+}
 
-  // [acct2-bro] 2026-11-15 moved here from EMULATION > Native code: they decide how much CPU waiting costs.
-  Section("CPU");
-  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the game's own jobs", "cod3_job_wait_sleeps",
-                             "The game's thread sleeps until its jobs are done instead of checking over and over, "
-                             "which leaves CPU time for the rest.", &restart_needed_);
-  dirty_ |= CvarCheckboxHelp("Sleep while waiting for the GPU emulation", "cod3_gpu_wait_sleeps",
-                             "The game's thread sleeps while the graphics emulation works, instead of keeping a CPU "
-                             "core busy.", &restart_needed_);
-
+// [acct2-bro] 2026-11-21 CONSOLE > Logs and reports (were PERFORMANCE's last two sections; owner 09:10), with a
+// reset of their own.
+void SettingsWindow::DrawLogsAndReports() {
+  if (ResetButton("reset_logs", "log settings")) {
+    for (const char* name : kLogSettings) restart_needed_ |= ResetSettings({name});
+    dirty_ = true;
+  }
   Section("Logs and reports");
   {
     const char* v[] = {"normal", "verbose", "debug"};
@@ -4663,55 +4860,15 @@ void SettingsWindow::DrawPerformance() {
 }
 
 // [claude-9b] 2026-10-27 EMULATION (owner 17:09: "make a emulation tab in the f2 menu for the emulation
-// toggles"): every setting about how the Xbox 360 is emulated, or which of the game's own code runs as native
-// code instead, in one place. A row only shows when this build has its setting (Has()), so builds without an SDK
-// patch, the other graphics API and cod3mp all work.
-// [acct2-bro] 2026-11-15 the native renderer switch is reset with the rest; the two waiting rows went to
-// PERFORMANCE > CPU.
-static constexpr const char* kEmulationSettings[] = {
-    "cod3_native_vulkan", "cod3_renderer", "render_target_path_vulkan", "render_target_path_d3d12",
-    "readback_resolve", "readback_resolve_cpu_reads_only", "readback_resolve_cpu_pages_only",
-    "readback_resolve_full_deferred", "native_2x_msaa", "clear_memory_page_state",
-    // GPU speed-ups (SDK patches)
-    "vulkan_reuse_draw_state", "vulkan_skip_unchanged_fetch_constants", "vulkan_sampler_cache",
-    "vulkan_reuse_texture_descriptors", "vulkan_dynamic_constant_offsets", "vulkan_resolve_into_textures",
-    "vulkan_vertex_refetch", "vulkan_texture_memo", "texture_replacement_async",
-    "vulkan_pipeline_creation_threads", "d3d12_pipeline_creation_threads", "async_shader_compilation",
-    "store_shaders",
-    // Native code
-    "cod3_native_crt", "cod3_native_math", "cod3_native_printf", "cod3_native_strtol", "cod3_native_lzo",
-    // Sound
-    "cod3_native_fmod", "cod3_native_fmod_mix", "cod3_native_resampler", "xma_restart_without_reopen",
-    "audio_pace_callbacks",
-};
+// toggles") had these four pages under one tab. [acct2-bro] 2026-11-21 (owner 09:01 "Video settings and
+// Emulation/Native tabs should be joined. Please merge them appropriately, have the emulation/native specific
+// settings under the right tabs/sub tabs"): the tab is gone and each page is drawn where its settings belong:
+// GPU as VIDEO > Renderer, GPU speed-ups as VIDEO > GPU speed-ups, Native code on SYSTEM, Audio engine on
+// SOUND. Their settings lists are above DrawVideo (kRendererSettings, kNativeCodeSettings, kAudioEngineSettings).
+// A row still only shows when this build has its setting (Has()).
 
-void SettingsWindow::DrawEmulation() {
-  if (ResetButton("reset_emulation", "emulation settings")) {
-    for (const char* name : kEmulationSettings) restart_needed_ |= ResetSettings({name});
-    dirty_ = true;
-  }
-  Help("How the Xbox 360 is emulated, and which of the game's code runs as native PC code. The defaults are the "
-       "tested, fastest ones; most of these apply after a restart.");
-  if (!ImGui::BeginTabBar("##emulation_views")) return;
-  struct Page {
-    const char* label;
-    void (SettingsWindow::*draw)();
-  };
-  static constexpr Page kPages[] = {
-      {"GPU", &SettingsWindow::DrawEmulationGpu},
-      {"GPU speed-ups", &SettingsWindow::DrawEmulationSpeedups},
-      {"Native code", &SettingsWindow::DrawEmulationNative},
-      {"Audio engine", &SettingsWindow::DrawEmulationSound},  // [acct2-decomp] not the SOUND tab
-  };
-  for (const Page& page : kPages) {
-    if (!ImGui::BeginTabItem(page.label)) continue;
-    (this->*page.draw)();
-    ImGui::EndTabItem();
-  }
-  ImGui::EndTabBar();
-}
-
-// EMULATION > GPU: who draws the game, and how the Xbox 360's graphics chip and its memory are emulated.
+// VIDEO > Renderer (was EMULATION > GPU): who draws the game, and how the Xbox 360's graphics chip and its memory
+// are emulated.
 void SettingsWindow::DrawEmulationGpu() {
   // [f2-menus] 2026-11-11 08:16 Who draws, as one switch. The owner (08:15): "the f2 menu still has mentions of the
   // rust renderer. It should be vulkan and the toggle box should be able to be pressed if they desire." and "and
@@ -4757,7 +4914,7 @@ void SettingsWindow::DrawEmulationGpu() {
       Help("With the native renderer on, the GPU emulation rows below and on GPU speed-ups do nothing.");
   }
 
-  Section("Graphics memory");
+  Section("Emulated GPU: render memory");  // [acct2-bro] 2026-11-21 was "Graphics memory" (now under Video)
   {
     // How the Xbox 360's EDRAM (the GPU's own render memory) is emulated.
     const char* v[] = {"", "fbo", "fsi"};
@@ -4781,7 +4938,7 @@ void SettingsWindow::DrawEmulationGpu() {
                              "the Xbox 360 but about twice the GPU work. Applies after a restart.",
                              &restart_needed_);
 
-  Section("Resolve readback");
+  Section("Emulated GPU: resolve readback");  // [acct2-bro] 2026-11-21 was "Resolve readback"
   if (Has("readback_resolve")) {
     const char* v[] = {"none", "fast", "some", "full"};
     const char* n[] = {"Off", "Fast (recommended)", "On cache miss", "Full (accurate, slow)"};
@@ -4800,14 +4957,15 @@ void SettingsWindow::DrawEmulationGpu() {
                              "With Full, the GPU emulation doesn't stop at each copy to wait for the card.",
                              &restart_needed_);
 
-  Section("Memory");
+  Section("Emulated GPU: memory updates");  // [acct2-bro] 2026-11-21 was "Memory"
   dirty_ |= CvarCheckboxHelp("Re-send all memory the game wrote, every frame", "clear_memory_page_state",
                              "Off (the default) sends only what changed since the last frame. Turn it on only if "
                              "something in the world goes missing or stops updating (slower).",
                              &restart_needed_);
 }
 
-// EMULATION > GPU speed-ups: shortcuts our SDK patches added to the GPU emulation. Each one is on by default
+// VIDEO > GPU speed-ups (was EMULATION > GPU speed-ups): shortcuts our SDK patches added to the GPU emulation.
+// Each one is on by default
 // and was checked to draw the same picture; turning one off is for comparing, or for a picture problem.
 void SettingsWindow::DrawEmulationSpeedups() {
   if (!Has("vulkan_reuse_draw_state") && !Has("vulkan_sampler_cache"))
@@ -4879,7 +5037,8 @@ void SettingsWindow::DrawEmulationSpeedups() {
   }
 }
 
-// EMULATION > Native code: parts of the game's own code that run as hand-written PC code instead of the
+// SYSTEM > Native code (was EMULATION > Native code): parts of the game's own code that run as hand-written PC
+// code instead of the
 // translated Xbox 360 code. Each one is checked against the game's code; turning one off runs the game's own
 // code there again.
 void SettingsWindow::DrawEmulationNative() {
@@ -4896,10 +5055,10 @@ void SettingsWindow::DrawEmulationNative() {
                              "Turning text into numbers (strtol, atoi and the like).", &restart_needed_);
   dirty_ |= CvarCheckboxHelp("Level file unpacking", "cod3_native_lzo",
                              "Unpacking the level files while a level loads (LZO).", &restart_needed_);
-  Help("The two \"sleep while waiting\" rows are on PERFORMANCE > CPU.");  // [acct2-bro] 2026-11-15
 }
 
-// EMULATION > Audio engine: the sound engine's busiest parts as native code, and how the Xbox 360's sound chip is
+// SOUND > Audio engine (was EMULATION > Audio engine): the sound engine's busiest parts as native code, and how
+// the Xbox 360's sound chip is
 // emulated.
 void SettingsWindow::DrawEmulationSound() {
   dirty_ |= CvarCheckboxHelp("Native reverb (FMOD)", "cod3_native_fmod",
@@ -4977,6 +5136,11 @@ void SettingsWindow::DrawConsole() {
     DrawProblemsPage();
     ImGui::EndTabItem();
   }
+  // [acct2-bro] 2026-11-21 the log, the report and the screenshots (were on PERFORMANCE; owner 09:10)
+  if (ImGui::BeginTabItem("Logs and reports")) {
+    DrawLogsAndReports();
+    ImGui::EndTabItem();
+  }
   if (ImGui::BeginTabItem("Saved settings")) {
     DrawSavedConsoleSettings();
     ImGui::EndTabItem();
@@ -5036,10 +5200,13 @@ void SettingsWindow::OnDraw(ImGuiIO& io) {
     };
     static constexpr Tab kTabs[] = {
         {"VIDEO", &SettingsWindow::DrawVideo},         {"SOUND", &SettingsWindow::DrawSound},
+        {"LANGUAGE", &SettingsWindow::DrawLanguage},  // [acct2-decomp] 2026-11-21 (owner 10:38)
         {"GAME", &SettingsWindow::DrawGame},
         {"CROSSHAIR", &SettingsWindow::DrawCrosshair}, {"CONTROLS", &SettingsWindow::DrawControls},
-        {"INTERFACE", &SettingsWindow::DrawInterface}, {"PERFORMANCE", &SettingsWindow::DrawPerformance},
-        {"EMULATION", &SettingsWindow::DrawEmulation},  // [claude-9b] 2026-10-27
+        {"INTERFACE", &SettingsWindow::DrawInterface},
+        {"SYSTEM", &SettingsWindow::DrawPerformance},  // [acct2-bro] 2026-11-21 was PERFORMANCE (owner 09:10)
+        // [claude-9b] 2026-10-27 EMULATION was here; [acct2-bro] 2026-11-21 its pages are in VIDEO, SYSTEM and
+        // SOUND now (owner 09:01).
         {"CONSOLE", &SettingsWindow::DrawConsole},
     };
     ImGui::PushFont(BoldFont(), 0.0f);
@@ -5108,8 +5275,10 @@ bool Cod3CrosshairHook(PPCRegister& f29, PPCRegister& r1, uint8_t* base) {
   if (plan.mine) {
     namespace ch = cod3::addr::crosshair;
     const uint32_t at = r1.u32 + ch::kColorOnStack;
+    // [acct2-ocr] 2026-11-21 a scoped weapon's alpha as the game's cross takes it: off as it goes off when moving
     const float rgba[4] = {cod3::guest::ReadF32(base, at), cod3::guest::ReadF32(base, at + 4),
-                           cod3::guest::ReadF32(base, at + 8), cod3::guest::ReadF32(base, at + 12)};
+                           cod3::guest::ReadF32(base, at + 8),
+                           cod3::ui::ScopedCrosshairAlpha(base, cod3::guest::ReadF32(base, at + 12))};
     cod3::ui::NotifyGameCrosshair(static_cast<float>(f29.f64), rgba);
   }
   return !plan.game;
@@ -5211,7 +5380,10 @@ REX_HOOK_RAW(sub_8245D9F8) {  // CG_DrawCrosshair (codmp_xenonf.xex)
   const bool on_foot = (flags & 0x6000u) == 0 && !t_vehicle_crosshair;
   if (on_foot && f2::xhair::Enabled(cod3::ui::ActiveView(base)))
     cod3::ui::SetNextSpread(cod3::ui::GameSpread(ctx, base));
-  __imp__sub_8245D9F8(ctx, base);
+  {  // [acct2-ocr] 2026-11-21 task 125: the quads drawn meanwhile are the crosshair's (ui/crosshair_texture.h)
+    cod3::crosshair_texture::Drawing drawing;
+    __imp__sub_8245D9F8(ctx, base);
+  }
   cod3::ui::SetNextSpread(0.0f);
   t_vehicle_crosshair = false;
 }
@@ -5227,7 +5399,10 @@ REX_HOOK_RAW(CG_DrawCrosshair) {
   const bool on_foot = (flags & 0x6000u) == 0 && !t_vehicle_crosshair;
   if (on_foot && f2::xhair::Enabled(cod3::ui::ActiveView(base)))
     cod3::ui::SetNextSpread(cod3::ui::GameSpread(ctx, base));
-  __imp__CG_DrawCrosshair(ctx, base);
+  {  // [acct2-ocr] 2026-11-21 task 125: the quads drawn meanwhile are the crosshair's (ui/crosshair_texture.h)
+    cod3::crosshair_texture::Drawing drawing;
+    __imp__CG_DrawCrosshair(ctx, base);
+  }
   cod3::ui::SetNextSpread(0.0f);
   t_vehicle_crosshair = false;
 }

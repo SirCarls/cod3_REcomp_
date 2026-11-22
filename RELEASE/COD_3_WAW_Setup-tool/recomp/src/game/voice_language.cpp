@@ -1242,14 +1242,16 @@ bool DrawSettingsRow() {
   // [acct2-ocr] 2026-11-07 cod3mp: at the next map (RefreshBanks); the Germany disc has German, the Fr/Es/It disc French
   const std::string help =
       "The language the soldiers speak. Another disc's voices (German, or French) come from the setup "
-      "tool: Play page > Add voices from another disc. The text has its own setting (Text, below). In "
+      "tool: Play page > Game settings > Language > Add voices from another disc. The text has its own "
+      "setting: the Text tab. In "
       "multiplayer a change is heard from the next map. Installed: " +
       (installed.empty() ? std::string("none found") : installed) + ".";
 #else
   const std::string help =
       "The language the soldiers speak in the campaign and its films. Another disc's voices "
-      "(German, or French, Spanish and Italian) come from the setup tool: Play page > Add voices "
-      "from another disc. The text has its own setting (Text, below). Films change from the next "
+      "(German, or French, Spanish and Italian) come from the setup tool: Play page > Game settings > "
+      "Language > Add voices from another disc. The text has its own setting: the Text tab. Films change "
+      "from the next "
       "film. The soldiers change within a few seconds: the battle chatter as soon as it is quiet, "
       // [acct2-ocr] 2026-11-07 a level's own speech next to its sounds (TryOverlay)
       "a level's own lines by loading the new voice's speech next to the level's sounds; only "
@@ -1257,7 +1259,7 @@ bool DrawSettingsRow() {
       "that is playing is cut off. Installed: " +
       (installed.empty() ? std::string("none found") : installed) + ".";
 #endif
-  Help(help.c_str());
+  Help(help.c_str());   // [acct2-decomp] 2026-11-21 F2 > LANGUAGE, and the setup tool's Language tab
   if (const int waiting = g_waiting.load(); waiting > 0) {
     const std::string w = std::to_string(waiting) + (waiting == 1 ? " sound bank still has" : " sound banks still have") +
 #if defined(COD3_MP)

@@ -23,7 +23,7 @@
 namespace cod3::options_pages {
 
 enum class Category : uint8_t { kGameplay, kControls, kAim, kVideo, kAudio, kMovement,
-                                kInterface /* [acct2-ocr] 2026-11-07 */ };
+                                kInterface /* [acct2-ocr] 2026-11-07 */, kCrosshair /* [acct2-ocr] 2026-11-21 */ };
 
 // Where a row's value comes from.
 enum class Source : uint8_t {

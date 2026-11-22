@@ -27,6 +27,7 @@
 #include "game/guest.h"
 #include "game/pc_menu.h"  // [acct2-bro] 2026-11-15 DrawingSystem: a quad a menu system draws
 #include "game/render_resolution.h"
+#include "ui/crosshair_texture.h"  // [acct2-ocr] 2026-11-21 task 125
 
 REXCVAR_DEFINE_STRING(cod3_aspect_ratio, "auto", "cod3/Display",
                       "Picture shape: auto (the window's, or the screen's in fullscreen), "
@@ -906,6 +907,10 @@ REX_HOOK_RAW(nglListAddQuad) {
   const bool bar = false;  // [acct2-ocr] no cinematic bars in cod3mp
 #endif
   const float scale = quad ? HudScale(base) : 0.0f;
+  // [acct2-ocr] 2026-11-21 task 125: a piece of the game's own crosshair (only while its CG_DrawCrosshair runs) is
+  // drawn from a sharp copy of its picture made at the size it is drawn; its texture is put back when this returns,
+  // after the list has copied the quad (ui/crosshair_texture.h).
+  const cod3::crosshair_texture::QuadSwap sharp_crosshair(base, quad, scale);
   EdgeFill fill;  // [acct2-ocr] cod3_edge_fill
   if (quad && !bar) EdgeFillApply(base, quad, scale > 0.0f, &fill);
   if (scale <= 0.0f) {

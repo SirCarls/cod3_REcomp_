@@ -157,8 +157,11 @@ def linux_system_libraries() -> Set[str]:
     names: Set[str] = set()
     for ldconfig in ("ldconfig", "/sbin/ldconfig", "/usr/sbin/ldconfig"):
         try:
-            out = subprocess.run([ldconfig, "-p"], capture_output=True, text=True, timeout=30).stdout
-        except (OSError, subprocess.TimeoutExpired):
+            # [acct2-decomp] 2026-11-21: errors="replace": a library folder whose name isn't in the locale's
+            # encoding stopped this with a UnicodeDecodeError; only the names (ASCII) are used.
+            out = subprocess.run([ldconfig, "-p"], capture_output=True, text=True, errors="replace",
+                                 timeout=30).stdout
+        except (OSError, ValueError, subprocess.SubprocessError):
             continue
         for line in out.splitlines()[1:]:
             name = line.strip().split(" ", 1)[0]

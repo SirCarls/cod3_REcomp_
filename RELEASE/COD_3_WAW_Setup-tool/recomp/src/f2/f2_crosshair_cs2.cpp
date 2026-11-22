@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <mutex>
 #include <tuple>
 
 #include <imgui.h>
@@ -104,6 +105,32 @@ struct Store {
   // Shot feedback without the game's shots: a jump in the spread.
   std::array<float, kPlayers> last_spread{};
   std::array<double, kPlayers> shot_at{-1, -1, -1, -1};
+  // [acct2-ocr] 2026-11-21 each player's shot feedback kick (CS2's, 0x1bc43d0) and the least spread of the last ten
+  // seconds (for View::spread_rest when the game doesn't say), in twenty half-second buckets. kick[kPlayers]: the
+  // preview's.
+  struct Kick {
+    float kick = 0;
+    double at = -1;          // the frame it was last run down
+    double shot = -1;        // the last shot counted
+    float preview_timer = 0;  // the preview's next shot (CS2's: 0.2 to 0.6 s apart)
+    uint32_t seed = 0x2545F491u;
+  };
+  std::array<Kick, kPlayers + 1> kick{};
+  struct Rest {
+    double start = -1;
+    int head = 0;
+    std::array<float, 20> least{};
+  };
+  std::array<Rest, kPlayers> rest{};
+  // [acct2-ocr] 2026-11-21 For the game's own Options pages, on the game's thread (PlayerCopy, AskSetPlayer): each
+  // player's crosshair as last published here, and a change asked there until Sync has taken it in.
+  std::mutex copy_mutex;
+  std::array<Settings, kPlayers> copy{};
+  std::array<bool, kPlayers> asked{};
+  std::array<bool, kPlayers> asked_written{};  // written into the text setting (or to be, once bound)
+  std::array<uint32_t, kPlayers> ask_seq{};    // counts the asks
+  std::array<uint32_t, kPlayers> done_seq{};   // the last ask whose write has returned (a read after sees it, or newer)
+  std::array<std::string, kPlayers> asked_text;
 };
 
 Store& S() {
@@ -584,7 +611,9 @@ bool HasSetting(const std::string& name) { return !name.empty() && rex::cvar::Ge
 
 void PublishEnabled() {
   Store& st = S();
+  std::lock_guard lock(st.copy_mutex);  // [acct2-ocr] 2026-11-21 and the copy the game's thread reads
   for (int p = 0; p < kPlayers; ++p) {
+    if (!st.asked[p]) st.copy[p] = st.players[p];
     st.enabled[p].store(st.players[p].enabled, std::memory_order_relaxed);
     for (int k = 0; k < kSpecialCount; ++k) st.special[p][k].store(st.players[p].special[k], std::memory_order_relaxed);
   }
@@ -644,8 +673,38 @@ void Bind(const std::array<const char*, kPlayers>& names, std::function<Legacy()
 void Sync() {
   Store& st = S();
   if (!st.bound) return;
+  // [acct2-ocr] 2026-11-21 a change the game's Options pages asked for before the names were bound: written now
+  std::array<std::string, kPlayers> late;
+  std::array<uint32_t, kPlayers> late_seq{};
+  {
+    std::lock_guard lock(st.copy_mutex);
+    for (int p = 0; p < kPlayers; ++p)
+      if (st.asked[p] && !st.asked_written[p] && HasSetting(st.names[p])) {
+        late[p] = st.asked_text[p];
+        late_seq[p] = st.ask_seq[p];
+        st.asked_written[p] = true;
+      }
+  }
   for (int p = 0; p < kPlayers; ++p) {
+    if (!late_seq[p]) continue;
+    rex::cvar::SetFlagByName(st.names[p], late[p]);
+    std::lock_guard lock(st.copy_mutex);
+    st.done_seq[p] = std::max(st.done_seq[p], late_seq[p]);
+  }
+  for (int p = 0; p < kPlayers; ++p) {
+    uint32_t done = 0;  // [acct2-ocr] 2026-11-21 the asks written before this read: the read has them (or newer)
+    {
+      std::lock_guard lock(st.copy_mutex);
+      done = st.done_seq[p];
+    }
     const std::string text = HasSetting(st.names[p]) ? rex::cvar::GetFlagByName(st.names[p]) : std::string();
+    {
+      std::lock_guard lock(st.copy_mutex);
+      if (st.asked[p] && st.ask_seq[p] == done) st.asked[p] = false;
+    }
+    // [acct2-ocr] 2026-11-21 player 1's text changed elsewhere while the game runs (the game's Options pages, the
+    // console): the old names follow it below, so the two agree.
+    const bool elsewhere = p == 0 && st.read[p] && !text.empty() && text != st.last[p];
     if (text.empty()) {
       // Player 1 from the old settings (read every time, so the old names still work from the console or an
       // in-game menu); players 2 to 4 the same as player 1 until they are given their own.
@@ -665,6 +724,10 @@ void Sync() {
       st.players[p] = FromText(text);
       st.last[p] = text;
       st.read[p] = true;
+    }
+    if (elsewhere && st.set_legacy) {
+      Write(0);
+      continue;
     }
     if (p == 0 && st.get_legacy) {
       // The old names changed elsewhere (Call of Duty 3's AIM page, the console): into player 1's crosshair.
@@ -709,90 +772,240 @@ Plan PlanFor(int player, int kind) {
   }
 }
 
+// [acct2-ocr] 2026-11-21 the game's Options pages (game/menu_port_rows.h)
+Settings PlayerCopy(int player) {
+  Store& st = S();
+  std::lock_guard lock(st.copy_mutex);
+  return st.copy[size_t(std::clamp(player, 0, kPlayers - 1))];
+}
+
+void AskSetPlayer(int player, const Settings& s) {
+  Store& st = S();
+  const size_t p = size_t(std::clamp(player, 0, kPlayers - 1));
+  const std::string text = Text(s);
+  bool write = false;
+  uint32_t seq = 0;
+  {
+    std::lock_guard lock(st.copy_mutex);
+    st.copy[p] = s;
+    st.asked[p] = true;
+    st.asked_text[p] = text;
+    seq = ++st.ask_seq[p];
+    write = st.asked_written[p] = st.bound && HasSetting(st.names[p]);
+  }
+  if (!write) return;
+  rex::cvar::SetFlagByName(st.names[p], text);  // (no setting's callback runs into this file)
+  std::lock_guard lock(st.copy_mutex);
+  st.done_seq[p] = std::max(st.done_seq[p], seq);
+}
+
+bool StyleUsesLength(int style) { return UsesLength(style); }
+bool StyleUsesGap(int style) { return UsesGap(style); }
+bool StyleUsesT(int style) { return UsesT(style); }
+bool StyleUsesDot(int style) { return UsesDot(style); }
+
 void SetCaps(const Caps& caps) { S().caps = caps; }
 const Caps& GetCaps() { return S().caps; }
 
 // ------------------------------------------------------------------------------------------------- public: placing
+
+namespace {
+
+// [acct2-ocr] 2026-11-21 CS2's placement, read from libclient.so (CS2 of 11-19; owner 11-21 10:43 "These settings
+// really need to look and feel official"): the main builder 0x1bd3560, the styles' builders 0x1bc3670-0x1bc4bc0, the
+// shape adders 0x1bc1d50 (rectangles), 0x1bc1e50 (rings), 0x1bc1f50 (four arcs) and the draw-time rescale 0x1bc5cf0.
+// Its numbers, as it has them:
+constexpr float kSpreadCapBase = 64.0f;  // the dynamic spread's soft limit: 64 + cl_crosshair_dynamic_spread_limit
+constexpr float kSpreadKnee = 0.75f;     //   it eases from three quarters of that on
+constexpr float kFadeAt = 0.25f, kFadeMost = 0.8f;  // the dynamic styles fade to 0.2 at 0.25 above resting inaccuracy
+constexpr float kQuadRingSlack = 10.0f;  // the dynamic quad is a ring within 10 pixels of the resting spread...
+constexpr float kQuadRingMost = 100.0f;  //   ... and under 100, else four arcs
+constexpr float kQuadArcsAt = 0.2f;      //   the arcs go from 45 degrees at rest to 5 at 0.2 above it
+constexpr float kQuadSpanMost = 45.0f, kQuadSpanFall = -40.0f;
+constexpr float kStaticQuadSpan = 90.0f;  // the static quad's arcs: 90 degrees times its split ratio
+constexpr float kDegToRad = 0.0174533f;
+constexpr float kKickMost = 25.0f, kKickFall = 42.0f, kKickScreen = 1200.0f;  // shot feedback (0x1bc43d0)
+constexpr float kKickPreview = 15.0f;  // a shot in CS2's preview, 0.2 to 0.6 s apart
+// For each shot a CS2 gun adds its recoil number / 3.5 (0x1bc45d0); Call of Duty's guns have none, so a rifle's is
+// taken (23, the number CS2's M4A4 has).
+constexpr float kKickShot = 23.0f / 3.5f;
+
+// CS2's V_roundf (halves away from 0) and cvtss2si (to the nearest, halves to even).
+float RoundF(float v) { return std::round(v); }
+int Nearest(float v) { return int(std::lrint(v)); }
+
+// How far the spread is from rest to where CS2's inaccuracy `at` above the weapon's resting one would put it, 0 to 1.
+// CS2 works these from its weapons' inaccuracy (radians); its spread in pixels is inaccuracy * 320 / tan(fov / 2) *
+// height / 480 (its classic style's formula, 0x1bc3e40), so at its 90 degrees an inaccuracy `at` is at * height * 2/3
+// pixels. Call of Duty gives its spread, so the pixels stand in for the inaccuracy.
+float Above(float spread, float rest, float at, float height) {
+  const float span = at * height * (320.0f / 480.0f) - rest;
+  if (!(span > 0.0f)) return spread > rest ? 1.0f : 0.0f;
+  return std::clamp((spread - rest) / span, 0.0f, 1.0f);
+}
+
+}  // namespace
 
 std::vector<Shape> Place(const Settings& s, const View& v, double now, int player) {
   (void)now;
   (void)player;
   std::vector<Shape> out;
   const Caps& caps = S().caps;
+
+  // [acct2-ocr] 2026-11-21 The screen's height in whole pixels and the sizes for it, as CS2 rescales them at draw time
+  // (0x1bc5cf0) from cl_crosshair_screen_height's: each that isn't 0 becomes V_roundf(size * height / its height), at
+  // least 1 (the gap keeps its sign); the same height, or none, leaves them as they are.
+  const float H = float(std::max(1L, std::lround(v.height)));
+  float gap = s.gap, th = s.thickness, len = s.length, limit = float(s.spread_limit),
+        split = float(s.split_distance);
+  {
+    const float h = float(s.screen_height);
+    if (h > 0.0f && h != H) {
+      const float k = H / h;
+      const float g = RoundF(gap * k);
+      if (gap > 0.0f)
+        gap = std::max(1.0f, g);
+      else if (gap < 0.0f)
+        gap = std::min(-1.0f, g);
+      for (float* x : {&len, &th, &limit, &split})
+        if (*x > 0.0f) *x = std::max(1.0f, RoundF(*x * k));
+    }
+  }
   const float ref = float(s.screen_height > 0 ? s.screen_height : 1080);
-  const float scale = std::max(0.25f, v.height / ref);
+  const float scale = std::max(0.25f, H / ref);  // the port's own pieces (the marks below the crosshair)
 
   float fill[4];
   FillColor(s, v, fill);
   float outline[4] = {0, 0, 0, 0};
-  float grow = 0.0f;
-  if (s.outline != kOutlineNone) {
-    Color4(s.outline_color, std::clamp(v.rgba[3], 0.0f, 1.0f), outline);
-    grow = float(std::max(1, Round(s.outline_thickness)));
-  }
-  const float grow0 = grow, grow1 = s.outline == kOutlineHalf ? 0.0f : grow;
+  const bool outlined = s.outline == kOutlineFull || s.outline == kOutlineHalf;
+  if (outlined) Color4(s.outline_color, std::clamp(v.rgba[3], 0.0f, 1.0f), outline);
+  // How far the outline reaches past a shape, on the top / left and the bottom / right: CS2's full (1, 1) and half
+  // (1, 0); the port lets it be wider (outline_px).
+  const float reach = outlined ? float(std::max(1, Round(s.outline_thickness))) : 0.0f;
+  const float grow0 = reach, grow1 = s.outline == kOutlineHalf ? 0.0f : reach;
 
-  int cx = int(std::floor(v.cx)), cy = int(std::floor(v.cy));
+  // CS2's whole thickness (cvtss2si, at least 1) and its halves: c pixels before the middle line, a after it. An odd
+  // thickness's middle is the middle of the pixel before the line cx, an even one's the line cx itself.
+  int t = Nearest(th);
+  if (t <= 0) t = 1;
+  const int c = (t + 1) >> 1, a = t - c;
+  const bool odd = c != a;
+  const float off = odd ? 0.5f : 0.0f;  // a ring's middle there
+
+  // The middle in whole pixels. CS2 cuts the view's middle down (roundss 0xb; with Follow recoil the kicked point's
+  // next pixel up), which on a screen an even number of pixels across is the screen's middle line. [acct2-ocr] 11-21
+  // (owner 11:16 "make sure the crosshair center is actually the center of the screen", 11:18 "please account for
+  // splitscreen too") here the line is chosen for the thickness, so that the crosshair's own middle is its view's
+  // middle wherever the pixels allow it: the same as CS2's on an even screen (an odd thickness then sits half a pixel
+  // up and left, as in CS2, there being no middle pixel), and on an odd one (a split-screen view 525 lines tall, a
+  // scaled window) on its middle pixel or within half a pixel, where CS2's cut can be a whole pixel off. Each
+  // split-screen view is centered on its own middle. Ties go up and left, as CS2's; 1/64 takes up the float error of
+  // a scaled window's middle.
+  float at_x = v.cx, at_y = v.cy;
   if (s.follow_recoil && caps.recoil) {
-    cx += Round(v.recoil_x);
-    cy += Round(v.recoil_y);
+    at_x += v.recoil_x;
+    at_y += v.recoil_y;
   }
-  const int t = std::max(1, Round(s.thickness * scale));
-  const int len = std::max(0, Round(s.length * scale));
-  const int gap = Round(s.gap * scale);
-  const int h0 = t / 2;
+  constexpr float kTie = 1.0f / 64.0f;
+  auto line_for = [&](float at) {  // the line cx (or cy) that puts the crosshair's middle nearest `at`
+    return odd ? std::floor(at - kTie) + 1.0f : std::ceil(at - 0.5f - kTie);
+  };
+  const float cx = line_for(at_x), cy = line_for(at_y);
 
-  // The game's spread for the dynamic styles, in pixels of this view.
-  int spread = 0;
-  if (MovesWithSpread(s) && caps.spread) {  // [acct2-bro] 2026-11-15: not with T style on
-    float px = std::max(0.0f, v.spread) * v.height / 480.0f * s.open_scale;
-    if (UsesSpreadLimit(s.style) && s.spread_limit > 0) px = std::min(px, float(s.spread_limit) * scale);
-    spread = Round(px);
+  // The spread in pixels, as CS2 rounds it (its +0xb0), and at rest (+0xac). A game that gives none, or a style kept
+  // still (T style, [acct2-bro] 11-15), sits at its gap, at rest.
+  const bool moving = MovesWithSpread(s) && caps.spread;
+  float spread, rest;
+  if (moving) {
+    const float px = H / 480.0f * s.open_scale;
+    const float now_units = std::max(0.0f, v.spread);
+    spread = RoundF(now_units * px);
+    rest = v.spread_rest >= 0.0f ? RoundF(std::min(v.spread_rest, now_units) * px) : spread;
+  } else {
+    spread = rest = std::max(0.0f, gap);
+  }
+  // CS2's fade for the dynamic styles (+0xb8): 1 at rest down to 0.2 at 0.25 above the resting inaccuracy.
+  const float fade = moving ? 1.0f - kFadeMost * Above(spread, rest, kFadeAt, H) : 1.0f;
+  // The dynamic styles' gap (+0xb4): the spread, eased to a stop at 64 + the limit from three quarters of that on, at
+  // least the thickness with the dot, cut to a whole pixel.
+  float dyn = spread;
+  {
+    const float cap = kSpreadCapBase + limit, knee = kSpreadKnee * cap;
+    if (dyn > knee) dyn = cap - (cap - knee) * std::exp(-(1.0f / (cap - knee)) * (dyn - knee));
+    dyn = std::min(dyn, cap);
+    dyn = std::max(dyn, s.dot ? th : 0.0f);
+    dyn = std::trunc(dyn);
   }
 
-  auto rect = [&](int x0, int y0, int x1, int y1, float alpha) {
-    if (x1 < x0 || y1 < y0) return;
+  // CS2's alphas are bytes: the dynamic styles' V_roundf(alpha * fade), the legacy split's (int)(alpha * its mod).
+  auto with_alpha = [](const float c[4], float a, float o[4]) {
+    o[0] = c[0];
+    o[1] = c[1];
+    o[2] = c[2];
+    o[3] = a;
+  };
+  float fill_dyn[4], outline_dyn[4];
+  with_alpha(fill, RoundF(fill[3] * 255.0f * fade) / 255.0f, fill_dyn);
+  with_alpha(outline, RoundF(outline[3] * 255.0f * fade) / 255.0f, outline_dyn);
+
+  // A rectangle as CS2 adds one (0x1bc1d50): [x0, x1) x [y0, y1), kept as the shader takes it, inclusive.
+  auto rect = [&](float x0, float y0, float x1, float y1, const float f[4], const float o[4]) {
+    if (!(x1 > x0) || !(y1 > y0)) return;
     Shape sh;
     sh.kind = 0;
-    sh.x0 = float(x0);
-    sh.y0 = float(y0);
-    sh.x1 = float(x1);
-    sh.y1 = float(y1);
+    sh.x0 = x0;
+    sh.y0 = y0;
+    sh.x1 = x1 - 1.0f;
+    sh.y1 = y1 - 1.0f;
     sh.grow0 = grow0;
     sh.grow1 = grow1;
     for (int i = 0; i < 4; ++i) {
-      sh.fill[i] = fill[i];
-      sh.outline[i] = outline[i];
+      sh.fill[i] = f[i];
+      sh.outline[i] = o[i];
     }
-    sh.fill[3] *= alpha;
-    sh.outline[3] *= alpha;
     out.push_back(sh);
   };
-  // The four lines, `d` pixels out from the middle, `l` long.
-  auto bars = [&](int d, int l, float alpha) {
-    if (l <= 0) return;
-    rect(cx + d, cy - h0, cx + d + l - 1, cy - h0 + t - 1, alpha);  // right
-    rect(cx - d - l, cy - h0, cx - d - 1, cy - h0 + t - 1, alpha);  // left
-    rect(cx - h0, cy + d, cx - h0 + t - 1, cy + d + l - 1, alpha);  // down
-    if (!TOn(s)) rect(cx - h0, cy - d - l, cx - h0 + t - 1, cy - d - 1, alpha);  // up ([acct2-bro] 11-15: TOn)
-  };
-  const float rc = (t % 2) ? 0.5f : 0.0f;  // a ring's middle where the lines' middle is
-  auto ring = [&](int kind, float inner, float span) {
+  // A ring (kind 1) or four arcs (kind 2) around (x, y), outer radius R, T thick, as CS2's builders give them. CS2
+  // stores x - 0.5 and its shader measures from the pixel's corner; Coverage here measures from the pixel's middle,
+  // which is the same circle around x.
+  auto ring = [&](int kind, float x, float y, float R, float T, float span, const float f[4], const float o[4]) {
     Shape sh;
     sh.kind = kind;
-    if (kind == 2 && TOn(s)) sh.arcs = 2 | 4;  // the bottom two ([acct2-bro] 2026-11-15: TOn)
-    sh.x0 = float(cx) + rc;
-    sh.y0 = float(cy) + rc;
-    sh.y1 = float(t);
-    sh.x1 = std::max(inner, 0.0f) + float(t);
+    sh.x0 = x;
+    sh.y0 = y;
+    sh.x1 = R;
+    sh.y1 = T;
     sh.span = span;
     sh.grow0 = grow0;
     sh.grow1 = grow1;
     for (int i = 0; i < 4; ++i) {
-      sh.fill[i] = fill[i];
-      sh.outline[i] = outline[i];
+      sh.fill[i] = f[i];
+      sh.outline[i] = o[i];
     }
     out.push_back(sh);
+  };
+
+  // CS2's cross (0x1bc3820): four bars `g` out from the middle (no less than 0), `l` long; an odd thickness's right
+  // and bottom bars start a pixel sooner, so they are as far from its middle pixel as the left and top ones. T style
+  // leaves out the top one.
+  auto cross = [&](const float f[4], const float o[4], float g, float l) {
+    if (!(l > 0.0f) || !(th > 0.0f)) return;
+    g = std::max(g, 0.0f);
+    const float k = odd ? -1.0f : 0.0f;
+    const float left = std::floor(cx - g);
+    rect(left - l, cy - float(c), left, cy + float(a), f, o);
+    const float right = std::ceil(cx + g) + k;
+    rect(right, cy - float(c), right + l, cy + float(a), f, o);
+    if (!TOn(s)) {
+      const float top = std::floor(cy - g - l);
+      rect(cx - float(c), top, cx + float(a), top + l, f, o);
+    }
+    const float bottom = std::ceil(cy + g) + k;
+    rect(cx - float(c), bottom, cx + float(a), bottom + l, f, o);
+  };
+  // CS2's dot (0x1bc3670, and Dot Only's): t x t on the bars' middle.
+  auto dot = [&](const float f[4], const float o[4]) {
+    if (th > 0.0f) rect(cx - float(c), cy - float(c), cx + float(a), cy + float(a), f, o);
   };
 
   // While a grenade is out: CS2 keeps the crosshair only when asked to.
@@ -801,84 +1014,128 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
   const bool watching_hidden = caps.spectating && v.watching && (!s.observer || (v.watching_bot && !s.observed_bot));
 
   if (draw_main && !watching_hidden) {
+    if (s.dot) dot(fill, outline);  // before the style, as CS2 draws it
     switch (s.style) {
-      case kDynamicCross:
-        bars(gap + spread, len, 1.0f);
+      case kDynamicCross:  // 0x1bc3a90: the cross at the dynamic gap, faded
+        cross(fill_dyn, outline_dyn, dyn, len);
+        break;
+      case kDynamicCircle:  // 0x1bc3b80: a ring out to the dynamic gap plus the thickness, a pixel thinner
+        if (dyn >= 0.0f && th > 0.0f)
+          ring(1, cx - off, cy - off, th + dyn, std::max(1.0f, th - 1.0f), 0.0f, fill_dyn, outline_dyn);
         break;
       case kDynamicCrossLegacy: {
-        // CS:GO's Classic Dynamic: past the split distance the inner part of each line stays and the outer part
-        // goes on with the spread, each with its own alpha.
-        const int split_at = Round(float(s.split_distance) * scale);
-        if (spread > split_at) {
-          const int inner = Round(float(len) * (1.0f - s.split_ratio));
-          const int outer = len - inner;
-          bars(gap + split_at, inner, s.split_inner_alpha);
-          bars(gap + spread + inner, outer, s.split_outer_alpha);
+        // 0x1bc3e40, CS:GO's classic dynamic: the spread in the 480-line screen's units (CS2: (inaccuracy + spread) *
+        // 320 / tan(fov / 2)); the bars sit that far out past the gap. Past the split distance each bar splits:
+        // its inner (1 - ratio) stays at the split distance and its outer part goes on with the spread, each with
+        // its own alpha.
+        const float units = moving ? std::max(0.0f, v.spread) * s.open_scale : 0.0f;
+        const float yres = H / 480.0f;
+        const float D = RoundF(yres * units);
+        float outer_gap, inner_gap;
+        if (D > 0.0f) {
+          outer_gap = D + gap;
+          inner_gap = gap + RoundF(std::min(split, units) * yres);
         } else {
-          bars(gap + spread, len, 1.0f);
+          outer_gap = std::trunc(gap);  // CS2 without a player's spread: 4 + gap - 4
+          inner_gap = gap;
+        }
+        if (units > split) {
+          const float inner_len = std::ceil((1.0f - s.split_ratio) * len), outer_len = std::floor(len * s.split_ratio);
+          float fo[4], oo[4], fi[4], oi[4];
+          with_alpha(fill, std::trunc(fill[3] * 255.0f * s.split_outer_alpha) / 255.0f, fo);
+          with_alpha(outline, std::trunc(outline[3] * 255.0f * s.split_outer_alpha) / 255.0f, oo);
+          with_alpha(fill, std::trunc(fill[3] * 255.0f * s.split_inner_alpha) / 255.0f, fi);
+          with_alpha(outline, std::trunc(outline[3] * 255.0f * s.split_inner_alpha) / 255.0f, oi);
+          cross(fo, oo, outer_gap + inner_len, outer_len);
+          cross(fi, oi, std::max(inner_gap, 0.0f), inner_len);
+        } else {
+          cross(fill, outline, outer_gap, len);
         }
         break;
       }
-      case kStaticCross:
-        bars(gap, len, 1.0f);
+      case kStaticCircle:  // 0x1bc41e0: a ring out to the gap (at least 1) plus the thickness, a pixel thinner
+        if (th > 0.0f)
+          ring(1, cx - off, cy - off, std::max(1.0f, gap) + th, std::max(1.0f, th - 1.0f), 0.0f, fill, outline);
         break;
-      case kStaticCrossShotFeedback: {
-        // The lines jump out at a shot and come back within 0.15 s.
-        int push = 0;
-        if (v.seconds_since_shot >= 0.0 && v.seconds_since_shot < 0.15)
-          push = Round(4.0f * scale * float(1.0 - v.seconds_since_shot / 0.15));
-        bars(gap + push, len, 1.0f);
+      case kStaticCross:  // 0x1bd3e00
+        cross(fill, outline, std::max(gap, 0.0f), len);
         break;
-      }
-      case kDotOnly:
-        break;  // the dot below
-      case kDynamicCircle:
-        ring(1, std::max(float(Round(3.0f * scale)), float(spread)), 0.0f);
+      case kStaticCrossShotFeedback:  // 0x1bc43d0: the gap grows by the kick, kick / 1200 of the screen's height
+        cross(fill, outline, RoundF(std::max(gap, 0.0f) + H * std::max(v.shot_kick, 0.0f) / kKickScreen), len);
         break;
-      case kStaticCircle:
-        ring(1, float(gap), 0.0f);
+      case kDotOnly:  // 0x1bd4378: the dot, unless it is drawn already
+        if (!s.dot) dot(fill, outline);
         break;
       case kDynamicQuad: {
-        // Four arcs on the diagonals, `length` long along the circle.
-        const float inner = float(std::max(0, gap + spread));
-        const float mid = inner + float(t) * 0.5f;
-        if (len > 0) ring(2, inner, std::min(kPi / 2, float(len) / std::max(1.0f, mid)));
+        // 0x1bc46c0: near rest a ring round the dynamic gap; further out four arcs on the diagonals, 45 degrees each
+        // at rest narrowing to 5; and the cross at the gap, unfaded.
+        if (spread > 0.0f) {
+          const float o = (odd && th >= 1.0f) ? 0.5f : 0.0f;
+          if (spread < kQuadRingMost && spread <= kQuadRingSlack + rest) {
+            const float T = std::max(1.0f, th - 1.0f);
+            ring(1, cx - o, cy - o, dyn + T, T, 0.0f, fill_dyn, outline_dyn);
+          } else {
+            const float deg = kQuadSpanMost + Above(spread, rest, kQuadArcsAt, H) * kQuadSpanFall;
+            ring(2, cx - o, cy - o, th + dyn, th, deg * kDegToRad, fill_dyn, outline_dyn);
+          }
+        }
+        cross(fill, outline, std::max(gap, 0.0f), len);
         break;
       }
-      case kStaticQuad:
-        ring(2, float(std::max(0, gap)), (kPi / 2) * (1.0f - std::clamp(s.split_ratio, 0.0f, 1.0f)));
+      case kStaticSquare:
+        // 0x1bc49c0: a square frame the gap out, the thickness wide; with the dot an odd thickness's frame is a pixel
+        // wider to the left and top, so the dot is in its middle.
+        if (th > 0.0f) {
+          const float k = (odd && s.dot) ? -1.0f : 0.0f;
+          const float g = std::max(gap, 0.0f);
+          const float right = std::floor(cx + g), left = std::floor(cx - g - th + k);
+          const float top = std::floor(cy - g - th + k), bottom = std::floor(cy + g);
+          rect(left, top, right, top + th, fill, outline);
+          rect(left, bottom, right, bottom + th, fill, outline);
+          rect(left, top, left + th, bottom + th, fill, outline);
+          rect(right, top, right + th, bottom + th, fill, outline);
+        }
         break;
-      case kStaticSquare: {
-        const int hs = std::max(0, gap) + t;
-        rect(cx - hs, cy - hs, cx + hs - 1, cy - hs + t - 1, 1.0f);              // top
-        rect(cx - hs, cy + hs - t, cx + hs - 1, cy + hs - 1, 1.0f);              // bottom
-        rect(cx - hs, cy - hs + t, cx - hs + t - 1, cy + hs - t - 1, 1.0f);      // left
-        rect(cx + hs - t, cy - hs + t, cx + hs - 1, cy + hs - t - 1, 1.0f);      // right
+      case kStaticQuad: {
+        // 0x1bc4bc0: four arcs on the diagonals out to the gap (at least 1) plus the thickness, each 90 degrees times
+        // the split ratio
+        const float o = (odd && th >= 1.0f) ? 0.5f : 0.0f;
+        const float span = kStaticQuadSpan * std::clamp(s.split_ratio, 0.0f, 1.0f) * kDegToRad;
+        ring(2, cx - o, cy - o, std::max(1.0f, gap) + th, th, span, fill, outline);
         break;
       }
       default:
-        bars(gap, len, 1.0f);
         break;
     }
-    if (s.dot || s.style == kDotOnly) rect(cx - h0, cy - h0, cx - h0 + t - 1, cy - h0 + t - 1, 1.0f);
   }
 
   const size_t main_shapes = out.size();  // [acct2-ocr] the crosshair itself (the countdown goes round it)
+  const int ti = t, ci = c, ai = a;
+  const int gi = Round(gap), li = Round(len);
+  const int cxi = int(cx), cyi = int(cy);
+  // Pixels i whose middles are within `half` of the crosshair's middle line, across: [lo, hi] inclusive.
+  auto span_of = [&](float middle, float half, int* lo, int* hi) {
+    *lo = int(std::ceil(middle - half - 0.5f));
+    *hi = int(std::floor(middle + half - 0.5f));
+  };
 
   // The iron sight dot while the sights are up.
   if (s.ads_dot && caps.sights && v.sights >= 0.5f) {
     const int d = std::max(2, Round(3.0f * scale * s.ironsight_dot_scale));
-    float dot[4] = {1.0f, 0.25f, 0.25f, 1.0f};
+    float dot_rgba[4] = {1.0f, 0.25f, 0.25f, 1.0f};
     if (s.ironsight_use_color) {
-      FillColor(s, v, dot);
-      dot[3] = s.color_from == kColorConstant ? s.color.a / 255.0f : 1.0f;
+      FillColor(s, v, dot_rgba);
+      dot_rgba[3] = s.color_from == kColorConstant ? s.color.a / 255.0f : 1.0f;
     }
     Shape sh;
-    sh.x0 = float(cx - d / 2);
-    sh.y0 = float(cy - d / 2);
-    sh.x1 = float(cx - d / 2 + d - 1);
-    sh.y1 = float(cy - d / 2 + d - 1);
-    for (int i = 0; i < 4; ++i) sh.fill[i] = dot[i];
+    int x0, x1, y0, y1;
+    span_of(cx - off, float(d) * 0.5f, &x0, &x1);
+    span_of(cy - off, float(d) * 0.5f, &y0, &y1);
+    sh.x0 = float(x0);
+    sh.y0 = float(y0);
+    sh.x1 = float(x1);
+    sh.y1 = float(y1);
+    for (int i = 0; i < 4; ++i) sh.fill[i] = dot_rgba[i];
     out.push_back(sh);
   }
 
@@ -887,20 +1144,22 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
   if (s.friendly_warning && friendly && draw_main) {
     const int r = std::max(3, Round(5.0f * scale));
     const int w = std::max(1, Round(1.5f * scale));
-    const int my = cy - std::max(gap + len, 0) - r - Round(6.0f * scale);
+    const int my = cyi - std::max(gi + li, 0) - r - Round(6.0f * scale);
     float col[4];
     Color4(s.case_color[kCaseFriendly], 1.0f, col);
     Shape sh;
     sh.kind = 1;
-    sh.x0 = float(cx) + rc;
+    sh.x0 = cx - off;
     sh.y0 = float(my) + 0.5f;
     sh.x1 = float(r);
     sh.y1 = float(w);
     for (int i = 0; i < 4; ++i) sh.fill[i] = col[i];
     out.push_back(sh);
     Shape bar;
-    bar.x0 = float(cx - r + w);
-    bar.x1 = float(cx + r - w - 1);
+    int x0, x1;
+    span_of(cx - off, float(r - w), &x0, &x1);
+    bar.x0 = float(x0);
+    bar.x1 = float(x1);
     bar.y0 = float(my - w / 2);
     bar.y1 = float(my - w / 2 + w - 1);
     for (int i = 0; i < 4; ++i) bar.fill[i] = col[i];
@@ -909,20 +1168,21 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
 
   // The grenade crosshair: a line-up mark under the middle once the grenade has been out for its delay.
   if (grenade_out && s.grenade_on[v.grenade] && v.grenade_seconds >= s.grenade_delay[v.grenade]) {
-    const int step = std::max(4, len > 0 ? len : Round(6.0f * scale));
-    const int top = cy + std::max(gap, 0) + 1;
-    rect(cx - h0, top, cx - h0 + t - 1, top + 3 * step, 1.0f);
-    for (int k = 1; k <= 3; ++k) rect(cx - h0 - step / 2, top + k * step - h0, cx - h0 + t - 1 + step / 2,
-                                      top + k * step - h0 + t - 1, 1.0f);
+    const int step = std::max(4, li > 0 ? li : Round(6.0f * scale));
+    const int top = cyi + std::max(gi, 0) + 1;
+    rect(float(cxi - ci), float(top), float(cxi + ai), float(top + 3 * step + 1), fill, outline);
+    for (int k = 1; k <= 3; ++k)
+      rect(float(cxi - ci - step / 2), float(top + k * step - ci), float(cxi + ai + step / 2),
+           float(top + k * step + ai), fill, outline);
   }
 
   // The sniper's inaccuracy while scoped: a thin ring the size of the spread.
   if (caps.scope && v.scoped && s.sniper_show_inaccuracy && caps.spread) {
-    const float r = std::max(2.0f, std::max(0.0f, v.spread) * v.height / 480.0f);
+    const float r = std::max(2.0f, std::max(0.0f, v.spread) * H / 480.0f);
     Shape sh;
     sh.kind = 1;
-    sh.x0 = float(cx) + 0.5f;
-    sh.y0 = float(cy) + 0.5f;
+    sh.x0 = cx - off;
+    sh.y0 = cy - off;
     sh.x1 = r;
     sh.y1 = float(std::max(1, s.sniper_width));
     for (int i = 0; i < 3; ++i) sh.fill[i] = 0.0f;
@@ -935,17 +1195,18 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
   // fuse (Call of Duty 3's 0.83, 0.67, 0.5, 0.33 and 0.17 of it left), the rest clockwise from the top, in this
   // crosshair's color, thickness and outline, just outside what the crosshair reaches.
   if (v.countdown >= 0.0f) {
-    float reach = float(std::max(t, 2));
+    const float mx = cx - off, my = cy - off;
+    float most = float(std::max(ti, 2));
     for (size_t i = 0; i < main_shapes; ++i) {
       const Shape& m = out[i];
       if (m.kind == 0)
-        reach = std::max({reach, std::fabs(m.x0 - float(cx)), std::fabs(m.x1 + 1.0f - float(cx)),
-                          std::fabs(m.y0 - float(cy)), std::fabs(m.y1 + 1.0f - float(cy))});
+        most = std::max({most, std::fabs(m.x0 - mx), std::fabs(m.x1 + 1.0f - mx), std::fabs(m.y0 - my),
+                         std::fabs(m.y1 + 1.0f - my)});
       else
-        reach = std::max(reach, m.x1);
+        most = std::max(most, m.x1);
     }
-    const int ring_t = std::max(1, t);
-    const float radius = reach + float(std::max(2, Round(3.0f * scale))) + float(ring_t);
+    const int ring_t = std::max(1, ti);
+    const float radius = most + float(std::max(2, Round(3.0f * scale))) + float(ring_t);
     int marks = 6;
     for (float left : {0.83f, 0.67f, 0.5f, 0.33f, 0.17f})
       if (v.countdown < left) --marks;
@@ -953,8 +1214,8 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
     for (int k = 0; k < marks; ++k) {
       Shape sh;
       sh.kind = 3;
-      sh.x0 = float(cx) + rc;
-      sh.y0 = float(cy) + rc;
+      sh.x0 = mx;
+      sh.y0 = my;
       sh.x1 = radius;
       sh.y1 = float(ring_t);
       sh.span = kPi / 3.0f - 0.24f;  // a sixth of the circle less a small gap
@@ -1074,6 +1335,48 @@ void Rasterize(const std::vector<Shape>& shapes, std::vector<Run>* runs) {
 
 namespace {
 
+// [acct2-ocr] 2026-11-21 CS2's shot feedback kick (0x1bc43d0), once a frame: a shot adds to it, it is kept to 0-25,
+// then it runs down at 42 a second. `shot_at` is the last shot's time (< 0: none). The preview fires as CS2's does: a
+// shot of 15 every 0.2 to 0.6 seconds.
+float RunKick(Store::Kick* k, double now, double shot_at, bool preview) {
+  const float dt = k->at < 0.0 ? 0.0f : float(std::clamp(now - k->at, 0.0, 0.25));
+  k->at = now;
+  if (preview) {
+    k->preview_timer -= dt;
+    if (k->preview_timer < 0.0f) {
+      k->kick += kKickPreview;
+      k->seed = k->seed * 1664525u + 1013904223u;
+      k->preview_timer = 0.2f + 0.4f * float(k->seed >> 8) / float(1u << 24);
+    }
+  } else if (shot_at >= 0.0 && shot_at > k->shot + 1e-3) {
+    if (now - shot_at < 0.25) k->kick += kKickShot;  // a shot of this frame or the last few, not an old one
+    k->shot = shot_at;
+  }
+  k->kick = k->kick < 0.0f ? 0.0f : std::min(kKickMost, k->kick);
+  if (k->kick > 0.0f)
+    k->kick -= kKickFall * dt;
+  else
+    k->kick = 0.0f;
+  return k->kick;
+}
+
+// [acct2-ocr] 2026-11-21 the least spread of the last ten seconds, in half-second buckets: the resting spread for a
+// game that doesn't give it (Call of Duty's spread rests at its least while the player stands still).
+float TrackRest(Store::Rest* r, double now, float spread) {
+  if (r->start < 0.0 || now < r->start || now - r->start > 10.0) {
+    r->start = now;
+    r->head = 0;
+    r->least.fill(spread);
+  }
+  while (now - r->start >= 0.5) {
+    r->start += 0.5;
+    r->head = (r->head + 1) % int(r->least.size());
+    r->least[size_t(r->head)] = spread;
+  }
+  r->least[size_t(r->head)] = std::min(r->least[size_t(r->head)], spread);
+  return *std::min_element(r->least.begin(), r->least.end());
+}
+
 void DrawSettings(ImDrawList* dl, const Settings& s, View v, int player, bool preview) {
   const ImGuiIO& io = ImGui::GetIO();
   const float fx = io.DisplayFramebufferScale.x > 0.01f ? io.DisplayFramebufferScale.x : 1.0f;
@@ -1089,6 +1392,18 @@ void DrawSettings(ImDrawList* dl, const Settings& s, View v, int player, bool pr
     if (v.spread > st.last_spread[player] + 0.75f) st.shot_at[player] = now;
     st.last_spread[player] = v.spread;
     if (v.seconds_since_shot < 0.0 && st.shot_at[player] >= 0.0) v.seconds_since_shot = now - st.shot_at[player];
+  }
+  // [acct2-ocr] 2026-11-21 what CS2 takes from its weapons: the resting spread and shot feedback's kick
+  if (!preview && player >= 0 && player < kPlayers) {
+    const size_t p = size_t(player);
+    if (v.spread_rest < 0.0f && st.caps.spread && v.spread > 0.0f)
+      v.spread_rest = TrackRest(&st.rest[p], now, v.spread);
+    if (v.shot_kick < 0.0f) {
+      const double shot = v.seconds_since_shot >= 0.0 ? now - v.seconds_since_shot : -1.0;
+      v.shot_kick = RunKick(&st.kick[p], now, shot, false);
+    }
+  } else if (preview && v.shot_kick < 0.0f) {
+    v.shot_kick = RunKick(&st.kick[kPlayers], now, -1.0, true);
   }
   std::vector<Shape> shapes = Place(s, v, now, player);
   static thread_local std::vector<Run> runs;
@@ -1135,6 +1450,26 @@ bool SliderF(const char* label, float* v, float lo, float hi, const char* fmt = 
 }
 bool SliderI(const char* label, int* v, int lo, int hi) { return cod3::ui::SliderIntBox(label, v, lo, hi); }
 
+// The preview's view: middle (cx, cy), `height` the view it is sized for; a dynamic style opens and closes, the
+// grenade countdown runs while it is this player's.
+View PreviewView(const Settings& s, float cx, float cy, float height) {
+  View v;
+  v.cx = cx;
+  v.cy = cy;
+  v.height = height;
+  const double t = ImGui::GetTime();
+  if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-bro] 11-15: not with T
+  v.spread_rest = 0.0f;  // [acct2-ocr] 11-21 the least of that swing; shot feedback fires as CS2's preview does
+  // [acct2-ocr] 2026-11-15 the grenade countdown while it is this player's (Mine or Both): a four-second fuse, a
+  // second's rest between
+  if ((S().caps.special >> kSpecialCountdown & 1u) &&
+      (s.special[kSpecialCountdown] == kMine || s.special[kSpecialCountdown] == kBoth)) {
+    const double cycle = std::fmod(t, 5.0);
+    if (cycle < 4.0) v.countdown = float(1.0 - cycle / 4.0);
+  }
+  return v;
+}
+
 // The preview: the crosshair at its size in the game, in a `side` pixels square box, half dark and half light (so
 // an outline and see-through colors show), opening and closing as in the game for a dynamic style when the game
 // gives its spread; the game's own color shows as over nothing (white). Dimmed while it is off.
@@ -1147,21 +1482,8 @@ void DrawPreviewBox(const Settings& s, int player, float side) {
   dl->PushClipRect(p0, p1, true);
   dl->AddRectFilled(p0, ImVec2(std::floor(p0.x + side * 0.5f), p1.y), IM_COL32(38, 40, 44, 255));
   dl->AddRectFilled(ImVec2(std::floor(p0.x + side * 0.5f), p0.y), p1, IM_COL32(176, 180, 186, 255));
-  View v;
-  v.cx = std::floor(p0.x + side * 0.5f);
-  v.cy = std::floor(p0.y + side * 0.5f);
-  v.height = io.DisplaySize.y;  // its size on the whole screen
+  View v = PreviewView(s, std::floor(p0.x + side * 0.5f), std::floor(p0.y + side * 0.5f), io.DisplaySize.y);
   v.rgba[3] = s.enabled ? 1.0f : 0.35f;
-  const double t = ImGui::GetTime();
-  if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-bro] 11-15: not with T
-  if (s.style == kStaticCrossShotFeedback) v.seconds_since_shot = std::fmod(t, 0.8);
-  // [acct2-ocr] 2026-11-15 the grenade countdown while it is this player's (Mine or Both): a four-second fuse, a
-  // second's rest between
-  if ((S().caps.special >> kSpecialCountdown & 1u) &&
-      (s.special[kSpecialCountdown] == kMine || s.special[kSpecialCountdown] == kBoth)) {
-    const double cycle = std::fmod(t, 5.0);
-    if (cycle < 4.0) v.countdown = float(1.0 - cycle / 4.0);
-  }
   DrawSettings(dl, s, v, player, true);
   dl->PopClipRect();
   dl->AddRect(p0, p1, ImGui::GetColorU32(ImGuiCol_Border));
@@ -1177,6 +1499,15 @@ void DrawView(ImDrawList* dl, int player, const View& view) {
 }
 
 void DrawPreview(int player, float side) { DrawPreviewBox(Player(player), player, side); }
+
+bool DrawPreviewAt(ImDrawList* dl, int player, float cx, float cy, float height) {
+  if (!dl || player < 0 || player >= kPlayers || !(height > 0.0f)) return false;
+  const Settings& s = Player(player);
+  View v = PreviewView(s, cx, cy, height);
+  v.rgba[3] = s.enabled ? 1.0f : 0.35f;  // dimmed while it is off, as F2's preview
+  DrawSettings(dl, s, v, player, true);
+  return true;
+}
 
 bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
   Store& st = S();

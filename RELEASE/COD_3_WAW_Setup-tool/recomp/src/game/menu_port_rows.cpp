@@ -12,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <utility>  // [acct2-bro Text lane] 2026-11-22 std::pair (ChoiceShown)
 
 #include <fmt/format.h>
 #include <rex/cvar.h>
@@ -221,9 +222,10 @@ bool SetText(const char* name, const std::string& value) {
 // (g_useholdtime, 250 ms), 0 a press, else milliseconds. cod3mp's players 2 to 4 also -1 = player 1's (the start)
 // and -2 = the game's own: PLAYER 1'S, GAME'S, PRESS, 50 MS ... 1000 MS.
 std::string UseHoldText(int player, int v) {
-  if (player > 0 && v == -1) return "PLAYER 1'S";
-  if (v < 0) return "GAME'S";
-  return v == 0 ? "PRESS" : fmt::format("{} MS", v);
+  // [acct2-bro Text lane] 2026-11-22 the values in the chosen language (COD3_PORT_V_* "@port" rows), else the English
+  if (player > 0 && v == -1) return Words("COD3_PORT_V_PLAYER1", "PLAYER 1'S");
+  if (v < 0) return Words("COD3_PORT_V_GAMES", "GAME'S");
+  return v == 0 ? Words("COD3_PORT_V_PRESS", "PRESS") : fmt::format("{} MS", v);
 }
 bool StepUseHold(int player, bool right) {
   const char* name = use_hold::SettingName(player);
@@ -290,7 +292,7 @@ constexpr ShortName kShortNames[] = {
     {"ja-JP", "JAPANESE"},          {"ko-KR", "KOREAN"},
 };
 std::string LanguageText(int i) {
-  if (i < 0) return "GAME'S";
+  if (i < 0) return Words("COD3_PORT_V_GAMES", "GAME'S");  // [acct2-bro Text lane] 2026-11-22
   const char* code = text::LanguageCode(i);
   for (const ShortName& s : kShortNames)
     if (std::strcmp(code, s.code) == 0) return s.name;
@@ -368,7 +370,6 @@ constexpr Word kTitleWord{"COD3_PORT_XHAIR_TITLE", "OPTIONS / CROSSHAIR"};
 constexpr Word kNoteStyleOff{"COD3_PORT_XHAIR_N_STYLE_OFF", "THE GAME'S OWN CROSSHAIR. CHOOSE A STYLE FOR YOUR OWN"};
 constexpr Word kNoteDynamic{"COD3_PORT_XHAIR_N_STYLE_DYNAMIC", "OPENS AND CLOSES WITH THE WEAPON'S SPREAD"};
 constexpr Word kNoteStatic{"COD3_PORT_XHAIR_N_STYLE_STATIC", "KEEPS ITS SIZE WHILE MOVING AND FIRING"};
-constexpr Word kNoteStill{"COD3_PORT_XHAIR_N_STYLE_STILL", "STAYS STILL: T STYLE IS ON"};
 constexpr Word kNoteOff{"COD3_PORT_XHAIR_N_OFF", "FOR YOUR OWN CROSSHAIR, ONCE A STYLE IS CHOSEN"};
 constexpr Word kNoteUnused{"COD3_PORT_XHAIR_N_UNUSED", "NOT USED BY THIS STYLE"};
 constexpr Word kNoteDot{"COD3_PORT_XHAIR_N_DOT", "A DOT IN THE MIDDLE OF THE CROSSHAIR"};
@@ -382,7 +383,9 @@ constexpr Word kNoteColor{"COD3_PORT_XHAIR_N_COLOR", "ONE COLOR, AS IN CS2 (CUST
 constexpr Word kNoteColorOwn{"COD3_PORT_XHAIR_N_COLOR_OWN", "YOUR OWN COLOR FOR EACH CASE, SET IN F2"};
 constexpr Word kNoteAlpha{"COD3_PORT_XHAIR_N_ALPHA", "HOW SOLID THE CROSSHAIR IS (255: FULLY)"};
 constexpr Word kNoteAlphaGame{"COD3_PORT_XHAIR_N_ALPHA_GAME", "THE GAME'S COLORS KEEP THE GAME'S OWN FADE"};
-constexpr Word kNoteT{"COD3_PORT_XHAIR_N_T", "NO TOP LINE (A DYNAMIC STYLE THEN STAYS STILL)"};
+// [acct2-ocr] 2026-11-22 (owner 02:22: "the T style has dynamic modes within CS that should also be in cod3"): a
+// dynamic style moves with T style on too, as CS2's
+constexpr Word kNoteT{"COD3_PORT_XHAIR_N_T", "NO TOP LINE"};
 
 // The sliders: CS2's ranges in pixels on its 1080-line screen (f2_crosshair_cs2.h), the arrows' steps.
 struct XhairNumber {
@@ -489,7 +492,7 @@ std::string XhairNote(int player, int row) {
   if (row == kXhairStyle) {
     if (!s.enabled) return Say(kNoteStyleOff, false);
     if (!xh::StyleIsDynamic(s.style)) return Say(kNoteStatic, false);
-    return Say(s.t_style && xh::StyleUsesT(s.style) ? kNoteStill : kNoteDynamic, false);
+    return Say(kNoteDynamic, false);   // [acct2-ocr] 2026-11-22 with T style too, as CS2
   }
   if (!s.enabled) return Say(kNoteOff, false);
   const bool used = row == kXhairDot      ? xh::StyleUsesDot(s.style)
@@ -609,18 +612,35 @@ std::string LabelShown(uint8_t* base, int row) {
   return kInfo[row].label;
 }
 
+// [acct2-bro Text lane] 2026-11-22 The rows' values and notes in the chosen language: each English text has a key
+// whose "@port" row (game/text_port_words.inc, or a pack's own row) answers it through Words(), else the English
+// stays. A value shown from a choice list: its word's key; names (XBOX, PLAYSTATION, ...) stay as they are.
+namespace {
+std::string OnOff(bool on) { return on ? Words(kOnWord.key, kOnWord.english) : Words(kOffWord.key, kOffWord.english); }
+std::string ChoiceShown(const char* shown) {
+  static constexpr std::pair<const char*, const char*> kChoiceKeys[] = {
+      {"AUTO", "COD3_PORT_V_AUTO"}, {"ORIGINAL", "COD3_PORT_V_ORIGINAL"}, {"GOLD", "COD3_PORT_V_GOLD"},
+      {"RAINBOW", "COD3_PORT_V_RAINBOW"}, {"COLOR CODES", "COD3_PORT_V_COLOR_CODES"}, {"CUSTOM", "COD3_PORT_V_CUSTOM"}};
+  for (const auto& [english, key] : kChoiceKeys)
+    if (std::strcmp(shown, english) == 0) return Words(key, english);
+  return shown;
+}
+std::string GamesWord() { return Words(kGamesWord.key, kGamesWord.english); }
+}  // namespace
+
 std::string ValueFor(int player, int row) {
   if (!ValidRow(row) || !ValidPlayer(player)) return {};
   const Info& in = kInfo[row];
   switch (in.kind) {
     case Kind::kToggle:
       // [f2-menus] 2026-11-11 ctl 14:50 INVERT MOUSE: the mouse as it is (with the game's own Invert aim), as F2's box.
-      if (std::string_view(in.cvar) == "cod3_invert_mouse") return MouseLook::MouseInverted() ? "ON" : "OFF";
-      return GetBool(in.cvar) ? "ON" : "OFF";
+      if (std::string_view(in.cvar) == "cod3_invert_mouse") return OnOff(MouseLook::MouseInverted());
+      return OnOff(GetBool(in.cvar));  // [acct2-bro Text lane] 2026-11-22
     case Kind::kChoice: {
       const std::string v = Get(in.cvar);
+      // [acct2-bro Text lane] 2026-11-22 the choice's word in the chosen language
       for (int i = 0; i < in.choice_count; ++i)
-        if (SameText(v, in.choices[i].value)) return in.choices[i].shown;
+        if (SameText(v, in.choices[i].value)) return ChoiceShown(in.choices[i].shown);
       return Upper(v);
     }
     case Kind::kNumber:
@@ -631,58 +651,83 @@ std::string ValueFor(int player, int row) {
   if (IsXhairRow(row)) return XhairValue(player, row, false);  // [acct2-ocr] 2026-11-21
   switch (row) {
     case kUseHold: return UseHoldText(player, use_hold::OwnSettingMs(player));
-    case kLeftHanded: return GetBool(FlipSetting(player)) ? "ON" : "OFF";
+    case kLeftHanded: return OnOff(GetBool(FlipSetting(player)));  // [acct2-bro Text lane] 2026-11-22
     case kVehicleFov: return fmt::format("{:.2f}", fov::VehicleScale(player));
     case kTextLanguage: return LanguageText(text::ChosenLanguage());
     case kVoices: {
       const int v = voice::Chosen();
-      return v < 0 || v >= voice::kLanguages ? std::string("GAME'S") : Upper(voice::kNames[v]);
+      // [acct2-bro Text lane] 2026-11-22
+      return v < 0 || v >= voice::kLanguages ? GamesWord() : Upper(voice::kNames[v]);
     }
     case kSplitHud: {
       const int v = SplitHud();
-      return v == 0 ? std::string("GAME'S") : fmt::format("{}%", v);
+      return v == 0 ? GamesWord() : fmt::format("{}%", v);  // [acct2-bro Text lane] 2026-11-22
     }
   }
   return {};
 }
 
+// [acct2-bro Text lane] 2026-11-22 "{0}" in a note's text -> the number (a plain replace: a text is never used as a
+// format string).
+namespace {
+std::string WithNumber(std::string text, const std::string& number) {
+  const size_t at = text.find("{0}");
+  if (at != std::string::npos) text.replace(at, 3, number);
+  return text;
+}
+}  // namespace
+
 std::string NoteFor(int player, int row) {
   if (!ValidRow(row) || !ValidPlayer(player)) return {};
   const Info& in = kInfo[row];
-  if (in.mouse && !KeyboardPlayer(player)) return "THE KEYBOARD AND MOUSE PLAYER'S";
-  if (in.kind != Kind::kOwn) return in.note;
+  // [acct2-bro Text lane] 2026-11-22 each note in the chosen language (COD3_PORT_<ROW>_N and COD3_PORT_N_* "@port"
+  // rows), else the English
+  if (in.mouse && !KeyboardPlayer(player)) return Words("COD3_PORT_N_KBM_PLAYERS", "THE KEYBOARD AND MOUSE PLAYER'S");
+  if (in.kind != Kind::kOwn) return Words((std::string(in.key) + "_N").c_str(), in.note);
   if (IsXhairRow(row)) return XhairNote(player, row);  // [acct2-ocr] 2026-11-21
   switch (row) {
     case kUseHold:
       if (player > 0 && use_hold::OwnSettingMs(player) == -1)
-        return "PLAYER 1'S UNTIL CHANGED HERE: HOW LONG USE IS HELD (THE GAME'S: 250 MS)";
-      return cod3::kMultiplayer ? "THIS PLAYER'S OWN: HOW LONG USE IS HELD (THE GAME'S: 250 MS)"
-                                : "HOW LONG USE IS HELD FOR A WEAPON, A GUN OR A VEHICLE (THE GAME'S: 250 MS)";
+        return Words("COD3_PORT_N_USE_HOLD_P1",
+                     "PLAYER 1'S UNTIL CHANGED HERE: HOW LONG USE IS HELD (THE GAME'S: 250 MS)");
+      return cod3::kMultiplayer ? Words("COD3_PORT_N_USE_HOLD_MP",
+                                        "THIS PLAYER'S OWN: HOW LONG USE IS HELD (THE GAME'S: 250 MS)")
+                                : Words("COD3_PORT_N_USE_HOLD_SP",
+                                        "HOW LONG USE IS HELD FOR A WEAPON, A GUN OR A VEHICLE (THE GAME'S: 250 MS)");
     case kLeftHanded:
-      return cod3::kMultiplayer ? "THIS PLAYER'S WEAPON IN THE LEFT HAND, MIRRORED"
-                                : "THE WEAPON IN THE LEFT HAND, MIRRORED";
+      return cod3::kMultiplayer ? Words("COD3_PORT_N_LEFT_HANDED_MP", "THIS PLAYER'S WEAPON IN THE LEFT HAND, MIRRORED")
+                                : Words("COD3_PORT_N_LEFT_HANDED_SP", "THE WEAPON IN THE LEFT HAND, MIRRORED");
     case kVehicleFov:
       if (player > 0)
         return fov::OwnVehicleScale(player) > 0.0
-                   ? fmt::format("THIS PLAYER'S OWN, IN VEHICLES AND ON A TANK'S GUN (PLAYER 1'S: {:.2f})",
-                                 fov::VehicleScale(0))
-                   : std::string("PLAYER 1'S UNTIL CHANGED HERE: IN VEHICLES AND ON A TANK'S GUN");
-      return "THE FIELD OF VIEW IN VEHICLES AND ON A TANK'S GUN (1.00: THE GAME'S)";
+                   ? WithNumber(Words("COD3_PORT_N_VEHICLE_FOV_OWN",
+                                      "THIS PLAYER'S OWN, IN VEHICLES AND ON A TANK'S GUN (PLAYER 1'S: {0})"),
+                                fmt::format("{:.2f}", fov::VehicleScale(0)))
+                   : Words("COD3_PORT_N_VEHICLE_FOV_P1",
+                           "PLAYER 1'S UNTIL CHANGED HERE: IN VEHICLES AND ON A TANK'S GUN");
+      return Words("COD3_PORT_N_VEHICLE_FOV_SP",
+                   "THE FIELD OF VIEW IN VEHICLES AND ON A TANK'S GUN (1.00: THE GAME'S)");
     case kTextLanguage: {
       const int i = text::ChosenLanguage();
-      if (i >= 0 && !text::LanguageUsable(i)) return "NOT INSTALLED: TEXT/<LANGUAGE>.TXT IN THE GAME'S FOLDER";
-      if (i >= 0 && text::LanguageAfterRestart(i)) return "APPLIES AFTER A RESTART (ITS SCRIPT IS DRAWN BY THE PORT)";
-      return "MENUS, HINTS, OBJECTIVES AND SUBTITLES, FROM THE NEXT TEXT THE GAME ASKS FOR";
+      if (i >= 0 && !text::LanguageUsable(i)) return Words("COD3_PORT_N_TEXT_NOT_INSTALLED",
+                                                           "NOT INSTALLED: TEXT/<LANGUAGE>.TXT IN THE GAME'S FOLDER");
+      if (i >= 0 && text::LanguageAfterRestart(i)) return Words("COD3_PORT_N_TEXT_RESTART",
+                                                                "APPLIES AFTER A RESTART (ITS SCRIPT IS DRAWN BY THE "
+                                                                "PORT)");
+      return Words("COD3_PORT_N_TEXT_NEXT",
+                   "MENUS, HINTS, OBJECTIVES AND SUBTITLES, FROM THE NEXT TEXT THE GAME ASKS FOR");
     }
     case kVoices: {
       const int v = voice::Chosen();
       if (v >= 0 && v < voice::kLanguages && voice::Available()[size_t(v)] == 0)
-        return "NOT INSTALLED: THE SETUP TOOL ADDS ANOTHER DISC'S VOICES";
-      return cod3::kMultiplayer ? "THE SOLDIERS' LANGUAGE, HEARD FROM THE NEXT MAP"
-                                : "THE SOLDIERS' LANGUAGE (ANOTHER DISC'S: THE SETUP TOOL'S PLAY PAGE)";
+        return Words("COD3_PORT_N_VOICES_NOT_INSTALLED", "NOT INSTALLED: THE SETUP TOOL ADDS ANOTHER DISC'S VOICES");
+      return cod3::kMultiplayer ? Words("COD3_PORT_N_VOICES_MP", "THE SOLDIERS' LANGUAGE, HEARD FROM THE NEXT MAP")
+                                : Words("COD3_PORT_N_VOICES_SP",
+                                        "THE SOLDIERS' LANGUAGE (ANOTHER DISC'S: THE SETUP TOOL'S PLAY PAGE)");
     }
     case kSplitHud:
-      return "HOW MUCH OF EACH VIEW THE HUD SPREADS OVER, FROM THE NEXT SPLIT (GAME'S: ABOUT 84%)";
+      return Words("COD3_PORT_N_SPLIT_HUD",
+                   "HOW MUCH OF EACH VIEW THE HUD SPREADS OVER, FROM THE NEXT SPLIT (GAME'S: ABOUT 84%)");
   }
   return {};
 }

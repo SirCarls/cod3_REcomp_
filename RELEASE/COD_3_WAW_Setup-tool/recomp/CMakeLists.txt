@@ -8,6 +8,23 @@ project(cod3 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# [acct2-bro] 2026-11-22 (the user reports of 2026-11-23): find_package keeps the rexglue_DIR of the first configure
+# even when CMAKE_PREFIX_PATH names another SDK now (a moved work folder, a renamed link), so a game could be built
+# against an SDK it wasn't given. A cached rexglue_DIR outside every CMAKE_PREFIX_PATH entry is looked up again.
+if(rexglue_DIR AND CMAKE_PREFIX_PATH)  # [acct2-bro] 2026-11-22
+    set(_cod3_sdk_given OFF)  # [acct2-bro] 2026-11-22
+    foreach(_cod3_prefix IN LISTS CMAKE_PREFIX_PATH)  # [acct2-bro] 2026-11-22
+        file(TO_CMAKE_PATH "${_cod3_prefix}" _cod3_prefix)  # [acct2-bro] 2026-11-22
+        string(FIND "${rexglue_DIR}/" "${_cod3_prefix}/" _cod3_at)  # [acct2-bro] 2026-11-22
+        if(_cod3_at EQUAL 0)  # [acct2-bro] 2026-11-22
+            set(_cod3_sdk_given ON)  # [acct2-bro] 2026-11-22
+        endif()  # [acct2-bro] 2026-11-22
+    endforeach()  # [acct2-bro] 2026-11-22
+    if(NOT _cod3_sdk_given)  # [acct2-bro] 2026-11-22
+        message(STATUS "cod3: the cached SDK (${rexglue_DIR}) isn't in CMAKE_PREFIX_PATH; looking for it again")
+        unset(rexglue_DIR CACHE)  # [acct2-bro] 2026-11-22
+    endif()  # [acct2-bro] 2026-11-22
+endif()  # [acct2-bro] 2026-11-22
 include(generated/rexglue.cmake)
 
 # A cross build (the Windows .exe made on Linux) can't run the SDK's own
@@ -109,6 +126,7 @@ set(COD3_SOURCES
     src/game/view_cull.cpp  # [claude-9b] the game's on-screen check as wide as the picture: logs, and cod3_cull_match_view (campaign only)
     src/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame, for the native renderer at NGL's level (logging only; campaign first)
     src/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame's 2D drawn by ngl_vk beside the GPU emulation and saved next to the game's screenshot (a check; campaign first)
+    src/game/ngl_camo.cpp  # [acct2-bro] 2026-11-22 Camo lane: camos on the first-person guns (native)
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
@@ -125,6 +143,7 @@ set(COD3_SOURCES
     src/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     src/game/thread_profiler.cpp
     src/game/ultrawide.cpp
+    src/game/console_budgets.cpp  # [acct2-decomp] 2026-11-22 detail and grass drawn farther than on the 360
     src/game/viewmodel.cpp  # [claude-9b] weapon offsets with Counter-Strike 2's commands (campaign only for now)
     src/game/viewmodel_flip.cpp  # [claude-9b] the weapon in the left hand (cod3_viewmodel_flip)
     src/game/aim_sensitivity.cpp  # [claude-9b] sensitivity per weapon class, hip and aiming, per player
@@ -155,6 +174,7 @@ set(COD3_SOURCES
     src/ui/problem_log.cpp
     src/ui/qte_spinner.cpp
     src/ui/server_tab.cpp  # [claude-9b] F2 > Game > Server: the match's rules, host only
+    src/ui/camo_tab.cpp  # [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos, per player and per gun
     src/ui/theme.cpp
     src/ui/waw_dvars.cpp
     src/test_input.cpp

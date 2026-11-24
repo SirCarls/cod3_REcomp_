@@ -115,6 +115,7 @@
 extern "C" {
 #include "ngl_vk.h"
 }
+#include "game/ngl_camo.h"  // [acct2-bro] 2026-11-22 Camo lane: camos on the first-person guns (CamoLayer)
 #endif
 #if defined(COD3_NGL_VK)  // side120: the presenter, to show the native picture in the window
 #include <rex/runtime.h>
@@ -237,6 +238,31 @@ REXCVAR_DEFINE_INT32(cod3_native_antialiasing, 1, "cod3/Display",
                      "7680x4320). The GPU draws that many times the pixels. Applies at the next start")
     .range(1, 16)
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-22 rn113c (owner 11-22 08:38: "The gun models need some anti-aliasing", 08:39: "The in-game
+// msaa needs to be improved", 08:43: the tree leaves): hardware MSAA for the native 3D scene (ngl_vk_set_msaa):
+// the opaque meshes (the world, the guns, the characters) and every cut-out (leaves, fences, wires: their edges
+// take their share of a pixel's samples) drawn with N samples a pixel and resolved; the grass, the blended draws,
+// the effect layer, the post effects and the HUD drawn as before over the resolved picture (rn113a's grass with
+// samples hung the GPU). Far cheaper than the supersampling above (which draws every pixel N times); the two go
+// together.
+REXCVAR_DEFINE_INT32(cod3_native_msaa, 4, "cod3/Display",
+                     "With cod3_native_vulkan, MSAA for the 3D scene (models, the world, leaves) in samples a "
+                     "pixel: 1 = none; 2, 4 or 8 (fewer where the GPU can't). Applies at the next start")
+    .range(1, 8)
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-22 rn114 (owner 11-22 08:02: "ambient fog spawns too quickly ... with both the emulated gpu
+// and native renderer"): CoD3 thins its new particles by the samples its effects drew the frame before (the effects
+// governor: campaign 0x824181D8, cod3mp 0x82430048, g = clamp((samples - 666,667) x 5e-7, 0, 1) from an occlusion
+// query; claude/acct2-bro/FOG-GOVERNOR.md). The GPU emulation answers that query with a stand-in 1000, so g stays
+// 0 and nothing is ever thinned. With this on and the native renderer drawing, the query is answered with the
+// native effect layer's samples (ngl_vk_effect_count, its half-size layer) scaled to the Xbox 360's layer (the
+// game draws smoke, dust and fire into a target half its screen each way, rn44b: 520x312, one sample a pixel,
+// for its 1040x624 picture); the game's own formula and its thinning go on from there. Off: as before.
+REXCVAR_DEFINE_BOOL(cod3_native_fx_governor, true, "cod3/Display",
+                    "With cod3_native_vulkan, the effects governor counts the native effect layer's pixels as the "
+                    "Xbox 360 counted its effects (fog and smoke thin out as they fill the screen); off: the GPU "
+                    "emulation's stand-in count, which never thins")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-09 (owner 11-09 09:35: "Native rendering should work"): rn1's long native frames came with
 // bursts of new textures, about 10 ms each, because ngl_vk copied every new texture to the GPU and waited for it on its
 // own. With this on (ngl_vk_set_batched_textures) a frame's new textures wait in a staging buffer and go to the GPU
@@ -609,6 +635,27 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_anisotropy, true, "cod3/Debug",
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 // [acct2-bro] 2026-11-11 rn50a: two more of the guns' metal shaders read by their own numbers (ReadMetalPass)
 // [acct2-bro] 2026-11-12 rn51b: the M1 Garand's metal (ReadMetalPlainPass)
+// [acct2-bro] 2026-11-22 rn112 (x227-x230, defect D: the Kar98k's bolt and receiver drawn nearly black in
+// multiplayer, grey steel in the game): its second material (samplers k98_n_Texture, k98_wood_color_Texture,
+// k98_metal_mask_Texture) is drawn by the plain gun metal shader 873FA02EF5630720, which MetalPlainShape didn't know,
+// and names its mask "metal_mask", which no sampler rule takes: so plain bumped, the color map's black. On by
+// default; off: as before.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_rn112, true, "cod3/Debug",
+                    "The Kar98k's second material (multiplayer) drawn as gun metal: its pixel shader "
+                    "873FA02EF5630720 read as the plain metal's, its *metal_mask* sampler as the mask; false: as "
+                    "before (plain bumped, near black)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-22 rn111: the bullets' shine (ReadShinyPass): on by default; off adds the environment as before
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_rn111, true, "cod3/Debug",
+                    "The strength and tint of the shiny shader B0D2C2278FE3586C (the bullets on a belt, the shotgun's "
+                    "shells) as the game has them; false adds the environment at full strength, as before")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-22 rn110: multiplayer's guns (the trench shotgun's two metal materials, the MP44's): on by
+// default; off draws them as before (the plain shiny path), to measure one against the other in one build.
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_rn110, true, "cod3/Debug",
+                    "The gun metal shapes read on 2026-11-22 (multiplayer's trench shotgun and MP44) and normal maps "
+                    "named _n<number>_; false draws those materials as before")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_metal_plain, true, "cod3/Debug",
                     "With cod3_native_vulkan, the M1 Garand's metal (the game's shaders 35841B3D12A90CA4 and "
                     "CC31EB0C3D04DBEF) takes the game's look: the level's reflection in its specular map, its "
@@ -706,16 +753,6 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_scene_targets, false, "cod3/Debug",
                     "With cod3_native_vulkan, a scene with neither a color nor a depth target is left out with its "
                     "children, as the game's scene render does (debug)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// [rexglue-native-render] 2026-11-11 rn48o (a probe, debug, off): every light of the scenes' light sets, of every kind,
-// as the game's lighting reads them (0x82142360 through 0x82150050; scene +0x36C: eight group lists at +0x00..+0x1C, a
-// light's next in group g at +4 x g, its kind at +0x28, its data at +0x2C), logged the first time a light is seen after
-// frame 1000 (by its address, kind, data and color to half a unit), with its groups and its data +0x00..+0x2C. To find
-// which kind the explosion that lights Chambois' walls in the game is (RENDER-NOTES.md 2026-11-11 10:37 item 3; run f
-// frame 2900, run k frame 1500): the native side takes kinds 0 and 5 only (rn47x).
-REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_light_kinds, false, "cod3/Debug",
-                    "With cod3_debug_ngl_side, log the scenes' lights of every kind as they come, after frame 1000 "
-                    "(debug)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native-render] 2026-11-11 rn48l: each 2D quad blended as the game's quad render sets it (0x82153BA0 ->
 // 0x82153538, decomp 82150000.c; QuadBlendOf below): additive where the game adds (+0x5C 01C00000: source alpha, one;
 // the compass's glow at a level's start, The Mace frames 1014-1019), opaque where its blending is off (the opaque
@@ -753,13 +790,6 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_bump_frame, true, "cod3/Debug",
                     "vehicles) bend along the game's own frame (a tangent along rising u, B = T x N), so stamped "
                     "letters read stamped; off: the two cotangents from the screen slopes, as before (the green "
                     "bend the other way where the coordinates aren't mirrored)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// [acct2-bro] 2026-11-21 rn101 (debug): ReportTangents' lines for the first N meshes drawn with the game's frame
-REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_tangent_report, 0, "cod3/Debug",
-                     "With cod3_native_vulkan, log how the first N meshes drawn with the game's normal map frame "
-                     "have their own tangents (the vertex declaration's TANGENT) against their coordinates' "
-                     "slope (0: none)")
-    .range(0, 256)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn40t: the soldiers' helmets as the game's pixel shader 1D4725CEF0551EBB draws them
 // (ReadHelmetPass); rn40x: and those with a woven swatch (and two soldiers' bodies) as ADC02DCE4FDC9253 does
@@ -830,15 +860,6 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_front_target, true, "cod3/Debug",
                     "With cod3_native_vulkan, a scene is drawn in front of the world (as the gun's) only if it draws "
                     "into the world's own target; off: by its near plane alone (a scene without a target of its own "
                     "can then cover the picture)")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// [acct2-bro] 2026-11-14 rn94a: a skinned corner's weights by the game's rule. The arms' vertex shader
-// (DB29558896983B88) runs with c161.x = 4 (t134): the first three weights as stored over 255 and the fourth 1 less
-// their sum; the stored fourth is never read. SkinPosition and SurfaceSkin took all four stored weights over their
-// own sum, which is the same only where the four add up to 255 (392 of the arms' 3059 corners don't; the island
-// BAR's front hand over its forend). On: the way before, to compare.
-REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_skin_stored_weights, false, "cod3/Debug",
-                    "With cod3_native_vulkan: skin with the four stored weights over their sum (as before rn94a) "
-                    "instead of the game's rule (the fourth weight is what the first three leave of 255)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn42w: the lit models' lighting flicker (owner 10:29: "the grass/bushes flicker with
 // lighting. There are a lot of other effects that also do this"). rn42u's live frames: a lit model's sun was its
@@ -1170,6 +1191,22 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_screen_echo, true, "cod3/Debug",
                     "With cod3_native_vulkan, a 2D quad the game draws with its last screen picture (a concussion's "
                     "echo) takes the native renderer's last finished frame; off: as before rn47n (black)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-22 rn47y (owner 13:15: "when a overlay like hit feedback, falling, or explosion the overlay
+// doesn't cover the whole screen there's a noticeable bar border"): the echo above is the screen's picture drawn 4
+// units right and down, (4, 4) to (644, 484), so the screen's top 3 rows and left 4 columns of units (6 and 8 pixels
+// at 1280x720) get none of it. They stay at the frame's full brightness while the rest settles at 0.545, and since
+// the echo feeds itself each frame's bare strip is copied 4 units further in: a staircase of bands along the top and
+// the left (x272's shots: 24 of 80 of The Mace, 13 of 80 of Saint-Bert, none before the first echo; the same with
+// the afterimage off). The console's TV overscan hid them. In cod3mp the echo was black (its textures weren't known),
+// which dimmed the screen to 0.30 but for a full-bright strip along the top and the left. On: a whole-screen echo's
+// sides that stop short of an edge are drawn 2 units past it with its picture's corners moved along, so the strip
+// takes the last frame's edge (ngl_vk's sampler clamps there) as its neighbours take the picture 4 units over; and
+// cod3mp's echo takes the last frame as the campaign's does (one view; split screen as before). Off: as before.
+REXCVAR_DEFINE_BOOL(cod3_native_echo_edges, true, "cod3/Display",
+                    "With cod3_native_vulkan, a concussion's echo of the screen (hit, fall, explosion) covers the "
+                    "whole screen: no bands along its top and left edges, and in multiplayer the echo itself "
+                    "rather than a dark screen with a bright border; off: as before")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_screen_echo_this, false, "cod3/Debug",
                     "With cod3_debug_ngl_side_screen_echo, the quad takes this frame's picture so far (rn47o's "
                     "trial) instead of the last finished frame, for comparing")
@@ -1489,6 +1526,37 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_leaf_cards, true, "cod3/Debug",
                     "With cod3_native_vulkan, each tree leaf is one card turned to face the camera and moved by its "
                     "pivot, as the game's leaf shader places it; off: two fixed crossed cards, as before 2026-11-11")
     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-22 rn115a: the leaves' level and fade, the game's (the owner, 08:43 and 08:44: "tree leaves need
+// to be improved", "density, lighting"; x262-x264b: natively every instance drew its tree's nearest level, 1.44x the
+// game's leaves for the same trees, where the game draws each instance's own level and cross-fades two)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_leaf_lod, true, "cod3/Debug",
+                    "With cod3_native_vulkan and cod3_debug_ngl_side_tree_cut, each tree instance's leaves are drawn "
+                    "at the level (or the two fading levels) the game draws them at, each cut by the game's own alpha "
+                    "test, and the leaf maps are kept as the game's; off: every instance at its tree's nearest level, "
+                    "as before 2026-11-22")
+    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+// [acct2-bro] 2026-11-22 rn115b: the trees' instances as the game draws them (after rn115a's leaves): the game tests
+// each instance's sphere against the view before it draws any part of it
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_tree_cull, true, "cod3/Debug",
+                    "With cod3_native_vulkan, a tree instance is drawn only where the game draws it: its sphere inside "
+                    "the view, or inside the sun's shadow map (to keep its shadow); off: every instance, as before "
+                    "2026-11-22")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-22 rn115c: the branches' and fronds' level, the game's (after rn115a's leaves: natively every
+// instance drew its tree's nearest level; x314: the game draws each instance's own level's strip)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_tree_lod, true, "cod3/Debug",
+                    "With cod3_native_vulkan, each tree instance's branches and fronds are drawn at the level the game "
+                    "draws them at (that level's strip); off: every instance at its tree's nearest level, as before "
+                    "2026-11-22")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-bro] 2026-11-22 SP lane, defect E: the multiplayer scopes' lens glass (the Springfield's and the scoped
+// Kar98k's: natively an empty ring, the color map's clear middle cut away) as the game's D464FD2ECA69C5E4 draws it
+// (ngl_vk.h lens_tint_map; ReadScopeLensPass)
+REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_scope_lens, true, "cod3/Debug",
+                    "With cod3_native_vulkan, a scope's lens takes the game's tinted glass (its color map and tint "
+                    "map, the level's reflection cube and the highlights, blended by its alpha as the game blends "
+                    "it); off: drawn plain, as before 2026-11-22")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [rexglue-native] 2026-11-10 rn42g: the effect flushes the game draws with only the frame's alpha written (RB_COLOR_MASK
 // 0x8). The tank barrel's smoke (owner 09:13: "square") is two such effects with the 16 x 16 framed texture 0D84C000:
 // the GPU draws the same quads with the same texture, but into the full-size frame's alpha alone (its other effects go
@@ -1726,14 +1794,6 @@ REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_water_log, true, "cod3/Debug",
 REXCVAR_DEFINE_BOOL(cod3_debug_ngl_side_water_late, true, "cod3/Debug",
                     "With cod3_native_vulkan, draw the water after the frame's other solid draws (as the game does), "
                     "not in its place among them")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-// [acct2-bro] 2026-11-13 rn86c: a test: the water's draws lifted in world z (z is up) by this many tenths of a unit.
-// wt10 showed the island's riverbed poking through the native water (drawn opaque) in patches: its surface lies
-// below the rocks where the game's covers them. The sweep against the game's picture measures by how much.
-REXCVAR_DEFINE_INT32(cod3_debug_ngl_side_water_lift, 0, "cod3/Debug",
-                     "With cod3_native_vulkan, lift the water's draws in world z by this many tenths of a unit "
-                     "(a test; 0 = as the vertices say)")
-    .range(-2000, 2000)
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [acct2-bro] 2026-11-13 rn86e: the water's alpha: 0 the game's 1 - (1 - opacity) x f (nearly opaque looking down),
 // 1 rn86a's opacity + (1 - opacity) x f (the opacity looking down)
@@ -3302,8 +3362,6 @@ constexpr uint64_t kMovingLightFrames = 1;  // how many game frames back a light
 std::mutex g_moving_light_mutex;
 std::vector<MovingLight> g_moving_lights;
 // [rexglue-native-render] 2026-11-11 rn48u: the last frame's set lights (rn48q: the block is a frame behind)
-MovingLight g_last_set_lights[kMaxMovingLights];
-size_t g_last_set_count = 0;
 // [rexglue-native] 2026-11-10 rn40j: the same lights kept by where their models stood (cod3_debug_ngl_side_light_by_place):
 // a grid of kKeptLightCell game units, each cell the last kKeptLightsPerCell models' lights (g_model_light_mutex)
 constexpr float kKeptLightCell = 64.0f;
@@ -4013,12 +4071,24 @@ void LogPassBinding(uint8_t* base, uint32_t node, const char* what) {
 // w_us_bar_*: k98_Norm_Texture "w_us_bar_n", k98_diffuse_Texture, k98_Spec_Texture) was drawn with its color map
 // alone, its normal map taken for nothing and so its specular map unused too (t126's census). "_norm" is in no
 // other sampler name of the island's census but the ones "normal" already takes.
+// [acct2-bro] 2026-11-22 rn110a: "_n" with a number and then "_" or the end ("shotgun_N1_Texture": the trench
+// shotgun's second metal material in multiplayer names its normal map so, beside "Shotgun_N_Sampler"'s; taken for
+// no normal map, its pass was never asked whether it is a gun metal's). Lower case in.
+bool NumberedNormalName(const std::string& lower) {
+  for (size_t at = lower.find("_n"); at != std::string::npos; at = lower.find("_n", at + 1)) {
+    size_t i = at + 2;
+    while (i < lower.size() && lower[i] >= '0' && lower[i] <= '9') ++i;
+    if (i > at + 2 && (i == lower.size() || lower[i] == '_')) return true;
+  }
+  return false;
+}
 bool NormalMapName(const std::string& name) {
   const std::string lower = Lower(name);
   if (lower.find("swatch") != std::string::npos) return false;  // [rexglue-native] rn24: a detail swatch isn't it
   return lower.find("normal") != std::string::npos || lower.find("_n_") != std::string::npos ||
          lower.find("nrm") != std::string::npos || lower.find("bump") != std::string::npos ||
          lower.find("_norm") != std::string::npos ||  // [acct2-bro] 2026-11-14 rn93a
+         (REXCVAR_GET(cod3_debug_ngl_side_rn110) && NumberedNormalName(lower)) ||  // [acct2-bro] rn110a
          (lower.size() > 2 && lower.compare(lower.size() - 2, 2, "_n") == 0);
 }
 
@@ -5295,6 +5365,7 @@ struct MetalPass {
   float blur = 0.13f;
   float mask_floor = 0.0f;  // [acct2-bro] 2026-11-11 rn50a: kMetalFloor's grey under the rim (0: the base, as CFC45995)
   float normal_depth = 0.0f;  // [acct2-bro] 2026-11-12 rn51b: the shader's Normal_Map_Depth (0: the map as it is)
+  bool mask_twice = false;  // [acct2-bro] 2026-11-22 rn112: the mask added twice (873FA02E: drawn as the scratch too)
 };
 // [rexglue-native-guns] 2026-11-11 rn49c: the compiled-in numbers of the view models' metal (565BDF86 / D680A2FF), as
 // the game's GPU holds them at their draws (rn49a): Reflection_Amt, SpecularPower, Metal_Hue, the rim's edge, scale and
@@ -5452,6 +5523,21 @@ MetalPass ReadMetalFloorPass(uint8_t* base, uint32_t node, const PassBinding& bi
 //     reflection's share c254.z, the power c254.w, the cube read with its gradients spread by c255.x (a wide sheen).
 // Their literal blocks hold 4 vectors (c252-c255). Drawn through the metal look with no rim (its color 0) and the
 // mask's floor at next to nothing, which leaves the specular map alone as the mask (ngl_vk.h metal_mask_floor).
+// [acct2-bro] 2026-11-22 rn112: the texture of a material's sampler named *metal_mask* (the Kar98k's second
+// material), 0 when none. Not a specular map by its name in general (SpecularMapName): lent as the metal's mask only
+// when the pass is drawn by a plain metal shader (MetalPlainNode), where the draw needs one.
+uint32_t MetalMaskSampler(uint8_t* base, uint32_t material) {
+  const uint32_t list = Pointer(material) ? g::ReadU32(base, material + kMaterialSamplers) : 0;
+  if (!Readable(list)) return 0;
+  for (uint32_t k = 0; k < kMaxSamplers; ++k) {
+    const uint32_t entry = list + kSamplerFirst + kSamplerBytes * k;
+    const uint32_t parameter = g::ReadU32(base, entry), texture = g::ReadU32(base, entry + 4);
+    if (!Pointer(parameter)) break;
+    if (parameter == kLightMapParameter || !IsTexture(base, texture)) continue;
+    if (Lower(SamplerTextureName(base, parameter)).find("metal_mask") != std::string::npos) return texture;
+  }
+  return 0;
+}
 bool MetalPlainShape(const uint32_t w[32], int* which) {
   if (w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0 && w[4] == 0 && w[5] == 0 && w[6] == 0 && w[7] == 0 &&
       w[8] == 0x40000000u && w[9] == 0xBF800000u && w[10] == 0 && w[11] == 0 && w[12] == 0 && w[13] == 0x3F800000u &&
@@ -5464,6 +5550,21 @@ bool MetalPlainShape(const uint32_t w[32], int* which) {
     *which = 2;  // CC31EB0C3D04DBEF's
     return true;
   }
+  // [acct2-bro] 2026-11-22 rn110a: F9C0AC7881433385's (multiplayer's trench shotgun; ReadMetalPlainPass)
+  if (w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0 && w[4] == 0 && w[5] == 0 && w[6] == 0 && w[7] == 0 &&
+      w[8] == 0xBF800000u && w[9] == 0x3F008081u && w[10] == 0 && w[11] == 0 && w[12] == 0 && w[13] == 0x3F800000u &&
+      w[14] == 0x3FC00000u && w[15] == 0x24E69595u && REXCVAR_GET(cod3_debug_ngl_side_rn110)) {
+    *which = 3;
+    return true;
+  }
+  // [acct2-bro] 2026-11-22 rn112: 873FA02EF5630720's (multiplayer's Kar98k, its second material; ReadMetalPlainPass):
+  // c252 = (0.2, 1, 1e-16, 0), c253 = (2, edge's scale, 0, -1), c254 = (1.5, -edge, .., ..), c255 = (rim, 3)
+  if (w[0] == 0x3E4CCCCDu && w[1] == 0x3F800000u && w[2] == 0x24E69595u && w[3] == 0 && w[4] == 0x40000000u &&
+      w[6] == 0 && w[7] == 0xBF800000u && w[8] == 0x3FC00000u && w[15] == 0x40400000u &&
+      REXCVAR_GET(cod3_debug_ngl_side_rn112)) {
+    *which = 4;
+    return true;
+  }
   return false;
 }
 MetalPass ReadMetalPlainPass(uint8_t* base, uint32_t node, const PassBinding& binding) {
@@ -5474,9 +5575,47 @@ MetalPass ReadMetalPlainPass(uint8_t* base, uint32_t node, const PassBinding& bi
   float v[16];  // c252 .. c255
   std::memcpy(v, w, sizeof v);
   float depth = 0.0f, brightness = 0.0f, power = 0.0f;
-  if (!ReadBound(base, binding, 29, &depth, 1) || !ReadBound(base, binding, 30, &brightness, 1)) return out;
   float reflection = 0.0f, blur = 0.0f;
-  if (which == 1) {
+  // [acct2-bro] 2026-11-22 rn110a: multiplayer's trench shotgun (the allies' class 3 on mp_merv; the owner 11-22
+  // 03:03: "Please continue with gun and first person models"): drawn dull by the plain shiny path, the game's bright
+  // (x216's mk216b: the gun's box 13.66 from the game's picture, the other guns 2.6 to 8). Its pass binds c16 to c31
+  // as the Garand's do, and its pixel shader F9C0AC7881433385 (x216's dump, its listing read) is 35841B3D's sum
+  //   color = base x light + (the highlights + c29.x x the cube) x the specular map's color
+  // with other numbers bound: c29.x the reflection's share, c30.x the highlights' power, c31.x the spread of the
+  // cube's gradients (its names: Reflection_Blur, Specular_Power); no brightness, no Normal_Map_Depth, no rim, no hue.
+  // Its literals: c254 = (-1, 0.50196, 0, 0): .x turns the normal map's two fetched halves into a signed pair, .y is
+  // its alpha test's edge on the specular map's alpha (not drawn here: the draw's own alpha state stays as it is);
+  // c255 = (0, 1, 1.5, 1e-16).
+  // [acct2-bro] 2026-11-22 rn112: 873FA02EF5630720 (x218's dump, its listing read; its numbers at the Kar98k's
+  // draws: x230). It binds c16 to c31 as the Garand's do, then c29.x the light's scale (on the base's light and on
+  // the highlights, not on the cube), c30.x the reflection's share, c31.x the highlights' power; its literals:
+  // c252.x the cube's gradients' spread (as CFC45995's blur), the rim t = saturate(-c253.y x (-c254.y - N.V)),
+  // s = t^2 (3 - 2t), toward c255.xyz. Its mask is the metal mask plus the mask turned toward the rim by s:
+  //   color = base x light x c29 + (c29 x the highlights + c30 x the cube) x (mask + mix(mask, rim, s))
+  // drawn through the metal look with the mask as the scratch map too (mask + mask + rim x s: off from the game's
+  // only by s x mask, at the edge). Its output's two lanes x 0.945 and 0.998 (c254.w, z) are left out.
+  float rim_edge = 0.0f, rim_scale = 0.0f;
+  if (which == 4) {
+    if (!ReadBound(base, binding, 29, &brightness, 1) || !ReadBound(base, binding, 30, &reflection, 1) ||
+        !ReadBound(base, binding, 31, &power, 1)) {
+      return out;
+    }
+    blur = v[0];
+    rim_edge = -v[9];
+    rim_scale = -v[5];
+    if (!(rim_edge > -1.0f) || !(rim_edge < 1.0f) || !(rim_scale > 0.0f) || !(rim_scale < 1000.0f)) return out;
+  } else if (which == 3) {
+    if (!ReadBound(base, binding, 29, &reflection, 1) || !ReadBound(base, binding, 30, &power, 1) ||
+        !ReadBound(base, binding, 31, &blur, 1)) {
+      return out;
+    }
+    brightness = 1.0f;
+  } else if (!ReadBound(base, binding, 29, &depth, 1) || !ReadBound(base, binding, 30, &brightness, 1)) {
+    return out;
+  }
+  if (which == 3 || which == 4) {
+    // (their numbers are read above)
+  } else if (which == 1) {
     reflection = v[15];
     if (!ReadBound(base, binding, 31, &power, 1)) return out;
   } else {
@@ -5498,6 +5637,12 @@ MetalPass ReadMetalPlainPass(uint8_t* base, uint32_t node, const PassBinding& bi
   out.rim_edge = 0.0f;
   out.rim_scale = 1.0f;
   out.mask_floor = 1.0e-6f;
+  if (which == 4) {  // [acct2-bro] 2026-11-22 rn112: its rim, and its mask twice (the draw lends it as the scratch)
+    std::memcpy(out.rim, v + 12, sizeof out.rim);
+    out.rim_edge = rim_edge;
+    out.rim_scale = rim_scale;
+    out.mask_twice = true;
+  }
   if (depth > 0.0f && depth < 64.0f) out.normal_depth = depth;
   float bias = 0.0f;
   if (ReadBound(base, binding, 17, &bias, 1)) out.cube_bias = bias;
@@ -5629,6 +5774,87 @@ MetalPass ReadMetalPass(uint8_t* base, uint32_t node) {
     out.sun_bound = ReadBound(base, binding, 28, out.sun_color, 3);
     out.ok = true;
     return out;
+  }
+  // [acct2-bro] 2026-11-22 rn110b: the trench shotgun's second metal material in multiplayer (its normal map
+  // "shotgun_N1_Texture", rn110a): the pass binds c29 to c31 and no c32, and its pixel shader 7D92D3630805B183 (x216's
+  // dump, its last 40 lines read) is 565BDF86's look with its numbers compiled in and two tints bound in place of the
+  // compiled-in hue: c29.x the brightness (on every light term), c30 Diff_Tint (on the color map), c31 Spec_tint (on
+  // the mask times reflection and highlights). Its literals, the block's last 5 vectors: c251 = (0, 1, -1, -14.925)
+  // .w minus the rim's scale; c252 = (0.18, 40, 1.5, 1e-16) the reflection's share and the highlights' power; c253 =
+  // (1e-16, -0.122, 0.13, 40) .y minus the rim's edge, .z the blur; c254 = (2, 0, 0, 0); c255 = (0.28028, 0.301134,
+  // 0.392, 3) the rim. Spec_tint is drawn as the hue; Diff_Tint has no place of its own in the metal look, so its
+  // mean goes into the brightness (exact for a gray tint; the line below says what it is).
+  {
+    uint32_t w[32];
+    float tint_diffuse[3] = {}, tint_specular[3] = {}, none[3] = {};
+    const bool rn110 = REXCVAR_GET(cod3_debug_ngl_side_rn110);
+    // [acct2-bro] 2026-11-22 rn110c: the MP44 in multiplayer (the axis' class 2; drawn by the plain shiny path with
+    // a far stronger reflection than the game's: x216's 13.36). Its pass binds c16 to c28 from the scene and the
+    // material and nothing of the material after (c29 to c31 come from another slot), and its pixel shader
+    // 23D86BF4054BAF80 (x218's dump, the lines that use its numbers read) is CFC45995's kin with every number
+    // compiled in and no brightness: c251 = (2, 1, 0, 0); c252 = (3, -1, -4.717, 0.35) .z minus the rim's scale, .w
+    // the blur; c253 = (1.5, 1e-16, -0.212, 0.835) .z minus the rim's edge; c254 = (0.2185, 0.2348, 0.306, 0) the
+    // rim; c255 = (0.9748, 0.945, 40, 0.3) .z the highlights' power, .w the reflection's share (.x and .y scale two
+    // of the color map's channels by a few percent: not drawn). Its mask adds two textures (tf5 and tf6), as
+    // 565BDF86's (MetalSecondMask takes the second for this kind).
+    if (rn110 && binding.slot[29] != 1 && PassPixelLiterals(base, node, w) && w[12] == 0x40000000u &&
+        w[13] == 0x3F800000u && w[14] == 0 && w[15] == 0 && w[16] == 0x40400000u && w[17] == 0xBF800000u &&
+        w[20] == 0x3FC00000u && w[21] == 0x24E69595u && w[27] == 0) {
+      float v[32];  // c248 .. c255
+      std::memcpy(v, w, sizeof v);
+      const float own_scale = -v[18], own_blur = v[19], own_edge = -v[22], own_power = v[30], own_reflection = v[31];
+      if (own_scale > 0.0f && own_scale < 1000.0f && own_blur >= 0.0f && own_blur < 16.0f && own_edge > -1.0f &&
+          own_edge < 1.0f && own_power > 0.0f && own_power < 1000.0f && own_reflection >= 0.0f &&
+          own_reflection < 16.0f) {
+        out.kind = kMetalCompiledIn;
+        out.brightness = 1.0f;
+        out.reflection = own_reflection;
+        out.power = own_power;
+        out.blur = own_blur;
+        out.rim_edge = own_edge;
+        out.rim_scale = own_scale;
+        out.hue[0] = out.hue[1] = out.hue[2] = 1.0f;
+        std::memcpy(out.rim, v + 24, sizeof out.rim);
+        out.sun_bound = ReadBound(base, binding, 28, out.sun_color, 3);
+        out.ok = true;
+        return out;
+      }
+    }
+    if (rn110 && binding.slot[30] == 1 && PassPixelLiterals(base, node, w) && w[12] == 0 && w[13] == 0x3F800000u &&
+        w[14] == 0xBF800000u && w[19] == 0x24E69595u && w[20] == 0x24E69595u && w[24] == 0x40000000u &&
+        w[31] == 0x40400000u && ReadBound(base, binding, 29, &brightness, 1) &&
+        ReadBound(base, binding, 30, tint_diffuse, 3) && ReadBound(base, binding, 31, tint_specular, 3) &&
+        !ReadBound(base, binding, 32, none, 3)) {
+      float v[32];  // c248 .. c255
+      std::memcpy(v, w, sizeof v);
+      const float diffuse = (tint_diffuse[0] + tint_diffuse[1] + tint_diffuse[2]) / 3.0f;
+      const float own_reflection = v[16], own_power = v[17], own_edge = -v[21], own_blur = v[22], own_scale = -v[15];
+      if (brightness > 0.0f && brightness < 64.0f && diffuse > 0.0f && diffuse < 16.0f && own_reflection >= 0.0f &&
+          own_reflection < 16.0f && own_power > 0.0f && own_power < 1000.0f && own_edge > -1.0f && own_edge < 1.0f &&
+          own_blur >= 0.0f && own_blur < 16.0f && own_scale > 0.0f && own_scale < 1000.0f) {
+        out.kind = kMetalCompiledIn;
+        out.brightness = brightness * diffuse;
+        out.reflection = own_reflection;
+        out.power = own_power;
+        out.blur = own_blur;
+        out.rim_edge = own_edge;
+        out.rim_scale = own_scale;
+        std::memcpy(out.hue, tint_specular, sizeof out.hue);
+        std::memcpy(out.rim, v + 28, sizeof out.rim);
+        out.sun_bound = ReadBound(base, binding, 28, out.sun_color, 3);
+        out.ok = true;
+        if (REXCVAR_GET(cod3_debug_ngl_side)) {
+          static std::atomic<int> said{0};
+          if (said.fetch_add(1, std::memory_order_relaxed) < 2) {
+            REXLOG_INFO("cod3: ngl side: rn110b gun metal with two tints (node {:08X}): brightness {:.4g}, Diff_Tint "
+                        "{:.3f} {:.3f} {:.3f}, Spec_tint {:.3f} {:.3f} {:.3f}", node, brightness, tint_diffuse[0],
+                        tint_diffuse[1], tint_diffuse[2], tint_specular[0], tint_specular[1], tint_specular[2]);
+          }
+        }
+        return out;
+      }
+    }
+    brightness = 0.0f;
   }
   if (!ReadBound(base, binding, 29, &brightness, 1) || !ReadBound(base, binding, 30, &reflection, 1) ||
       !ReadBound(base, binding, 31, &power, 1) || !ReadBound(base, binding, 32, hue, 3)) {
@@ -6056,6 +6282,74 @@ LensPass ReadLensPass(uint8_t* base, uint32_t node, const LensRegisters& registe
   }
   out.ok = true;
   return out;
+}
+// [acct2-bro] 2026-11-22 SP lane, defect E: the multiplayer scopes' glass (mp_merv's allies kit 4 Springfield and
+// axis kit 4 scoped Kar98k: material "lens", effect "standard_12"; the MP lane's x403, its notes DEFECT-E-LENS). The
+// game's pixel shader D464FD2ECA69C5E4, over its vertex shader 136BEC0F23AFBC5A (which lights it: the irradiance
+// rows, the sun and the nearest point light, and their highlights of power 200, its literal c255.z), reads tf1 the
+// level's reflection cube (__17_REFLECTION_CUBEMAP, named by no material), tf2 the color map and tf3 the material's
+// reflection_tint map ("bullet_d"), and draws (its 11-54)
+//   color = (the color map x c252.x x the light + the tint map x c255.xyz x (the cube x c255.w + the highlights))
+//           x c254.zyx,   alpha = c252.x x the color map's alpha,
+// the cube along the eye's reflection about the normal plus c16.x ("zero": the value block's +1D0). Its literal block
+// holds 4 vectors (c252-c255; x403: (1.519 0.03 0 0) (0 1 1.5 1e-16) (0.4053 0.410837 0.42 1) (0.161504 0.291734
+// 0.392 4)): the words that give its shape (c252.zw, c253, c254.w) are checked, its numbers carried (c252.y, the
+// cube's blur through its own gradients, has no place natively). ok false (with why) when a step fails.
+struct ScopeLensPass {
+  bool ok = false;
+  const char* why = "";
+  float color_scale = 1.0f, out_scale[3] = {1.0f, 1.0f, 1.0f}, tint[3] = {1.0f, 1.0f, 1.0f};
+  float reflection = 0.0f, bias = 0.0f;
+};
+constexpr float kScopeLensPower = 200.0f;  // 136BEC0F's c255.z (x237's saved vertex block: c255 = 0 1 200 0)
+ScopeLensPass ReadScopeLensPass(uint8_t* base, uint32_t node) {
+  ScopeLensPass out;
+  uint32_t w[32];
+  if (!PassPixelLiterals(base, node, w)) {
+    out.why = "its shader's numbers not read";
+    return out;
+  }
+  if (w[2] != 0 || w[3] != 0 || w[4] != 0 || w[5] != 0x3F800000u || w[6] != 0x3FC00000u || w[7] != 0x24E69595u ||
+      w[11] != 0x3F800000u) {
+    out.why = "not the shape of D464FD2E's numbers";
+    return out;
+  }
+  float v[16];  // c252 .. c255
+  std::memcpy(v, w, sizeof v);
+  const auto in = [](float x, float low, float high) { return x > low && x <= high; };
+  if (!in(v[0], 0.0f, 8.0f) || !in(v[8], 0.0f, 4.0f) || !in(v[9], 0.0f, 4.0f) || !in(v[10], 0.0f, 4.0f) ||
+      !in(v[12], 0.0f, 4.0f) || !in(v[13], 0.0f, 4.0f) || !in(v[14], 0.0f, 4.0f) || !in(v[15], 0.0f, 16.0f)) {
+    out.why = "its numbers out of range";
+    return out;
+  }
+  out.color_scale = v[0];
+  out.out_scale[0] = v[10];  // the red's c254.z (54: oC0.rgb = r0.zxy x c254.zyx)
+  out.out_scale[1] = v[9];
+  out.out_scale[2] = v[8];
+  std::memcpy(out.tint, v + 12, sizeof out.tint);
+  out.reflection = v[15];
+  const PassBinding binding = ReadPassBinding(base, node);  // c16: 0 where it isn't bound from the value block
+  float bias = 0.0f;
+  if (binding.ok && binding.values && ReadBound(base, binding, 16, &bias, 1) && !FillValue(bias) &&
+      std::fabs(bias) <= 4.0f) {
+    out.bias = bias;
+  }
+  out.ok = true;
+  return out;
+}
+// [acct2-bro] 2026-11-22 defect E: the texture of a material's sampler named *reflection_tint* (the scopes'
+// "bullet_d"), 0 when none (as MetalMaskSampler)
+uint32_t ReflectionTintSampler(uint8_t* base, uint32_t material) {
+  const uint32_t list = Pointer(material) ? g::ReadU32(base, material + kMaterialSamplers) : 0;
+  if (!Readable(list)) return 0;
+  for (uint32_t k = 0; k < kMaxSamplers; ++k) {
+    const uint32_t entry = list + kSamplerFirst + kSamplerBytes * k;
+    const uint32_t parameter = g::ReadU32(base, entry), texture = g::ReadU32(base, entry + 4);
+    if (!Pointer(parameter)) break;
+    if (parameter == kLightMapParameter || !IsTexture(base, texture)) continue;
+    if (Lower(SamplerTextureName(base, parameter)).find("reflection_tint") != std::string::npos) return texture;
+  }
+  return 0;
 }
 // [rexglue-native] 2026-11-10 rn40t: the Polish infantry's helmets (the color map "c_polinf_head1_c" with its normal
 // map and a specular map, drawn as their own object at the soldier's place; rn40r's flat-white check) are the game's
@@ -6638,47 +6932,6 @@ constexpr uint32_t kLightData = 0x2C;
 constexpr uint32_t kLightDirectional = 1;
 constexpr uint32_t kMaxSetLights = 16;
 
-// [rexglue-native-render] 2026-11-11 rn48o: the probe (cod3_debug_ngl_side_light_kinds), for one scene's light set as
-// the frame is built: each light of its eight groups, once per address, kind, data and color (to half a unit); at most
-// 400 lines a run
-void ProbeLightKinds(uint8_t* base, uint64_t frame, uint32_t scene, uint32_t set) {
-  if (!REXCVAR_GET(cod3_debug_ngl_side_light_kinds) || frame < 1000 || !Readable(set + 4 * kLightGroups)) return;
-  static std::mutex mutex;
-  static std::unordered_set<uint64_t> seen;
-  static int said = 0;
-  std::lock_guard<std::mutex> lock(mutex);
-  uint32_t lights[4 * kMaxSetLights], groups[4 * kMaxSetLights], count = 0;
-  for (uint32_t group = 0; group < kLightGroups; ++group) {
-    uint32_t light = g::ReadU32(base, set + 4 * group);
-    for (uint32_t n = 0; light != set && Pointer(light) && Readable(light + kLightData + 4) && n < kMaxSetLights;
-         light = g::ReadU32(base, light + 4 * group), ++n) {
-      uint32_t k = 0;
-      while (k < count && lights[k] != light) ++k;
-      if (k == count) {
-        if (count == 4 * kMaxSetLights) break;
-        lights[count] = light;
-        groups[count++] = 0;
-      }
-      groups[k] |= 1u << group;
-    }
-  }
-  for (uint32_t k = 0; k < count && said < 400; ++k) {
-    const uint32_t kind = g::ReadU32(base, lights[k] + kLightKind);
-    const uint32_t data = g::ReadU32(base, lights[k] + kLightData);
-    float v[12] = {};
-    const bool readable = Pointer(data) && Readable(data + 0x30);
-    for (uint32_t i = 0; readable && i < 12; ++i) v[i] = g::ReadF32(base, data + 4 * i);
-    const auto half = [](float x) { return std::isfinite(x) ? static_cast<int64_t>(std::lround(x * 2.0f)) : 0; };
-    const uint64_t key = (uint64_t{lights[k]} << 32 | data) ^ (uint64_t{kind} << 56) ^
-                         static_cast<uint64_t>(half(v[4]) * 73856093 ^ half(v[5]) * 19349663 ^ half(v[6]) * 83492791);
-    if (!seen.insert(key).second) continue;
-    ++said;
-    REXLOG_INFO("cod3: ngl side: rn48o frame {}: scene {:08X} set {:08X} light {:08X} groups {:02X} kind {} data "
-                "{:08X}: {:.4g} {:.4g} {:.4g} {:.4g} | {:.4g} {:.4g} {:.4g} {:.4g} | {:.4g} {:.4g} {:.4g} {:.4g}",
-                frame, scene, set, lights[k], groups[k], kind, data, v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7],
-                v[8], v[9], v[10], v[11]);
-  }
-}
 
 // [rexglue-native] 2026-11-10 rn40j: an object's light set (its render parameters' light-set parameter), 0 for none
 uint32_t ObjectLightSet(uint8_t* base, uint32_t object) {
@@ -8530,6 +8783,10 @@ thread_local bool t_sky_texture = false;
 // as they are), instead of KeepCoverage's.
 thread_local int t_tree_cut = 0;
 constexpr int kSpeedTreeCut = 84;  // SpeedTree's alpha test value for a level fully in, of 255
+// [acct2-bro] 2026-11-22 rn115a: t_tree_cut kTreeMapAsIs: a tree's leaf map kept as the game's at every level (neither
+// scaled here nor KeepCoverage's), its draws carrying the game's own cut (ngl_vk_mesh_draw alpha_cut; the scaling
+// can't hold a cut above 167, and a fading level's runs up to 255)
+constexpr int kTreeMapAsIs = -1;
 
 void CutLikeTheGame(std::vector<uint8_t>& top, std::vector<std::vector<uint8_t>>& levels, int cut) {
   const double scale = 128.5 / cut;  // 84 -> 129 (passes ngl_vk's > 128), 83 -> 127 (cut)
@@ -8640,7 +8897,8 @@ uint32_t MakeTexture(uint8_t* base, const uint32_t* fetch, uint32_t label, std::
   }
   if (cut_out && t_tree_cut > 0) {  // [rexglue-native-world] 2026-11-11 w1: a tree's leaf map, cut as the game's
     CutLikeTheGame(bgra, levels, t_tree_cut);
-  } else if (cut_out && REXCVAR_GET(cod3_debug_ngl_side_keep_coverage)) {  // [acct2-bro] 2026-11-13 rn63a
+  } else if (cut_out && t_tree_cut == 0 &&  // [acct2-bro] 2026-11-22 rn115a: a tree's map as it is (kTreeMapAsIs)
+             REXCVAR_GET(cod3_debug_ngl_side_keep_coverage)) {  // [acct2-bro] 2026-11-13 rn63a
     KeepCoverage(bgra, levels);
   }
   std::vector<const void*> pictures{bgra.data()};
@@ -8975,6 +9233,43 @@ void AddQuad(std::vector<ngl_vk_vertex>& v, const Quad& q, uint32_t texture) {
     out.texture = texture;
     v.push_back(out);
   }
+}
+
+// [acct2-bro] 2026-11-22 rn47y (cod3_native_echo_edges): a whole-screen picture quad's sides that stop short of the
+// 640x480 screen's edges (by under 16 units) moved 2 units past them (as cod3_edge_fill's), its picture's corners
+// moved with them at the quad's own scale, so what was drawn stays where it was and the new strip reads on past the
+// picture's edge (clamped there by ngl_vk's sampler). Only an upright rectangle with an upright picture (corners 0
+// top left, 1 top right, 2 bottom left, 3 bottom right, as AddQuad's) at least 608 x 448 units; true when moved.
+bool EchoToEdges(Quad& q) {
+  constexpr float kShort = 16.0f, kPast = 2.0f, kHeight = 480.0f;
+  if (q.x[0] != q.x[2] || q.x[1] != q.x[3] || q.y[0] != q.y[1] || q.y[2] != q.y[3] || q.u[0] != q.u[2] ||
+      q.u[1] != q.u[3] || q.v[0] != q.v[1] || q.v[2] != q.v[3])
+    return false;
+  const float x0 = q.x[0], x1 = q.x[1], y0 = q.y[0], y1 = q.y[2];
+  if (!(x1 - x0 >= kScreenWidth - 2.0f * kShort && y1 - y0 >= kHeight - 2.0f * kShort)) return false;
+  const float du = (q.u[1] - q.u[0]) / (x1 - x0), dv = (q.v[2] - q.v[0]) / (y1 - y0);  // per unit
+  bool moved = false;
+  if (x0 > -kPast && x0 < kShort) {  // left
+    q.u[0] = q.u[2] = q.u[0] + (-kPast - x0) * du;
+    q.x[0] = q.x[2] = -kPast;
+    moved = true;
+  }
+  if (x1 < kScreenWidth + kPast && x1 > kScreenWidth - kShort) {  // right
+    q.u[1] = q.u[3] = q.u[1] + (kScreenWidth + kPast - x1) * du;
+    q.x[1] = q.x[3] = kScreenWidth + kPast;
+    moved = true;
+  }
+  if (y0 > -kPast && y0 < kShort) {  // top
+    q.v[0] = q.v[1] = q.v[0] + (-kPast - y0) * dv;
+    q.y[0] = q.y[1] = -kPast;
+    moved = true;
+  }
+  if (y1 < kHeight + kPast && y1 > kHeight - kShort) {  // bottom
+    q.v[2] = q.v[3] = q.v[2] + (kHeight + kPast - y1) * dv;
+    q.y[2] = q.y[3] = kHeight + kPast;
+    moved = true;
+  }
+  return moved;
 }
 
 void SavePpm(const std::filesystem::path& path, const uint8_t* rgba, uint32_t width, uint32_t height) {
@@ -9705,15 +10000,12 @@ struct Geometry {
   uint32_t blend_weights_type = 0, blend_indices_type = 0;
   int32_t normal = -1;              // side134: the normal's offset (-1: none) and its type
   uint32_t normal_type = 0;
-  int32_t tangent = -1;             // [acct2-bro] 2026-11-21 rn101: the tangent's (ReportTangents only)
-  uint32_t tangent_type = 0;
 };
 
 // Xbox 360 vertex element types (D3DDECLTYPE) and uses (D3DDECLUSAGE) read here.
 constexpr uint32_t kDeclFloat2 = 0x2C23A5, kDeclFloat3 = 0x2A23B9, kDeclHalf2 = 0x2C235F;
 constexpr uint32_t kUsagePosition = 0, kUsageBlendWeight = 1, kUsageBlendIndices = 2, kUsageNormal = 3,
                    kUsageTexcoord = 5, kUsageColor = 10;
-constexpr uint32_t kUsageTangent = 6;  // [acct2-bro] 2026-11-21 rn101 (ReportTangents)
 // A type's low six bits are the GPU's vertex format; 0x100 marks a signed one, 0x200 one read as whole numbers.
 constexpr uint32_t kFormat2_10_10_10 = 0x07, kFormat32_32_32Float = 0x39, kTypeSigned = 0x100, kTypeWhole = 0x200;
 
@@ -9746,10 +10038,6 @@ void ReadFormat(uint8_t* base, uint32_t surface, Geometry& geo) {
       geo.normal_type = type;
     }
     if (usage == kUsageColor && index == 0) geo.color = static_cast<int32_t>(offset);  // side195
-    if (usage == kUsageTangent && index == 0) {  // [acct2-bro] 2026-11-21 rn101
-      geo.tangent = static_cast<int32_t>(offset);
-      geo.tangent_type = type;
-    }
     if (usage == kUsageTexcoord && index < 3 && (type == kDeclFloat2 || type == kDeclHalf2)) {
       geo.uv[index] = static_cast<int32_t>(offset);
       geo.uv_half[index] = type == kDeclHalf2;
@@ -9865,132 +10153,6 @@ bool VertexNormal(uint8_t* base, uint32_t at, const Geometry& geo, float out[3])
   }
   return true;
 }
-
-// [acct2-bro] 2026-11-21 rn101 (debug): the vertex at `at`'s tangent (x, y, z and, for 2_10_10_10, its 2-bit w as
-// 0..3); false when the format isn't one read here
-bool VertexTangent(uint8_t* base, uint32_t at, const Geometry& geo, float out[4]) {
-  out[0] = out[1] = out[2] = out[3] = 0.0f;
-  if (geo.tangent < 0) return false;
-  const uint32_t where = at + static_cast<uint32_t>(geo.tangent);
-  const uint32_t format = geo.tangent_type & 0x3F;
-  if (format == kFormat32_32_32Float && static_cast<uint32_t>(geo.tangent) + 12 <= geo.stride) {
-    for (int k = 0; k < 3; ++k) out[k] = VertexFloat(base, where + 4 * k, geo.endian);
-    return true;
-  }
-  if (format != kFormat2_10_10_10 || static_cast<uint32_t>(geo.tangent) + 4 > geo.stride) return false;
-  uint32_t word = GpuU32(base, where);
-  if (geo.endian == 0) word = __builtin_bswap32(word);
-  for (int k = 0; k < 3; ++k) {
-    const uint32_t bits = (word >> (10 * k)) & 0x3FF;
-    out[k] = (geo.tangent_type & kTypeSigned) ? static_cast<float>(static_cast<int32_t>(bits << 22) >> 22) / 511.0f
-                                              : static_cast<float>(bits) / 1023.0f;
-  }
-  out[3] = static_cast<float>(word >> 30);
-  return true;
-}
-
-// [acct2-bro] 2026-11-21 rn101 (debug, cod3_debug_ngl_side_tangent_report N): how a mesh's own tangents lie against
-// its coordinates' slope dP/du, once a surface, for the first N drawn with the game's normal map frame (mesh.frag
-// rebuilds T from the screen slopes as dP/du; the corners'-tangent shaders take the mesh's). Per triangle: dP/du and
-// dP/dv from its corners, N its corners' normals' sum, T theirs; mirrored where (dP/du x dP/dv) . N < 0. Said: the
-// share of T . dP/du > 0 and the mean |cos| of T to dP/du and to dP/dv, the unmirrored and mirrored apart, and the
-// tangents' 2-bit w. kind: the draw's native kind; metal_kind: ReadMetalPass's (0: none).
-void ReportTangents(uint8_t* base, uint32_t surface, const Geometry& geo, const char* kind, uint32_t material,
-                    int metal_kind) {
-  static std::mutex mutex;
-  static std::unordered_set<uint32_t> said;
-  const int most = REXCVAR_GET(cod3_debug_ngl_side_tangent_report);
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    if (static_cast<int>(said.size()) >= most || !said.insert(surface).second) return;
-  }
-  if (geo.tangent < 0 || geo.normal < 0 || geo.uv[0] < 0) {
-    REXLOG_INFO("cod3: ngl side: rn101 tangents of surface {:08X} ({} {}, material {:08X}): none in its declaration "
-                "(tangent {}, normal {}, coordinates {})", surface, kind, metal_kind, material, geo.tangent, geo.normal,
-                geo.uv[0]);
-    return;
-  }
-  // the indices, in the byte order that keeps them inside the vertices (as MeshFor reads them)
-  const uint32_t count = std::min<uint32_t>(geo.index_count / 3 * 3, 60000);
-  std::vector<uint32_t> list(count);
-  bool fits = false;
-  for (int order = 0; order < 2 && !fits; ++order) {
-    fits = true;
-    for (uint32_t i = 0; i < count && fits; ++i) {
-      const uint8_t* p = GpuPointer(base, geo.indices + (geo.index_start + i) * geo.index_size);
-      uint32_t value;
-      if (geo.index_size == 4) {
-        value = order == 0 ? (uint32_t{p[0]} << 24 | uint32_t{p[1]} << 16 | uint32_t{p[2]} << 8 | p[3])
-                           : (uint32_t{p[3]} << 24 | uint32_t{p[2]} << 16 | uint32_t{p[1]} << 8 | p[0]);
-      } else {
-        value = order == 0 ? (uint32_t{p[0]} << 8 | p[1]) : (uint32_t{p[1]} << 8 | p[0]);
-      }
-      fits = value < geo.vertex_count;
-      list[i] = value;
-    }
-  }
-  if (!fits) return;
-  struct Group {
-    uint32_t triangles = 0, along = 0;
-    double cos_u = 0.0, cos_v = 0.0;
-  } group[2];
-  uint32_t w_count[4] = {}, skipped = 0;
-  for (uint32_t t = 0; t + 2 < count; t += 3) {
-    float p[3][3], uv[3][2], n[3] = {}, tg[3] = {};
-    bool ok = true;
-    for (int c = 0; c < 3 && ok; ++c) {
-      const uint32_t at = geo.vertices + (geo.vertex_start + list[t + c]) * geo.stride;
-      for (int k = 0; k < 3; ++k)
-        p[c][k] = VertexFloat(base, at + static_cast<uint32_t>(geo.position) + 4 * k, geo.endian);
-      VertexUv(base, at, geo, 0, &uv[c][0], &uv[c][1]);
-      float vn[3], vt[4];
-      ok = VertexNormal(base, at, geo, vn) && VertexTangent(base, at, geo, vt);
-      for (int k = 0; k < 3 && ok; ++k) {
-        n[k] += vn[k];
-        tg[k] += vt[k];
-      }
-      if (ok) ++w_count[static_cast<int>(vt[3]) & 3];
-    }
-    const float e1[3] = {p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]};
-    const float e2[3] = {p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]};
-    const float du1 = uv[1][0] - uv[0][0], dv1 = uv[1][1] - uv[0][1];
-    const float du2 = uv[2][0] - uv[0][0], dv2 = uv[2][1] - uv[0][1];
-    const float det = du1 * dv2 - du2 * dv1;
-    if (!ok || !std::isfinite(det) || std::fabs(det) < 1e-12f) {
-      ++skipped;
-      continue;
-    }
-    float pu[3], pv[3];
-    for (int k = 0; k < 3; ++k) {
-      pu[k] = (e1[k] * dv2 - e2[k] * dv1) / det;
-      pv[k] = (e2[k] * du1 - e1[k] * du2) / det;
-    }
-    const float cr[3] = {pu[1] * pv[2] - pu[2] * pv[1], pu[2] * pv[0] - pu[0] * pv[2], pu[0] * pv[1] - pu[1] * pv[0]};
-    const auto dot = [](const float* a, const float* b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
-    const float lt = std::sqrt(dot(tg, tg)), lu = std::sqrt(dot(pu, pu)), lv = std::sqrt(dot(pv, pv));
-    if (lt <= 0.0f || lu <= 0.0f || lv <= 0.0f || !std::isfinite(lu) || !std::isfinite(lv)) {
-      ++skipped;
-      continue;
-    }
-    Group& side = group[dot(cr, n) < 0.0f ? 1 : 0];
-    ++side.triangles;
-    const float cu = dot(tg, pu) / (lt * lu), cv = dot(tg, pv) / (lt * lv);
-    side.along += cu > 0.0f;
-    side.cos_u += std::fabs(cu);
-    side.cos_v += std::fabs(cv);
-  }
-  const auto share = [](uint32_t a, uint32_t b) { return b ? 100.0 * a / b : 0.0; };
-  const auto mean = [](double a, uint32_t b) { return b ? a / b : 0.0; };
-  REXLOG_INFO("cod3: ngl side: rn101 tangents of surface {:08X} ({} {}, material {:08X}, type {:06X}): {} triangles, "
-              "{} skipped; not mirrored {}: T along +u {:.0f}%, |cos| to dP/du {:.2f}, to dP/dv {:.2f}; mirrored {}: "
-              "T along +u {:.0f}%, |cos| to dP/du {:.2f}, to dP/dv {:.2f}; w 0 1 2 3: {} {} {} {}",
-              surface, kind, metal_kind, material, geo.tangent_type, count / 3, skipped, group[0].triangles,
-              share(group[0].along, group[0].triangles), mean(group[0].cos_u, group[0].triangles),
-              mean(group[0].cos_v, group[0].triangles), group[1].triangles, share(group[1].along, group[1].triangles),
-              mean(group[1].cos_u, group[1].triangles), mean(group[1].cos_v, group[1].triangles), w_count[0],
-              w_count[1], w_count[2], w_count[3]);
-}
-
 
 // side228: a surface's ngl_vk mesh and the counts it was made with (a new surface at the same place has others)
 struct CachedMesh {
@@ -10125,10 +10287,10 @@ uint32_t U16(uint8_t* base, uint32_t at) { return g::ReadU16(base, at); }  // [r
 
 // [acct2-bro] 2026-11-14 rn94a: a corner's four weights (out of 255) from its stored word, by the game's rule: the
 // first three as stored, the fourth what they leave of 255 (below 0 when they add up to more, as the game's own).
-// `stored`: all four as stored, the way before (cod3_debug_ngl_side_skin_stored_weights).
-inline void SkinWeights(uint32_t weights, bool stored, float w[4]) {
+// [acct2-bro] 2026-11-22 x308: the switch back to all four stored weights is gone (RENDER-NOTES, the cleanup).
+inline void SkinWeights(uint32_t weights, float w[4]) {
   for (int k = 0; k < 4; ++k) w[k] = static_cast<float>((weights >> (8 * k)) & 255u);
-  if (!stored) w[3] = 255.0f - (w[0] + w[1] + w[2]);
+  w[3] = 255.0f - (w[0] + w[1] + w[2]);
 }
 
 // The skinned position of the vertex at `at` (its own position p), or false when none of its bones is usable.
@@ -10152,7 +10314,7 @@ bool SkinPosition(uint8_t* base, uint32_t surface, uint32_t object, const Geomet
   const uint32_t slots = GpuU32(base, at + static_cast<uint32_t>(geo.blend_indices));
   const uint32_t weights = GpuU32(base, at + static_cast<uint32_t>(geo.blend_weights));
   float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f, by_rule[4];
-  SkinWeights(weights, REXCVAR_GET(cod3_debug_ngl_side_skin_stored_weights), by_rule);  // rn94a
+  SkinWeights(weights, by_rule);  // rn94a
   for (int k = 0; k < 4; ++k) {
     const float weight = by_rule[k];
     if (weight == 0.0f) continue;
@@ -10192,7 +10354,6 @@ class SurfaceSkin {
  public:
   SurfaceSkin(uint8_t* base, uint32_t surface, uint32_t object) : base_(base), surface_(surface) {
     slot_bones_.fill(kSlotUnread);  // [acct2-bro] 2026-11-13 rn79b
-    stored_weights_ = REXCVAR_GET(cod3_debug_ngl_side_skin_stored_weights);  // [acct2-bro] 2026-11-14 rn94a
     const uint32_t posed = g::ReadU32(base, object + kObjectBoneCount), bones = g::ReadU32(base, object + kObjectBones);
     if (!GameData(bones) || posed == 0 || posed > 512) return;  // [rexglue-native-mem] 2026-11-11: the AnimHeap
     const uint32_t model = g::ReadU32(base, object + kObjectModel);
@@ -10220,7 +10381,7 @@ class SurfaceSkin {
   // The same with the corner's bone slots and weights (the two words as GpuU32 reads them) already read.
   bool SkinWith(uint32_t slots, uint32_t weights, const float p[3], float out[3], const float* n, float* n_out) {
     float sum[3] = {0.0f, 0.0f, 0.0f}, turned[3] = {0.0f, 0.0f, 0.0f}, total = 0.0f, by_rule[4];
-    SkinWeights(weights, stored_weights_, by_rule);  // [acct2-bro] 2026-11-14 rn94a
+    SkinWeights(weights, by_rule);  // [acct2-bro] 2026-11-14 rn94a
     for (int k = 0; k < 4; ++k) {
       const float weight = by_rule[k];
       if (weight == 0.0f) continue;
@@ -10280,7 +10441,6 @@ class SurfaceSkin {
   uint8_t* base_;
   uint32_t surface_;
   uint32_t bones_ = 0, records_ = 0, count_ = 0;
-  bool stored_weights_ = false;  // rn94a: cod3_debug_ngl_side_skin_stored_weights when this surface's skin was made
   std::vector<Matrix> matrices_;
   std::vector<uint8_t> ready_;
   std::array<uint16_t, 256> slot_bones_;  // rn79b
@@ -11063,8 +11223,18 @@ uint32_t AnyTextureFor(uint8_t* base, uint32_t word) {
   return id;
 }
 
-uint32_t TreeMesh(uint8_t* base, uint32_t tree, const TreePart& part, std::string& why) {
-  const uint64_t key = static_cast<uint64_t>(tree) << 32 | part.buffer;
+// [acct2-bro] 2026-11-22 rn115c: level, the level whose strip is drawn (0, the nearest, as before; the others for the
+// game's own level of each instance, see GameTreeLevel). The game makes the tables once at load (0x823EF820): a level's
+// entry in index_buffers is an index buffer holding the level's first strip (0 where the level has none), its u16 in
+// lengths that strip's length; every level draws from the part's one vertex buffer. A level's mesh keeps only the
+// vertices its strip uses (level 0 keeps its key and all its vertices, as before).
+constexpr uint32_t kTreeLevels = 8;
+uint32_t TreeMesh(uint8_t* base, uint32_t tree, const TreePart& part, std::string& why, uint32_t level = 0) {
+  if (level >= kTreeLevels) {
+    why = "no such level";
+    return 0;
+  }
+  const uint64_t key = static_cast<uint64_t>(tree) << 32 | level << 16 | part.buffer;
   const auto found = g_tree_meshes.find(key);
   if (found != g_tree_meshes.end()) {
     if (!found->second) why = "left out before";
@@ -11079,18 +11249,53 @@ uint32_t TreeMesh(uint8_t* base, uint32_t tree, const TreePart& part, std::strin
     why = "no buffers";
     return 0;
   }
+  // rn115c: this level's entries (the u16 read inside its aligned word: Readable() takes words)
+  if (level && (!Readable(index_buffers + 4 * level) || !Readable(lengths + 4 * (level / 2)))) {
+    why = "rn115c no tables for the level";
+    return 0;
+  }
   const uint32_t vertices = GuestAddress(g::ReadU32(base, buffer + kBufferFetch) & ~3u);
-  const uint32_t first = g::ReadU32(base, index_buffers);
+  const uint32_t first = g::ReadU32(base, index_buffers + 4 * level);
+  if (level && !first) {
+    why = "rn115c a level without a strip";
+    return 0;
+  }
   if (!Physical(vertices) || !Heap(first)) {
     why = "buffers outside memory";
     return 0;
   }
   const uint32_t indices = GuestAddress(g::ReadU32(base, first + 0x18));
   const uint32_t index_bytes = g::ReadU32(base, first + 0x1C);
-  const uint32_t length = U16(base, lengths);
+  const uint32_t length = U16(base, lengths + 2 * level);
   if (!Physical(indices) || length < 3 || length * 4 > index_bytes) {
     why = "a strip longer than its index buffer";
     return 0;
+  }
+  // [acct2-bro] 2026-11-22 rn115d: a level whose strip is level 0's own (the same length and the same indices word for
+  // word: x316 saw some trees' levels 1-5 so) draws level 0's mesh, made before (the part's mesh), not a copy of it.
+  // Looked up with find(), so the map gets nothing new here and mesh above stays a good reference. The meshes are only
+  // ever freed together (ngl_vk_forget, then g_tree_meshes.clear()), so two keys may name one mesh.
+  if (level) {
+    const auto zero = g_tree_meshes.find(static_cast<uint64_t>(tree) << 32 | part.buffer);
+    const uint32_t first0 = g::ReadU32(base, index_buffers);
+    if (zero != g_tree_meshes.end() && zero->second && Heap(first0)) {
+      const uint32_t indices0 = GuestAddress(g::ReadU32(base, first0 + 0x18));
+      const uint32_t index_bytes0 = g::ReadU32(base, first0 + 0x1C);
+      bool same = U16(base, lengths) == length && Physical(indices0) && length * 4 <= index_bytes0;
+      for (uint32_t k = 0; same && indices0 != indices && k < length; ++k) {
+        same = GpuU32(base, indices0 + 4 * k) == GpuU32(base, indices + 4 * k);
+      }
+      if (same) {
+        mesh = zero->second;
+        static int shown_same = 0;  // the first eight
+        if (shown_same < 8) {
+          ++shown_same;
+          REXLOG_INFO("cod3: ngl side: rn115d tree {:08X} {} level {}: its strip ({}) is level 0's: level 0's mesh {}",
+                      tree, part.name, level, length, mesh);
+        }
+        return mesh;
+      }
+    }
   }
   std::vector<float> corners(static_cast<size_t>(count) * NGL_VK_CORNER_FLOATS, 0.0f);
   const uint32_t white = 0xFFFFFFFFu;
@@ -11142,6 +11347,32 @@ uint32_t TreeMesh(uint8_t* base, uint32_t tree, const TreePart& part, std::strin
     list.push_back(static_cast<uint16_t>(b));
     list.push_back(static_cast<uint16_t>(c));
   }
+  if (level) {  // rn115c: a far level's mesh, the vertices its strip uses (renumbered in the order first used)
+    if (list.empty()) {
+      why = "rn115c a level's strip of no triangles";
+      return 0;
+    }
+    std::vector<int32_t> number(count, -1);
+    std::vector<float> used;
+    uint32_t kept = 0;
+    for (uint16_t& i : list) {
+      if (number[i] < 0) {
+        number[i] = static_cast<int32_t>(kept++);
+        const auto from = corners.begin() + static_cast<std::ptrdiff_t>(i) * NGL_VK_CORNER_FLOATS;
+        used.insert(used.end(), from, from + NGL_VK_CORNER_FLOATS);
+      }
+      i = static_cast<uint16_t>(number[i]);
+    }
+    mesh = ngl_vk_mesh(used.data(), kept, list.data(), static_cast<uint32_t>(list.size()));
+    if (!mesh) why = "ngl_vk has no room";
+    static int shown_levels = 0;  // the first eight
+    if (shown_levels < 8) {
+      ++shown_levels;
+      REXLOG_INFO("cod3: ngl side: rn115c tree {:08X} {} level {}: strip of {} -> {} triangles on {} of {} vertices, "
+                  "mesh {}", tree, part.name, level, length, list.size() / 3, kept, count, mesh);
+    }
+    return mesh;
+  }
   mesh = ngl_vk_mesh(corners.data(), count, list.data(), static_cast<uint32_t>(list.size()));
   if (!mesh) why = "ngl_vk has no room";
   static int shown = 0, shown_fronds = 0;  // rn46c: the first six, and the first four fronds apart
@@ -11166,8 +11397,14 @@ uint32_t TreeMesh(uint8_t* base, uint32_t tree, const TreePart& part, std::strin
 // center (float4 at 0, the tree's space), the atlas u, v and the corner's number 0-3 (at +32), and the leaf's width
 // and height (at +48). Corner 0 is the top right, 1 top left, 2 bottom left, 3 bottom right. Here each leaf is two
 // fixed crossed cards (in the x-z and y-z planes, both faces), so one mesh serves every instance and every camera.
-uint32_t LeafMesh(uint8_t* base, uint32_t tree, std::string& why) {
-  const uint64_t key = static_cast<uint64_t>(tree) << 32 | kLeafPart.buffer;
+// [acct2-bro] 2026-11-22 rn115a: level, the level record's number (0, the nearest, as before; the others for the game's
+// own level of each instance, see GameLeafLevels), its mesh kept apart (level 0 keeps its key)
+uint32_t LeafMesh(uint8_t* base, uint32_t tree, std::string& why, uint32_t level = 0) {
+  if (level >= 8) {  // rn115a (GameLeafLevels gives under 8)
+    why = "no such leaf level";
+    return 0;
+  }
+  const uint64_t key = static_cast<uint64_t>(tree) << 32 | (level ? 0x80000000u | level << 16 : 0u) | kLeafPart.buffer;
   const auto found = g_tree_meshes.find(key);
   if (found != g_tree_meshes.end()) {
     if (!found->second) why = "left out before";
@@ -11176,11 +11413,12 @@ uint32_t LeafMesh(uint8_t* base, uint32_t tree, std::string& why) {
   uint32_t& mesh = g_tree_meshes[key];
   const uint32_t levels = g::ReadU32(base, tree + kLeafPart.lengths);
   const uint32_t buffers = g::ReadU32(base, tree + kLeafPart.buffer);
-  if (!Readable(levels) || !Readable(buffers)) {
+  if (!Readable(levels) || !Readable(levels + 72 * level + 8) || !Readable(buffers)) {  // rn115a: this level's record
     why = "no leaf levels";
     return 0;
   }
-  const uint32_t number = g::ReadU32(base, levels + 4), leaves = g::ReadU32(base, levels + 8);
+  const uint32_t record = levels + 72 * level;  // rn115a
+  const uint32_t number = g::ReadU32(base, record + 4), leaves = g::ReadU32(base, record + 8);
   const uint32_t buffer = number < 8 ? g::ReadU32(base, buffers + 4 * number) : 0;
   if (!Heap(buffer) || leaves == 0 || leaves > 4096) {
     why = "no leaf buffer";
@@ -11314,10 +11552,164 @@ uint32_t LeafMesh(uint8_t* base, uint32_t tree, std::string& why) {
   static int shown = 0;
   if (shown < 4) {
     ++shown;
-    REXLOG_INFO("cod3: ngl side: tree {:08X} leaves: level 0 buffer {} with {} leaves -> {} cards, mesh {}{}", tree,
-                number, leaves, count / 4, mesh, cards ? " (w1: one card a leaf, facing the camera)" : "");
+    REXLOG_INFO("cod3: ngl side: tree {:08X} leaves: level {} buffer {} with {} leaves -> {} cards, mesh {}{}", tree,
+                level, number, leaves, count / 4, mesh, cards ? " (w1: one card a leaf, facing the camera)" : "");
   }
   return mesh;
+}
+
+// [acct2-bro] 2026-11-22 rn115a: the levels the game draws a tree instance's leaves at and each one's cut, as its leaf
+// draw (sub_823F5028; cod3mp 0x8240F3A8) has them from SpeedTree's GetGeometry (0x82196DD0 and its fade 0x82196D40;
+// cod3mp 0x82238930). The instance's SpeedTree object is at its +0; the object's LOD (1 near to 0 far) is in its own
+// LOD record ([+56] +16) or else its shared one ([+0] +20), as GetLodLevel (0x821969E8) reads it; and the object has
+// +200 the leaf levels, +28 the LOD's mode (1: levels by distance, fading), +72 the alpha test of a level fully in
+// (84 of 255), +36 the fades' power, +32 x 2 the near end's share and +44 a fade's start in its width, +204 that
+// width, +208 and +216 where a level starts fading and how long a level lasts (+212 and +220 with SpeedTree's drop to
+// nothing at the far end, the byte at kLeafDropOut, 0 on the maps seen). Up to two levels in the game's order, each
+// with its cut (of 1: the game's c18, alpha / 255). x264b: the same levels and cuts as the game's own draws for 257
+// of 257 forest instances. Returns how many (0: none, dropped out), or -1 where the object doesn't read sanely (the
+// caller then draws the nearest level, as before).
+#if defined(COD3_MP)
+constexpr uint32_t kLeafDropOut = 0x82A995D8;  // cod3mp: the byte its 0x82238930 reads (lis -32086, addi -27176)
+#else
+constexpr uint32_t kLeafDropOut = 0x8291AFE8;  // the byte 0x82196DD0 reads (lbz -20504 off 0x82920000)
+#endif
+struct LeafLevel {
+  int level;
+  float cut;  // of 1
+};
+int GameLeafLevels(uint8_t* base, uint32_t instance, LeafLevel out[2]) {
+  const uint32_t rt = g::ReadU32(base, instance);
+  if (!Readable(rt) || !Readable(rt + 220) || !Readable(kLeafDropOut)) return -1;
+  const uint32_t own = g::ReadU32(base, rt + 56);
+  const uint32_t lod_at = own ? own + 16 : g::ReadU32(base, rt) + 20;
+  if (!Readable(lod_at)) return -1;
+  auto at = [base, rt](uint32_t offset) { return g::ReadF32(base, rt + offset); };
+  const float lod = g::ReadF32(base, lod_at);
+  const int32_t levels = static_cast<int32_t>(g::ReadU32(base, rt + 200));
+  const int32_t mode = static_cast<int32_t>(g::ReadU32(base, rt + 28));
+  const float alpha_in = at(72), power = at(36), width = at(204), fade_start = at(44);
+  const bool drop_out = (g::ReadU32(base, kLeafDropOut) >> 24) != 0;
+  const float start = at(drop_out ? 212 : 208), span = at(drop_out ? 220 : 216);
+  if (!std::isfinite(lod) || levels < 1 || levels > 8 || !(alpha_in >= 0.0f && alpha_in <= 255.0f) ||
+      !std::isfinite(power + width + fade_start + start + span + at(32))) {
+    return -1;
+  }
+  constexpr float kOut = 255.0f;  // a level faded out (the game's 255.0 at 0x8202D4D4)
+  int count = 0;
+  auto keep = [&](int level, float alpha) {  // the game draws a level >= 0 (and under the levels, for safety here)
+    if (level >= 0 && level < levels && count < 2) out[count++] = LeafLevel{level, alpha / 255.0f};
+  };
+  auto fade = [power](float a, float b, float s, bool first) {  // 0x82196D40
+    return first ? (a - b) * std::pow(1.0f - s, power) + b : (b - a) * std::pow(s, power) + a;
+  };
+  const float near_share = at(32) * 2.0f, fade_share = 1.0f - fade_start, drop_end = near_share * fade_share;
+  if (!(lod > 0.0f)) {
+    if (!drop_out) keep(levels - 1, alpha_in);
+    return count;
+  }
+  if (!(lod < 1.0f)) {
+    keep(0, alpha_in);
+    return count;
+  }
+  if (mode != 1) {  // no fades: the level by the LOD alone (mode 3: the nearest)
+    keep(mode == 3 ? 0 : static_cast<int>(static_cast<float>(levels) * (1.0f - lod)), alpha_in);
+    return count;
+  }
+  if (!(span > 0.0f) || !(width > 0.0f) || !(fade_share > 0.0f)) return -1;
+  if (drop_out && lod < drop_end) {  // the farthest level fading to nothing
+    const float a = fade(kOut, alpha_in, lod / drop_end, true);
+    if (a != kOut) keep(levels - 1, a);
+    return count;
+  }
+  const float x = drop_out ? lod - width : lod;
+  const int k = static_cast<int>(x / span);  // toward 0 (fctiwz)
+  int level = levels - k - 1;
+  if (level <= 0) level = 0;
+  const float rest = x - static_cast<float>(k) * span;
+  if (rest < start) {
+    keep(level, alpha_in);
+    return count;
+  }
+  const float t = (rest - start) / width;  // through the fade, the nearer level coming in and this one going out
+  keep(level - 1, t < fade_share ? fade(kOut, alpha_in, t / fade_share, true) : alpha_in);
+  keep(level, t > fade_start ? fade(alpha_in, kOut, (t - fade_start) / fade_share, false) : alpha_in);
+  return count;
+}
+bool LeafLod() {  // rn115a: cod3_debug_ngl_side_leaf_lod, where this ngl_vk can cut each draw
+#if defined(NGL_VK_ALPHA_CUT)
+  return REXCVAR_GET(cod3_debug_ngl_side_leaf_lod);
+#else
+  return false;
+#endif
+}
+// [acct2-bro] 2026-11-22 rn115c: the level the game draws a tree instance's branches or fronds at (the frond draw
+// 0x823F5868, like the branch draw, takes it from GetGeometry): the instance's SpeedTree object (its +0) has +192 the
+// branch levels and +196 the frond levels, and its LOD (1 near to 0 far, read as GameLeafLevels reads it)
+// picks levels x (1 - LOD), toward 0; 1 or more: level 0, 0 or less: the last. x314: the game's own level and strip
+// length for all 257 branch and 199 frond draws of forest's frames 2400 and 3000. -1 where the object doesn't read
+// sanely (the caller then draws the nearest level, as before).
+int GameTreeLevel(uint8_t* base, uint32_t instance, const TreePart& part) {
+  const uint32_t rt = g::ReadU32(base, instance);
+  if (!Readable(rt) || !Readable(rt + 220)) return -1;
+  const uint32_t own = g::ReadU32(base, rt + 56);
+  const uint32_t lod_at = own ? own + 16 : g::ReadU32(base, rt) + 20;
+  if (!Readable(lod_at)) return -1;
+  const float lod = g::ReadF32(base, lod_at);
+  const int levels = static_cast<int>(g::ReadU32(base, rt + (part.buffer == kBranchPart.buffer ? 192 : 196)));
+  if (!std::isfinite(lod) || levels < 1 || levels > static_cast<int>(kTreeLevels)) return -1;
+  if (!(lod > 0.0f)) return levels - 1;
+  if (!(lod < 1.0f)) return 0;
+  return std::min(static_cast<int>(static_cast<float>(levels) * (1.0f - lod)), levels - 1);
+}
+// rn115c: whether a tree part's level has no strip (0x823EF820 makes no index buffer for it: the game draws nothing)
+bool TreeLevelEmpty(uint8_t* base, uint32_t tree, const TreePart& part, uint32_t level) {
+  const uint32_t index_buffers = g::ReadU32(base, tree + part.index_buffers);
+  return level && level < kTreeLevels && Readable(index_buffers + 4 * level) &&
+         !g::ReadU32(base, index_buffers + 4 * level);
+}
+// rn115c: the frame's counts of the levels drawn (branches, fronds)
+const char* const kTreeLevelLabels[2][kTreeLevels] = {
+    {"(trees: rn115c branches at level 0)", "(trees: rn115c branches at level 1)",
+     "(trees: rn115c branches at level 2)", "(trees: rn115c branches at level 3)",
+     "(trees: rn115c branches at level 4)", "(trees: rn115c branches at level 5)",
+     "(trees: rn115c branches at level 6)", "(trees: rn115c branches at level 7)"},
+    {"(trees: rn115c fronds at level 0)", "(trees: rn115c fronds at level 1)", "(trees: rn115c fronds at level 2)",
+     "(trees: rn115c fronds at level 3)", "(trees: rn115c fronds at level 4)", "(trees: rn115c fronds at level 5)",
+     "(trees: rn115c fronds at level 6)", "(trees: rn115c fronds at level 7)"}};
+
+// [acct2-bro] 2026-11-22 rn115b: the game's test before it draws an instance of a tree part (its branch, frond and leaf
+// draws 0x823F5C80, 0x823F5868 and 0x823F5028; cod3mp's 0x8240E760, 0x8240EF98 and 0x8240F3A8; x301: the same
+// instances as the game's in the forest and on mp_merv): the instance's sphere (its place, +0x4C its radius) against
+// the six planes of the pass (the render context's +656: outward, unit; 0x820C1A18 / 0x820D2080: inside when the
+// radius less each plane's distance is at least 0 for all six). Its main pass draws by that alone (its shadow pass
+// adds the instances near the camera, at their farthest levels). Here the view's planes come from the scene's own
+// view-projection (each split-screen player's), and an instance outside the view is still drawn where a shadow map's
+// scene takes it in, since every lit draw also casts the native sun's shadow (the game casts it in its own pass).
+constexpr uint32_t kInstanceRadius = 0x4C;
+struct Planes {
+  float p[6][4];
+};
+// The planes of a view-projection (row vectors: column j is m[j], m[4 + j], m[8 + j], m[12 + j]), outward and unit as
+// the game keeps its own: x and y in -w..w, z in 0..w (either way round). False when one can't be made.
+bool PlanesOf(const float m[16], Planes& out) {
+  for (int i = 0; i < 4; ++i) {
+    const float c0 = m[4 * i], c1 = m[4 * i + 1], c2 = m[4 * i + 2], c3 = m[4 * i + 3];
+    const float inside[6] = {c3 + c0, c3 - c0, c3 + c1, c3 - c1, c2, c3 - c2};
+    for (int k = 0; k < 6; ++k) out.p[k][i] = inside[k];
+  }
+  for (auto& plane : out.p) {
+    const float n = std::sqrt(plane[0] * plane[0] + plane[1] * plane[1] + plane[2] * plane[2]);
+    if (!std::isfinite(n) || !(n > 1e-12f)) return false;
+    for (float& v : plane) v = -v / n;
+  }
+  return true;
+}
+bool SphereIn(const Planes& planes, float x, float y, float z, float radius) {
+  for (const auto& plane : planes.p) {
+    if (!(radius - (plane[0] * x + plane[1] * y + plane[2] * z + plane[3]) >= 0.0f)) return false;
+  }
+  return true;
 }
 
 // The frame's trees (branches, fronds and leaves) as ngl_vk draws: every instance of each tree drawn.
@@ -11879,6 +12271,27 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
   // whole-screen scene shares view 0, so one player and the campaign stay as they were
   std::unordered_map<uint32_t, std::unordered_set<uint64_t>> done;
   std::unordered_map<uint32_t, std::pair<bool, std::array<float, 16>>> cameras;
+  // [acct2-bro] 2026-11-22 rn115b: the shadow maps' scenes that hold trees this frame (their cameras aren't
+  // perspective ones), whose planes keep an instance outside the view for its shadow
+  const bool cull = REXCVAR_GET(cod3_debug_ngl_side_tree_cull);
+  std::vector<Planes> shadow_planes;
+  if (cull) {
+    std::unordered_set<uint32_t> seen;
+    for (const Solid& t : census.trees) {
+      if (!seen.insert(t.scene).second || shadow_planes.size() >= 8) continue;
+      float vp[16];
+      bool reversed = false;
+      if (SceneCamera(base, t.scene, vp, &reversed)) continue;  // a perspective camera: a view
+      float raw[16];
+      bool sane = true;
+      for (uint32_t k = 0; k < 16; ++k) {
+        raw[k] = g::ReadF32(base, t.scene + kSceneViewProjection + 4 * k);
+        sane = sane && std::isfinite(raw[k]);
+      }
+      Planes planes;
+      if (sane && PlanesOf(raw, planes)) shadow_planes.push_back(planes);
+    }
+  }
   for (const Solid& t : census.trees) {
     const uint32_t record = g::ReadU32(base, t.node + 0x0C);
     if (!Readable(record)) continue;
@@ -11919,8 +12332,11 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
     }
     ngl_vk_mesh_draw d{};
     d.mesh = mesh;
-    // [rexglue-native-world] 2026-11-11 w1: the leaf map (leaves and fronds share it) made with the game's cut
-    t_tree_cut = kind != kTreeBranches && REXCVAR_GET(cod3_debug_ngl_side_tree_cut) ? kSpeedTreeCut : 0;
+    // [rexglue-native-world] 2026-11-11 w1: the leaf map (leaves and fronds share it) made with the game's cut;
+    // [acct2-bro] 2026-11-22 rn115a: with the game's leaf levels, as it is (each draw carries its cut)
+    const bool tree_cut = kind != kTreeBranches && REXCVAR_GET(cod3_debug_ngl_side_tree_cut);
+    const bool by_level = tree_cut && LeafLod();
+    t_tree_cut = tree_cut ? (by_level ? kTreeMapAsIs : kSpeedTreeCut) : 0;
     d.texture = AnyTextureFor(base, g::ReadU32(base, tree + part->texture));
     t_tree_cut = 0;
 #if defined(NGL_VK_BILLBOARD)
@@ -12046,12 +12462,24 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
     // [acct2-bro] 2026-11-12 rn57b (debug): this part's light against the frame before
     if (REXCVAR_GET(cod3_debug_ngl_side_flicker) > 0) WatchTreeLight(tree, *part, d, leaf);
     d.alpha = g_cut_out.count(d.texture) ? NGL_VK_ALPHA_TEST : NGL_VK_ALPHA_OPAQUE;
+#if defined(NGL_VK_ALPHA_CUT)
+    if (by_level) d.alpha_cut = kSpeedTreeCut / 255.0f;  // rn115a: the fronds' cut, the one the scaled map gave
+#endif
     FogWith(base, t.scene, d);
     std::memcpy(d.view_projection, camera->second.second.data(), sizeof d.view_projection);
     SplitScissor(base, t.scene, d);  // [rexglue-native] 2026-11-09: kept in its player's part of the screen
+    // [acct2-bro] 2026-11-22 rn115b: the view's planes for the game's test
+    Planes view_planes;
+    const bool culled = cull && PlanesOf(camera->second.second.data(), view_planes);
+    // [acct2-bro] 2026-11-22 rn115c: each instance's branches or fronds at the game's level, a mesh a level (level 0:
+    // the part's mesh; the others looked up the first time an instance needs them this frame)
+    const bool tree_lod = kind != kTreeLeaves && REXCVAR_GET(cod3_debug_ngl_side_tree_lod);
+    uint32_t level_meshes[kTreeLevels] = {mesh};
+    bool level_tried[kTreeLevels] = {true};
     uint32_t instance = g::ReadU32(base, tree + kTreeFirstInstance);
     // [rexglue-native-mem] 2026-11-11: GameData (the instances are the game's own data)
     for (uint32_t n = 0; GameData(instance) && n < kMaxTreeInstances && draws.size() < kMaxDraws; ++n) {
+      const uint32_t here = instance;  // [acct2-bro] 2026-11-22 rn115a
       const float x = g::ReadF32(base, instance + kInstancePosition);
       const float y = g::ReadF32(base, instance + kInstancePosition + 4);
       const float z = g::ReadF32(base, instance + kInstancePosition + 8);
@@ -12062,6 +12490,18 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
         left_out["(trees: an instance not sane)"]++;
         continue;
       }
+      if (culled) {  // [acct2-bro] 2026-11-22 rn115b: the game's test (see SphereIn)
+        const float radius = g::ReadF32(base, here + kInstanceRadius);
+        if (std::isfinite(radius) && radius >= 0.0f && !SphereIn(view_planes, x, y, z, radius)) {
+          bool shadowed = false;
+          for (const Planes& planes : shadow_planes) shadowed = shadowed || SphereIn(planes, x, y, z, radius);
+          if (!shadowed) {
+            left_out["(trees: rn115b instances outside the view, not drawn, as the game)"]++;
+            continue;
+          }
+          left_out["(trees: rn115b instances outside the view, drawn for the sun's shadow map)"]++;
+        }
+      }
       const float c = std::cos(turn) * scale, s = std::sin(turn) * scale;
       const float world[16] = {c, s, 0, 0, -s, c, 0, 0, 0, 0, scale, 0, x, y, z, 1};
       std::memcpy(d.world, world, sizeof world);
@@ -12070,6 +12510,59 @@ void TreeDraws(uint8_t* base, const Census& census, std::vector<ngl_vk_mesh_draw
         const float length = std::sqrt(way[0] * way[0] + way[1] * way[1] + way[2] * way[2]);
         if (length > 1e-3f) {
           for (int i = 0; i < 3; ++i) d.light_direction[i] = way[i] / length;
+        }
+      }
+#if defined(NGL_VK_ALPHA_CUT)
+      if (by_level && kind == kTreeLeaves) {  // [acct2-bro] 2026-11-22 rn115a: the game's level or levels and cuts
+        LeafLevel chosen[2];
+        const int count = GameLeafLevels(base, here, chosen);
+        if (count < 0) {  // its SpeedTree object unread: the nearest level, cut as a level fully in (as before)
+          chosen[0] = LeafLevel{0, kSpeedTreeCut / 255.0f};
+          left_out["(trees: rn115a leaves at the nearest level, the instance's SpeedTree object unread)"]++;
+        } else if (count == 0) {
+          left_out["(trees: rn115a leaves dropped out at the far end)"]++;
+        }
+        for (int k = 0; k < (count < 0 ? 1 : count) && draws.size() < kMaxDraws; ++k) {
+          std::string level_why;
+          const uint32_t level_mesh = chosen[k].level == 0 ? mesh : LeafMesh(base, tree, level_why, chosen[k].level);
+          if (!level_mesh) {
+            left_out["(trees: rn115a a leaf level not drawn: " + level_why + ")"]++;
+            continue;
+          }
+          d.mesh = level_mesh;
+          d.alpha_cut = chosen[k].cut;
+          NotePlantDraw(draws.size(), d, trees_unflashed);
+          draws.push_back(d);
+          left_out["(trees: leaves drawn)"]++;
+        }
+        continue;
+      }
+#endif
+      if (tree_lod) {  // [acct2-bro] 2026-11-22 rn115c: the game's level of this instance's branches or fronds
+        const int level = GameTreeLevel(base, here, *part);
+        if (level < 0) {  // its SpeedTree object unread: the nearest level (as before)
+          d.mesh = mesh;
+          left_out["(trees: rn115c branches and fronds at the nearest level, the SpeedTree object unread)"]++;
+        } else {
+          if (!level_tried[level]) {  // once a frame each level of this part
+            level_tried[level] = true;
+            if (TreeLevelEmpty(base, tree, *part, static_cast<uint32_t>(level))) {
+              level_meshes[level] = 0;  // the game makes no strip for it and draws nothing
+            } else {
+              std::string level_why;
+              level_meshes[level] = TreeMesh(base, tree, *part, level_why, static_cast<uint32_t>(level));
+              if (!level_meshes[level]) {  // the nearest level instead (as before)
+                left_out["(trees: rn115c a level drawn at the nearest: " + level_why + ")"]++;
+                level_meshes[level] = mesh;
+              }
+            }
+          }
+          if (!level_meshes[level]) {
+            left_out["(trees: rn115c instances at a level without a strip, not drawn, as the game)"]++;
+            continue;
+          }
+          d.mesh = level_meshes[level];
+          left_out[kTreeLevelLabels[kind == kTreeBranches ? 0 : 1][level]]++;
         }
       }
       NotePlantDraw(draws.size(), d, trees_unflashed);  // [acct2-bro] 2026-11-13 rn84a
@@ -12700,7 +13193,7 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
   if (name.empty() || !WatchHolds(watch, Lower(name))) return;
   // [rexglue-native] 2026-11-10 rn40i: a watched helmet (5931940F174EA055): its object and the light kept for it, and
   // the object watched for the game's passes and draws (WatchLightObject)
-  if (d.lens_cube && d.lens_opaque && REXCVAR_GET(cod3_debug_ngl_side) && Readable(object + 0x38)) {
+  if (d.lens_cube && d.lens_opaque == 1 && REXCVAR_GET(cod3_debug_ngl_side) && Readable(object + 0x38)) {
     float at[3];
     for (int i = 0; i < 3; ++i) at[i] = g::ReadF32(base, object + 0x30 + 4 * i);
     if (WatchedLightObject(object, nullptr, nullptr) != 1) {
@@ -12751,7 +13244,9 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
     static std::atomic<int> said{0};
     if (said.fetch_add(1, std::memory_order_relaxed) < 40) {
       const char* kind = d.metal_cube     ? "metal"
-                         : d.lens_cube    ? (d.lens_opaque ? "5931940F (eyes)" : "glass with a cube")
+                         : d.lens_cube    ? (d.lens_opaque == 1   ? "5931940F (eyes)"
+                                             : d.lens_opaque == 2 ? "D464FD2E (scope)"  // [acct2-bro] defect E
+                                                                  : "glass with a cube")
                          : d.env_texture  ? "shiny"
                          : d.fabric_mask  ? "fabric"
                          : d.noise_swatch ? "skin"
@@ -12791,7 +13286,9 @@ void WatchDraw(uint8_t* base, uint32_t node, uint32_t object, uint32_t material,
   }
   if (old_class) maps = "an old class's material: no sampler list, its first texture";  // rn65c
   const char* how = d.metal_cube     ? "metal"
-                    : d.lens_cube    ? (d.lens_opaque ? "the eyes with a cube" : "glass with a cube")
+                    : d.lens_cube    ? (d.lens_opaque == 1   ? "the eyes with a cube"
+                                        : d.lens_opaque == 2 ? "a scope's glass"  // [acct2-bro] defect E
+                                                             : "glass with a cube")
                     : d.env_texture  ? "shiny"
                     : d.fabric_mask  ? "fabric"
                     : d.detail_map   ? "detail-mapped metal"
@@ -13352,6 +13849,94 @@ struct StloNote {
 };
 thread_local std::map<std::string, StloNote> t_stlo_notes;
 
+#if defined(NGL_VK_CAMO)
+// [acct2-bro] 2026-11-22 Camo lane c519: the gun's key from its color map's own name. x514 found no name in the
+// held-weapon chain (the campaign's word reads 0, cod3mp's def +8 is no pointer), but the first-person gun's
+// own textures name it: w_springfield_c, weapon_m1garand_c, w_m1garand_diff. A gun's textures start w_ or weapon_;
+// the arms, hands, gloves, sleeves, lenses, glass, reticles, flashes and third-person (world) models are not taken.
+// The key is the name, lower case, without that start and its _c / _d / _diff / _col ends ("springfield",
+// "m1garand"): F2's rows are these keys; "" for anything else (no camo). Cached by texture and its name's pointer.
+std::string CamoGunKeyOf(const std::string& own) {
+  std::string key;
+  for (char c : own) key.push_back(c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c);
+  if (key.rfind("weapon_", 0) == 0) key.erase(0, 7);
+  else if (key.rfind("w_", 0) == 0) key.erase(0, 2);
+  else return {};
+  for (const char* no : {"arms", "hand", "glove", "sleeve", "lens", "glass", "reticle", "flash", "world"})
+    if (key.find(no) != std::string::npos) return {};
+  for (bool cut = true; cut;) {
+    cut = false;
+    for (const char* end : {"_diff", "_col", "_c", "_d"}) {
+      const size_t n = std::strlen(end);
+      if (key.size() > n + 1 && key.compare(key.size() - n, n, end) == 0) {
+        key.resize(key.size() - n);
+        cut = true;
+        break;
+      }
+    }
+  }
+  if (key.empty() || key.size() > 48) return {};
+  for (char c : key)
+    if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return {};  // ngl_camo's IsWeaponName
+  return key;
+}
+
+const std::string& CamoGunKey(uint8_t* base, uint32_t texture) {
+  struct Entry {
+    uint32_t texture = 0, name = 0;
+    std::string key;
+  };
+  thread_local std::array<Entry, 64> cache;  // the drawing thread's; a texture's name pointer tells a reused address
+  static const std::string none;
+  if (!IsTexture(base, texture)) return none;
+  const uint32_t name = g::ReadU32(base, texture + kTextureName);
+  Entry& e = cache[(texture >> 4) & 63];
+  if (e.texture != texture || e.name != name) {
+    e.texture = texture;
+    e.name = name;
+    e.key = CamoGunKeyOf(TextureOwnName(base, texture));
+  }
+  return e.key;
+}
+
+// split screen: the local player a scene's view belongs to, from its part of the screen (SplitPart): two players
+// top 1, bottom 2; more: top left 1, top right 2, bottom left 3, bottom right 4. A whole-screen scene: 1.
+int CamoPlayer(uint8_t* base, uint32_t scene) {
+  float part[4];
+  if (!SplitPart(base, scene, part)) return 1;
+  const bool bottom = part[1] >= 0.49f, right = part[0] >= 0.49f, whole_width = part[2] - part[0] > 0.75f;
+  return whole_width ? (bottom ? 2 : 1) : 1 + (bottom ? 2 : 0) + (right ? 1 : 0);
+}
+
+// One front rigid draw: the layer chosen for its player and gun (ngl_camo::LayerFor, after this frame's BeginFrame),
+// into the draw's camo fields. The gun is named by its color map (CamoGunKey): a draw that names none takes none.
+void CamoLayer(uint8_t* base, uint32_t scene, uint64_t frame, uint32_t color, ngl_vk_mesh_draw& d) {
+  const std::string& weapon = CamoGunKey(base, color);
+  if (weapon.empty()) return;
+  const int player = CamoPlayer(base, scene);
+  cod3::ngl_camo::Layer layer;
+  if (!cod3::ngl_camo::LayerFor(player, weapon, &layer) || !layer.color) return;
+  d.camo_texture = layer.color;
+  d.camo_params[0] = layer.scale;
+  d.camo_params[1] = layer.offset[0];
+  d.camo_params[2] = layer.offset[1];
+  d.camo_params[3] = layer.strength;
+  for (int i = 0; i < 3; ++i) d.camo_params[4 + i] = layer.mean[i];
+  d.camo_params[7] = 0.0f;
+  static std::atomic<int> said{0};
+  static uint64_t said_frame = 0;  // the first 8, then every 1200 frames or so while a camo is drawn
+  const bool first = said.load(std::memory_order_relaxed) < 8;
+  if (first || frame >= said_frame + 1200) {
+    if (first) said.fetch_add(1, std::memory_order_relaxed);
+    said_frame = frame;
+    REXLOG_INFO("cod3: camo: player {} {}: texture {}, scale {:.3f}, mean {:.3f} {:.3f} {:.3f}, strength {:.2f} "
+                "(frame {}; ngl_vk's camo passes so far {})",
+                player, weapon, layer.color, layer.scale, layer.mean[0], layer.mean[1], layer.mean[2], layer.strength,
+                frame, ngl_vk_camo_count());
+  }
+}
+#endif
+
 void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector<ngl_vk_mesh_draw>& draws) {
   const size_t first = draws.size();
   decaldepth::t_pull = 0.0f;  // [rexglue-native stlo 2026-11-17] patch17: set by the decal list below
@@ -13638,6 +14223,16 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // [acct2-bro] 2026-11-12 rn51b: the level's cube kept (g_level_cube), and lent to a pass that the game draws
     // with it without its material naming it (the M1 Garand's: ReadMetalPlainPass)
     [[maybe_unused]] bool lent_cube = false;  // [acct2-bro] 2026-11-21 rn104: a cube lent to the pass below
+    // [acct2-bro] 2026-11-22 rn112: a *metal_mask* sampler lent as the mask, only to a plain metal shader's pass
+    bool lent_mask = false;
+    if (!samplers.env && !samplers.env_mask && !d.lightmap && samplers.normal &&
+        REXCVAR_GET(cod3_debug_ngl_side_rn112) && REXCVAR_GET(cod3_debug_ngl_side_metal_plain)) {
+      const uint32_t mask = MetalMaskSampler(base, material);
+      if (mask && MetalPlainNode(base, s.node)) {
+        samplers.env_mask = mask;
+        lent_mask = true;
+      }
+    }
     if (samplers.reflection_cube) {
       g_level_lens_cube.store(samplers.reflection_cube, std::memory_order_relaxed);
     } else if (samplers.env && samplers.normal && IsCubeTexture(base, samplers.env)) {
@@ -13667,6 +14262,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
           (second_mask = MetalSecondMask(base, material, samplers)) != 0) {
         d.metal_scratch = TextureFor(base, second_mask);
       }
+      if (metal_pass.mask_twice && !d.metal_scratch) d.metal_scratch = d.specular_map;  // rn112: 873FA02E's mask
       d.metal_brightness = metal_pass.brightness;
       d.metal_reflection = metal_pass.reflection;
       d.metal_power = metal_pass.power;
@@ -13699,7 +14295,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         fabric_read = false;
         fabric_pass_read = FabricPass{};
       } else {
-        left_out[metal_pass.kind == kMetalPlain        ? "(of those, the guns' metal: the M1 Garand's)"  // [acct2-bro]
+        left_out[metal_pass.kind == kMetalPlain        ? "(of those, the guns' metal: the plain sum's)"  // [acct2-bro]
                  : metal_pass.kind == kMetalFloor      ? "(of those, the guns' metal: 687855C9BA600FC3)"  // [acct2-bro]
                  : metal_pass.kind == kMetalAlphaTested ? "(of those, the guns' metal: 5CA91BD2CD3CBA09, alpha-tested)"
                  : metal_pass.kind == kMetalCompiledIn ? "(of those, the guns' metal: its numbers compiled in)"
@@ -13728,6 +14324,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
         }
       }
     }
+    if (lent_mask && !d.metal_cube) samplers.env_mask = 0;  // [acct2-bro] 2026-11-22 rn112: not drawn as metal
     LensPass lens_pass;  // rn40 (ReadLensPass)
     // rn40: the glass (FC767C09DBD34C2A: an environment cube, no normal map); rn40e: the eyes (5931940F174EA055: a
     // Reflection_Cube_Map, a normal map the shader doesn't bend the normal with, no specular map)
@@ -13738,6 +14335,23 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                               : glass_like                  ? samplers.env
                               : eyes_like                   ? samplers.reflection_cube
                                                             : 0;
+    // [acct2-bro] 2026-11-22 SP lane, defect E: a scope's lens (ReadScopeLensPass): a color map and the material's
+    // reflection_tint map, no normal map, environment or specular map, reflection cube or lightmap, in a pass with
+    // D464FD2E's numbers; drawn as rn40's glass of the tinted kind (ngl_vk.h lens_opaque 2) with the level's cube
+    // (g_level_cube, else g_level_lens_cube, as rn51b lends it). Its sun and alpha are chosen below, with the others'.
+    [[maybe_unused]] ScopeLensPass scope_pass;
+    [[maybe_unused]] uint32_t scope_tint = 0, scope_cube = 0;
+#if defined(NGL_VK_LENS_TINTED)
+    if (!lens_map && !d.metal_cube && samplers.color && !d.lightmap && !samplers.normal && !samplers.env &&
+        !samplers.env_mask && !samplers.reflection_cube && REXCVAR_GET(cod3_debug_ngl_side_scope_lens) &&
+        (scope_pass = ReadScopeLensPass(base, s.node)).ok &&
+        (scope_tint = ReflectionTintSampler(base, material)) != 0) {
+      const uint32_t own = g_level_cube.load(std::memory_order_relaxed);
+      const uint32_t lens = g_level_lens_cube.load(std::memory_order_relaxed);
+      scope_cube = own && IsCubeTexture(base, own) ? own : lens && IsCubeTexture(base, lens) ? lens : 0;
+      if (!scope_cube) left_out["(defect E: a scope's lens drawn plain: no level cube seen yet)"]++;
+    }
+#endif
     if (d.metal_cube) {
       // rn34: drawn as the guns' metal (above)
     } else if (lens_map && IsCubeTexture(base, lens_map) &&
@@ -13796,10 +14410,65 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
                       samplers.looks ? own_name(samplers.looks) : std::string("-"), look_frame.value);
         }
       }
+#if defined(NGL_VK_LENS_TINTED)
+    } else if (scope_cube) {  // [acct2-bro] 2026-11-22 SP lane, defect E: a scope's lens, as D464FD2E draws it
+      d.lens_cube = CubeFor(base, scope_cube);
+      d.lens_opaque = 2;
+      d.lens_reflection = scope_pass.reflection;
+      d.lens_power = kScopeLensPower;
+      d.lens_cube_bias = scope_pass.bias;
+      std::memcpy(d.lens_tint, scope_pass.tint, sizeof d.lens_tint);
+      d.lens_tint_map = TextureFor(base, scope_tint);
+      d.lens_color_scale = scope_pass.color_scale;
+      std::memcpy(d.lens_out_scale, scope_pass.out_scale, sizeof d.lens_out_scale);
+      left_out[!d.lens_cube        ? "(defect E: a scope's lens drawn plain: its cube not made)"
+               : d.lens_tint_map ? "(defect E: a scope's lens as tinted glass: D464FD2ECA69C5E4)"
+                                 : "(defect E: a scope's lens as tinted glass without its tint map)"]++;
+      if (REXCVAR_GET(cod3_debug_ngl_side)) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1, std::memory_order_relaxed) < 4) {
+          REXLOG_INFO("cod3: ngl side: defect E scope lens (object {:08X}, material {:08X}): cube {:08X} -> {}, tint "
+                      "map {:08X} \"{}\" -> {}, color x {:.4g}, out x {:.4g} {:.4g} {:.4g}, tint {:.4g} {:.4g} "
+                      "{:.4g}, cube x {:.4g}, bias {:.4g}", object, material, scope_cube, d.lens_cube, scope_tint,
+                      TextureOwnName(base, scope_tint), d.lens_tint_map, d.lens_color_scale, d.lens_out_scale[0],
+                      d.lens_out_scale[1], d.lens_out_scale[2], d.lens_tint[0], d.lens_tint[1], d.lens_tint[2],
+                      d.lens_reflection, d.lens_cube_bias);
+        }
+      }
+#endif
     } else if (samplers.env && !d.lightmap) {  // side88: shiny (the guns): the environment map times the specular
                                                 // map, added
       d.env_texture = TextureFor(base, samplers.env);
       d.env_mask = samplers.env_mask ? TextureFor(base, samplers.env_mask) : 0;
+#if defined(NGL_VK_ENV_STRENGTH)
+      // [acct2-bro] 2026-11-22 rn111: the bullets (the .30 cal's belt, the shotgun's shells; x216: far too bright in
+      // a dark room): their pixel shader B0D2C2278FE3586C (x216's dump, read whole) ends
+      //   color = (light x base + (highlights + c254.z x environment) x c254.w x specular map) x c255.yxz
+      // with c254 = (0, 1, 0.2, 1.14) and c255 = (0.6155, 0.659, 0.6122, 1) as its literals, where this path added
+      // environment x specular map at full strength with no tint. The strength and tint from the pass's own
+      // literals (its highlights are not drawn here).
+      if (!samplers.normal && d.env_mask && REXCVAR_GET(cod3_debug_ngl_side_rn111)) {
+        uint32_t w[32];
+        // The shader is known by its whole literal block (x217's pass probe: c252 and c253 zero, then these), as
+        // rn110's shapes are: another shiny shader with numbers in the same places keeps the path it had.
+        if (PassPixelLiterals(base, s.node, w) && w[0] == 0 && w[1] == 0 && w[2] == 0 && w[3] == 0 && w[4] == 0 &&
+            w[5] == 0 && w[6] == 0 && w[7] == 0 && w[8] == 0 && w[9] == 0x3F800000u && w[10] == 0x3E4CCCCDu &&
+            w[11] == 0x3F91EB85u && w[12] == 0x3F1D907Eu && w[13] == 0x3F28B439u && w[14] == 0x3F1CB9DCu &&
+            w[15] == 0x3F800000u) {
+          float v[16];  // c252 .. c255
+          std::memcpy(v, w, sizeof v);
+          const float strength = v[10] * v[11];
+          if (strength > 0.0f && strength < 4.0f && v[12] > 0.0f && v[12] < 4.0f && v[13] > 0.0f && v[13] < 4.0f &&
+              v[14] > 0.0f && v[14] < 4.0f) {
+            d.env_strength = strength;
+            d.env_tint[0] = v[13];
+            d.env_tint[1] = v[12];
+            d.env_tint[2] = v[14];
+            left_out["(of those, shiny with the game's strength and tint: B0D2C2278FE3586C)"]++;
+          }
+        }
+      }
+#endif
       left_out[d.env_mask ? "(of those, shiny: environment map x specular map)" : "(of those, shiny: environment map)"]++;
       // rn40: glass with a cube that wasn't taken as FC767C09DBD34C2A's, with cod3_debug_ngl_side, to see why
       if (REXCVAR_GET(cod3_debug_ngl_side) && lens_pass.why[0]) {
@@ -13808,6 +14477,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
           REXLOG_INFO("cod3: ngl side: rn40 a cube without a normal map (object {:08X}) not taken as glass: {}",
                       object, lens_pass.why);
           LogPassBinding(base, s.node, "not taken as glass");
+          ProbePassShaders(base, s.node, "not taken as glass");  // [acct2-bro] 2026-11-22 rn110a: the bullets' pass
         }
       }
       // rn34: a gun whose pass isn't the metal shader's, once with cod3_debug_ngl_side, to see what binds it
@@ -14487,7 +15157,38 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // a soldier's DXT5 color map keeps something else in its alpha (side24 drew them whole without the test)
     d.alpha = !skinned && g_cut_out.count(d.texture) ? NGL_VK_ALPHA_TEST : NGL_VK_ALPHA_OPAQUE;
     // rn40: the game blends the glass by its alpha (blend 07060706); rn40e: not the helmets (00010001)
-    if (d.lens_cube && !d.lens_opaque) d.alpha = NGL_VK_ALPHA_BLEND;
+    if (d.lens_cube && d.lens_opaque != 1) d.alpha = NGL_VK_ALPHA_BLEND;  // [acct2-bro] defect E: and the scopes'
+#if defined(NGL_VK_LENS_TINTED)
+    // [acct2-bro] 2026-11-22 SP lane, defect E: a scope's glass is blended unless its pass draws opaque
+    // (RB_BLENDCONTROL0 ONE / ZERO, StloReadPassState); its sun is the draw's own, as its vertex shader's (unshadowed),
+    // placed 2000 units from it toward the sun (as FC767C09's c29 is)
+    if (d.lens_cube && d.lens_opaque == 2) {
+      const StloPassState scope_state = StloReadPassState(base, s.node);
+      if (scope_state.blend_known && scope_state.blend == 0x00010001u) d.alpha = NGL_VK_ALPHA_OPAQUE;
+#if defined(NGL_VK_BLEND_PREMULTIPLIED)
+      // x320: the scopes' pass blends 07060701, its color ONE / INV_SRC_ALPHA: added as it is over what's behind
+      // x (1 - alpha), not times its alpha (NGL_VK_BLEND_ALPHA's)
+      if (scope_state.blend_known && (scope_state.blend & 0xFFFFu) == 0x0701u) d.blend = NGL_VK_BLEND_PREMULTIPLIED;
+#endif
+      const float* way = d.light_direction;
+      const float length = std::sqrt(way[0] * way[0] + way[1] * way[1] + way[2] * way[2]);
+      for (int i = 0; i < 3; ++i) {
+        d.lens_sun_place[i] = length > 1e-4f ? d.world[12 + i] - 2000.0f * way[i] / length : d.world[12 + i];
+        d.lens_sun_color[i] = length > 1e-4f ? d.light_color[i] : 0.0f;
+      }
+      if (REXCVAR_GET(cod3_debug_ngl_side)) {
+        static std::atomic<int> said{0};
+        if (said.fetch_add(1, std::memory_order_relaxed) < 4) {
+          REXLOG_INFO("cod3: ngl side: defect E scope lens (object {:08X}): blend {} {:08X} -> {}, sun {:.3f} {:.3f} "
+                      "{:.3f} from {:.3f} {:.3f} {:.3f}", object, scope_state.blend_known ? "read" : "unread",
+                      scope_state.blend,
+                      d.alpha != NGL_VK_ALPHA_BLEND ? "opaque" : d.blend ? "blended, premultiplied" : "blended",
+                      d.lens_sun_color[0],
+                      d.lens_sun_color[1], d.lens_sun_color[2], way[0], way[1], way[2]);
+        }
+      }
+    }
+#endif
 #if defined(NGL_VK_COD3_WATER)
     if (d.cod3_water) d.alpha = NGL_VK_ALPHA_BLEND;  // [acct2-bro] 2026-11-13 rn86a: the water too (07060706)
 #endif
@@ -14760,7 +15461,7 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
       }
     }
     // rn40o: (rn40p: only the watched ones from frame 2900, rn40o's lines went to the ulans' small cube-lit part)
-    t_skin_watch = d.lens_cube && d.lens_opaque && REXCVAR_GET(cod3_debug_ngl_side) && frame >= 2900 &&
+    t_skin_watch = d.lens_cube && d.lens_opaque == 1 && REXCVAR_GET(cod3_debug_ngl_side) && frame >= 2900 &&
                    WatchedTextureName(base, samplers.color);
     // [acct2-bro] 2026-11-13 rn78c: with the geometry read above; a rigid solid's corners aren't posed (SkinnedCorners
     // returned 0 for it), so it is asked only for a skinned one, or a watched helmet (its rn40o line says why not)
@@ -15233,7 +15934,9 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
           return Pointer(name_at) && Readable(name_at) ? InlineName(base, name_at + 4) : std::string("-");
         };
         const char* kind = d.metal_cube     ? "metal"
-                           : d.lens_cube    ? (d.lens_opaque ? "5931940F (eyes)" : "glass with a cube")
+                           : d.lens_cube    ? (d.lens_opaque == 1   ? "5931940F (eyes)"
+                                               : d.lens_opaque == 2 ? "D464FD2E (scope)"  // [acct2-bro] defect E
+                                                                    : "glass with a cube")
                            : d.env_texture  ? "shiny"
                            : d.fabric_mask  ? "fabric"
                            : d.noise_swatch ? "skin"
@@ -15279,9 +15982,6 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // [acct2-bro] 2026-11-13 rn86b: the water is appended after the loop (cod3_debug_ngl_side_water_late). The notes
     // made above at this index (NoteDrawPlace, NotePlantDraw, the flicker log's) are taken by the next draw appended
     // here and made again for the water when it is appended.
-    if (water_draw) {  // [acct2-bro] 2026-11-13 rn86c/rn86d: the test lift in world z (the translation's z)
-      d.world[14] += 0.1f * static_cast<float>(REXCVAR_GET(cod3_debug_ngl_side_water_lift));
-    }
     if (water_draw && REXCVAR_GET(cod3_debug_ngl_side_water_late)) {  // rn86d: any water mode
       late_water.push_back(
           LateWater{d, surface, flicker_log && !g_flicker_from.empty() ? g_flicker_from.back() : FlickerFrom{}});
@@ -15473,15 +16173,13 @@ void SolidDraws(uint8_t* base, uint64_t frame, const Census& census, std::vector
     // Saint-Lo's whole picture, d 4.64 as before, 4.44 with the first group alone, 4.17 with all.
     d.game_bump_frame =
         REXCVAR_GET(cod3_debug_ngl_side_bump_frame) && d.normal_map && d.irradiance_rows == 9 ? 1u : 0u;
-    if (d.game_bump_frame && REXCVAR_GET(cod3_debug_ngl_side_tangent_report) > 0) {  // rn101 (debug)
-      const char* kind = d.fabric_mask      ? "fabric"
-                         : d.metal_cube     ? "metal"
-                         : d.noise_swatch   ? "skin"
-                         : d.detail_map     ? "detail"
-                         : d.vehicle_bumped ? "vehicle"
-                                            : "generic";
-      ReportTangents(base, surface, geo, kind, material, static_cast<int>(metal_pass.kind));
-    }
+#endif
+#if defined(NGL_VK_CAMO)
+    // [acct2-bro] 2026-11-22 Camo lane: the first-person gun's own surfaces (the front scene's rigid ones; the arms
+    // and sleeves are skinned) take the camo chosen for that player and the gun in hand (ngl_camo.h); opaque ones
+    // only (ngl_vk.h camo_texture). Nothing chosen (the default) or anything unreadable: the draw as before.
+    if (camera->second.front && !skinned && d.alpha == NGL_VK_ALPHA_OPAQUE)
+      CamoLayer(base, s.scene, frame, samplers.color, d);  // the color map names the gun (CamoGunKey)
 #endif
     draws.push_back(d);
     if (left_out.on()) {
@@ -16418,6 +17116,12 @@ int StartNglVk() {
 #if defined(NGL_VK_OUTPUT_BOX)
   ngl_vk_set_shown_scale(g_target_scale);  // [acct2-bro] 2026-11-12 rn61a
 #endif
+#if defined(NGL_VK_MSAA)
+  ngl_vk_set_msaa(static_cast<uint32_t>(std::clamp(REXCVAR_GET(cod3_native_msaa), 1, 8)));  // [acct2-bro] rn113
+#endif
+#if defined(NGL_VK_EFFECT_COUNT)
+  ngl_vk_set_effect_count(1, 0);  // [acct2-bro] 2026-11-22 rn114: counted (cod3_native_fx_governor: if used)
+#endif
   // [acct2-bro] 2026-11-12 rn61b: anti-aliasing (g_target_scale above 1) asks for the hand-over on the GPU too
   if (g_native.load(std::memory_order_relaxed) &&
       (REXCVAR_GET(cod3_native_shared_device) || g_target_scale > 1)) {
@@ -16433,6 +17137,10 @@ int StartNglVk() {
                                         const_cast<void*>(static_cast<const void*>(device))) == 0) {
       g_shared_device = true;
       REXLOG_INFO("cod3: ngl side: ngl_vk draws on the window's own Vulkan device; pictures go to it on the GPU");
+#if defined(NGL_VK_MSAA)
+      REXLOG_INFO("cod3: ngl side: rn113 MSAA: asked {}, in use {} (1: none)", REXCVAR_GET(cod3_native_msaa),
+                  ngl_vk_msaa());  // [acct2-bro] 2026-11-22
+#endif
 #if defined(NGL_VK_ANISOTROPY)
       REXLOG_INFO("cod3: ngl side: rn52a anisotropic filtering: asked {:.0f}, in use {:.0f} (1: none)", anisotropy,
                   ngl_vk_anisotropy());  // [acct2-bro] 2026-11-12
@@ -16454,6 +17162,12 @@ int StartNglVk() {
 #endif
   }
   const int started = ngl_vk_init(g_target_width, g_target_height);
+#if defined(NGL_VK_MSAA)
+  if (started == 0) {  // [acct2-bro] 2026-11-22 rn113
+    REXLOG_INFO("cod3: ngl side: rn113 MSAA: asked {}, in use {} (1: none)", REXCVAR_GET(cod3_native_msaa),
+                ngl_vk_msaa());
+  }
+#endif
 #if defined(NGL_VK_ANISOTROPY)
   if (started == 0) {  // [acct2-bro] 2026-11-12 rn52a
     REXLOG_INFO("cod3: ngl side: rn52a anisotropic filtering: asked {:.0f}, in use {:.0f} (1: none)", anisotropy,
@@ -16552,6 +17266,10 @@ constexpr uint32_t kMenuBlurState = 0x82BCC8C0, kMenuBlurAmount = 0x82BCC8B0;  /
 // [acct2-bro] 2026-11-14 rn91a: each local player's in-match menu system (+ 4 x the player;
 // test_autojoin_mp.cpp's), its + 0x1C the open page's id, -1 (0xFFFFFFFF) while none is
 constexpr uint32_t kMenuSystems = 0x82C6B2CC, kMenuCurrent = 0x1C;
+// [acct2-bro] 2026-11-22 rn47y: cod3mp's two screen buffer textures, the campaign's 0x82911068 and 0x8291103C (rn47n;
+// globals_sp_to_mp.tsv). cod3mp's list send swaps 0x82A8FBF0 between them every frame (82140000.c, as the
+// campaign's 0x82912CE0) and a concussion's quad takes the one it names (82160000.c), as in the campaign.
+constexpr uint32_t kMpScreenTextureA = 0x82A8DF74, kMpScreenTextureB = 0x82A8DF48;
 #else
 constexpr uint32_t kDofOn = 0x829128C4, kDofNear = 0x825B3070, kDofFar = 0x825B3074;
 // [acct2-bro] 2026-11-13 rn64a (debug): the near and far planes the pass builds its c0 from (0x82149C80)
@@ -18140,6 +18858,9 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
   std::vector<ngl_vk_mesh_draw> draws = SkyDraws(base, frame);  // the sky first, under everything (side85)
   lap(g_parts.sky);
   const size_t first_solid = draws.size();
+#if defined(NGL_VK_CAMO)
+  cod3::ngl_camo::BeginFrame();  // [acct2-bro] 2026-11-22 Camo lane: the frame's camo choices, one texture made
+#endif
   SolidDraws(base, frame, census, draws);  // side213: appended, not copied
   lap(g_parts.solids);
   if (!pictures) {  // side229
@@ -18346,6 +19067,12 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
 #if !defined(COD3_MP)
     last_frame_quad = REXCVAR_GET(cod3_debug_ngl_side_screen_echo) &&
                       (q.texture == kScreenTextureA || q.texture == kScreenTextureB);
+#else
+    // [acct2-bro] 2026-11-22 rn47y: cod3mp's echo too, in one view (a split screen's views are cut apart above and
+    // the echo's picture would be the whole screen's: as before there)
+    last_frame_quad = REXCVAR_GET(cod3_debug_ngl_side_screen_echo) && REXCVAR_GET(cod3_native_echo_edges) &&
+                      (q.texture == kMpScreenTextureA || q.texture == kMpScreenTextureB) &&
+                      g::ReadU32(base, kLocalPlayers) < 2;
 #endif
     const bool echo_of_last = last_frame_quad && !REXCVAR_GET(cod3_debug_ngl_side_screen_echo_this);
     if (last_frame_quad) {
@@ -18375,7 +19102,22 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
       texture = TextureFor(base, q.texture);
     }
     textured += texture != 0;
-    AddQuad(vertices, q, texture);
+    if (last_frame_quad && REXCVAR_GET(cod3_native_echo_edges)) {  // [acct2-bro] 2026-11-22 rn47y: to the edges
+      Quad echo = q;
+      const bool moved = EchoToEdges(echo);
+      static std::atomic<int> said_edges{0};
+      if (said_edges.fetch_add(1, std::memory_order_relaxed) < 4) {
+        REXLOG_INFO("cod3: ngl side: rn47y frame {}: the echo ({:.1f}, {:.1f}) to ({:.1f}, {:.1f}), picture ({:.4f}, "
+                    "{:.4f}) to ({:.4f}, {:.4f}): {} ({:.1f}, {:.1f}) to ({:.1f}, {:.1f}), picture ({:.4f}, {:.4f}) "
+                    "to ({:.4f}, {:.4f})",
+                    frame, q.x[0], q.y[0], q.x[3], q.y[3], q.u[0], q.v[0], q.u[3], q.v[3],
+                    moved ? "drawn" : "left as it is", echo.x[0], echo.y[0], echo.x[3], echo.y[3], echo.u[0],
+                    echo.v[0], echo.u[3], echo.v[3]);
+      }
+      AddQuad(vertices, echo, texture);
+    } else {
+      AddQuad(vertices, q, texture);
+    }
     quadcenter::t_tags.resize(vertices.size(), static_cast<uint8_t>((q.list == -1 ? 1 : 0) | (last_frame_quad ? 2 : 0)));  // [rexglue-native stlo 2026-11-17] patch20
     if (last_frame_quad) {  // the picture is opaque: its alpha is the quad's own
       for (size_t k = vertices.size() - 6; k < vertices.size(); ++k) vertices[k].textured = 1.0f;
@@ -18455,7 +19197,6 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
       const uint32_t set = g::ReadU32(base, scene + 0x36C);
       if (!Pointer(set) || !Readable(set + 0x1C)) continue;
       sets_read = true;
-      ProbeLightKinds(base, frame, scene, set);  // [rexglue-native-render] 2026-11-11 rn48o (debug, off)
       uint32_t light = g::ReadU32(base, set + 0x18);
       for (uint32_t n = 0; light != set && Pointer(light) && Readable(light + kLightData + 4) && n < 64;
            light = g::ReadU32(base, light + 0x18), ++n) {
@@ -18494,42 +19235,8 @@ void Dump(uint8_t* base, uint32_t root, uint64_t frame, bool pictures = true, Ta
       for (const MovingLight& m : g_moving_lights) {
         if (m.seen + kMovingLightFrames < now) continue;
         ++kept_now;
-        // [rexglue-native-render] 2026-11-11 rn48q (with cod3_debug_ngl_side_light_kinds): a light the game's block
-        // held at its draws (rn47w) that no scene's set holds this frame, one line a frame, at most 200 a run: where
-        // the game's flash lights come from when the sets' lights (rn48o) don't have them
-        if (sets_read && REXCVAR_GET(cod3_debug_ngl_side_light_kinds) && frame >= 1000) {
-          bool in_sets = false;
-          for (size_t k = 0; k < from_sets; ++k) {
-            in_sets = in_sets || (std::fabs(lights[k].light[0] - m.light[0]) < 0.5f &&
-                                  std::fabs(lights[k].light[1] - m.light[1]) < 0.5f &&
-                                  std::fabs(lights[k].light[2] - m.light[2]) < 0.5f);
-          }
-          // [rexglue-native-render] 2026-11-11 rn48u: or the last frame's sets
-          for (size_t k = 0; k < g_last_set_count; ++k) {
-            in_sets = in_sets || (std::fabs(g_last_set_lights[k].light[0] - m.light[0]) < 0.5f &&
-                                  std::fabs(g_last_set_lights[k].light[1] - m.light[1]) < 0.5f &&
-                                  std::fabs(g_last_set_lights[k].light[2] - m.light[2]) < 0.5f);
-          }
-          // rn48u: bright ones only (the muzzle flashes, color 3.89 3.03 2.00 range 150, filled the 200 lines)
-          const bool bright = m.light[4] + m.light[5] + m.light[6] > 15.0f || m.light[3] < 0.0016f;
-          static int said_kept = 0;
-          static uint64_t said_frame = 0;
-          if (!in_sets && bright && said_kept < 200 && said_frame != frame) {
-            ++said_kept;
-            said_frame = frame;
-            REXLOG_INFO("cod3: ngl side: rn48q frame {}: a light of the game's block (seen at game frame {}) in no "
-                        "scene's set of this frame or the last (rn48u): at {:.0f} {:.0f} {:.0f}, 1 / radius {:.6f}, "
-                        "color {:.2f} {:.2f} {:.2f}; the sets "
-                        "hold {} lights", frame, m.seen, m.light[0], m.light[1], m.light[2], m.light[3], m.light[4],
-                        m.light[5], m.light[6], from_sets);
-          }
-        }
         if (!sets_read && count < kMaxMovingLights) lights[count++] = m;
       }
-    }
-    if (sets_read) {  // [rexglue-native-render] 2026-11-11 rn48u: this frame's set lights, for the next frame's rn48q
-      for (size_t k = 0; k < from_sets; ++k) g_last_set_lights[k] = lights[k];
-      g_last_set_count = from_sets;
     }
     if (limits::On()) limits::NoteMovingLights(count);  // [rexglue-native-limits] 2026-11-11
     // the strongest first (for the log's sake; the choice below goes by reach)
@@ -21170,6 +21877,9 @@ std::atomic<uint64_t> g_worker_wait_ns{0};  // side212: how long the game's main
 // it too (ForgetIfNewLevel). On LiveFrame's thread, like every cache here.
 void ForgetEverything() {
   ngl_vk_forget();
+#if defined(NGL_VK_CAMO)
+  cod3::ngl_camo::Forget();  // [acct2-bro] 2026-11-22 Camo lane: its texture numbers went with the rest
+#endif
   // [acct2-bro] 2026-11-14 (acct2-main's review, 18:05): the packs' pictures are forgotten with every other texture,
   // so their budget starts again. It only grew, and after 1.5 GB in one session no pack picture was used any more.
   g_pack_bytes = 0;
@@ -24272,6 +24982,48 @@ REX_HOOK_RAW(sub_8214B0B0) {
   cod3::ngl_side::KeepPostEffect(base, ctx.r3.u32, ctx.r4.u32);
   if (cod3::ngl_side::SkipGamePostEffect(ctx.r3.u32)) return;  // side200: a check
   __imp__sub_8214B0B0(ctx, base);
+}
+#endif
+#endif
+// [acct2-bro] 2026-11-22 rn114: the effects governor's query (cod3_native_fx_governor): its reader (campaign
+// 0x822ED590, cod3mp 0x822BC2B0: GetData(query, out, 4, 0), 0 when the count is there; its only caller is the
+// governor's read) runs as before, then, with the setting on and the native renderer drawing, its answer is the native
+// effect layer's last count scaled to the Xbox 360's layer, and "there".
+#if defined(COD3_NGL_VK) && defined(NGL_VK_EFFECT_COUNT)
+namespace cod3::ngl_side {
+bool AnswerEffectQuery(uint8_t* base, uint32_t out, uint32_t size) {
+  constexpr uint64_t kScreen360 = 520ull * 312ull;  // the 360's half-size effect layer, a sample a pixel
+  static std::atomic<uint64_t> answered{0};
+  uint64_t samples = 0, screen = 0;
+  if (!g_native.load(std::memory_order_relaxed) || !REXCVAR_GET(cod3_native_fx_governor) || !out || size != 4 ||
+      !ngl_vk_effect_count(&samples, &screen) || !screen) {
+    return false;
+  }
+  const uint32_t scaled = static_cast<uint32_t>(std::min<uint64_t>(samples * kScreen360 / screen, 0xFFFFFFFFull));
+  const uint32_t big_endian = __builtin_bswap32(scaled);
+  std::memcpy(g::At(base, out), &big_endian, 4);
+  const uint64_t n = answered.fetch_add(1, std::memory_order_relaxed);
+  if (n < 4 || n % 3600 == 0) {
+    REXLOG_INFO("cod3: ngl side: rn114 effects governor: the native effect layer drew {} samples of a {}-pixel "
+                "screen: {} at the Xbox 360's size (governor {:.3f})", samples, screen, scaled,
+                std::clamp((static_cast<double>(scaled) - 666667.0) * 5e-7, 0.0, 1.0));
+  }
+  return true;
+}
+}  // namespace cod3::ngl_side
+#if defined(COD3_MP)
+REX_EXTERN(__imp__sub_822BC2B0);
+REX_HOOK_RAW(sub_822BC2B0) {
+  const uint32_t out = ctx.r4.u32, size = ctx.r5.u32;  // GetData(query, out, size, flags): the governor's 4 bytes
+  __imp__sub_822BC2B0(ctx, base);
+  if (cod3::ngl_side::AnswerEffectQuery(base, out, size)) ctx.r3.u64 = 0;
+}
+#else
+REX_EXTERN(__imp__sub_822ED590);
+REX_HOOK_RAW(sub_822ED590) {
+  const uint32_t out = ctx.r4.u32, size = ctx.r5.u32;  // GetData(query, out, size, flags): the governor's 4 bytes
+  __imp__sub_822ED590(ctx, base);
+  if (cod3::ngl_side::AnswerEffectQuery(base, out, size)) ctx.r3.u64 = 0;
 }
 #endif
 #endif

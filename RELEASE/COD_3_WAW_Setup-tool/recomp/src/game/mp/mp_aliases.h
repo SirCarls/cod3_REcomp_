@@ -194,6 +194,8 @@
 #define __imp__sub_823BD998 __imp__sub_8238D020
 #define sub_823F04B0 sub_8240A0C0  // 0x823F04B0 -> 0x8240A0C0
 #define __imp__sub_823F04B0 __imp__sub_8240A0C0
+#define sub_823F6A68 sub_82411848  // 0x823F6A68 -> 0x82411848
+#define __imp__sub_823F6A68 __imp__sub_82411848
 #define sub_82419098 sub_82430E70  // 0x82419098 -> 0x82430E70
 #define __imp__sub_82419098 __imp__sub_82430E70
 #define sub_82425BD0 sub_8243D590  // 0x82425BD0 -> 0x8243D590

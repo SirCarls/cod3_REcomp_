@@ -58,9 +58,11 @@ it does nothing useful and the game sets it back.
 - In a multiplayer match only the host can set `sv_cheats`, and everyone is
   told (a line in its own column, like the kill feed).
 - **Multiplayer only, added by the port:** these dvars aren't cheat protected
-  in the game but would let one player see or react to the others better, so
-  cod3mp registers them cheat protected (the game's own flag, so all of the
-  above applies to them):
+  in the game but would let one player see or react to the others better, or
+  change how that player's own soldier moves, heals or fights (each console
+  runs its own players and only sends where they are), so cod3mp registers
+  them cheat protected (the game's own flag, so all of the above applies to
+  them):
 
   | dvars | why |
   |---|---|
@@ -73,6 +75,13 @@ it does nothing useful and the game sets it back.
   | `r_LightScale` | brighter light everywhere |
   | `r_lodbias`, `r_lodscale` | model detail at a distance |
   | `mp_debug`, `mp_debugrender`, `mp_debugrenderspawnpoints`, `RadarFakeFriendlies`, `showvehmap`, `show_playerdist`, `cg_mpDebugAnimEntity` | the game modes' debug drawing (spawn points ...) |
+  | `pmove_fixed`, `pmove_msec` | the steps your own movement is worked out in |
+  | `g_knockback` | how far a hit pushes you |
+  | `health_recharge_rate` | how fast your health comes back |
+  | `conical_spread` | the shape of your weapon's spread |
+  | `g_weaponAmmoPools`, `g_weaponrespawn` | ammo shared between weapons; dropped weapons coming back |
+  | `livegrenadeangle` | how far from your view a live grenade still shows its warning |
+  | `enemy_radar` | enemies on the compass when they fire |
 
   The campaign keeps them as the game made them (nobody to gain on). The
   list is `kMultiplayerCheatDvars` in `recomp/src/game/cheat_guard.cpp`.

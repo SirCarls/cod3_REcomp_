@@ -185,8 +185,8 @@ class Pages:
         tip(self.btn_play, lambda: (f"Start {self._play_exe()[0]}" if self._play_exe()[0] else
                                     self.v_play_reason.get()))
         self.v_play_reason = tk.StringVar()
-        self.lbl_play_reason = ttk.Label(top, textvariable=self.v_play_reason, style="Hint.TLabel",
-                                         wraplength=px(440), justify="left")
+        self.lbl_play_reason = widgets.autowrap(ttk.Label(top, textvariable=self.v_play_reason, style="Hint.TLabel",
+                                                          justify="left"), 440)   # [acct2-ocr] 2026-11-22 to the page
         self.lbl_play_reason.pack(side="left", padx=(px(14), 0))
         # Windowed or fullscreen is the game's own Display mode (Game settings
         # below, F2 in the game): one setting, so the last change made in
@@ -705,14 +705,12 @@ class Pages:
         bar.grid(row=r, column=1, columnspan=2, sticky="w", pady=(px(14), px(4)))
         self.btn_gs_save = ttk.Button(bar, text="Save game settings", style="Accent.TButton",
                                       command=self._save_game_settings)
-        self.btn_gs_save.pack(side="left")
         tip(self.btn_gs_save, lambda: self.v_gs_reason.get() or "Write these to the game's settings file.")
         self.btn_gs_undo = ttk.Button(bar, text="Undo changes", command=self._load_game_settings)
-        self.btn_gs_undo.pack(side="left", padx=(px(6), 0))
         tip(self.btn_gs_undo, "Back to what the settings file has now.")
         self.btn_gs_defaults = ttk.Button(bar, text="Game defaults", command=self._game_settings_defaults)
-        self.btn_gs_defaults.pack(side="left", padx=(px(6), 0))
         tip(self.btn_gs_defaults, "Fill in the game's defaults (saved when you press Save).")
+        widgets.flow(bar, gap=6)   # [acct2-ocr] 2026-11-22 the three wrap on a narrow page
         self.v_gs_reason = tk.StringVar()
         self.lbl_gs_reason = hint(s, var=self.v_gs_reason, style="Hint.TLabel")
         self.lbl_gs_reason.grid(row=r + 1, column=1, columnspan=2, sticky="w")
@@ -745,10 +743,14 @@ class Pages:
                                                                          pady=(px(12 if rr else 4), px(2)))
                     rr += 1
                 rr = self._gs_row(f, st, rr)
-            b = ttk.Button(bar, text=title, style="Ghost.TButton", command=lambda t=title: self._gs_show_tab(t))
-            b.pack(side="left", padx=(0, px(4)))
+            # [acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues ... every tab and sub-tab"): each tab as wide
+            # as its name (ttk keeps room for 11 characters otherwise), and the row wraps on a narrow page
+            # (widgets.flow): the eight tabs were 892 px wide, so the Play page scrolled sideways under 1100 px.
+            b = ttk.Button(bar, text=title, style="SubTab.Ghost.TButton", width=0,
+                           command=lambda t=title: self._gs_show_tab(t))
             self._gs_tab_frames[title] = f
             self._gs_tab_buttons[title] = b
+        widgets.flow(bar, gap=4)
         if tabs:
             self._gs_show_tab(tabs[0][0])
         return r + 2
@@ -761,8 +763,13 @@ class Pages:
             else:
                 f.grid_remove()
         for t, b in self._gs_tab_buttons.items():
-            b.configure(style="Accent.TButton" if t == title else "Ghost.TButton")
+            b.configure(style="SubTab.Accent.TButton" if t == title else "SubTab.Ghost.TButton")
         self._gs_tab = title
+        # [acct2-ocr] 2026-11-22 the page fitted to this tab at once (it waited up to half a second, the bottom of
+        # a taller tab cut off and the scroll bar of a taller one left over meanwhile)
+        page = getattr(self, "pages", {}).get("play")
+        if page:
+            page["scroll"].relayout()
 
     def _gs_row(self, s, st, r: int) -> int:
         """One game setting: label | control, help under the control."""
@@ -1119,8 +1126,9 @@ class Pages:
         cf = ttk.Frame(cs)
         cf.pack(anchor="w", pady=(0, px(18)))
         self.v_censored = tk.BooleanVar(value=False)
-        cz = ttk.Checkbutton(cf, text="Censored campaign (the German release's textures; needs the German disc once)",
-                             variable=self.v_censored, command=self._toggle_censored)
+        cz = widgets.autowrap(ttk.Checkbutton(   # [acct2-ocr] 2026-11-22 it wraps on a narrow page
+            cf, text="Censored campaign (the German release's textures; needs the German disc once)",
+            variable=self.v_censored, command=self._toggle_censored))
         cz.grid(row=0, column=0, columnspan=6, sticky="w")
         self.cb_censored = cz
         tip(cz, "The campaign with the German release's textures (insignia taken off). Needs the German disc once: "
@@ -1413,6 +1421,7 @@ class Pages:
             ("Output folder", lambda: self._open(self.v_out.get()), "The game, the ripped files, saves and logs."),
             ("Input folder", self._open_input, "Your discs and downloads (only ever read)."),
             ("Log folder", self._open_logs, "The build logs.")])
+        widgets.reflow(bf)   # [acct2-ocr] 2026-11-22 the buttons wrap on a narrow page
 
         r = section(t, "Repair", 5, columns=1)
         hint(r, "Looks over the build in the output folder for missing or broken files, and fixes what it can by "
@@ -1430,6 +1439,7 @@ class Pages:
         b.pack(side="left", padx=(px(6), 0))
         tip(b, "Read every file taken off the disc and compare it with the disc's own MD5 (a minute or two; "
                "nothing is changed).")
+        widgets.reflow(bf)   # [acct2-ocr] 2026-11-22 the buttons wrap on a narrow page
         self.v_repair_reason = tk.StringVar()
         self.lbl_repair_reason = hint(r, var=self.v_repair_reason)
         self.lbl_repair_reason.pack(anchor="w", pady=(px(4), 0))
@@ -1443,7 +1453,7 @@ class Pages:
         pf = ttk.Frame(p)
         pf.pack(anchor="w", pady=(px(8), 0))
         self.lb_profiles = tk.Listbox(pf, height=6, borderwidth=0, highlightthickness=1, activestyle="none",
-                                      exportselection=False, width=40)
+                                      exportselection=False, width=28)   # [acct2-ocr] 2026-11-22 (40: too wide)
         self.lb_profiles.grid(row=0, column=0, sticky="ns")
         theme.recolor(self.lb_profiles)
         self.lb_profiles.bind("<<ListboxSelect>>", lambda e: self._update_profile_buttons())

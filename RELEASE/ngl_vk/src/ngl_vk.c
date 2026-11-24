@@ -126,9 +126,25 @@ static const uint32_t window_easu_frag_spirv[] =   /* [acct2-fh] */
 static const uint32_t window_rcas_frag_spirv[] =   /* [acct2-fh] */
 #include "window_rcas.frag.inc"
 ;
+static const uint32_t msaa_depth_frag_spirv[] =    /* [acct2-bro] 2026-11-22 rn113: MSAA's depth pass */
+#include "msaa_depth.frag.inc"
+;
+static const uint32_t mesh_msaa_frag_spirv[] =     /* [acct2-bro] 2026-11-22 rn113b: the twins' mesh.frag */
+#include "mesh_msaa.frag.inc"
+;
+static const uint32_t camo_vert_spirv[] =          /* [acct2-bro] 2026-11-22 Camo lane: the camo pass (make_camo) */
+#include "camo.vert.inc"
+;
+static const uint32_t camo_frag_spirv[] =          /* [acct2-bro] 2026-11-22 Camo lane */
+#include "camo.frag.inc"
+;
 
 #define TARGET_FORMAT   VK_FORMAT_R8G8B8A8_UNORM
 #define DEPTH_FORMAT    VK_FORMAT_D32_SFLOAT
+/* [acct2-bro] 2026-11-22 rn113: MSAA (ngl_vk_set_msaa): the pipelines that get multisampled twins (msaa_slot), and
+ * the most samples the multisampled target may hold (a 3840x2160 picture with four) */
+enum { MSAA_MESH, MSAA_CULL_CW, MSAA_CULL_CCW, MSAA_TWINS };
+#define MSAA_MOST_SAMPLES (3840ull * 2160ull * 4ull)
 #define PICTURE_FORMAT  VK_FORMAT_B8G8R8A8_UNORM     /* X8R8G8B8 in memory: blue, green, red, unused */
 #define BYTES_PER_PIXEL 4u
 #define WAIT_NS         5000000000ull               /* 5 s: a draw that takes longer has hung */
@@ -320,6 +336,8 @@ static struct {
     VkPipeline mesh_blend_pipeline;     /* the same, blended by alpha, not writing depth */
     VkPipeline mesh_add_pipeline;       /* and added (NGL_VK_BLEND_ADD), taken away (NGL_VK_BLEND_SUBTRACT) */
     VkPipeline mesh_subtract_pipeline;
+    /* [acct2-bro] 2026-11-22 defect E: premultiplied (NGL_VK_BLEND_PREMULTIPLIED); VK_NULL_HANDLE: not made */
+    VkPipeline mesh_premultiplied_pipeline;
     VkPipeline mesh_multiply_pipeline;  /* [waw-decomp] 2026-11-10: multiplied (NGL_VK_BLEND_MULTIPLY: decals) */
     VkPipeline mesh_decal_pipeline;     /* [rexglue-native stlo 2026-11-16] the scene decal list's (NGL_VK_BLEND_DECAL) */
     VkPipeline mesh_decal_alpha_pipeline;   /* [rexglue-native stlo 2026-11-16] the decal list's blended ones (NGL_VK_BLEND_DECAL_ALPHA) */
@@ -399,6 +417,35 @@ static struct {
     VkSampler soft_sampler;
     int soft_ready;                 /* the copy is in its sampled layout */
     int soft_live;                  /* drawing the second half: the copy holds this frame's depth */
+    /* [acct2-bro] 2026-11-22 rn113: MSAA (ngl_vk_set_msaa; make_msaa_target): the samples in use (0 or 1: none),
+     * the multisampled color and depth, the first half's pass and framebuffer, the pass after it (the depth into
+     * the one-sample depth, the grass), the pipelines' twins (msaa_slot's order) and their coverage shader */
+    uint32_t msaa_samples;
+    int msaa_swapped;                   /* the twins are in the one-sample pipelines' places now */
+    VkImage msaa_color, msaa_depth;
+    VkDeviceMemory msaa_color_memory, msaa_depth_memory;
+    VkImageView msaa_color_view, msaa_depth_view;
+    VkRenderPass msaa_opaque_pass, msaa_depth_pass;
+    VkFramebuffer msaa_framebuffer, msaa_depth_framebuffer;
+    VkSampler msaa_sampler;
+    VkDescriptorSetLayout msaa_set_layout;
+    VkDescriptorPool msaa_pool;
+    VkDescriptorSet msaa_set;
+    VkPipelineLayout msaa_depth_layout;
+    VkPipeline msaa_depth_pipeline;
+    VkPipeline msaa_twin[MSAA_TWINS];
+    VkShaderModule msaa_mesh_fragment;  /* rn113b: the twins' fragment shader while they are made */
+    int msaa_coverage;                  /* rn113b: the twins were made with it */
+    /* [acct2-bro] 2026-11-22 rn114: the effect layer's samples (ngl_vk_set_effect_count; make_effect_count): two
+     * occlusion queries used in turn, the next one's index, the one this frame's layer counts into and the one
+     * the last frame counted into (-1: none), the layer's pixels over the game's screen with it, and the last
+     * count (the layer's pixels in the high 32 bits, the samples in the low 32; 0: none yet) */
+    VkQueryPool effect_queries;
+    VkQueryControlFlags effect_query_flags;
+    uint32_t effect_query_next;
+    int effect_query_frame, effect_query_last;
+    uint64_t effect_screen_frame, effect_screen_last;
+    uint64_t effect_count;
     /* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer; make_effect_layer): a color and a depth
      * target of half the main target's width and height. Each frame that has layer draws: the layer's color cleared
      * and its depth filled from the opaque depth's copy (effect_fill_pass, effect_fill_pipeline), the layer's draws
@@ -437,6 +484,11 @@ static struct {
     VkPipelineLayout heat_layout;       /* [rexglue-native-fx] 2026-11-11 fx1: the picture's copy, the mask */
     VkPipeline heat_pipeline;           /* [rexglue-native-fx] 2026-11-11 fx1: the strip over the picture */
     VkPipeline mesh_heat_pipeline;      /* the mask draws (made with the mesh pipelines) [rexglue-native-fx] */
+    /* [acct2-bro] 2026-11-22 Camo lane: the camo pass (ngl_vk.h camo_texture; make_camo, draw_camo): by the draw's
+     * culling (none, NGL_VK_CULL_CW, NGL_VK_CULL_CCW), and their MSAA twins for the multisampled first half */
+    VkPipeline camo_pipeline[3];
+    VkPipeline camo_msaa_pipeline[3];
+    uint32_t camo_count;                /* [acct2-bro] 2026-11-22 Camo lane: camo passes drawn (ngl_vk_camo_count) */
     VkBuffer warp_buffer;               /* [rexglue-native-fx] 2026-11-11 fx1: the strip as drawn (host memory) */
     VkDeviceMemory warp_memory;         /* [rexglue-native-fx] 2026-11-11 fx1 */
     float *warp_data;                   /* [rexglue-native-fx] 2026-11-11 fx1: warp_buffer, mapped */
@@ -592,6 +644,11 @@ static float anisotropy_asked = 1.0f;
 static int anisotropy_on_borrowed_device;
 /* [acct2-bro] 2026-11-12 rn61a: ngl_vk_set_shown_scale: the target is this many times the shown picture each way */
 static uint32_t shown_scale = 1u;
+/* [acct2-bro] 2026-11-22 rn113: ngl_vk_set_msaa: the samples asked for the 3D scene (1: none) */
+static uint32_t msaa_wanted = 1u;
+/* [acct2-bro] 2026-11-22 rn114: ngl_vk_set_effect_count: the effect layer's samples counted, and whether a
+ * borrowed device has occlusionQueryPrecise on (as its owner made it) */
+static int effect_count_wanted, effect_precise_on_borrowed_device;
 
 /* A memory type in type_bits with all of the wanted properties. */
 static int find_memory(uint32_t type_bits, VkMemoryPropertyFlags wanted, uint32_t *index)
@@ -916,6 +973,18 @@ static int make_device(void)
             vk.anisotropy_feature = 1;
         }
     }
+    /* [acct2-bro] 2026-11-22 rn114: with the effect count asked for, exact counts (occlusionQueryPrecise) when
+     * the GPU has them; else the count may only say "some" */
+    if (effect_count_wanted) {
+        vkGetPhysicalDeviceFeatures(vk.gpu, &gpu_features);
+        if (gpu_features.occlusionQueryPrecise) {
+            if (!info.pEnabledFeatures)
+                memset(&asked_features, 0, sizeof asked_features);
+            asked_features.occlusionQueryPrecise = VK_TRUE;
+            info.pEnabledFeatures = &asked_features;
+            vk.effect_query_flags = VK_QUERY_CONTROL_PRECISE_BIT;
+        }
+    }
     CHECK(vkCreateDevice(vk.gpu, &info, NULL, &vk.device));
     if (ngl_vk_load_device(vk.device)) {   /* [rexglue-native] 2026-11-09: its functions, from its driver */
         if (vkDestroyDevice)
@@ -1206,6 +1275,497 @@ static int make_half_pass(int second, VkRenderPass *pass)
     return 0;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * [acct2-bro] 2026-11-22 rn113: MSAA for the 3D scene's opaque half (ngl_vk_set_msaa; Call of Duty 3's owner, 11-22
+ * 08:38: "The gun models need some anti-aliasing", 08:39: "The in-game msaa needs to be improved", 08:43-08:44: the
+ * tree leaves, "density, lighting"). The first half's meshes (the world, the guns, the characters, every cut-out:
+ * leaves, fences, wires) are drawn into multisampled color and depth (msaa_opaque_pass) and the color resolved into
+ * the target. Then one pass over the target with one sample (msaa_resolve_depth): the multisampled depth goes into
+ * the one-sample depth (msaa_depth.frag, each pixel's first sample) and the grass is drawn as before, with its
+ * one-sample pipeline. From there the frame is the one-sample frame: copy_soft_depth, the second half (blended
+ * draws, decals, effects), the effect layer, the post effects, the quads and the copies out are unchanged.
+ * rn113c: the grass stays out of the samples: its multisampled twin hung the GPU (VK_ERROR_DEVICE_LOST on an RTX
+ * 3080 at the first frame with grass, x243 to x246; the validation layer saw no error), and drawn with one sample
+ * after the resolve it is drawn exactly as without MSAA. The opaque mesh pipelines get multisampled twins, made
+ * right after each with the same state (msaa_twin), swapped into their places for the first half only
+ * (msaa_swap_pipelines); with the fabric's sets the twins use mesh.frag's coverage build (rn113b: a cut-out's edge
+ * takes its share of the pixel's samples). Nothing of this is made unless MSAA is asked for: with 1 (the default)
+ * every pass, pipeline and frame is as before. */
+static void depth_barrier(VkImage image, VkImageLayout from, VkImageLayout to, VkAccessFlags from_access,
+                          VkAccessFlags to_access, VkPipelineStageFlags from_stage, VkPipelineStageFlags to_stage);
+static int draw_grass(void);
+
+/* the one-sample pipeline whose twin is vk.msaa_twin[slot]: the first half's (draw_meshes(0)) */
+static VkPipeline *msaa_slot(int slot)
+{
+    switch (slot) {
+    case MSAA_CULL_CW: return &vk.mesh_cull_pipeline[0];
+    case MSAA_CULL_CCW: return &vk.mesh_cull_pipeline[1];
+    default: return &vk.mesh_pipeline;
+    }
+}
+
+/* The twins into the one-sample pipelines' places and back: the draw code binds whatever those places hold, so the
+ * first half draws with the twins and every other pass (the grass, the second half, the effect layer, the shadow)
+ * with the one-sample ones. */
+static void msaa_swap_pipelines(void)
+{
+    for (int i = 0; i < MSAA_TWINS; i++) {
+        VkPipeline *slot = msaa_slot(i), kept = *slot;
+
+        *slot = vk.msaa_twin[i];
+        vk.msaa_twin[i] = kept;
+    }
+    vk.msaa_swapped = !vk.msaa_swapped;
+}
+
+/* A one-sample pipeline's twin: the same create info with the samples and the multisampled pass, made right after it
+ * (the info and multisample state as they were for it), with the coverage build of mesh.frag when it was made
+ * (rn113b: told MSAA's count); not made when MSAA is off or the pipeline wasn't made. */
+static void msaa_twin(VkGraphicsPipelineCreateInfo *info, VkPipelineMultisampleStateCreateInfo *multisample, int slot,
+                      VkPipeline made)
+{
+    VkRenderPass kept_pass = info->renderPass;
+    VkSampleCountFlagBits kept_samples = multisample->rasterizationSamples;
+    VkGraphicsPipelineCreateInfo twin = *info;
+    VkPipelineShaderStageCreateInfo stages[2];
+    VkSpecializationMapEntry entry = { 0, 0, sizeof(int32_t) };
+    int32_t samples = (int32_t)vk.msaa_samples;
+    VkSpecializationInfo special = { 1, &entry, sizeof samples, &samples };
+
+    if (vk.msaa_samples < 2u || made == VK_NULL_HANDLE || slot < 0 || slot >= MSAA_TWINS)
+        return;
+    multisample->rasterizationSamples = (VkSampleCountFlagBits)vk.msaa_samples;
+    info->renderPass = vk.msaa_opaque_pass;
+    twin = *info;
+    if (vk.msaa_mesh_fragment && info->stageCount == 2u) {
+        memcpy(stages, info->pStages, sizeof stages);
+        stages[1].module = vk.msaa_mesh_fragment;
+        stages[1].pSpecializationInfo = &special;
+        twin.pStages = stages;
+        vk.msaa_coverage = 1;
+    }
+    if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &twin, NULL, &vk.msaa_twin[slot]) != VK_SUCCESS)
+        vk.msaa_twin[slot] = VK_NULL_HANDLE;
+    multisample->rasterizationSamples = kept_samples;
+    info->renderPass = kept_pass;
+}
+
+/* MSAA's parts let go (each may be missing), the twins back out of the pipelines' places first */
+static void msaa_free(void)
+{
+    if (!vk.device)
+        return;
+    if (vk.msaa_swapped)
+        msaa_swap_pipelines();
+    for (int i = 0; i < MSAA_TWINS; i++) {
+        vkDestroyPipeline(vk.device, vk.msaa_twin[i], NULL);
+        vk.msaa_twin[i] = VK_NULL_HANDLE;
+    }
+    vkDestroyPipeline(vk.device, vk.msaa_depth_pipeline, NULL);
+    vkDestroyPipelineLayout(vk.device, vk.msaa_depth_layout, NULL);
+    vkDestroyDescriptorPool(vk.device, vk.msaa_pool, NULL);     /* and its set */
+    vkDestroyDescriptorSetLayout(vk.device, vk.msaa_set_layout, NULL);
+    vkDestroySampler(vk.device, vk.msaa_sampler, NULL);
+    vkDestroyFramebuffer(vk.device, vk.msaa_framebuffer, NULL);
+    vkDestroyFramebuffer(vk.device, vk.msaa_depth_framebuffer, NULL);
+    vkDestroyRenderPass(vk.device, vk.msaa_opaque_pass, NULL);
+    vkDestroyRenderPass(vk.device, vk.msaa_depth_pass, NULL);
+    vkDestroyImageView(vk.device, vk.msaa_color_view, NULL);
+    vkDestroyImageView(vk.device, vk.msaa_depth_view, NULL);
+    vkDestroyImage(vk.device, vk.msaa_color, NULL);
+    vkDestroyImage(vk.device, vk.msaa_depth, NULL);
+    vkFreeMemory(vk.device, vk.msaa_color_memory, NULL);
+    vkFreeMemory(vk.device, vk.msaa_depth_memory, NULL);
+    vk.msaa_depth_pipeline = VK_NULL_HANDLE;
+    vk.msaa_depth_layout = VK_NULL_HANDLE;
+    vk.msaa_pool = VK_NULL_HANDLE;
+    vk.msaa_set = VK_NULL_HANDLE;
+    vk.msaa_set_layout = VK_NULL_HANDLE;
+    vk.msaa_sampler = VK_NULL_HANDLE;
+    vk.msaa_framebuffer = VK_NULL_HANDLE;
+    vk.msaa_depth_framebuffer = VK_NULL_HANDLE;
+    vk.msaa_opaque_pass = VK_NULL_HANDLE;
+    vk.msaa_depth_pass = VK_NULL_HANDLE;
+    vk.msaa_color_view = VK_NULL_HANDLE;
+    vk.msaa_depth_view = VK_NULL_HANDLE;
+    vk.msaa_color = VK_NULL_HANDLE;
+    vk.msaa_depth = VK_NULL_HANDLE;
+    vk.msaa_color_memory = VK_NULL_HANDLE;
+    vk.msaa_depth_memory = VK_NULL_HANDLE;
+    vk.msaa_coverage = 0;
+    vk.msaa_samples = 1u;
+}
+
+/* A multisampled image of the target's size (vk.msaa_samples), in the GPU's own memory, and its view */
+static int make_msaa_image(VkFormat format, VkImageUsageFlags usage, VkImage *image, VkDeviceMemory *memory,
+                           VkImageView *view)
+{
+    VkImageCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
+    VkImageViewCreateInfo view_info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    VkMemoryAllocateInfo allocation = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO };
+    VkMemoryRequirements needs;
+
+    info.imageType = VK_IMAGE_TYPE_2D;
+    info.format = format;
+    info.extent.width = vk.width;
+    info.extent.height = vk.height;
+    info.extent.depth = 1;
+    info.mipLevels = 1;
+    info.arrayLayers = 1;
+    info.samples = (VkSampleCountFlagBits)vk.msaa_samples;
+    info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    info.usage = usage;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    CHECK(vkCreateImage(vk.device, &info, NULL, image));
+    vkGetImageMemoryRequirements(vk.device, *image, &needs);
+    allocation.allocationSize = needs.size;
+    if (find_memory(needs.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &allocation.memoryTypeIndex)) {
+        fprintf(stderr, "[ngl_vk] rn113: no GPU memory for a %ux%u image of %u samples\n", vk.width, vk.height,
+                vk.msaa_samples);
+        return -1;
+    }
+    CHECK(vkAllocateMemory(vk.device, &allocation, NULL, memory));
+    CHECK(vkBindImageMemory(vk.device, *image, *memory, 0));
+    view_info.image = *image;
+    view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view_info.format = format;
+    view_info.subresourceRange.aspectMask = format == DEPTH_FORMAT ? VK_IMAGE_ASPECT_DEPTH_BIT
+                                                                   : VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.levelCount = 1;
+    view_info.subresourceRange.layerCount = 1;
+    CHECK(vkCreateImageView(vk.device, &view_info, NULL, view));
+    return 0;
+}
+
+/* The first half, multisampled: color (0) and depth (1) of vk.msaa_samples, both cleared, the target (2) the color's
+ * resolve. The color isn't kept (the resolve is what is needed); the depth is, for msaa_resolve_depth. The target is
+ * left as the one-sample first half leaves it (a color attachment, for the pass that follows). */
+static int make_msaa_opaque_pass(void)
+{
+    VkAttachmentDescription attachments[3] = { { 0 }, { 0 }, { 0 } };
+    VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference resolve = { 2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = { 0 };
+    VkSubpassDependency dependencies[2];
+    VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+
+    attachments[0].format = TARGET_FORMAT;
+    attachments[0].samples = (VkSampleCountFlagBits)vk.msaa_samples;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[1].format = DEPTH_FORMAT;
+    attachments[1].samples = (VkSampleCountFlagBits)vk.msaa_samples;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    attachments[2].format = TARGET_FORMAT;
+    attachments[2].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[2].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[2].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[2].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[2].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[2].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    subpass.pResolveAttachments = &resolve;
+    subpass.pDepthStencilAttachment = &depth;
+    target_pass_dependencies(dependencies);     /* the one-sample main pass's own set */
+    pass_info.attachmentCount = 3;
+    pass_info.pAttachments = attachments;
+    pass_info.subpassCount = 1;
+    pass_info.pSubpasses = &subpass;
+    pass_info.dependencyCount = 2;
+    pass_info.pDependencies = dependencies;
+    CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, &vk.msaa_opaque_pass));
+    return 0;
+}
+
+/* The pass after the resolve, with one sample over the target and the one-sample depth (compatible with the main
+ * pass, so the grass's one-sample pipeline draws in it): the target loaded and kept, the depth written whole by the
+ * depth's pipeline (quad.vert's one triangle, msaa_depth.frag reading the samples, no color written) and left in the
+ * transfer layout for copy_soft_depth, as the one-sample first half leaves it. */
+static int make_msaa_depth_parts(void)
+{
+    VkAttachmentDescription attachments[2] = { { 0 }, { 0 } };
+    VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
+    VkAttachmentReference depth = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
+    VkSubpassDescription subpass = { 0 };
+    VkSubpassDependency dependencies[2];
+    VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
+    VkImageView views[2] = { vk.target_view, vk.depth_view };
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
+    VkDescriptorSetLayoutBinding binding = { 0 };
+    VkDescriptorSetLayoutCreateInfo set_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
+    VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorImageInfo image_info = { 0 };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+    VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    VkPipelineColorBlendAttachmentState blend_attachment = { 0 };   /* no color written (colorWriteMask 0) */
+    VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    VkPipelineDepthStencilStateCreateInfo depth_state = {
+        VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    VkResult result;
+
+    attachments[0].format = TARGET_FORMAT;
+    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[0].initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    attachments[1].format = DEPTH_FORMAT;
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    subpass.colorAttachmentCount = 1;
+    subpass.pColorAttachments = &color;
+    subpass.pDepthStencilAttachment = &depth;
+    target_pass_dependencies(dependencies);     /* the main pass's own set: after the resolve, before the copy */
+    pass_info.attachmentCount = 2;
+    pass_info.pAttachments = attachments;
+    pass_info.subpassCount = 1;
+    pass_info.pSubpasses = &subpass;
+    pass_info.dependencyCount = 2;
+    pass_info.pDependencies = dependencies;
+    CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, &vk.msaa_depth_pass));
+    framebuffer_info.renderPass = vk.msaa_depth_pass;
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.width;
+    framebuffer_info.height = vk.height;
+    framebuffer_info.layers = 1;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_depth_framebuffer));
+
+    /* the samples read texel by texel (texelFetch: the sampler's filters aren't used) */
+    sampler_info.magFilter = VK_FILTER_NEAREST;
+    sampler_info.minFilter = VK_FILTER_NEAREST;
+    sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    sampler_info.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampler_info.maxLod = 0.0f;
+    CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.msaa_sampler));
+    binding.binding = 0;
+    binding.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    binding.descriptorCount = 1;
+    binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    set_layout_info.bindingCount = 1;
+    set_layout_info.pBindings = &binding;
+    CHECK(vkCreateDescriptorSetLayout(vk.device, &set_layout_info, NULL, &vk.msaa_set_layout));
+    pool_info.maxSets = 1;
+    pool_info.poolSizeCount = 1;
+    pool_info.pPoolSizes = &pool_size;
+    CHECK(vkCreateDescriptorPool(vk.device, &pool_info, NULL, &vk.msaa_pool));
+    set_info.descriptorPool = vk.msaa_pool;
+    set_info.descriptorSetCount = 1;
+    set_info.pSetLayouts = &vk.msaa_set_layout;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.msaa_set));
+    image_info.sampler = vk.msaa_sampler;
+    image_info.imageView = vk.msaa_depth_view;
+    image_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    write.dstSet = vk.msaa_set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    layout_info.setLayoutCount = 1;
+    layout_info.pSetLayouts = &vk.msaa_set_layout;
+    CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.msaa_depth_layout));
+
+    if (make_shader(quad_vert_spirv, sizeof quad_vert_spirv, &vertex_shader) ||
+        make_shader(msaa_depth_frag_spirv, sizeof msaa_depth_frag_spirv, &fragment_shader)) {
+        vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+        return -1;
+    }
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex_shader;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment_shader;
+    stages[1].pName = "main";
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.cullMode = VK_CULL_MODE_NONE;
+    raster.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    raster.lineWidth = 1.0f;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attachment;
+    depth_state.depthTestEnable = VK_TRUE;      /* (a depth is written only with the test on) */
+    depth_state.depthWriteEnable = VK_TRUE;
+    depth_state.depthCompareOp = VK_COMPARE_OP_ALWAYS;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &blend;
+    info.pDepthStencilState = &depth_state;
+    info.pDynamicState = &dynamic;
+    info.layout = vk.msaa_depth_layout;
+    info.renderPass = vk.msaa_depth_pass;
+    info.subpass = 0;
+    result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.msaa_depth_pipeline);
+    vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+    vkDestroyShaderModule(vk.device, fragment_shader, NULL);
+    if (result != VK_SUCCESS) {
+        vk.msaa_depth_pipeline = VK_NULL_HANDLE;
+        fprintf(stderr, "[ngl_vk] rn113: vkCreateGraphicsPipelines (MSAA's depth) failed (%d)\n", (int)result);
+        return -1;
+    }
+    return 0;
+}
+
+/* MSAA's images, passes, framebuffers and depth parts, at the end of make_target (the target and depth are made): the
+ * samples asked for (msaa_wanted), fewer where the device can't draw or sample that many or the picture is very large
+ * (MSAA_MOST_SAMPLES); none of it when 1 is asked or something can't be made (said on stderr: drawn with one sample).
+ * The twins are made with the pipelines (msaa_twin) and checked when all are made (msaa_finish). */
+static int make_msaa_target(void)
+{
+    VkPhysicalDeviceProperties properties;
+    VkSampleCountFlags can;
+    VkImageView views[3];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+    uint32_t samples = msaa_wanted;
+
+    vk.msaa_samples = 1u;
+    if (samples < 2u)
+        return 0;
+    vkGetPhysicalDeviceProperties(vk.gpu, &properties);
+    can = properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts &
+          properties.limits.sampledImageDepthSampleCounts;
+    while (samples >= 2u && (!(can & samples) || (uint64_t)vk.width * vk.height * samples > MSAA_MOST_SAMPLES))
+        samples /= 2u;
+    if (samples < 2u) {
+        fprintf(stderr, "[ngl_vk] rn113: MSAA x%u asked for, but the device or the picture's size (%ux%u) allows "
+                "none: drawn with one sample\n", msaa_wanted, vk.width, vk.height);
+        return -1;
+    }
+    vk.msaa_samples = samples;
+    if (make_msaa_image(TARGET_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &vk.msaa_color, &vk.msaa_color_memory,
+                        &vk.msaa_color_view) ||
+        make_msaa_image(DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        &vk.msaa_depth, &vk.msaa_depth_memory, &vk.msaa_depth_view) ||
+        make_msaa_opaque_pass())
+        goto failed;
+    views[0] = vk.msaa_color_view;
+    views[1] = vk.msaa_depth_view;
+    views[2] = vk.target_view;
+    framebuffer_info.renderPass = vk.msaa_opaque_pass;
+    framebuffer_info.attachmentCount = 3;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.width;
+    framebuffer_info.height = vk.height;
+    framebuffer_info.layers = 1;
+    if (vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_framebuffer) != VK_SUCCESS ||
+        make_msaa_depth_parts())
+        goto failed;
+    return 0;
+failed:
+    fprintf(stderr, "[ngl_vk] rn113: MSAA x%u's parts couldn't all be made: drawn with one sample\n", samples);
+    msaa_free();
+    return -1;
+}
+
+/* When make_drawing has made every pipeline: each one-sample pipeline of the first half must have its twin, and the
+ * passes the multisampled frame goes on with must be there; else MSAA is let go (said on stderr) */
+static void msaa_finish(void)
+{
+    int missing = 0;
+
+    if (vk.msaa_samples < 2u)
+        return;
+    for (int i = 0; i < MSAA_TWINS; i++) {
+        if (*msaa_slot(i) && !vk.msaa_twin[i])
+            missing++;
+    }
+    if (missing || !vk.msaa_depth_pipeline || !vk.opaque_pass || !vk.blend_pass || !vk.soft_depth) {
+        fprintf(stderr, "[ngl_vk] rn113: MSAA let go (%d pipeline twins not made, or the halves' passes missing): "
+                "drawn with one sample\n", missing);
+        msaa_free();
+        return;
+    }
+    fprintf(stderr, "[ngl_vk] rn113c: MSAA, %u samples a pixel for the 3D scene's opaque half (%ux%u)%s\n",
+            vk.msaa_samples, vk.width, vk.height, vk.msaa_coverage ? ", cut-outs by coverage" : "");
+}
+
+/* After the multisampled first half (its color resolved into the target): the pass with one sample. The samples'
+ * depth into the one-sample depth (msaa_depth.frag: each pixel's first sample; read in the depth's read-only
+ * layout), then this frame's grass with its one-sample pipeline over the game's screen (view), as the one-sample
+ * first half ends with it. Leaves the target and the depth as the one-sample first half does, for copy_soft_depth
+ * and the second half. */
+static void msaa_resolve_depth(const VkViewport *view)
+{
+    VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkRect2D whole = { { 0, 0 }, { vk.width, vk.height } };
+    VkViewport all = { 0.0f, 0.0f, (float)vk.width, (float)vk.height, 0.0f, 1.0f };
+
+    depth_barrier(vk.msaa_depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    pass.renderPass = vk.msaa_depth_pass;
+    pass.framebuffer = vk.msaa_depth_framebuffer;
+    pass.renderArea = whole;
+    vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, &all);
+    vkCmdSetScissor(vk.commands, 0, 1, &whole);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.msaa_depth_pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.msaa_depth_layout, 0, 1, &vk.msaa_set, 0,
+                            NULL);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
+    vkCmdSetViewport(vk.commands, 0, 1, view);
+    draw_grass();               /* (the whole target as its scissor, given back) */
+    vkCmdEndRenderPass(vk.commands);
+    depth_barrier(vk.msaa_depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_ACCESS_SHADER_READ_BIT,
+                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
+}
+
 static int make_target(void)
 {
     VkAttachmentDescription attachments[2] = { { 0 }, { 0 } };
@@ -1285,6 +1845,8 @@ static int make_target(void)
         sampler_info.maxLod = 0.0f;
         CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.soft_sampler));
     }
+
+    make_msaa_target();     /* [acct2-bro] 2026-11-22 rn113: MSAA's parts when asked (failing: one sample) */
 
     return make_host_buffer_cached((VkDeviceSize)vk.width * vk.height * BYTES_PER_PIXEL,
                                    VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1, &vk.readback, &vk.readback_memory,
@@ -1826,6 +2388,35 @@ void ngl_vk_set_shown_scale(uint32_t scale)
     shown_scale = scale < 1u ? 1u : scale > 4u ? 4u : scale;
 }
 
+/* [acct2-bro] 2026-11-22 rn113: see ngl_vk.h */
+void ngl_vk_set_msaa(uint32_t samples)
+{
+    msaa_wanted = samples >= 8u ? 8u : samples >= 4u ? 4u : samples >= 2u ? 2u : 1u;
+}
+
+uint32_t ngl_vk_msaa(void)
+{
+    return vk.msaa_samples > 1u ? vk.msaa_samples : 1u;
+}
+
+/* [acct2-bro] 2026-11-22 rn114: see ngl_vk.h */
+void ngl_vk_set_effect_count(int on, int precise_on_borrowed_device)
+{
+    effect_count_wanted = on != 0;
+    effect_precise_on_borrowed_device = precise_on_borrowed_device != 0;
+}
+
+int ngl_vk_effect_count(uint64_t *samples, uint64_t *screen)
+{
+    const uint64_t count = __atomic_load_n(&vk.effect_count, __ATOMIC_ACQUIRE);
+
+    if (!count || !samples || !screen)
+        return 0;
+    *samples = count & 0xFFFFFFFFull;
+    *screen = count >> 32;
+    return 1;
+}
+
 uint64_t ngl_vk_take_staging(uint64_t *flushes)
 {
     uint64_t bytes = vk.staged_bytes;
@@ -1891,6 +2482,11 @@ static int make_mesh_pipeline(void)
         (vk.fabric_sets ? make_shader(mesh_frag_spirv, sizeof mesh_frag_spirv, &fragment_shader)
                         : make_shader(mesh_four_sets_frag_spirv, sizeof mesh_four_sets_frag_spirv, &fragment_shader)))
         return -1;
+    /* [acct2-bro] 2026-11-22 rn113b: the mesh twins' fragment shader, mesh.frag with the cut-outs' coverage (made
+     * only with MSAA and the fabric's sets; without it the twins share the one-sample shader) */
+    if (vk.msaa_samples > 1u && vk.fabric_sets &&
+        make_shader(mesh_msaa_frag_spirv, sizeof mesh_msaa_frag_spirv, &vk.msaa_mesh_fragment))
+        vk.msaa_mesh_fragment = VK_NULL_HANDLE;
     stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
     stages[0].module = vertex_shader;
     stages[0].pName = "main";
@@ -1933,6 +2529,8 @@ static int make_mesh_pipeline(void)
     info.renderPass = vk.render_pass;
     info.subpass = 0;
     result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_pipeline);
+    if (result == VK_SUCCESS)   /* [acct2-bro] 2026-11-22 rn113: its MSAA twin */
+        msaa_twin(&info, &multisample, MSAA_MESH, vk.mesh_pipeline);
     /* [acct2-bro] 2026-11-13 rn69a: the two culling ones (front faces wind clockwise here, so CW is FRONT); without
      * them a draw that asks for culling is drawn from both sides, as before */
     if (result == VK_SUCCESS) {
@@ -1940,10 +2538,12 @@ static int make_mesh_pipeline(void)
         if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_cull_pipeline[0]) !=
             VK_SUCCESS)
             vk.mesh_cull_pipeline[0] = VK_NULL_HANDLE;
+        msaa_twin(&info, &multisample, MSAA_CULL_CW, vk.mesh_cull_pipeline[0]);  /* [acct2-bro] rn113 */
         raster.cullMode = VK_CULL_MODE_BACK_BIT;
         if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_cull_pipeline[1]) !=
             VK_SUCCESS)
             vk.mesh_cull_pipeline[1] = VK_NULL_HANDLE;
+        msaa_twin(&info, &multisample, MSAA_CULL_CCW, vk.mesh_cull_pipeline[1]);  /* [acct2-bro] rn113 */
         raster.cullMode = VK_CULL_MODE_NONE;    /* as before, for the pipelines that follow */
     }
     if (result == VK_SUCCESS) {
@@ -1956,6 +2556,15 @@ static int make_mesh_pipeline(void)
         blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
         depth.depthWriteEnable = VK_FALSE;
         result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_blend_pipeline);
+    }
+    /* [acct2-bro] 2026-11-22 SP lane, defect E: premultiplied (NGL_VK_BLEND_PREMULTIPLIED): color + behind x
+     * (1 - alpha), the game's ONE / INV_SRC_ALPHA (the scopes' glass); not made: drawn by the blended one instead */
+    if (result == VK_SUCCESS) {
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_premultiplied_pipeline) !=
+            VK_SUCCESS)
+            vk.mesh_premultiplied_pipeline = VK_NULL_HANDLE;
+        blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;    /* as the blended one left it */
     }
     if (result == VK_SUCCESS) {         /* added: behind + color x alpha */
         blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -2065,6 +2674,8 @@ static int make_mesh_pipeline(void)
     }
     vkDestroyShaderModule(vk.device, vertex_shader, NULL);
     vkDestroyShaderModule(vk.device, fragment_shader, NULL);
+    vkDestroyShaderModule(vk.device, vk.msaa_mesh_fragment, NULL);   /* [acct2-bro] rn113b */
+    vk.msaa_mesh_fragment = VK_NULL_HANDLE;
     if (result != VK_SUCCESS) {
         fprintf(stderr, "[ngl_vk] vkCreateGraphicsPipelines (meshes) failed (%d)\n", (int)result);
         return -1;
@@ -2548,6 +3159,15 @@ static int world_bump_detail_draw(const struct ngl_vk_mesh_draw *d)
            !vk.textures[d->world_detail_normal_map].cube && d->world_detail_repeat > 0.0f;
 }
 
+/* [acct2-bro] 2026-11-22 rn111: a shiny draw with a strength and tint of its own (ngl_vk.h env_strength): an
+ * environment map, no normal map, and none of the kinds that write the slot's later vec4s */
+static int env_scaled_draw(const struct ngl_vk_mesh_draw *d)
+{
+    return d->env_strength > 0.0f && d->env_texture && d->env_texture <= vk.texture_count && !d->normal_map &&
+           !d->blend_texture && !d->lightmap && !fabric_draw(d) && !lens_draw(d) && !water_draw(d) &&
+           !lookup_draw(d) && !grid_draw(d) && !detail_add_draw(d) && !world_lookup_draw(d) && !world_normal_draw(d);
+}
+
 /* A draw's own lights into this frame's slot (DRAW_LIGHT_FLOATS): its nearby lights, each place into its mesh's own
  * space (the world matrix's inverse; the world's meshes are rigid, so the range needs no scaling), then its irradiance
  * rows (already in the mesh's space), then (rexglue-native) the fabric's numbers, or (rn34) the gun metal's; the slot's
@@ -2566,6 +3186,7 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
     int detail_add = !fabric && !lens && !water && detail_add_draw(d);  /* [waw-decomp] */
     int world_lookup = !fabric && !lens && !water && world_lookup_draw(d);  /* [waw-decomp] */
     int world_normal = !fabric && !lens && !water && world_normal_draw(d);  /* [waw-decomp] 2026-11-11 */
+    int env_scaled = env_scaled_draw(d);    /* [acct2-bro] 2026-11-22 rn111 */
 
     if (!vk.draw_light_data || vk.draw_light_slots >= MAX_DRAW_LIGHT_SLOTS)
         return 0;
@@ -2573,7 +3194,7 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         count = 0;
     /* [waw-decomp] water, lookup, grid, detail_add, world_lookup */
     if (!count && !rows && !fabric && !lens && !water && !lookup && !grid && !detail_add && !world_lookup &&
-        !world_normal)  /* [waw-decomp] 2026-11-11 */
+        !world_normal && !env_scaled)   /* [waw-decomp] 2026-11-11; [acct2-bro] 2026-11-22 rn111 */
         return 0;
     slot = vk.draw_light_data + (size_t)vk.draw_light_slots * DRAW_LIGHT_FLOATS;
     memset(slot, 0, DRAW_LIGHT_FLOATS * sizeof(float));
@@ -2768,6 +3389,20 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
             slot[METAL_FLOATS_AT + 6 + 4 * part] = w[8 + part];
             slot[METAL_FLOATS_AT + 7 + 4 * part] = d->lens_tint[part];
         }
+        if (d->lens_opaque == 2) {  /* [acct2-bro] 2026-11-22 SP lane, defect E: the scopes' tinted glass (ngl_vk.h
+                                     * lens_tint_map): at FABRIC_FLOATS_AT 2 (3: no tint map, taken as white) and
+                                     * lens_color_scale in the w; no shadow's floor; lens_out_scale in the third
+                                     * vec4's x, y and w (the fade's place, and the water's two, which a glass leaves
+                                     * unread; its z stays 1: a cube) */
+            int mapped = d->lens_tint_map && d->lens_tint_map <= vk.texture_count;
+
+            slot[FABRIC_FLOATS_AT] = mapped ? 2.0f : 3.0f;
+            slot[FABRIC_FLOATS_AT + 3] = d->lens_color_scale;
+            slot[FABRIC_FLOATS_AT + 7] = 0.0f;
+            slot[FABRIC_FLOATS_AT + 8] = d->lens_out_scale[0];
+            slot[FABRIC_FLOATS_AT + 9] = d->lens_out_scale[1];
+            slot[FABRIC_FLOATS_AT + 11] = d->lens_out_scale[2];
+        }
     } else if (water && d->cod3_water) {    /* [acct2-bro] 2026-11-13 rn86a: Call of Duty 3's water (ngl_vk.h
                                              * cod3_water): at FABRIC_FLOATS_AT (its color, 0), (the reflection's
                                              * color, 0), (0, 1: water, 0: not a lens, -1: Call of Duty 3's); at
@@ -2823,6 +3458,13 @@ static uint32_t place_draw_lights(const struct ngl_vk_mesh_draw *d)
         slot[FABRIC_FLOATS_AT + 1] = d->world_detail_scale;
         slot[FABRIC_FLOATS_AT + 2] = world_bump_detail_draw(d) ? d->world_detail_repeat : 0.0f;
         slot[FABRIC_FLOATS_AT + 3] = (float)(d->world_bump_frame & 7u);
+    }
+    if (env_scaled) {   /* [acct2-bro] 2026-11-22 rn111: the slot's last vec4 (no other kind of this draw's writes
+                         * there): the tint, and the strength in w (above 0 says the vec4 is in use) */
+        slot[METAL_FLOATS_AT + 12] = d->env_tint[0];
+        slot[METAL_FLOATS_AT + 13] = d->env_tint[1];
+        slot[METAL_FLOATS_AT + 14] = d->env_tint[2];
+        slot[METAL_FLOATS_AT + 15] = d->env_strength;
     }
     return ++vk.draw_light_slots;
 }
@@ -3070,6 +3712,10 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
         flags |= PUSH_CORNER_ALPHA;
     if (d->billboard)                       /* [rexglue-native-world] 2026-11-11 w1 */
         flags |= PUSH_BILLBOARD;
+    /* [acct2-bro] 2026-11-22 rn115a: the draw's own alpha test (alpha_cut) in the fourth light's color, which a draw
+     * with fewer than four lights leaves 0 (set above) and no shader reads; mesh.frag and shadow.frag take it there */
+    if (more < 3 && d->alpha_cut > 0.0f && d->alpha_cut <= 1.0f)
+        memcpy(push + 31, &d->alpha_cut, sizeof d->alpha_cut);
     push[23] = flags;
     vkCmdPushConstants(vk.commands, vk.mesh_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof push, push);
 }
@@ -3146,6 +3792,50 @@ static VkRect2D draw_scissor(const struct ngl_vk_mesh_draw *d)
     return scissor_within(d->scissor_x, d->scissor_y, d->scissor_width, d->scissor_height);
 }
 
+/* [acct2-bro] 2026-11-22 Camo lane: the camo pass over the opaque draw d (ngl_vk.h camo_texture), right after d was
+ * drawn in draw_meshes' opaque loop: the pipeline for d's culling (its MSAA twin while the twins are in the
+ * pipelines' places), the camo in set 0, its numbers in the push constants after d's matrix (push_mesh_draw has just
+ * pushed d's; camo.vert reads the matrix and these), d's own indices and corners. Nothing is drawn for a camo that
+ * isn't a 2D texture of this frame's, for numbers that aren't sane (scale above 0 and at most 64, strength above 0)
+ * or without the pipeline. Then *pipeline is emptied and set 0 marked unbound, so the next draw binds its own again
+ * (the other sets keep theirs: the same layout). */
+static void draw_camo(const struct ngl_vk_mesh_draw *d, VkPipeline *pipeline, VkDescriptorSet *bound)
+{
+    const int k = d->cull == NGL_VK_CULL_CW ? 1 : d->cull == NGL_VK_CULL_CCW ? 2 : 0;
+    const VkPipeline camo = vk.msaa_swapped ? vk.camo_msaa_pipeline[k] : vk.camo_pipeline[k];
+    float params[8];
+
+    if (d->alpha != NGL_VK_ALPHA_OPAQUE || !d->camo_texture || d->camo_texture > vk.texture_count ||
+        vk.textures[d->camo_texture].cube || !camo || !d->mesh || d->mesh > vk.mesh_count)
+        return;
+    for (int i = 0; i < 8; i++) {   /* finite and in range, or not drawn (no math.h here: NaN fails x == x) */
+        const float x = d->camo_params[i];
+
+        if (!(x == x) || x < -1e4f || x > 1e4f)
+            return;
+        params[i] = x;
+    }
+    if (!(params[0] > 0.0f) || params[0] > 64.0f || !(params[3] > 0.0f))
+        return;
+    params[3] = params[3] > 1.0f ? 1.0f : params[3];
+    for (int i = 4; i < 7; i++)
+        params[i] = params[i] < 1.0f / 255.0f ? 1.0f / 255.0f : params[i] > 1.0f ? 1.0f : params[i];
+    params[7] = 0.0f;
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, camo);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.mesh_layout, 0, 1,
+                            &vk.textures[d->camo_texture].set, 0, NULL);
+    vkCmdPushConstants(vk.commands, vk.mesh_layout, VK_SHADER_STAGE_VERTEX_BIT, 16 * sizeof(float), sizeof params,
+                       params);
+    vkCmdDrawIndexed(vk.commands,
+                     d->index_count && d->index_count < vk.meshes[d->mesh].index_count
+                         ? d->index_count : vk.meshes[d->mesh].index_count,
+                     1, vk.meshes[d->mesh].first_index,
+                     (int32_t)(d->corners ? d->corners - 1u : vk.meshes[d->mesh].first_corner), 0);
+    *pipeline = VK_NULL_HANDLE;
+    bound[0] = VK_NULL_HANDLE;
+    vk.camo_count++;
+}
+
 static void draw_meshes(int part)
 {
     VkDeviceSize no_offset = 0;
@@ -3213,6 +3903,10 @@ static void draw_meshes(int part)
             uint32_t mode = (mixed ? MESH_MODE_MIX : 0u) | (third ? MESH_MODE_THIRD : 0u) |
                             (env ? MESH_MODE_SHINY : 0u) | (env_masked ? MESH_MODE_MASKED : 0u) |
                             (mixed && d->blend_by_alpha ? MESH_MODE_BY_ALPHA : 0u) |
+                            /* [acct2-bro] 2026-11-22 rn111: a shiny draw with its own strength and tint
+                             * (env_scaled_draw) carries the mix's by-alpha bit too: shiny is never mixed, so no draw
+                             * had the pair, and mesh.frag reads the slot's last vec4 on that pair alone */
+                            (env && env_scaled_draw(d) ? MESH_MODE_BY_ALPHA : 0u) |
                             (bumped ? MESH_MODE_BUMPED : 0u) | (specular ? MESH_MODE_SPECULAR : 0u) |
                             (shading == NGL_VK_SHADE_LIGHTMAP && !mixed && d->lit && d->lightmap_scale > 0.0f
                                  ? MESH_MODE_LIGHTMAP_SUN : 0u);
@@ -3260,6 +3954,9 @@ static void draw_meshes(int part)
                       : vehicle && overlay_draw(d) ? vk.textures[d->overlay_map].set  /* [rexglue-native] rn46m */
                       : fabric && !skin && !detail && !vehicle ? vk.textures[d->fabric_mask].set
                       : skin && skin_woven(d)                  ? vk.textures[d->skin_swatch].set  /* rn40x */
+                      /* [acct2-bro] 2026-11-22 defect E: the scopes' glass's tint map (ngl_vk.h lens_tint_map) */
+                      : lens && d->lens_opaque == 2 && d->lens_tint_map && d->lens_tint_map <= vk.texture_count
+                          ? vk.textures[d->lens_tint_map].set
                                                                : untextured,
                 metal || vehicle ? untextured
                       : skin ? vk.textures[d->noise_swatch].set
@@ -3298,6 +3995,9 @@ static void draw_meshes(int part)
                                   /* [rexglue-native stlo 2026-11-16] */
                                   : d->blend == NGL_VK_BLEND_DECAL_ALPHA && vk.mesh_decal_alpha_pipeline
                                       ? vk.mesh_decal_alpha_pipeline
+                                  /* [acct2-bro] 2026-11-22 defect E */
+                                  : d->blend == NGL_VK_BLEND_PREMULTIPLIED && vk.mesh_premultiplied_pipeline
+                                      ? vk.mesh_premultiplied_pipeline
                                                                       : vk.mesh_blend_pipeline;
                 if (d->blend == NGL_VK_BLEND_HEAT_MASK)     /* [rexglue-native-fx] 2026-11-11 fx1 */
                     wanted = vk.mesh_heat_pipeline;                                 /* [rexglue-native-fx] */
@@ -3378,11 +4078,16 @@ static void draw_meshes(int part)
                              (d->blend == NGL_VK_BLEND_DECAL_DEPTH && d->decal_alpha == NGL_VK_ALPHA_TEST ? MESH_ALPHA_TEST
                                                                                                           : 0u) |
                              (d->light_once ? MESH_LIGHT_ONCE : 0u));
+            /* [acct2-bro] 2026-11-22 Camo lane: its camo over it (draw_camo); the picture's opaque draws only */
+            if (!blended && part != 3 && part != 4 && d->camo_texture)
+                draw_camo(d, &pipeline, bound);
         }
     }
     if (memcmp(&scissor, &whole, sizeof whole))
         vkCmdSetScissor(vk.commands, 0, 1, &whole);    /* [rexglue-native] what comes after: the whole target */
     if (part == 0) {
+        if (vk.msaa_swapped)    /* [acct2-bro] 2026-11-22 rn113c: with MSAA, after the resolve (msaa_resolve_depth) */
+            return;
         draw_grass();       /* the pass ends after it: nothing to bind again */
         return;
     }
@@ -3962,6 +4667,209 @@ static int make_empty_cube(void)
 
 /* Everything a draw needs, once the device and its commands exist: the target and its passes, the pipelines, the
  * shadow; then the parts drawn without when they can't be made. */
+/* ---------------------------------------------------------------------------------------------------------------
+ * [acct2-bro] 2026-11-22 rn114: the effect layer's samples (ngl_vk_set_effect_count, ngl_vk_effect_count), for Call of
+ * Duty 3's effects governor: the game thins its new particles by the samples its effects drew the frame before (an
+ * occlusion query around its effects pass, a half-size target on the Xbox 360 too); the port's GPU emulation
+ * answers that query with a stand-in count, so nothing is ever thinned (the owner, 11-22 08:02: "ambient fog spawns
+ * too quickly"). Here an occlusion query is wrapped around the effect layer's draws (draw_meshes(3)), every sample
+ * that passes the depth test counted, overdraw included, as the game's query counts them. Two queries in turn: the
+ * frame's is reset before the layer's passes, begun and ended around its draws, and read at the next draw, after
+ * finish_frame has waited for that frame. Nothing is made unless the count is asked for. */
+static void effect_count_free(void)
+{
+    if (vk.device && vk.effect_queries)
+        vkDestroyQueryPool(vk.device, vk.effect_queries, NULL);
+    vk.effect_queries = VK_NULL_HANDLE;
+    vk.effect_query_frame = vk.effect_query_last = -1;
+    __atomic_store_n(&vk.effect_count, 0, __ATOMIC_RELEASE);
+}
+
+/* the two queries, when asked for and the effect layer is there (its draws are what is counted) */
+static void make_effect_count(void)
+{
+    VkQueryPoolCreateInfo info = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO };
+
+    vk.effect_query_frame = vk.effect_query_last = -1;
+    if (!effect_count_wanted || !vk.effect_ready || !vkCreateQueryPool)
+        return;
+    info.queryType = VK_QUERY_TYPE_OCCLUSION;
+    info.queryCount = 2;
+    if (vkCreateQueryPool(vk.device, &info, NULL, &vk.effect_queries) != VK_SUCCESS) {
+        vk.effect_queries = VK_NULL_HANDLE;
+        fprintf(stderr, "[ngl_vk] rn114: no query pool: the effect layer's samples aren't counted\n");
+        return;
+    }
+    fprintf(stderr, "[ngl_vk] rn114: the effect layer's samples are counted (%s)\n",
+            vk.effect_query_flags ? "exact" : "not exact: the device has no precise occlusion queries on");
+}
+
+/* At a draw, after finish_frame: the last frame's count, when it counted (none counted: no effect drawn, 0) */
+static void effect_count_read(void)
+{
+    uint64_t samples = 0;
+
+    if (!vk.effect_queries)
+        return;
+    if (vk.effect_query_last >= 0 &&
+        vkGetQueryPoolResults(vk.device, vk.effect_queries, (uint32_t)vk.effect_query_last, 1, sizeof samples,
+                              &samples, sizeof samples, VK_QUERY_RESULT_64_BIT) != VK_SUCCESS)
+        return;     /* not there yet: the count before stays */
+    if (vk.effect_query_last >= 0 && vk.effect_screen_last)
+        __atomic_store_n(&vk.effect_count, vk.effect_screen_last << 32 | (samples > 0xFFFFFFFFull ? 0xFFFFFFFFull
+                                                                                                   : samples),
+                         __ATOMIC_RELEASE);
+    else if (vk.effect_screen_last)
+        __atomic_store_n(&vk.effect_count, vk.effect_screen_last << 32, __ATOMIC_RELEASE);
+    vk.effect_query_last = -1;
+}
+
+/* Before the effect layer's passes (outside a pass): this frame's query reset */
+static void effect_count_reset(void)
+{
+    if (!vk.effect_queries)
+        return;
+    vk.effect_query_frame = (int)vk.effect_query_next;
+    vk.effect_query_next ^= 1u;
+    vkCmdResetQueryPool(vk.commands, vk.effect_queries, (uint32_t)vk.effect_query_frame, 1);
+}
+
+/* Around the layer's draws: the count, and the layer's pixels over the game's screen (view, at the layer's half size) */
+static void effect_count_begin(const VkViewport *view)
+{
+    if (!vk.effect_queries || vk.effect_query_frame < 0)
+        return;
+    vk.effect_screen_frame = (uint64_t)(view->width * 0.5f + 0.5f) * (uint64_t)(view->height * 0.5f + 0.5f);
+    vkCmdBeginQuery(vk.commands, vk.effect_queries, (uint32_t)vk.effect_query_frame, vk.effect_query_flags);
+}
+
+static void effect_count_end(void)
+{
+    if (!vk.effect_queries || vk.effect_query_frame < 0)
+        return;
+    vkCmdEndQuery(vk.commands, vk.effect_queries, (uint32_t)vk.effect_query_frame);
+    vk.effect_query_last = vk.effect_query_frame;
+    vk.effect_screen_last = vk.effect_screen_frame;
+    vk.effect_query_frame = -1;
+}
+
+/* [acct2-bro] 2026-11-22 Camo lane: the camo pass's pipelines (ngl_vk.h camo_texture; draw_camo draws with them).
+ * The mesh pipelines' layout and corners, camo.vert and camo.frag; one for each culling the mesh draws use (none,
+ * then the front and the back faces dropped, as mesh_cull_pipeline[0] and [1]), so the pass covers the faces its
+ * draw drew and no others. Depth tested and not written, pulled toward the eye as the multiplied decals are (so it
+ * lands on exactly the pixels its own draw just left, where something nearer hasn't covered them); blended as
+ * DST_COLOR x out + SRC_COLOR x behind = the picture x 2 x out: camo.frag's factor (0 to 2) over 2 multiplies what
+ * the draw left; red, green and blue only. With MSAA (msaa_finish kept it) each also gets a multisampled twin for the
+ * first half. What isn't made is left out: no camo is drawn there (said once on stderr); nothing else uses them. */
+static void make_camo(void)
+{
+    VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+    };
+    VkVertexInputBindingDescription binding = { 0, CORNER_FLOATS * sizeof(float), VK_VERTEX_INPUT_RATE_VERTEX };
+    VkVertexInputAttributeDescription attributes[2] = {
+        { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, 0 },                   /* position, as the mesh pipelines read it */
+        { 1, 0, VK_FORMAT_R32G32_SFLOAT, 3 * sizeof(float) },      /* the base texture's coordinates */
+    };
+    VkPipelineVertexInputStateCreateInfo vertex_input = { VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO };
+    VkPipelineInputAssemblyStateCreateInfo assembly = {
+        VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO };
+    VkPipelineViewportStateCreateInfo viewport = { VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO };
+    VkPipelineRasterizationStateCreateInfo raster = { VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO };
+    VkPipelineMultisampleStateCreateInfo multisample = { VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO };
+    VkPipelineColorBlendAttachmentState blend_attachment = { 0 };
+    VkPipelineColorBlendStateCreateInfo blend = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
+    VkPipelineDepthStencilStateCreateInfo depth = { VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO };
+    VkDynamicState dynamic_states[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynamic = { VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO };
+    VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    static const VkCullModeFlags culls[3] = { VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_BACK_BIT };
+    int made = 0;
+
+    if (!vk.device || !vk.mesh_layout || !vk.render_pass || vk.camo_pipeline[0])
+        return;
+    if (make_shader(camo_vert_spirv, sizeof camo_vert_spirv, &vertex_shader) ||
+        make_shader(camo_frag_spirv, sizeof camo_frag_spirv, &fragment_shader)) {
+        fprintf(stderr, "[ngl_vk] camo: its shaders couldn't be made: no camo is drawn\n");
+        if (vertex_shader)
+            vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+        return;
+    }
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex_shader;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment_shader;
+    stages[1].pName = "main";
+    vertex_input.vertexBindingDescriptionCount = 1;
+    vertex_input.pVertexBindingDescriptions = &binding;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = attributes;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    viewport.viewportCount = 1;
+    viewport.scissorCount = 1;
+    raster.polygonMode = VK_POLYGON_MODE_FILL;
+    raster.frontFace = VK_FRONT_FACE_CLOCKWISE;     /* as the mesh pipelines */
+    raster.lineWidth = 1.0f;
+    raster.depthBiasEnable = VK_TRUE;               /* as the multiplied decals: toward the eye, no slope part */
+    raster.depthBiasConstantFactor = -1.0f;
+    raster.depthBiasSlopeFactor = 0.0f;
+    multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    blend_attachment.blendEnable = VK_TRUE;
+    blend_attachment.srcColorBlendFactor = VK_BLEND_FACTOR_DST_COLOR;
+    blend_attachment.dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+    blend_attachment.colorBlendOp = VK_BLEND_OP_ADD;
+    blend_attachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    blend_attachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    blend_attachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    blend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT;
+    blend.attachmentCount = 1;
+    blend.pAttachments = &blend_attachment;
+    depth.depthTestEnable = VK_TRUE;
+    depth.depthWriteEnable = VK_FALSE;
+    depth.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    dynamic.dynamicStateCount = 2;
+    dynamic.pDynamicStates = dynamic_states;
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &vertex_input;
+    info.pInputAssemblyState = &assembly;
+    info.pViewportState = &viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &blend;
+    info.pDepthStencilState = &depth;
+    info.pDynamicState = &dynamic;
+    info.layout = vk.mesh_layout;
+    info.subpass = 0;
+    for (int k = 0; k < 3; k++) {
+        raster.cullMode = culls[k];
+        multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+        info.renderPass = vk.render_pass;
+        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.camo_pipeline[k]) != VK_SUCCESS)
+            vk.camo_pipeline[k] = VK_NULL_HANDLE;
+        made += vk.camo_pipeline[k] != VK_NULL_HANDLE;
+        if (vk.camo_pipeline[k] && vk.msaa_samples >= 2u && vk.msaa_opaque_pass) {
+            multisample.rasterizationSamples = (VkSampleCountFlagBits)vk.msaa_samples;
+            info.renderPass = vk.msaa_opaque_pass;
+            if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.camo_msaa_pipeline[k]) !=
+                VK_SUCCESS)
+                vk.camo_msaa_pipeline[k] = VK_NULL_HANDLE;
+        }
+    }
+    vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+    vkDestroyShaderModule(vk.device, fragment_shader, NULL);
+    if (made < 3)
+        fprintf(stderr, "[ngl_vk] camo: %d of its 3 pipelines made: the draws without one get no camo\n", made);
+}
+
+uint32_t ngl_vk_camo_count(void)    /* [acct2-bro] 2026-11-22 Camo lane (ngl_vk.h) */
+{
+    return vk.camo_count;
+}
+
 static int make_drawing(void)
 {
     if (make_target() || make_pipeline() || make_quad_pipeline() || make_shadow() || make_mesh_pipeline() ||
@@ -3979,6 +4887,9 @@ static int make_drawing(void)
         fprintf(stderr, "[ngl_vk] no screen warp: no heat haze\n");
     if (make_glow())            /* [rexglue-native] 2026-11-10 */
         fprintf(stderr, "[ngl_vk] no sky glow: drawn without it\n");
+    msaa_finish();          /* [acct2-bro] 2026-11-22 rn113: every twin made, or MSAA let go */
+    make_effect_count();    /* [acct2-bro] 2026-11-22 rn114: the effect layer's samples, when asked */
+    make_camo();            /* [acct2-bro] 2026-11-22 Camo lane: after msaa_finish (its twins need MSAA kept) */
     return 0;
 }
 
@@ -4051,6 +4962,7 @@ int ngl_vk_init_on_device(uint32_t width, uint32_t height, void *instance, void 
     vk.queue_unlock = unlock;
     vk.queue_user = user;
     vk.anisotropy_feature = anisotropy_on_borrowed_device;     /* [acct2-bro] 2026-11-12: as its owner made it */
+    vk.effect_query_flags = effect_precise_on_borrowed_device ? VK_QUERY_CONTROL_PRECISE_BIT : 0;  /* rn114 */
     vkGetDeviceQueue(vk.device, queue_family, queue_index, &vk.queue);
     vkGetPhysicalDeviceProperties(vk.gpu, &properties);
     snprintf(device_name, sizeof device_name, "%s", properties.deviceName);
@@ -5795,10 +6707,13 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
     int after = tint && vk.after_on && vk.after_image && vk.after_set;
     /* [rexglue-native] 2026-11-10: and the sky glow (ngl_vk_set_glow), right after the tint's draw */
     int glow = halves && vk.glow_on && vk.glow_ready && vk.overlay_pass;
+    /* [acct2-bro] 2026-11-22 rn113c: and MSAA: the first half multisampled, the rest over the resolved target */
+    int msaa = halves && vk.msaa_samples > 1u;
 
     if (!vk.device || !pixels || !width || !height || pitch < width * BYTES_PER_PIXEL)
         return -1;
     finish_frame();     /* the last draw's, when frames overlap */
+    effect_count_read();    /* [acct2-bro] 2026-11-22 rn114: the last frame's effect samples, now it is done */
     if ((width != vk.picture_width || height != vk.picture_height) && make_picture(width, height))
         return -1;
     for (row = 0; row < height; row++)
@@ -5858,6 +6773,11 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
     }
     if (halves)
         pass.renderPass = vk.opaque_pass;
+    if (msaa) {     /* [acct2-bro] 2026-11-22 rn113c: the first half into the samples, with the pipelines' twins */
+        pass.renderPass = vk.msaa_opaque_pass;
+        pass.framebuffer = vk.msaa_framebuffer;
+        msaa_swap_pipelines();
+    }
     vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
     vkCmdSetViewport(vk.commands, 0, 1, &view);
     vkCmdSetScissor(vk.commands, 0, 1, &whole);
@@ -5872,6 +6792,11 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
         if (halves) {
             draw_meshes(0);
             vkCmdEndRenderPass(vk.commands);
+            if (msaa) {     /* [acct2-bro] 2026-11-22 rn113c: resolved; on with one sample (the depth, the grass) */
+                msaa_swap_pipelines();
+                msaa_resolve_depth(&view);
+                pass.framebuffer = vk.framebuffer;
+            }
             copy_soft_depth();
             pass.renderPass = vk.blend_pass;
             vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
@@ -5907,6 +6832,7 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                 VkDescriptorSet back_sets[2] = { vk.effect_color_set, vk.shadow_set };
 
                 vkCmdEndRenderPass(vk.commands);
+                effect_count_reset();   /* [acct2-bro] 2026-11-22 rn114 */
                 /* its color cleared, its depth from the opaque depth's copy at every second pixel */
                 layer_clear[1].depthStencil.depth = 1.0f;
                 layer_clear[1].depthStencil.stencil = 0;
@@ -5928,9 +6854,11 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                 vkCmdBeginRenderPass(vk.commands, &layer_pass, VK_SUBPASS_CONTENTS_INLINE);
                 vkCmdSetViewport(vk.commands, 0, 1, &layer_view);
                 vkCmdSetScissor(vk.commands, 0, 1, &layer_whole);
+                effect_count_begin(&view);  /* [acct2-bro] 2026-11-22 rn114: the layer's samples, counted */
                 vk.soft_live = 1;
                 draw_meshes(3);
                 vk.soft_live = 0;
+                effect_count_end();     /* [acct2-bro] 2026-11-22 rn114 */
                 vkCmdEndRenderPass(vk.commands);
                 vk.effect_live = 0;
                 if (vk.heat_live) {     /* [rexglue-native-fx] 2026-11-11 fx1: the heat haze's mask (part 4) */
@@ -6907,6 +7835,8 @@ void ngl_vk_shutdown(void)
         free_picture();
         window_ramp_free();     /* [acct2-ocr] 2026-11-13: the window's color table image (made only when used) */
         window_fx_free();       /* [acct2-fh] 2026-11-14: the window's CAS / FSR 1 parts (made only when used) */
+        msaa_free();            /* [acct2-bro] 2026-11-22 rn113: MSAA's parts (made only when asked) */
+        effect_count_free();    /* [acct2-bro] 2026-11-22 rn114 */
         /* ngl_vk_output's (none of it made unless it was used) */
         vkDestroyFramebuffer(vk.device, vk.output_framebuffer, NULL);
         vkDestroyPipeline(vk.device, vk.output_pipeline, NULL);
@@ -6947,11 +7877,17 @@ void ngl_vk_shutdown(void)
         vkDestroyPipeline(vk.device, vk.mesh_blend_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_add_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.mesh_subtract_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.mesh_premultiplied_pipeline, NULL);  /* [acct2-bro] 2026-11-22 defect E */
+        vk.mesh_premultiplied_pipeline = VK_NULL_HANDLE;
         vkDestroyPipeline(vk.device, vk.mesh_multiply_pipeline, NULL);  /* [waw-decomp] */
         vkDestroyPipeline(vk.device, vk.mesh_decal_pipeline, NULL);     /* [rexglue-native stlo 2026-11-16] */
         vkDestroyPipeline(vk.device, vk.mesh_decal_alpha_pipeline, NULL);   /* [rexglue-native stlo 2026-11-16] */
         vkDestroyPipeline(vk.device, vk.mesh_decal_depth_pipeline, NULL);   /* [rexglue-native stlo 2026-11-17] */
         vkDestroyPipeline(vk.device, vk.mesh_heat_pipeline, NULL);      /* [rexglue-native-fx] 2026-11-11 fx1 */
+        for (int k = 0; k < 3; k++) {   /* [acct2-bro] 2026-11-22 Camo lane: the camo pass (make_camo) */
+            vkDestroyPipeline(vk.device, vk.camo_pipeline[k], NULL);
+            vkDestroyPipeline(vk.device, vk.camo_msaa_pipeline[k], NULL);
+        }
         vkDestroyPipeline(vk.device, vk.mesh_shadow_pipeline, NULL);
         vkDestroyPipelineLayout(vk.device, vk.mesh_layout, NULL);
         if (vk.shadow_uniform_memory)

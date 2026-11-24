@@ -177,8 +177,9 @@ class GameSettingsTabsTests(unittest.TestCase):
         app._gs_show_tab("Language")
         self.assertEqual(lang.winfo_manager(), "grid")
         self.assertEqual(app._gs_tab_frames["Display"].winfo_manager(), "")
-        self.assertEqual(str(app._gs_tab_buttons["Language"].cget("style")), "Accent.TButton")
-        self.assertEqual(str(app._gs_tab_buttons["Display"].cget("style")), "Ghost.TButton")
+        # [acct2-ocr] 2026-11-22 the sub-tab styles: one font and padding chosen or not (theme.py)
+        self.assertEqual(str(app._gs_tab_buttons["Language"].cget("style")), "SubTab.Accent.TButton")
+        self.assertEqual(str(app._gs_tab_buttons["Display"].cget("style")), "SubTab.Ghost.TButton")
 
 
 if __name__ == "__main__":

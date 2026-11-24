@@ -35,14 +35,86 @@ WRAP = 640
 MIN_WRAP = 160
 # Labels that wrap to the page: (label, their widest wrap at 96 DPI).
 _AUTOWRAP: List[Tuple[object, int]] = []
+# [acct2-ocr] 2026-11-22 Rows of buttons that wrap onto more rows to fit the page (flow()).
+_FLOWS: List[object] = []
 
 
 def autowrap(label, wrap: int = WRAP):
     """Makes a label's text wrap at the room its page has, never wider than
-    `wrap`. Returns the label."""
+    `wrap`. Returns the label. [acct2-ocr] 2026-11-22 A checkbox's text too (a long one kept a narrow page wide):
+    ttk checkboxes take the wrap from their style, so each gets a style of its own, under its own."""
+    if label.winfo_class() == "TCheckbutton" and not getattr(label, "c3w_wrap_style", None):
+        _WRAP_STYLES[0] += 1
+        label.c3w_wrap_style = f"C3WWrap{_WRAP_STYLES[0]}.{str(label.cget('style')) or 'TCheckbutton'}"
+        label.configure(style=label.c3w_wrap_style)
     _AUTOWRAP.append((label, wrap))
-    label.configure(wraplength=px(wrap))
+    _set_wrap(label, px(wrap))
     return label
+
+
+_WRAP_STYLES = [0]   # [acct2-ocr] the checkboxes' own styles made so far
+
+
+def _wrap_of(label) -> int:
+    style = getattr(label, "c3w_wrap_style", None)
+    value = ttk.Style(label).lookup(style, "wraplength") if style else label.cget("wraplength")
+    try:
+        return int(float(str(value) or 0))
+    except ValueError:
+        return 0
+
+
+def _set_wrap(label, n: int) -> None:
+    style = getattr(label, "c3w_wrap_style", None)
+    if style:
+        ttk.Style(label).configure(style, wraplength=n)
+    else:
+        label.configure(wraplength=n)
+
+
+def reflow(frame, gap: int = 6):
+    """[acct2-ocr] 2026-11-22 flow() for a row button_row() already packed: the buttons wrap onto more rows on
+    a narrow page. Returns the frame."""
+    for k in frame.winfo_children():
+        if k.winfo_manager() == "pack":
+            k.pack_forget()
+    return flow(frame, gap=gap)
+
+
+def flow(frame, gap: int = 4):
+    """[acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues"): makes a row of buttons (children of `frame`, which
+    this places with grid) wrap onto more rows when the page is narrower than the row, as a label's text wraps
+    (ScrollFrame lays them out again when its width changes). Returns the frame."""
+    frame.c3w_flow_gap = gap
+    frame.c3w_flow_rows = None
+    _FLOWS.append(frame)
+    _place_flow(frame, None)
+    return frame
+
+
+def _place_flow(frame, room: Optional[int]) -> bool:
+    """Places a flow() frame's children in rows no wider than `room` (one row: None). Returns whether that
+    changed anything."""
+    kids = [k for k in frame.winfo_children() if not getattr(k, "c3w_flow_skip", False)]
+    gap = px(frame.c3w_flow_gap)
+    rows, row, used = [], [], 0
+    for k in kids:
+        w = k.winfo_reqwidth()
+        if row and room is not None and used + gap + w > room:
+            rows.append(row)
+            row, used = [], 0
+        used += (gap if row else 0) + w
+        row.append(k)
+    if row:
+        rows.append(row)
+    shape = tuple(len(r) for r in rows)
+    if shape == frame.c3w_flow_rows:
+        return False
+    frame.c3w_flow_rows = shape
+    for r, members in enumerate(rows):
+        for c, k in enumerate(members):
+            k.grid(row=r, column=c, sticky="w", padx=(0, gap), pady=(px(4) if r else 0, 0))
+    return True
 
 
 class ScrollFrame(ttk.Frame):
@@ -122,10 +194,12 @@ class ScrollFrame(ttk.Frame):
             # content's own size and scroll.
             self.canvas.itemconfigure(self._win, width=max(need_w, have_w), height=max(need_h, have_h))
             self.canvas.configure(scrollregion=(0, 0, max(need_w, have_w), max(need_h, have_h)))
+            # [acct2-ocr] 2026-11-22 by whether each bar is gridded, not whether it is in view: laid out while
+            # its page was hidden, an unneeded bar stayed (and took the page's room) when it came back.
             for bar, needed in ((self.vbar, need_v), (self.hbar, need_h_bar)):
-                if needed and not bar.winfo_ismapped():
+                if needed and not bar.winfo_manager():
                     bar.grid()
-                elif not needed and bar.winfo_ismapped():
+                elif not needed and bar.winfo_manager():
                     bar.grid_remove()
             if not need_v:
                 self.canvas.yview_moveto(0)
@@ -158,10 +232,28 @@ class ScrollFrame(ttk.Frame):
             # Room kept free on its right (a page title's buttons beside its text).
             reserve = getattr(label, "c3w_reserve", None)
             want = max(px(MIN_WRAP), min(px(most), room_w - x - (reserve() if reserve else 0)))
-            if int(str(label.cget("wraplength")) or 0) != want:
-                label.configure(wraplength=want)
+            if _wrap_of(label) != want:   # [acct2-ocr] 2026-11-22 a checkbox's through its style
+                _set_wrap(label, want)
                 changed = True
         _AUTOWRAP[:] = alive
+        # [acct2-ocr] 2026-11-22 rows of buttons (flow()) wrap the same way
+        live = []
+        for frame in _FLOWS:
+            try:
+                if not frame.winfo_exists():
+                    continue
+            except tk.TclError:
+                continue
+            live.append(frame)
+            if not str(frame).startswith(prefix):
+                continue
+            x, w = 0, frame
+            while w is not None and w is not self.inner:
+                x += w.winfo_x()
+                w = w.master
+            if _place_flow(frame, max(px(MIN_WRAP), room_w - x)):
+                changed = True
+        _FLOWS[:] = live
         return changed
 
     def relayout(self) -> None:

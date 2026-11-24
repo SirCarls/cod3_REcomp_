@@ -49,6 +49,11 @@ PAGE_LABELS: Dict[str, str] = {
     "cod2_status": "Port status",   # [f2-menus] 2026-11-10 its New copy and LAN server pages are gone (see COD2)
     "coduo_copy": "New copy", "coduo_server": "LAN server", "coduo_status": "Port status",
 }
+# [acct2-ocr] 2026-11-22 (owner 00:26: "the other game's tabs need to be more akin to cod3's"): every tab has its own
+# Tools and About pages, as Call of Duty 3's has (gui_tabkit.py); its sidebar ends as Call of Duty 3's does.
+KIT_TABS = (BRO, FH, WAW, COD2, COD4, CODUO)
+PAGE_LABELS.update({f"{gid}_{page}": label for gid in KIT_TABS for page, label in (("tools", "Tools"),
+                                                                                    ("about", "About"))})
 SHARED_PAGES = ("log",)
 
 GAMES: Tuple[Game, ...] = (
@@ -58,12 +63,12 @@ GAMES: Tuple[Game, ...] = (
     # [acct2-bro] Call of Duty 2: Big Red One (the original Xbox game), built like Call of Duty 3 (c3w/bro.py).
     Game(BRO, "Call of Duty 2: Big Red One", "Big Red One", "BRO", ("CALL OF DUTY 2", "BIG RED ONE"),
          "The Xbox original, recompiled for PC from your own disc", "bro",
-         ("bro_setup", "bro_play", "bro_status", "log"), ("build", "play")),
+         ("bro_setup", "bro_play", "bro_status", "bro_tools", "log", "bro_about"), ("build", "play")),
     # [acct2-decomp] 2026-11-21 (owner 11:18: "add finest hour to the tabs"): Call of Duty: Finest Hour, the original Xbox
     # game, built like Big Red One (c3w/fh.py; the port in fh/ is acct2-fh's).
     Game(FH, "Call of Duty: Finest Hour", "Finest Hour", "FH", ("CALL OF DUTY", "FINEST HOUR"),
          "The Xbox original, recompiled for PC from your own disc", "fh",
-         ("fh_setup", "fh_play", "fh_status", "log"), ("build", "play")),
+         ("fh_setup", "fh_play", "fh_status", "fh_tools", "log", "fh_about"), ("build", "play")),
     # [waw-decomp] 2026-11-09: World at War and Call of Duty 2 recompiled from the Xbox 360 disc on Call of Duty 3's
     # SDK (owner 11-07 11:49: "the setup tool says rust, but it should be the same as cod3's SDK"); Call of Duty 4
     # new. World at War keeps its Content page (the rip for Call of Duty 3).
@@ -71,16 +76,17 @@ GAMES: Tuple[Game, ...] = (
     # tab is the Xbox 360 port only. The two pages were tools for the PC game; United Offensive's tab still has them.
     Game(WAW, "World at War", "World at War", "WaW", ("CALL OF DUTY", "WORLD AT WAR"),
          "Recompiled for PC from your own Xbox 360 disc", "waw",
-         ("waw_setup", "waw_play", "waw_content", "maps", "waw_status", "log"), ("build", "play", "rip")),
+         ("waw_setup", "waw_play", "waw_content", "maps", "waw_status", "waw_tools", "log", "waw_about"),
+         ("build", "play", "rip")),
     Game(COD2, "Call of Duty 2", "Call of Duty 2", "CoD2", ("CALL OF DUTY", "2"),
          "Recompiled for PC from your own Xbox 360 disc", "cod2",
-         ("cod2_setup", "cod2_play", "cod2_status", "log"), ("build", "play")),
+         ("cod2_setup", "cod2_play", "cod2_status", "cod2_tools", "log", "cod2_about"), ("build", "play")),
     Game(COD4, "Call of Duty 4: Modern Warfare", "Call of Duty 4", "CoD4", ("CALL OF DUTY 4", "MODERN WARFARE"),
          "Recompiled for PC from your own Xbox 360 disc", "cod4",
-         ("cod4_setup", "cod4_play", "cod4_status", "log"), ("build", "play")),
+         ("cod4_setup", "cod4_play", "cod4_status", "cod4_tools", "log", "cod4_about"), ("build", "play")),
     Game(CODUO, "Call of Duty: United Offensive", "United Offensive", "UO", ("CALL OF DUTY", "UNITED OFFENSIVE"),
          "Tools for your PC game: a data-only copy and a LAN server", "coduo",   # [f2-menus] no "Rust engine"
-         ("coduo_copy", "coduo_server", "coduo_status", "log"), ("copy", "server")),
+         ("coduo_copy", "coduo_server", "coduo_status", "coduo_tools", "log", "coduo_about"), ("copy", "server")),
 )
 GAME_ORDER: List[str] = [g.id for g in GAMES]
 BY_ID: Dict[str, Game] = {g.id: g for g in GAMES}

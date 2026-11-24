@@ -32,9 +32,10 @@ class GameTableTests(unittest.TestCase):
         self.assertEqual([g.tab for g in games.GAMES],
                          ["Call of Duty 3", "Big Red One", "Finest Hour", "World at War", "Call of Duty 2",
                           "Call of Duty 4", "United Offensive"])
-        self.assertEqual(PAGES["fh"], ["fh_setup", "fh_play", "fh_status", "log"])
+        # [acct2-ocr] 2026-11-22 every tab ends as Call of Duty 3's: Tools, Log, About (gui_tabkit.py)
+        self.assertEqual(PAGES["fh"], ["fh_setup", "fh_play", "fh_status", "fh_tools", "log", "fh_about"])
         self.assertEqual(games.game("fh").actions, ("build", "play"))
-        self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_status", "log"])
+        self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_status", "bro_tools", "log", "bro_about"])
         self.assertEqual(games.game("bro").actions, ("build", "play"))
         self.assertEqual(theme.GAME_ORDER, tuple(games.GAME_ORDER))
 
@@ -47,7 +48,8 @@ class GameTableTests(unittest.TestCase):
             self.assertNotIn("Rust", games.game(gid).tagline)
         self.assertIn("rip", games.game("waw").actions)          # World at War's content rip stays
         # [f2-menus] 2026-11-10 (owner: "CoD2's New copy and LAN server pages shouldn't be there")
-        self.assertEqual(PAGES["cod2"], ["cod2_setup", "cod2_play", "cod2_status", "log"])
+        self.assertEqual(PAGES["cod2"], ["cod2_setup", "cod2_play", "cod2_status", "cod2_tools", "log",
+                                         "cod2_about"])
         self.assertIn("coduo_copy", PAGES["coduo"])            # United Offensive's tab keeps its two
 
     def test_no_rust_engine_wording(self):

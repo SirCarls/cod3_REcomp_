@@ -21,6 +21,7 @@
 #include "game/font_fill.h"  // [acct2-ocr]
 #include "ui/text_overlay.h"  // [acct2-ocr]
 #include "game/color_text.h"  // [acct2-ocr]
+#include "game/console_budgets.h"  // [acct2-decomp] 2026-11-22 models' detail at a distance
 #include "ui/text_native.h"  // [acct2-ocr]
 #include "game/text_language.h"  // [acct2-ocr] RawTextFor
 #include "game/program.h"
@@ -540,6 +541,10 @@ void Cod3SceneAspectHook(PPCRegister& f1) {
 // below that the game is being played (not a menu, movie or loading screen).
 REX_EXTERN(__imp__RE_RenderScene);
 REX_HOOK_RAW(RE_RenderScene) {
+  // [acct2-decomp] 2026-11-22 models keep their detail farther than the console's distances
+  // (cod3_model_detail_distance): r_lodscale for this view, the game's value back after it.
+  float detail_saved = 0.0f;
+  const uint32_t detail_dvar = cod3::budgets::DetailBegin(base, &detail_saved);
 #if defined(COD3_MP)
   g_mp_base = base;
   float lod_saved = 0.0f;
@@ -552,6 +557,7 @@ REX_HOOK_RAW(RE_RenderScene) {
 #if defined(COD3_MP)
   if (lod_dvar) WriteF32(base, lod_dvar + kDvarValue, lod_saved);
 #endif
+  cod3::budgets::DetailEnd(base, detail_dvar, detail_saved);
 }
 
 REX_EXTERN(__imp__RE_BeginFrame);

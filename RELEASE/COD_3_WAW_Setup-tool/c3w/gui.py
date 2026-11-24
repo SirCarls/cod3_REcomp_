@@ -39,6 +39,7 @@ from .gui_log import LogPage
 from .gui_pages import Pages, clean_path_text  # [acct2-decomp] clean_path_text
 from .gui_updates import Updates  # [updater] the setup tool's own update checks
 from .gui_addons import Addons  # [acct2-decomp] map packs (and later mods) on Set up
+from .gui_tabkit import TabKit  # [acct2-ocr] 2026-11-22 the other tabs in Call of Duty 3's layout
 from . import disc_needs  # [acct2-decomp] what each disc gives
 from . import build_needs  # [acct2-decomp] what the build needs on this PC, kept up to date on Set up
 from .pipeline import KNOWN_XEX, TOOL_VERSION, BuildOptions, Pipeline
@@ -60,7 +61,11 @@ OLD_WORK_DEFAULTS = {common.cache_dir() / "work", Path("/var/tmp") / f"{common.A
 UI_KEYS = ("ui_geometry", "ui_zoomed")
 SIDEBAR_W, SIDEBAR_COMPACT_W = 200, 132
 LABEL_W, LABEL_COMPACT_W = 190, 150   # the forms' label column
-COMPACT_BELOW = 860   # window width (at 96 DPI) under which the sidebar and tabs get narrow
+COMPACT_BELOW = 900   # window width (at 96 DPI) under which the sidebar and the label column get narrow
+# [acct2-ocr] 2026-11-22 (860 before: the widest pages, Set up's and Big Red One's and Finest Hour's Play, need
+# 650 to 670 px beside the full sidebar, so 860 to 880 px windows scrolled sideways.) A page name too long for
+# the narrow sidebar has a short form there:
+COMPACT_PAGE_LABELS = {"Textures & censoring": "Textures"}
 
 
 def desktop_scale(root: tk.Tk) -> float:
@@ -116,7 +121,9 @@ def format_duration(seconds: float) -> str:
     return f"{s // 3600} h {(s % 3600) // 60} min"
 
 
-class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-decomp] Ports
+# [acct2-ocr] 2026-11-22 TabKit first: its Set up and Play pages of Big Red One, Finest Hour and the Xbox 360 ports
+# (Call of Duty 3's layout) take the place of gui_games', gui_fh's and gui_ports' own, whose logic they use.
+class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-decomp] Ports
     def __init__(self, root: tk.Tk, launcher: bool):
         self.root = root
         self.launcher = launcher
@@ -267,6 +274,9 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         for gid in games.X360_PORTS:   # [waw-decomp] (gui_ports.py, c3w/x360_ports.py)
             builders[f"{gid}_setup"] = lambda t, g=gid: self._page_port_setup(t, g)
             builders[f"{gid}_play"] = lambda t, g=gid: self._page_port_play(t, g)
+        for gid in games.KIT_TABS:   # [acct2-ocr] 2026-11-22 each tab's own Tools and About (gui_tabkit.py)
+            builders[f"{gid}_tools"] = lambda t, g=gid: self._page_game_tools(t, g)
+            builders[f"{gid}_about"] = lambda t, g=gid: self._page_game_about(t, g)
         for gid in pc_games.PC_GAMES:
             builders[f"{gid}_copy"] = lambda t, g=gid: self._page_pc_copy(t, g)
             builders[f"{gid}_server"] = lambda t, g=gid: self._page_pc_server(t, g)
@@ -274,6 +284,8 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         # Each page once (the log is in every tab's sidebar, but is one page).
         for key in dict.fromkeys(k for gid in games.GAME_ORDER for k in self.page_lists[gid]):
             self._add_page(key, builders[key])
+        self._kit_after_pages()   # [acct2-ocr] 2026-11-22 each Tools page its own profile list
+        self._tabs_init()   # [acct2-ocr] 2026-11-22 the game tabs fit any width (_fit_tabs)
         self._initial_size()
 
         self.v_iso.trace_add("write", lambda *a: (self._validate_iso(), self._update_build_state()))
@@ -379,11 +391,16 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
             return
         self.tabs.show(owner, key)
         current = getattr(self, "page", None)
+        if current != key:
+            self.log.debug(f"page: {owner} > {key}")   # [acct2-ocr] 2026-11-22 what the user was looking at
         if current and current != key:
             self.pages[current]["frame"].grid_remove()
         self.page = key
         p = self.pages[key]
         p["frame"].grid(row=0, column=0, sticky="nsew")
+        # [acct2-ocr] 2026-11-22 fitted at once: a page that changed while hidden (another sub-tab, the window
+        # resized) kept its old size, a scroll bar it no longer needed or the bottom cut off, for up to 0.5 s
+        p["scroll"].relayout()
         for (gid, k), (btn, _) in self.nav_items.items():
             if gid == owner:
                 btn.configure(style="NavSelected.TButton" if k == key else "Nav.TButton")
@@ -409,24 +426,20 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         if compact != self._compact:
             self._compact = compact
             self.sidebar.configure(width=px(SIDEBAR_COMPACT_W if compact else SIDEBAR_W))
-            for gid, item in self.tab_items.items():
-                g = games.game(gid)
-                item["button"].configure(text=(g.short if compact else g.tab).upper())
-            # The box before the tabs is as wide as the sidebar, so the tabs
-            # start where the pages do.
-            self.tab_badge_box.configure(width=px(SIDEBAR_COMPACT_W if compact else SIDEBAR_W))
-            self.tab_badge.configure(text="SETUP" if compact else "SETUP TOOL")
             if compact:
                 self.sidebar_foot.pack_forget()
-                self.btn_open_out.grid_remove()
             else:
                 self.sidebar_foot.pack(side="bottom", fill="x", after=self.nav_host)
-                self.btn_open_out.grid()
+            # [acct2-ocr] 2026-11-22 a page name too long for the narrow sidebar gets its short form
+            for (_, key), (btn, _) in getattr(self, "nav_items", {}).items():
+                label = games.PAGE_LABELS[key]
+                btn.configure(text=COMPACT_PAGE_LABELS.get(label, label) if compact else label)
             for frame in getattr(self, "_label_frames", []):
                 try:
                     frame.columnconfigure(0, minsize=px(LABEL_COMPACT_W if compact else LABEL_W))
                 except tk.TclError:
                     pass
+        self._fit_tabs(event.width)   # [acct2-ocr] 2026-11-22 the game tabs' labels and rows
         # The header follows the window's height; a low window gives its
         # room to the page (and the bottom bar's buttons get the usual size).
         self._fit_hero(event.height)
@@ -434,6 +447,80 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         if low != self._low or getattr(self, "_actions_compact", None) != (compact or low):
             self._low = low
             self._compact_actions(compact or low)
+        self._fit_bottom_soon()   # [acct2-ocr] 2026-11-22
+
+    # [acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues ... every tab and sub-tab"): the game tabs always fit.
+    # With seven of them, "UNITED OFFENSIVE" was cut off (or hidden) in any window under 1212 px at 96 DPI, the
+    # first window size among them (1140 px). Now: the full names when they fit, else the short ones; else the
+    # short ones without the "SETUP" box before them; else the tabs wrap onto a second row. Each tab is as wide
+    # as its name (ttk's buttons otherwise keep room for 11 characters, so "FH" took as much as "COD4").
+    def _tabs_init(self) -> None:
+        bar = self.tabbar
+        cells = [self.tab_items[g.id]["button"].master for g in games.GAMES]
+        for w in [self.tab_badge_box] + cells:   # gui_games._build_tabbar packs them side by side
+            w.pack_forget()
+        self.tab_badge_box.grid(row=0, column=0, rowspan=len(cells), sticky="ns")
+        for i, cell in enumerate(cells):
+            cell.grid(row=0, column=i + 1, sticky="ns")
+            self.tab_items[games.GAMES[i].id]["button"].configure(width=0)
+        bar.columnconfigure(len(cells) + 1, weight=1)
+        self.root.update_idletasks()
+        btn = self.tab_items[games.GAMES[0].id]["button"]
+        self._tab_font = tkfont.nametofont(str(ttk.Style(self.root).lookup("GameTab.TButton", "font") or
+                                               "TkDefaultFont"), root=self.root)
+        self._tab_extra = max(0, btn.winfo_reqwidth() - self._tab_font.measure(btn.cget("text")))
+        self._tab_fit: Optional[tuple] = None
+        self._tab_cells = cells   # last: _fit_tabs (from a <Configure> above) waits for it
+
+    def _tab_widths(self, short: bool) -> List[int]:
+        return [self._tab_font.measure((g.short if short else g.tab).upper()) + self._tab_extra for g in games.GAMES]
+
+    def tabs_full_width(self) -> int:
+        """How wide the window must be for the tabs' full names on one row (the first window size)."""
+        return px(SIDEBAR_W) + sum(self._tab_widths(False)) + px(4)
+
+    def _fit_tabs(self, width: int) -> None:
+        if not hasattr(self, "_tab_cells"):
+            return
+        side = px(SIDEBAR_COMPACT_W if self._compact else SIDEBAR_W)
+        full, short = self._tab_widths(False), self._tab_widths(True)
+        if side + sum(full) <= width:
+            fit = ("full", side, None)
+        elif side + sum(short) <= width:
+            fit = ("short", side, None)
+        else:
+            lead = px(8)
+            rows, row, used = [], [], 0
+            for i, w in enumerate(short):
+                if row and lead + used + w > width:
+                    rows.append(row)
+                    row, used = [], 0
+                row.append(i)
+                used += w
+            rows.append(row)
+            fit = ("short", lead, tuple(tuple(r) for r in rows))
+        if fit == self._tab_fit:
+            return
+        self._tab_fit = fit
+        names, box_w, rows = fit
+        for g in games.GAMES:
+            self.tab_items[g.id]["button"].configure(text=(g.short if names == "short" else g.tab).upper())
+        # The box before the tabs is as wide as the sidebar, so the tabs start where the pages do; without room
+        # for it, it is a small margin.
+        self.tab_badge_box.configure(width=box_w)
+        if rows is None:
+            self.tab_badge.configure(text="SETUP TOOL" if box_w >= px(SIDEBAR_W) else "SETUP")
+            if not self.tab_badge.winfo_manager():
+                self.tab_badge.pack(side="left", padx=(px(18), 0))
+        else:
+            self.tab_badge.pack_forget()
+        if rows is None:
+            rows = (tuple(range(len(self._tab_cells))),)
+        for r, members in enumerate(rows):
+            for c, i in enumerate(members):
+                self._tab_cells[i].grid(row=r, column=c + 1, sticky="nsew")
+        self.tab_badge_box.grid(rowspan=len(rows))
+        self.log.debug(f"game tabs in {width} px: {names} names, {len(rows)} row(s)")
 
     def _initial_size(self) -> None:
         """Open at the size the window had last time; the first time, big
@@ -453,6 +540,8 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
                  setup.vbar.winfo_reqwidth() + px(8))
             h = (setup.inner.winfo_reqheight() + self.bottom.winfo_reqheight() + self.tabbar.winfo_reqheight() +
                  px(HERO_H) + px(8))
+            # [acct2-ocr] 2026-11-22 and wide enough for every game tab's full name (it was 72 px short)
+            w = max(w, self.tabs_full_width())
         self.root.geometry(f"{min(w, int(sw * 0.95))}x{min(h, int(sh * 0.88))}")
         if self._saved_ui.get("ui_zoomed"):
             try:
@@ -532,6 +621,7 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
             try:
                 text = build_needs.check(opts).line()
             except Exception as e:  # noqa: BLE001 - the line says so; the page goes on
+                self.log.exception(e, "checking what this build needs")   # [acct2-ocr] 2026-11-22 where
                 text = f"What this build needs couldn't be checked ({e}); Tools > Check this PC shows it."
             self.q.put(("call", lambda: gen == self._needs_gen and self.v_needs.set(text)))
         threading.Thread(target=work, daemon=True).start()
@@ -593,12 +683,16 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         # The progress: a thin line along the bar's top edge (a plain
         # divider while nothing runs), so the bar takes little height.
         widgets.LineProgress(bar, self.v_progress, max(2, px(3))).pack(fill="x")
-        inner = ttk.Frame(bar, padding=(px(24), px(10), px(24), px(8)))
+        inner = self._bottom_inner = ttk.Frame(bar, padding=(px(24), px(10), px(24), px(8)))
         inner.pack(fill="x")
         inner.columnconfigure(2, weight=1)
         actions = ttk.Frame(inner)
         actions.grid(row=0, column=0, sticky="w")
         self._build_actions(actions)
+        # [acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues"): row 1 is for Cancel when the buttons don't fit
+        # side by side (_fit_bottom); the reason and the status are rows 2 and 3.
+        self._bottom_fit: Optional[tuple] = None
+        self._bottom_pending = False
         # The quiet buttons are outlined, the same height as the main ones.
         self.btn_cancel = ttk.Button(inner, text="Cancel", style="Big.Ghost.TButton", command=self._cancel,
                                      state="disabled")
@@ -611,16 +705,82 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         # Why the main button is off (only shown then); a click goes to the page that fixes it.
         self.lbl_reason = ttk.Label(inner, textvariable=self.v_build_reason, style="Warn.TLabel", cursor="hand2",
                                     justify="left")
-        self.lbl_reason.grid(row=1, column=0, columnspan=4, sticky="w", pady=(px(6), 0))
+        self.lbl_reason.grid(row=2, column=0, columnspan=4, sticky="w", pady=(px(6), 0))
         self.lbl_reason.bind("<Button-1>", lambda e: self._reason_clicked())
         tip(self.lbl_reason, "Click to go where this is set.")
         # Status (cut at the window's edge, never pushing the buttons) and the time taken.
-        ttk.Label(inner, textvariable=self.v_status, width=1).grid(row=2, column=0, columnspan=3, sticky="ew",
+        ttk.Label(inner, textvariable=self.v_status, width=1).grid(row=3, column=0, columnspan=3, sticky="ew",
                                                                   pady=(px(4), 0))
-        ttk.Label(inner, textvariable=self.v_elapsed, style="Hint.TLabel").grid(row=2, column=3, sticky="e",
+        ttk.Label(inner, textvariable=self.v_elapsed, style="Hint.TLabel").grid(row=3, column=3, sticky="e",
                                                                                pady=(px(4), 0))
-        inner.bind("<Configure>", lambda e: self.lbl_reason.configure(wraplength=max(px(200), e.width - px(52))),
-                   add="+")
+        inner.bind("<Configure>", lambda e: (self.lbl_reason.configure(wraplength=max(px(200), e.width - px(52))),
+                                             self._fit_bottom_soon()), add="+")
+
+    # [acct2-ocr] 2026-11-22 (owner 00:13: "the setup tool has sizing issues. Please go over every tab and
+    # sub-tab"): the bottom bar never cuts a button off. Where the tab's buttons, Cancel and "Open output folder"
+    # don't fit side by side, "Open output folder" goes first (it is on Tools > Folders too), then Cancel goes under
+    # the main buttons, and in the narrowest window the main buttons wrap onto more rows, as many to a row as fit.
+    def _fit_bottom_soon(self) -> None:
+        if not self._bottom_pending:
+            self._bottom_pending = True
+            self.root.after_idle(self._fit_bottom)
+            # and once the window's new size has reached the bar (a resize's sizes arrive over several idle passes)
+            self.root.after(120, self._fit_bottom)
+
+    def _fit_bottom(self) -> None:
+        self._bottom_pending = False
+        inner = self._bottom_inner
+        try:
+            room = inner.winfo_width() - 2 * px(24)
+            if room <= 1:
+                return
+            frame = self.action_frames.get(self.tabs.game)
+            buttons = list(frame.winfo_children()) if frame is not None else []
+            gap = px(6)
+            rows: List[list] = []
+            row, used = [], 0
+            for b in buttons:
+                w = b.winfo_reqwidth()
+                if row and used + gap + w > room:
+                    rows.append(row)
+                    row, used = [], 0
+                used += (gap if row else 0) + w
+                row.append(b)
+            if row:
+                rows.append(row)
+            last_w = used
+            cancel_w = gap + self.btn_cancel.winfo_reqwidth()
+            open_w = px(12) + self.btn_open_out.winfo_reqwidth()
+            show_open = not self._compact and len(rows) <= 1 and last_w + cancel_w + open_w <= room
+            cancel_beside = last_w + cancel_w <= room
+        except (tk.TclError, AttributeError):
+            return
+        fit = (tuple(len(r) for r in rows), show_open, cancel_beside, self.tabs.game)
+        if fit == self._bottom_fit:
+            return
+        self._bottom_fit = fit
+        if show_open:
+            self.btn_open_out.grid()
+        else:
+            self.btn_open_out.grid_remove()
+        if cancel_beside:   # beside the last row of the tab's buttons
+            self.btn_cancel.grid(row=0, column=1, columnspan=1, sticky="sw", padx=(gap, 0), pady=0)
+        else:
+            self.btn_cancel.grid(row=1, column=0, columnspan=2, sticky="w", padx=0, pady=(gap, 0))
+        for b in buttons:   # gui_games._build_actions packs them side by side; laid out here with grid
+            if b.winfo_manager() == "pack":
+                b.pack_forget()
+        for r, members in enumerate(rows):
+            for c, b in enumerate(members):
+                b.grid(row=r, column=c, sticky="w", padx=(gap if c else 0, 0), pady=(gap if r else 0, 0))
+        self.log.debug(f"bottom bar in {room} px: the tab's buttons in {len(rows)} row(s); "
+                       f"Cancel {'beside them' if cancel_beside else 'under them'}; "
+                       f"Open output folder {'shown' if show_open else 'left out'}")
+
+    def show_game(self, game_id: str, page: Optional[str] = None) -> None:
+        """[acct2-ocr] 2026-11-22 gui_games.Games.show_game, then the bottom bar fitted to this tab's buttons."""
+        super().show_game(game_id, page)
+        self._fit_bottom_soon()
 
     def _build_banner(self, main) -> None:
         """The "Done" note at the end of a build (no desktop notification):
@@ -734,10 +894,10 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         for item in buttons:
             text, cmd = item[0], item[1]
             b = ttk.Button(f, text=text, command=cmd)
-            b.pack(side="left", padx=(px(4), 0))
             if len(item) > 2 and item[2]:
                 tip(b, item[2])
             made.append(b)
+        widgets.flow(f, gap=4)   # [acct2-ocr] 2026-11-22 the buttons wrap on a narrow page
         if widgets_out is not None:
             widgets_out += made
         return entry
@@ -757,12 +917,17 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
 
     def _bg(self, func: Callable[[], None], busy_text: str = "") -> None:
         """Run a short task off the UI thread; errors become messages."""
+        name = getattr(func, "__qualname__", None) or repr(func)
+
         def wrapper():
+            self.log.debug(f"background job: {name}" + (f" ({busy_text})" if busy_text else ""))
             try:
                 func()
             except SetupError as e:
+                self.log.exception(e, name)   # [acct2-ocr] 2026-11-22 the message on screen, the traceback in the log
                 self.q.put(("error", str(e)))
             except Exception as e:  # pragma: no cover - unexpected
+                self.log.exception(e, name)
                 self.q.put(("error", f"{type(e).__name__}: {e}"))
         if busy_text:
             self.v_status.set(busy_text)
@@ -843,9 +1008,9 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
 
         w = section(t, "What to build", 3, columns=1)
         self._grid_cols(w)
-        ttk.Checkbutton(w, text="Build the playable Call of Duty 3 (recompiled; 30-120 minutes per version the "
-                                "first time)", variable=self.v_recomp,
-                        command=self._update_versions).grid(row=0, column=0, columnspan=3, sticky="w")
+        widgets.autowrap(ttk.Checkbutton(   # [acct2-ocr] 2026-11-22 it wraps on a narrow page
+            w, text="Build the playable Call of Duty 3 (recompiled; 30-120 minutes per version the first time)",
+            variable=self.v_recomp, command=self._update_versions)).grid(row=0, column=0, columnspan=3, sticky="w")
         vf = ttk.Frame(w)
         vf.grid(row=1, column=0, columnspan=3, sticky="w", padx=(px(26), 0), pady=(px(2), 0))
         ttk.Label(vf, text="Versions:").pack(side="left", padx=(0, px(8)))
@@ -866,8 +1031,8 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         self._row(w, 3, "Output folder", self.v_out, [
             ("Browse...", lambda: self._pick_dir(self.v_out, "Where everything goes"), "")],
             tooltip="Where the game, the ripped files, saves and logs go.")
-        ttk.Checkbutton(w, text="Install anything that's missing (you approve the list first; recommended)",  # [acct2-decomp]
-                        variable=self.v_install).grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
+        widgets.autowrap(ttk.Checkbutton(w, text="Install anything that's missing (you approve the list first; recommended)",  # [acct2-decomp]
+                        variable=self.v_install)).grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(4), 0))  # [acct2-ocr] wraps
         waw_box = ttk.Checkbutton(w, text="Also rip World at War (set it up on its tab)", variable=self.v_use_waw,
                                   command=self._update_build_state)
         waw_box.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
@@ -1030,6 +1195,7 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
             except (SetupError, OSError) as e:
                 msg = str(e)
             except Exception as e:  # noqa: BLE001 [acct2-decomp] a damaged image: say so, never keep an old status
+                self.log.exception(e, f"reading the disc {p}")   # [acct2-ocr] 2026-11-22 where
                 msg = f"Can't read it: {type(e).__name__}: {e}"
             if clean_path_text(self.v_iso.get()) == p:   # still the same disc
                 self.q.put(("iso_status", msg, ok))
@@ -1133,17 +1299,20 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         self._log_show_live()
 
         def work():
+            self.log.debug(f"{what} pressed")   # [acct2-ocr] 2026-11-22
             try:
                 Pipeline(opts, self.log, self.cancel,
                          on_step=lambda i, n, t: self.q.put(("step", i, n, t))).run()
                 self.q.put(("done", "good", self._where_summary(opts)))
             except common.Cancelled:
+                self.log.debug(f"{what}: canceled")
                 self.q.put(("done", "warn", f"Press {what} to continue later."))  # [acct2-decomp] also Repair, Rip
             except SetupError as e:
                 self.log.error(str(e))
+                self.log.exception(e, what)   # [acct2-ocr] 2026-11-22 its traceback, as details
                 self.q.put(("done", "bad", str(e)))
             except Exception as e:  # pragma: no cover
-                self.log.error(f"{type(e).__name__}: {e}")
+                self.log.exception(e, what)   # [acct2-ocr] 2026-11-22 the whole traceback (it was one line)
                 self.q.put(("done", "bad", f"Unexpected error: {e}"))
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
@@ -1178,16 +1347,20 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
         self.log.step(what)
 
         def run():
+            started = time.monotonic()
             try:
                 text = work(common.Runner(self.log, self.cancel))
+                self.log.debug(f"{what}: done in {time.monotonic() - started:.1f} s")   # [acct2-ocr] 2026-11-22
                 self.q.put(("done", "good", text or ""))
             except common.Cancelled:
+                self.log.debug(f"{what}: canceled after {time.monotonic() - started:.1f} s")
                 self.q.put(("done", "warn", "Canceled."))
             except SetupError as e:
                 self.log.error(str(e))
+                self.log.exception(e, what)   # [acct2-ocr] 2026-11-22 its traceback, as details
                 self.q.put(("done", "bad", str(e)))
             except Exception as e:  # pragma: no cover - unexpected
-                self.log.error(f"{type(e).__name__}: {e}")
+                self.log.exception(e, what)   # [acct2-ocr] 2026-11-22 the whole traceback (it was one line)
                 self.q.put(("done", "bad", f"Unexpected error: {e}"))
         self.worker = threading.Thread(target=run, daemon=True)
         self.worker.start()
@@ -1382,8 +1555,8 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
                             self.v_status.set(text)
                     else:
                         self._append(k, text)
-                        if k in ("step", "warn", "error"):
-                            self.v_status.set(text.strip())
+                        if k in ("step", "warn", "error"):   # [acct2-ocr] 2026-11-22 the first line (not a traceback)
+                            self.v_status.set((text.strip().splitlines() or [""])[0])
                 elif kind == "step":
                     _, i, n, title = msg
                     self.root.title(f"{common.APP_NAME} - [{i + 1}/{n}] {title}")
@@ -1520,8 +1693,9 @@ class App(Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [waw-deco
             self._pc_stop_all_servers()
         try:
             self._save()
-        except Exception:  # noqa: BLE001 - never keep the window from closing
-            pass
+        except Exception as e:  # noqa: BLE001 - never keep the window from closing
+            self.log.exception(e, "saving the settings on close")   # [acct2-ocr] 2026-11-22
+        self.log.debug("window closed" + (" (a job was canceled)" if job else ""))
         self.root.destroy()
 
 
@@ -1534,9 +1708,29 @@ def run(launcher: bool = False) -> int:
             ctypes.windll.shcore.SetProcessDpiAwareness(1)
         except (AttributeError, OSError):
             pass
+    # [acct2-ocr] 2026-11-22 this start's session log (cod3_waw_setup.main starts it first; this is for a start
+    # without it), with the window's own versions
+    common.start_session_log("the window" + (" (launcher)" if launcher else ""))
     root = tk.Tk()
+    common.session_info(f"window: Tk {root.tk.call('info', 'patchlevel')}, windowing system "
+                        f"{root.tk.call('tk', 'windowingsystem')}, screen {root.winfo_screenwidth()}x"
+                        f"{root.winfo_screenheight()}, setup tool {TOOL_VERSION}")
     apply_desktop_scale(root)
     theme.setup_fonts(root, windows=IS_WINDOWS)
-    App(root, launcher)
+    app = App(root, launcher)
+
+    def tk_error(kind, value, tb):
+        """An error in a button's or a timer's code: Tk only printed it to the console (often hidden). Now the
+        log has it, with its traceback, and the status line says so."""
+        import traceback as _tb
+        app.log.error(f"In the window's code: {kind.__name__}: {value}\n" +
+                      "".join(_tb.format_exception(kind, value, tb)).rstrip())
+        try:
+            app.v_status.set(f"Something went wrong ({kind.__name__}: {value}); the Log page has the details.")
+        except Exception:   # noqa: BLE001 - the window may be half built
+            pass
+    root.report_callback_exception = tk_error
+    app.log.debug(f"settings: {SETTINGS_FILE}; config folder {app.config_dir}")
     root.mainloop()
+    common.end_session_log(0)
     return 0

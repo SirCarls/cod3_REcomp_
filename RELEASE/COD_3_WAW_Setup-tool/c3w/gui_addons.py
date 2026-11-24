@@ -9,7 +9,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Optional
 
-from . import addons, common, disc_needs, theme
+from . import addons, common, disc_needs, theme, widgets
 from .widgets import hint, px, tip
 
 PACK_TYPES = [("Map pack downloads", "*.zip *.ZIP"), ("Xbox 360 packages", "*")]
@@ -33,8 +33,8 @@ class Addons:
                 ("Folder...", self._add_addons_folder, "Pick a folder holding map pack downloads or packages."),
                 ("Remove...", self._remove_addon, "Remove a map pack you added.")):
             b = ttk.Button(f, text=text, command=cmd)
-            b.pack(side="left", padx=(px(4), 0))
             tip(b, help_text)
+        widgets.flow(f, gap=4)   # [acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues") they wrap on a narrow page
         hint(parent, "Your Call of Duty 3 map pack downloads (Champs, Valor, Bravo), for multiplayer: only a game "
                      "built from the USA/Europe disc has it. They're only read: copied into the game's userdata, "
                      "never run. Only the known packs are added.").grid(

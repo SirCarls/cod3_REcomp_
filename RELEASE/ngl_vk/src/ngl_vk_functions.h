@@ -151,6 +151,16 @@
     F(vkCmdClearColorImage)
 
 /* VK_KHR_swapchain, for a window of ngl_vk's own (may be missing otherwise) */
+/* [acct2-bro] 2026-11-22 rn114: occlusion queries, for ngl_vk_effect_count (core Vulkan; a device without them
+ * only goes without the count) */
+#define NGL_VK_QUERY_FUNCTIONS(F) \
+    F(vkCreateQueryPool) \
+    F(vkDestroyQueryPool) \
+    F(vkCmdResetQueryPool) \
+    F(vkCmdBeginQuery) \
+    F(vkCmdEndQuery) \
+    F(vkGetQueryPoolResults)
+
 #define NGL_VK_SWAPCHAIN_FUNCTIONS(F) \
     F(vkCreateSwapchainKHR) \
     F(vkDestroySwapchainKHR) \
@@ -168,6 +178,7 @@ NGL_VK_INSTANCE_FUNCTIONS(NGL_VK_POINTER)
 NGL_VK_SURFACE_FUNCTIONS(NGL_VK_POINTER)
 NGL_VK_DEVICE_FUNCTIONS(NGL_VK_POINTER)
 NGL_VK_SWAPCHAIN_FUNCTIONS(NGL_VK_POINTER)
+NGL_VK_QUERY_FUNCTIONS(NGL_VK_POINTER)       /* [acct2-bro] rn114 */
 #undef NGL_VK_POINTER
 
 /* How a pointer is found: through the instance (VK_NULL_HANDLE for the global ones), or through the device */
@@ -273,6 +284,7 @@ static int ngl_vk_load_device(VkDevice device)
         return -1;
     NGL_VK_DEVICE_FUNCTIONS(NGL_VK_FROM_DEVICE)
     NGL_VK_SWAPCHAIN_FUNCTIONS(NGL_VK_FROM_DEVICE)
+    NGL_VK_QUERY_FUNCTIONS(NGL_VK_FROM_DEVICE)  /* [acct2-bro] rn114 (missing ones: no effect count) */
     NGL_VK_DEVICE_FUNCTIONS(NGL_VK_NEEDED)
     if (missing) {
         fprintf(stderr, "[ngl_vk] the Vulkan device has no %s\n", missing);

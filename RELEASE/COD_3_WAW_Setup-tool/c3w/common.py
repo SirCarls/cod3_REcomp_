@@ -22,10 +22,12 @@ import sys
 import tarfile
 import threading
 import time
+import traceback   # [acct2-ocr] 2026-11-22 the detailed log: tracebacks
 import urllib.request
 import zipfile
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime   # [acct2-ocr] 2026-11-22 the detailed log: the date and time zone in its header
 from pathlib import Path
 from typing import Callable, Iterable, List, Optional, Sequence
 
@@ -360,6 +362,14 @@ def free_space(path: Path) -> int:
     return shutil.disk_usage(p).free
 
 
+def free_text(path: Optional[Path]) -> str:
+    """[acct2-ocr] 2026-11-22 the free space where `path` is, for a log line ("?" when it can't be read)."""
+    try:
+        return human(free_space(Path(path))) if path else "?"
+    except (OSError, ValueError):
+        return "?"
+
+
 def dir_size(path: Path) -> int:
     total = 0
     for root, _, files in os.walk(path):
@@ -469,7 +479,63 @@ def safe_rmtree(target: Path, allowed_root: Path, protected: Iterable[Path], log
 
 # ---------------------------------------------------------------------------
 # Logging (thread-safe, fans out to the GUI / console and a log file)
+#
+# [acct2-ocr] 2026-11-22 (owner 00:00 "Please make the setup tool logging better and more verbose so I would be
+# able to figure out what's wrong"): every start of the tool (the window or a command) writes its own session log,
+# <config>/logs/tool-<date>-<time>-<pid>.log (the last KEEP_SESSION_LOGS), with every message of every Log, the
+# details (debug) included, times to the millisecond, the full traceback of every error and crash, and what each
+# command and download did. The screen shows the details only when asked (the Log page's Details box, --verbose, or
+# COD3_SETUP_VERBOSE=1); the files always have them.
 # ---------------------------------------------------------------------------
+VERBOSE_ENV = "COD3_SETUP_VERBOSE"
+KEEP_SESSION_LOGS = 20
+SESSION_LOGS = "logs"            # under config_dir()
+SESSION_PREFIX = "tool-"
+_SECRET_WORDS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "API_KEY", "CREDENTIAL", "AUTH")
+_session: dict = {"file": None, "fd": None, "lock": threading.Lock(), "last_progress": 0.0}
+_verbose = {"on": os.environ.get(VERBOSE_ENV, "").strip() not in ("", "0", "false", "no", "off")}
+
+
+def set_verbose(on: bool) -> None:
+    """Show the details (debug lines) on the console too."""
+    _verbose["on"] = bool(on)
+
+
+def verbose() -> bool:
+    return _verbose["on"]
+
+
+def log_stamp() -> str:
+    """The time a log line starts with: 18:10:43.217."""
+    return datetime.now().strftime("%H:%M:%S.%f")[:-3]
+
+
+def session_log() -> Optional[Path]:
+    """This run's session log, or None before start_session_log()."""
+    return _session["file"]
+
+
+def _session_write(kind: str, text: str, skip: Optional[Path] = None) -> None:
+    path = _session["file"]
+    if not path or not text or (skip is not None and skip == path):
+        return
+    if kind == "progress":   # a progress line a second is plenty in the session log
+        now = time.monotonic()
+        if now - _session["last_progress"] < 1.0:
+            return
+        _session["last_progress"] = now
+    with _session["lock"]:
+        try:
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"{log_stamp()} [{kind}] {text}\n")
+        except OSError:
+            pass
+
+
+def _masked(name: str, value: str) -> str:
+    return "<hidden>" if any(w in name.upper() for w in _SECRET_WORDS) else value
+
+
 @dataclass
 class Log:
     sinks: list = field(default_factory=list)          # callables(kind, text, frac)
@@ -482,9 +548,10 @@ class Log:
                 try:
                     self.file.parent.mkdir(parents=True, exist_ok=True)
                     with open(self.file, "a", encoding="utf-8", errors="replace") as f:
-                        f.write(f"{time.strftime('%H:%M:%S')} [{kind}] {text}\n")
+                        f.write(f"{log_stamp()} [{kind}] {text}\n")
                 except OSError:
                     pass
+            _session_write(kind, text, skip=self.file)
             for sink in list(self.sinks):
                 try:
                     sink(kind, text, frac)
@@ -509,6 +576,143 @@ class Log:
     def progress(self, frac: Optional[float], text: str = "") -> None:
         self._emit("progress", text, frac)
 
+    def debug(self, text: str) -> None:
+        """A detail for finding out what went wrong: always in the log files, on screen when asked."""
+        self._emit("debug", text)
+
+    def exception(self, e: BaseException, context: str = "") -> None:
+        """An error with where it happened: a SetupError (the tool's own message, already worded for the user)
+        gets its traceback as details; anything else is logged as an error with its whole traceback."""
+        tb = "".join(traceback.format_exception(type(e), e, e.__traceback__)).rstrip()
+        lead = f"{context}: " if context else ""
+        if isinstance(e, (SetupError, Cancelled)):
+            self.debug(f"{lead}{type(e).__name__} raised here:\n{tb}")
+        else:
+            self.error(f"{lead}unexpected {type(e).__name__}: {e}\n{tb}")
+
+
+def start_session_log(what: str, argv: Optional[Sequence[str]] = None, header: Sequence[str] = (),
+                      folder: Optional[Path] = None) -> Optional[Path]:
+    """Starts this run's session log (once; a second call returns the first file): the header says what started,
+    with which Python on which system, from where and with what environment, and the crash hooks are put in
+    (install_crash_logging). Old session logs past KEEP_SESSION_LOGS are removed. None when no folder can be
+    written."""
+    if _session["file"]:
+        return _session["file"]
+    try:
+        logs = Path(folder) if folder else config_dir() / SESSION_LOGS
+        logs.mkdir(parents=True, exist_ok=True)
+        path = logs / f"{SESSION_PREFIX}{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}.log"
+        path.touch()
+    except OSError:
+        return None
+    _session["file"] = path
+    for old in sorted(logs.glob(f"{SESSION_PREFIX}*.log"))[:-KEEP_SESSION_LOGS]:
+        try:
+            old.unlink()
+        except OSError:
+            pass
+    now = datetime.now().astimezone()
+    lines = [f"---- session ---- {what}, started {now.strftime('%Y-%m-%d %H:%M:%S %Z (UTC%z)')}",
+             f"command line: {' '.join(_quote(str(a)) for a in (argv if argv is not None else sys.argv))}",
+             f"folder: {os.getcwd()}",
+             f"python: {sys.version.split()[0]} ({sys.executable}); {platform.platform()}; "
+             f"{platform.machine()}; pid {os.getpid()}"
+             + (f"; Wine {wine_version()}" if UNDER_WINE else ""),
+             f"details on screen: {'yes' if verbose() else 'no'} (the files always have them; "
+             f"{VERBOSE_ENV}=1 or --verbose shows them)",
+             f"this log: {path}"]
+    lines += list(header)
+    names = ("DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "XDG_CURRENT_DESKTOP", "DESKTOP_SESSION", "LANG",
+             "LC_ALL", "LANGUAGE", "SHELL", "TERM", "PATH", "PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV",
+             "CONDA_PREFIX", "VULKAN_SDK", "VK_ICD_FILENAMES", "LD_LIBRARY_PATH", "APPIMAGE", "WSL_DISTRO_NAME",
+             "C3W_WINE", "WINEPREFIX", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS", "SystemDrive",
+             "TEMP", "TMPDIR", VERBOSE_ENV)
+    env = [f"  {n}={_masked(n, os.environ[n])}" for n in names if n in os.environ]
+    if env:
+        lines.append("environment:\n" + "\n".join(env))
+    _session_write("info", "\n".join(lines))
+    install_crash_logging()
+    return path
+
+
+def install_crash_logging() -> None:
+    """Every error nobody caught goes to the session log with its traceback: the main thread's
+    (sys.excepthook), a worker thread's (threading.excepthook) and Python's own crashes (faulthandler: a
+    segmentation fault or a hang killed by a signal, written straight into the log). The hooks hand on to the
+    ones before them, so nothing else changes."""
+    if _session.get("hooks"):
+        return
+    _session["hooks"] = True
+    before_sys = sys.excepthook
+    _session["before"] = (sys.excepthook, threading.excepthook, None)
+
+    def sys_hook(kind, value, tb):
+        if not issubclass(kind, KeyboardInterrupt):
+            _session_write("error", "uncaught " + "".join(traceback.format_exception(kind, value, tb)).rstrip())
+        before_sys(kind, value, tb)
+    sys.excepthook = sys_hook
+    before_thread = threading.excepthook
+
+    def thread_hook(args):
+        if args.exc_type is not SystemExit:
+            name = args.thread.name if args.thread else "?"
+            _session_write("error", f"uncaught in thread {name}: " + "".join(
+                traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)).rstrip())
+        before_thread(args)
+    threading.excepthook = thread_hook
+    try:
+        import faulthandler
+        if _session["file"]:
+            _session["fd"] = open(_session["file"], "a", encoding="utf-8", errors="replace")
+            faulthandler.enable(file=_session["fd"], all_threads=True)
+    except (OSError, RuntimeError, ValueError, AttributeError):
+        pass
+    try:
+        import warnings
+        before_warn = warnings.showwarning
+
+        def warn_hook(message, category, filename, lineno, file=None, line=None):
+            _session_write("debug", f"python warning: {category.__name__}: {message} ({filename}:{lineno})")
+            before_warn(message, category, filename, lineno, file, line)
+        warnings.showwarning = warn_hook
+        _session["before"] = _session["before"][:2] + (before_warn,)
+    except Exception:   # noqa: BLE001 - only a convenience
+        pass
+
+
+def stop_session_log() -> None:
+    """Ends the session log here: the hooks put back as they were, faulthandler off and its file closed (the
+    tests start and stop sessions of their own)."""
+    before = _session.pop("before", None)
+    if before:
+        sys.excepthook, threading.excepthook = before[0], before[1]
+        if before[2] is not None:
+            import warnings
+            warnings.showwarning = before[2]
+    if _session.get("fd") is not None:
+        try:
+            import faulthandler
+            faulthandler.disable()
+        except (RuntimeError, ValueError):
+            pass
+        try:
+            _session["fd"].close()
+        except OSError:
+            pass
+    _session.update(file=None, fd=None, hooks=False, last_progress=0.0)
+
+
+def session_info(text: str) -> None:
+    """A line for the session log only (not on screen): versions and such."""
+    _session_write("info", text)
+
+
+def end_session_log(code: object = None) -> None:
+    """The session's last line: how it ended."""
+    if _session["file"]:
+        _session_write("info", f"---- session ended ({'exit code ' + str(code) if code is not None else 'closed'})")
+
 
 _console_state = {"progress": False}
 
@@ -520,6 +724,8 @@ def set_console_line_mode(on: bool) -> None:
 
 
 def console_sink(kind: str, text: str, frac: Optional[float]) -> None:
+    if kind == "debug" and not verbose():   # [acct2-ocr] 2026-11-22 details: in the log files, here only when asked
+        return
     if _console_state.get("lines"):
         if kind == "progress":
             if not text:
@@ -531,7 +737,8 @@ def console_sink(kind: str, text: str, frac: Optional[float]) -> None:
             pct = f"{frac * 100:5.1f}% " if frac is not None else "  0.0% "
             sys.stdout.write(f"  {pct}{text[:100]}\n")
         else:
-            prefix = {"step": "==> ", "warn": "WARNING: ", "error": "ERROR: ", "out": "    "}.get(kind, "")
+            prefix = {"step": "==> ", "warn": "WARNING: ", "error": "ERROR: ", "out": "    ",
+                      "debug": "  . "}.get(kind, "")
             sys.stdout.write(prefix + text + "\n")
         sys.stdout.flush()
         return
@@ -543,7 +750,7 @@ def console_sink(kind: str, text: str, frac: Optional[float]) -> None:
             sys.stdout.flush()
             _console_state["progress"] = True
         return
-    prefix = {"step": "\n==> ", "warn": "WARNING: ", "error": "ERROR: ", "out": "    "}.get(kind, "")
+    prefix = {"step": "\n==> ", "warn": "WARNING: ", "error": "ERROR: ", "out": "    ", "debug": "  . "}.get(kind, "")
     # Progress is redrawn in place with \r; every other message starts on a
     # fresh line.
     sys.stdout.write("\n" + prefix + text)
@@ -576,6 +783,8 @@ class Runner:
         self.check_cancel()
         cmd = [str(c) for c in cmd]
         self.log.info("$ " + " ".join(_quote(c) for c in cmd))
+        self._log_context(cwd, env)   # [acct2-ocr] 2026-11-22 where and with what it ran
+        started = time.monotonic()
         kwargs: dict = dict(cwd=str(cwd) if cwd else None, env=env, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
         if IS_WINDOWS:
@@ -585,8 +794,10 @@ class Runner:
         try:
             proc = subprocess.Popen(cmd, **kwargs)
         except FileNotFoundError:
+            self.log.debug(f"not started: {cmd[0]} isn't there (PATH: {(env or os.environ).get('PATH', '')})")
             raise SetupError(f"Program not found: {cmd[0]}")
         except OSError as e:
+            self.log.debug(f"not started: {type(e).__name__}: {e}")
             if not IS_WINDOWS:
                 raise
             # Windows: an antivirus that blocks or quarantines the program,
@@ -597,10 +808,13 @@ class Runner:
         watcher = threading.Thread(target=self._watch, args=(proc,), daemon=True)
         watcher.start()
         assert proc.stdout is not None
+        self.log.debug(f"started, pid {proc.pid}")
         tail: deque = deque(maxlen=400)   # the last lines, for failure_hint
+        lines = 0
         for raw in iter(proc.stdout.readline, b""):
             line = raw.decode("utf-8", errors="replace").rstrip()
             tail.append(line)
+            lines += 1
             if line_filter:
                 line_filter(line)
             if not quiet and line:
@@ -608,8 +822,20 @@ class Runner:
         proc.stdout.close()
         rc = proc.wait()
         self._proc = None
+        took = time.monotonic() - started
         if self.cancel.is_set():
+            self.log.debug(f"canceled after {took:.1f} s: {cmd[0]}")
             raise Cancelled()
+        self.log.debug(f"exit code {rc}{_rc_meaning(rc)} after {took:.1f} s, {lines} lines of output: "
+                       f"{Path(cmd[0]).name}")
+        if rc != 0:
+            # A quiet command's output isn't in the log above: its end is, now that it failed.
+            shown = [x for x in tail if x][-60:]
+            if quiet and shown:   # a warning when it stops the job, a detail when the caller expects it may fail
+                (self.log.warn if check else self.log.debug)(
+                    f"{Path(cmd[0]).name} ended with exit code {rc}; its last {len(shown)} lines:\n"
+                    + "\n".join(shown))
+            self.log.debug("the whole command: " + " ".join(_quote(c) for c in cmd))
         if check and rc != 0:
             hint = self.failure_hint(list(tail)) if self.failure_hint else ""
             raise SetupError(f"Command failed (exit code {rc}): {' '.join(_quote(c) for c in cmd[:6])}"
@@ -619,6 +845,9 @@ class Runner:
 
     def capture(self, cmd: Sequence, cwd: Optional[Path] = None, env: Optional[dict] = None,
                 timeout: float = 60) -> tuple[int, str]:
+        # [acct2-ocr] 2026-11-22 details: what was asked, its answer's start and how it ended
+        text = " ".join(_quote(str(c)) for c in cmd)
+        started = time.monotonic()
         try:
             kwargs: dict = {}
             if IS_WINDOWS:
@@ -626,15 +855,55 @@ class Runner:
             p = subprocess.run([str(c) for c in cmd], cwd=str(cwd) if cwd else None, env=env,
                                capture_output=True, timeout=timeout, stdin=subprocess.DEVNULL, **kwargs)
             out = (p.stdout or b"").decode("utf-8", "replace") + (p.stderr or b"").decode("utf-8", "replace")
+            first = [x for x in out.splitlines() if x.strip()][:8]
+            self.log.debug(f"$ {text}{f'  (in {cwd})' if cwd else ''}: exit code {p.returncode}"
+                           f"{_rc_meaning(p.returncode)} after {time.monotonic() - started:.1f} s"
+                           + ("".join("\n  | " + x[:300] for x in first)))
             return p.returncode, out
         except (OSError, subprocess.TimeoutExpired) as e:
+            self.log.debug(f"$ {text}: not run or too slow ({type(e).__name__}: {e})")
             return -1, str(e)
+
+    def _log_context(self, cwd: Optional[Path], env: Optional[dict]) -> None:
+        """[acct2-ocr] 2026-11-22 the details of a command about to run: its folder and what its environment
+        changes (secrets hidden)."""
+        self.log.debug(f"in {cwd if cwd else os.getcwd()}")
+        if env is None:
+            return
+        base = os.environ
+        changed = [f"{k}={_masked(k, str(v))}" for k, v in sorted(env.items()) if base.get(k) != v]
+        removed = sorted(k for k in base if k not in env)
+        if changed:
+            self.log.debug("environment set: " + "; ".join(changed))
+        if removed:
+            self.log.debug("environment without: " + ", ".join(removed))
 
     def _watch(self, proc: subprocess.Popen) -> None:
         while proc.poll() is None:
             if self.cancel.wait(0.5):
                 kill_tree(proc)
                 return
+
+
+def _rc_meaning(rc: int) -> str:
+    """[acct2-ocr] 2026-11-22 what an exit code says when it isn't a plain number: a signal (Linux) or a
+    Windows status (an access violation, a missing DLL)."""
+    if -64 <= rc < 0 and not IS_WINDOWS:
+        try:
+            return f" (killed by {signal.Signals(-rc).name})"
+        except ValueError:
+            return f" (killed by signal {-rc})"
+    if IS_WINDOWS or rc > 0xFFFF or rc < -0xFFFF:
+        status = rc & 0xFFFFFFFF
+        known = {0xC0000005: "access violation", 0xC0000135: "a DLL it needs is missing",
+                 0xC0000139: "a DLL it needs is the wrong version", 0xC000013A: "stopped with Ctrl+C",
+                 0xC00000FD: "stack overflow", 0xC0000409: "stack buffer overrun", 0xC000001D: "illegal instruction",
+                 0xC0000142: "a DLL failed to start", 0x40010004: "killed (debugger or task manager)"}
+        if status in known:
+            return f" (0x{status:08X}: {known[status]})"
+        if status >= 0xC0000000:
+            return f" (0x{status:08X})"
+    return ""
 
 
 def kill_tree(proc: subprocess.Popen) -> None:
@@ -724,6 +993,8 @@ def download(url: str, dest: Path, log: Log, cancel: threading.Event, sha256: Op
     dest = Path(dest)
     if dest.exists() and dest.stat().st_size > 0:
         if not sha256 or _sha256_file(dest) == sha256.lower():
+            log.debug(f"{dest.name}: already downloaded ({human(dest.stat().st_size)}"
+                      f"{', checksum matches' if sha256 else ', no checksum to compare'}): {dest}")
             return dest
         log.warn(f"{dest.name} doesn't match its checksum; downloading it again.")
         dest.unlink()
@@ -731,12 +1002,18 @@ def download(url: str, dest: Path, log: Log, cancel: threading.Event, sha256: Op
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".part")
     log.info(f"Downloading {url}")
+    log.debug(f"to {dest}; expected sha256 {sha256 or '(none given)'}; "
+              f"free there {free_text(dest.parent)}")
     req = urllib.request.Request(url, headers={"User-Agent": f"{APP_ID}/1.0"})
     h = hashlib.sha256()
+    started = time.monotonic()
+    done = 0
     try:
         with urllib.request.urlopen(req, timeout=60) as r, open(tmp, "wb") as f:
             total = int(r.headers.get("Content-Length") or 0)
-            done = 0
+            final = r.geturl() if hasattr(r, "geturl") else url
+            log.debug(f"answer: HTTP {getattr(r, 'status', '?')}, {human(total) if total else 'size not given'}"
+                      f"{f', from {final}' if final != url else ''}")
             last = 0.0
             while True:
                 if cancel.is_set():
@@ -760,10 +1037,17 @@ def download(url: str, dest: Path, log: Log, cancel: threading.Event, sha256: Op
     # (IncompleteRead when a chunked reply ends early: an HTTPException, not an OSError, so it was a traceback).
     except (OSError, ValueError, http.client.HTTPException) as e:
         tmp.unlink(missing_ok=True)
+        log.debug(f"download stopped after {human(done)} and {time.monotonic() - started:.1f} s: "
+                  f"{type(e).__name__}: {e}")
         raise SetupError(f"Download failed: {url} ({e}). Check the internet connection and build again.")
-    if sha256 and h.hexdigest().lower() != sha256.lower():
+    took = max(time.monotonic() - started, 1e-3)
+    got = h.hexdigest().lower()
+    if sha256 and got != sha256.lower():
         tmp.unlink(missing_ok=True)
+        log.debug(f"checksum: got sha256 {got}, expected {sha256.lower()}")
         raise SetupError(f"Checksum mismatch for {url}")
+    log.debug(f"downloaded {human(done)} in {took:.1f} s ({human(done / took)}/s); sha256 {got}"
+              f"{' (matches)' if sha256 else ''}")
     tmp.replace(dest)
     return dest
 
@@ -934,10 +1218,28 @@ def start_and_collect(args: Sequence[str], on_exit: Optional[Callable[[int], Non
     list as a "zombie" until this tool closes: the game looked as if it was
     still running (owner, 2026-10-16: "ghost application"). `on_exit` gets
     the exit code (on that thread)."""
-    proc = subprocess.Popen(list(args), **kwargs)
+    # [acct2-ocr] 2026-11-22 the session log says what was started (the game from Play, a file manager), from
+    # where, and how it ended
+    shown = " ".join(_quote(str(a)) for a in args)
+    _session_write("info", f"started: {shown}" + (f"  (in {kwargs['cwd']})" if kwargs.get("cwd") else ""))
+    env = kwargs.get("env")
+    if env is not None:
+        changed = [f"{k}={_masked(k, str(v))}" for k, v in sorted(env.items()) if os.environ.get(k) != v]
+        if changed:
+            _session_write("debug", "its environment set: " + "; ".join(changed))
+    try:
+        proc = subprocess.Popen(list(args), **kwargs)
+    except (OSError, ValueError) as e:
+        _session_write("error", f"couldn't start {args[0]}: {type(e).__name__}: {e}")
+        raise
+    started = time.monotonic()
+    _session_write("debug", f"pid {proc.pid}")
 
     def collect() -> None:
         code = proc.wait()
+        _session_write("info" if code == 0 else "warn",
+                       f"{Path(str(args[0])).name} (pid {proc.pid}) ended: exit code {code}{_rc_meaning(code)} after "
+                       f"{time.monotonic() - started:.0f} s")
         if on_exit:
             try:
                 on_exit(code)

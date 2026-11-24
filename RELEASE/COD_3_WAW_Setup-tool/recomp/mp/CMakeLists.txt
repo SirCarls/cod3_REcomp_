@@ -77,6 +77,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/native_memory_shadow.cpp  # [memory-360] 2026-11-11 stage 3's test: which arena-0 allocations reach the graphics side (cod3_native_memory_shadow, off; moves nothing); both programs
     ${COD3_SRC}/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame (logging only)
     ${COD3_SRC}/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame drawn by ngl_vk beside the GPU emulation (a check)
+    ${COD3_SRC}/game/ngl_camo.cpp  # [acct2-bro] 2026-11-22 Camo lane: camos on the first-person guns (native)
     ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
@@ -86,6 +87,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/speedtree_fix.cpp  # [speedtree] the trees' buffers released once, and only those made
     ${COD3_SRC}/game/thread_profiler.cpp
     ${COD3_SRC}/game/ultrawide.cpp
+    ${COD3_SRC}/game/console_budgets.cpp  # [acct2-decomp] 2026-11-22 detail and grass drawn farther than on the 360
     ${COD3_SRC}/game/voice_language.cpp  # [acct2-ocr] Voices from another disc (mp/ banks), heard from the next map
     ${COD3_SRC}/game/text_language.cpp  # [acct2-ocr] the game's text in another language, switchable (its own hook of cod3mp's lookup)
     ${COD3_SRC}/game/text_rekey.cpp  # [acct2-main] 2026-11-15 a text set from a key follows a change of the text language
@@ -137,6 +139,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/ui/crosshair_texture.cpp  # [acct2-ocr] the game's crosshair drawn sharp (task 125)
     ${COD3_SRC}/ui/problem_log.cpp
     ${COD3_SRC}/ui/server_tab.cpp  # [acct2-ocr] F2 > Game > Server in cod3mp (matches this PC plays alone)
+    ${COD3_SRC}/ui/camo_tab.cpp  # [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos, per player and per gun
     ${COD3_SRC}/ui/theme.cpp
     ${COD3_SRC}/ui/waw_dvars.cpp
 )

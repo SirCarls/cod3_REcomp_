@@ -1,0 +1,17 @@
+diff --git a/src/system/CMakeLists.txt b/src/system/CMakeLists.txt
+--- a/src/system/CMakeLists.txt
++++ b/src/system/CMakeLists.txt
+@@ -123,3 +123,13 @@
+     )
+     target_compile_definitions(rexruntime PUBLIC REX_HAS_VULKAN=1)
+ endif()
++
++# [acct2-bro] 2026-11-22 (patch 0317): Dear ImGui is built into rexruntime.dll (thirdparty's imgui object library,
++# through rexui) and WINDOWS_EXPORT_ALL_SYMBOLS exports its data with its functions. A program that uses that data
++# (ImGuiTextBuffer::EmptyString through c_str(), GImGui) must declare it __declspec(dllimport) on Windows: the MSVC
++# ABI's linker (lld-link, link.exe) has no automatic import of data, so the game's link stopped there (the user
++# reports of 2026-11-23); MinGW's linker imports data by itself, which hid it in the builds made on Linux. Every
++# target that links rexruntime sees IMGUI_API as dllimport; the SDK's own code inside the DLL keeps it empty.
++if(WIN32)
++    target_compile_definitions(rexruntime INTERFACE "IMGUI_API=__declspec(dllimport)")
++endif()

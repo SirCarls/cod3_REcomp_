@@ -613,6 +613,10 @@ def apply(root, theme_id: str = DEFAULT_THEME, accent: str = "",
     s.configure("Big.Accent.TButton", font="C3WAction", padding=(px(26), px(9)))
     s.configure("Big.TButton", font="C3WAction", padding=(px(20), px(9)))
     s.configure("Big.Ghost.TButton", font="C3WAction", padding=(px(18), px(9)))
+    # [acct2-ocr] 2026-11-22 Sub-tabs (Play > Game settings): outlined, the selected one filled with the accent;
+    # one font and padding for both, so a tab keeps its width when chosen (the row doesn't shift).
+    s.configure("SubTab.Ghost.TButton", font="C3WBold", padding=(px(14), px(6)))
+    s.configure("SubTab.Accent.TButton", font="C3WBold", padding=(px(14), px(6)))
     # Status labels on the Port status pages.
     for name in ("good", "warn", "info", "dim"):
         s.configure(f"Chip{name.title()}.TLabel", background=c[f"chip_{name}_bg"], foreground=c[f"chip_{name}"],

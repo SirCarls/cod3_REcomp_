@@ -31,9 +31,24 @@ class Drawing {
   Drawing& operator=(const Drawing&) = delete;
 };
 
+// [acct2-ocr] 2026-11-22 Around a game function whose 2D pictures are to be drawn nowhere (the scope's picture and
+// reticle with that player's Scopes set to Mine or None, ui/hud_overlay.cpp; the game's thread): while one is alive
+// with `on`, each quad handed to nglListAddQuad has its four corners put on one point off the screen for that call, so
+// nothing is drawn, and put back after the list copies it (QuadSwap). The game still works everything out itself.
+class Hiding {
+ public:
+  explicit Hiding(bool on = true);
+  ~Hiding();
+  Hiding(const Hiding&) = delete;
+  Hiding& operator=(const Hiding&) = delete;
+
+ private:
+  bool on_ = false;
+};
+
 // In nglListAddQuad's hook, before the list copies `quad` (r3): while Drawing, a quad sampling a picture this makes
 // sharp is pointed at the sharp copy until this goes (after the copy). `hud_scale`: the factor ultrawide's mapping
-// squeezes the HUD's x by (0 when it doesn't).
+// squeezes the HUD's x by (0 when it doesn't). [acct2-ocr] 2026-11-22 while Hiding, the quad is drawn nowhere instead.
 class QuadSwap {
  public:
   QuadSwap(uint8_t* base, uint32_t quad, float hud_scale);
@@ -45,6 +60,8 @@ class QuadSwap {
   uint8_t* base_ = nullptr;
   uint32_t quad_ = 0;
   uint32_t texture_ = 0;   // the game's, put back; 0: nothing changed
+  bool hidden_ = false;    // [acct2-ocr] 2026-11-22 Hiding: the corners below put back
+  float corners_[8] = {};  // x, y of each of the four vertices
 };
 
 }  // namespace cod3::crosshair_texture

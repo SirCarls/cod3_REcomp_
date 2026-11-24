@@ -54,12 +54,12 @@ bool UsesGap(int st) { return st != kDynamicCircle && st != kDotOnly; }
 bool UsesT(int st) { return UsesLength(st); }
 bool UsesDot(int st) { return st != kDotOnly; }
 bool UsesSpreadLimit(int st) { return st == kDynamicCross || st == kDynamicCircle || st == kDynamicQuad; }
-// [acct2-bro] 2026-11-15 (owner 17:15: "the T style has no dynamic settings. Please take a look at CS2 again"):
-// with T style on, a style that offers it is drawn still and shows none of the dynamic rows (the spread limit, the
-// split, how far it opens); T style itself only applies to the styles that offer it (CS2: "removes the top bar on
-// cross styles").
+// T style only applies to the styles that offer it (CS2: "removes the top bar on cross styles"). [acct2-ocr]
+// 2026-11-22 (owner 02:22: "the T style has dynamic modes within CS that should also be in cod3"): a dynamic style
+// moves with the spread with T style on too, as CS2's own code draws it (0x1bc3820 leaves out only the top bar), and
+// shows its dynamic rows; acct2-bro's 11-15 rule (still with T style) is gone.
 bool TOn(const Settings& s) { return s.t_style && UsesT(s.style); }
-bool MovesWithSpread(const Settings& s) { return StyleIsDynamic(s.style) && !TOn(s); }
+bool MovesWithSpread(const Settings& s) { return StyleIsDynamic(s.style); }
 
 // ------------------------------------------------------------------------------------------------- text
 
@@ -175,7 +175,8 @@ void Coverage(const Shape& sh, int px, int py, float* fill_cov, float* outline_c
     const float L = std::max(len, 1.0f);
     const float hs = sh.span * 0.5f;
     const float og = Mix(sh.grow0, sh.grow1, h);
-    // [acct2-ocr] which of the four arcs are drawn (CS2's shader draws all four; the T style leaves out the top two)
+    // [acct2-ocr] which of the four arcs are drawn (CS2's shader draws all four, whatever T style is; a mask of the
+    // port's own)
     const int bit = quarter >= 0.0f ? (quarter < 0.5f ? 1 : 2) : (quarter > -1.5f ? 8 : 4);
     if (!(sh.arcs & bit)) {
       *fill_cov = 0.0f;
@@ -288,6 +289,8 @@ std::string Text(const Settings& s) {
   add("sniper_inaccuracy", b(s.sniper_show_inaccuracy));
   add("sniper_rezoom", b(s.sniper_auto_rezoom));
   add("sniper_width", std::to_string(s.sniper_width));
+  add("arc", b(s.grenade_arc));  // [acct2-ocr] 2026-11-22
+  add("arc_bounces", std::to_string(s.grenade_arc_bounces));
   add("color_from", std::to_string(s.color_from));
   add("color_normal", ColorText(s.case_color[kCaseNormal]));
   add("color_enemy", ColorText(s.case_color[kCaseEnemy]));
@@ -369,6 +372,8 @@ Settings FromText(std::string_view text) {
     else if (key == "sniper_inaccuracy") s.sniper_show_inaccuracy = on;
     else if (key == "sniper_rezoom") s.sniper_auto_rezoom = on;
     else if (key == "sniper_width") s.sniper_width = in(1, 6);
+    else if (key == "arc") s.grenade_arc = on;  // [acct2-ocr] 2026-11-22
+    else if (key == "arc_bounces") s.grenade_arc_bounces = in(0, 3);
     else if (key == "color_from") s.color_from = in(0, 2);
     else if (key == "color_normal") ParseColor(val, &s.case_color[kCaseNormal]);
     else if (key == "color_enemy") ParseColor(val, &s.case_color[kCaseEnemy]);
@@ -805,6 +810,13 @@ bool StyleUsesT(int style) { return UsesT(style); }
 bool StyleUsesDot(int style) { return UsesDot(style); }
 
 void SetCaps(const Caps& caps) { S().caps = caps; }
+
+// [acct2-ocr] 2026-11-22 the grenade arc's block (a host's veto), set by the game's code, read by the page
+namespace {
+std::atomic<const char*> g_arc_blocked{nullptr};
+}  // namespace
+void SetGrenadeArcBlocked(const char* why) { g_arc_blocked.store(why, std::memory_order_relaxed); }
+const char* GrenadeArcBlocked() { return g_arc_blocked.load(std::memory_order_relaxed); }
 const Caps& GetCaps() { return S().caps; }
 
 // ------------------------------------------------------------------------------------------------- public: placing
@@ -912,8 +924,8 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
   };
   const float cx = line_for(at_x), cy = line_for(at_y);
 
-  // The spread in pixels, as CS2 rounds it (its +0xb0), and at rest (+0xac). A game that gives none, or a style kept
-  // still (T style, [acct2-bro] 11-15), sits at its gap, at rest.
+  // The spread in pixels, as CS2 rounds it (its +0xb0), and at rest (+0xac). A game that gives none sits at its gap,
+  // at rest.
   const bool moving = MovesWithSpread(s) && caps.spread;
   float spread, rest;
   if (moving) {
@@ -1009,7 +1021,8 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
   };
 
   // While a grenade is out: CS2 keeps the crosshair only when asked to.
-  const bool grenade_out = caps.grenades && v.grenade >= 0 && v.grenade < kGrenadeCount;
+  const bool grenade_out = caps.grenades && v.grenade >= 0 && v.grenade < kGrenadeCount &&
+                           (caps.grenade_kinds >> v.grenade & 1u);
   const bool draw_main = !grenade_out || s.grenade_keep_mine;
   const bool watching_hidden = caps.spectating && v.watching && (!s.observer || (v.watching_bot && !s.observed_bot));
 
@@ -1176,6 +1189,25 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
            float(top + k * step + ai), fill, outline);
   }
 
+  // What is drawn without the crosshair (View::cross false: the game drew none this frame) starts here.
+  const size_t extras_start = out.size();
+  // [acct2-ocr] 2026-11-22 (owner 02:22: "It needs to be 1:1 with features") the scope as CS2 draws a sniper's: two
+  // black lines across the view through the middle, Scope line width (1-6, for the settings' screen height) thick,
+  // with Scopes Mine (in place of the game's picture) or Both (over it), as far in as the game's picture has faded in.
+  const int scope_mode = std::clamp(s.special[kSpecialScope], 0, kSpecialModeCount - 1);
+  if (caps.scope && v.scoped && (caps.special >> kSpecialScope & 1u) &&
+      (scope_mode == kMine || scope_mode == kBoth)) {
+    const int lw = std::max(1, Round(float(std::clamp(s.sniper_width, 1, 6)) * H / ref));
+    const float vw = v.width > 0.0f ? v.width : H * 16.0f / 9.0f;
+    const float black[4] = {0.0f, 0.0f, 0.0f, std::clamp(v.scope, 0.0f, 1.0f)};
+    const float clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    const int after = lw / 2, before = lw - after;  // pixels before and after the middle line, as a thickness's
+    rect(float(Round(cx - vw * 0.5f)), float(cyi - before), float(Round(cx + vw * 0.5f)), float(cyi + after), black,
+         clear);
+    rect(float(cxi - before), float(Round(cy - H * 0.5f)), float(cxi + after), float(Round(cy + H * 0.5f)), black,
+         clear);
+  }
+
   // The sniper's inaccuracy while scoped: a thin ring the size of the spread.
   if (caps.scope && v.scoped && s.sniper_show_inaccuracy && caps.spread) {
     const float r = std::max(2.0f, std::max(0.0f, v.spread) * H / 480.0f);
@@ -1210,7 +1242,6 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
     int marks = 6;
     for (float left : {0.83f, 0.67f, 0.5f, 0.33f, 0.17f})
       if (v.countdown < left) --marks;
-    const size_t ring_start = out.size();
     for (int k = 0; k < marks; ++k) {
       Shape sh;
       sh.kind = 3;
@@ -1228,9 +1259,10 @@ std::vector<Shape> Place(const Settings& s, const View& v, double now, int playe
       }
       out.push_back(sh);
     }
-    if (!v.cross) out.erase(out.begin(), out.begin() + std::ptrdiff_t(ring_start));
+    // [acct2-ocr] 2026-11-22 without the crosshair: the scope's lines and ring (when scoped) and the marks
+    if (!v.cross) out.erase(out.begin(), out.begin() + std::ptrdiff_t(extras_start));
   } else if (!v.cross) {
-    out.clear();
+    out.erase(out.begin(), out.begin() + std::ptrdiff_t(extras_start));  // [acct2-ocr] 11-22 the scope's, if any
   }
   return out;
 }
@@ -1458,7 +1490,7 @@ View PreviewView(const Settings& s, float cx, float cy, float height) {
   v.cy = cy;
   v.height = height;
   const double t = ImGui::GetTime();
-  if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-bro] 11-15: not with T
+  if (MovesWithSpread(s)) v.spread = float(3.0 + 3.0 * std::sin(t * 2.2));  // [acct2-ocr] 11-22 with T style too
   v.spread_rest = 0.0f;  // [acct2-ocr] 11-21 the least of that swing; shot feedback fires as CS2's preview does
   // [acct2-ocr] 2026-11-15 the grenade countdown while it is this player's (Mine or Both): a four-second fuse, a
   // second's rest between
@@ -1591,7 +1623,7 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
   Section("Style");
   ImGui::SetNextItemWidth(std::min(ImGui::GetContentRegionAvail().x * 0.6f, 320.0f));
   edit |= ImGui::Combo("Style", &s.style, kStyleNames, kStyleCount);
-  if (MovesWithSpread(s) && !caps.spread)  // [acct2-bro] 2026-11-15: a T style stays still anyway
+  if (MovesWithSpread(s) && !caps.spread)
     Help("This game doesn't tell its spread yet, so a dynamic style stays still here.");
   edit |= SliderF("Thickness", &s.thickness, 0.0f, 32.0f, "%.1f");
   if (UsesLength(s.style)) edit |= SliderF("Length", &s.length, 0.0f, 255.0f, "%.1f");
@@ -1602,8 +1634,8 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     ImGui::SameLine();
     edit |= ImGui::Checkbox("T style (no top line)", &s.t_style);
   }
-  // [acct2-bro] 2026-11-15 (owner 17:15): the dynamic rows only while the crosshair can move (not with T style on),
-  // greyed together, with one reason, while the game gives no spread (the split rows were editable before)
+  // The dynamic rows for the dynamic styles (with T style too, [acct2-ocr] 11-22), greyed together, with one reason,
+  // while the game gives no spread
   if (MovesWithSpread(s)) {
     Greyed g(caps.spread, "These need the game's spread, which this game's hook doesn't give yet.");
     if (UsesSpreadLimit(s.style)) edit |= SliderI("Dynamic spread limit", &s.spread_limit, 0, 255);
@@ -1615,8 +1647,6 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     }
     edit |= SliderF("How far it opens", &s.open_scale, 0.0f, 3.0f, "%.2f x");
     if (caps.spread) Help("1 is exactly the game's own spread; lower keeps the crosshair tighter.");
-  } else if (StyleIsDynamic(s.style)) {
-    Help("With T style on, this crosshair stays still, so the dynamic rows are hidden.");
   }
   if (s.style == kStaticQuad) edit |= SliderF("Static quad split ratio", &s.split_ratio, 0.0f, 1.0f, "%.2f");
   edit |= SliderI("Sizes are for a screen this tall", &s.screen_height, 240, 4320);
@@ -1682,6 +1712,8 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     edit |= ImGui::Checkbox("Keep my crosshair while a grenade is out", &s.grenade_keep_mine);
     for (int i = 0; i < kGrenadeCount; ++i) {
       ImGui::PushID(i);
+      // [acct2-ocr] 2026-11-22 a kind the game has no grenade of stays greyed (Call of Duty 3: frag and smoke only)
+      Greyed kind(!caps.grenades || (caps.grenade_kinds >> i & 1u), "This game has no grenade of this kind.");
       char label[48];
       std::snprintf(label, sizeof(label), "%s grenade crosshair", kGrenadeNames[i]);
       edit |= ImGui::Checkbox(label, &s.grenade_on[i]);
@@ -1697,10 +1729,15 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
   Section("Sniper");
   {
     Greyed g(caps.scope, "Needs the game's scope, which this game's hook doesn't give yet.");
-    edit |= ImGui::Checkbox("Delay unscope after a shot", &s.sniper_delay_unscope);
+    {  // [acct2-ocr] 2026-11-22 these two act on the game taking the scope down after a shot
+      Greyed shots(!caps.scope || caps.scope_shots, "This game keeps the scope up through a shot.");
+      edit |= ImGui::Checkbox("Delay unscope after a shot", &s.sniper_delay_unscope);
+      edit |= ImGui::Checkbox("Zoom back in after a shot", &s.sniper_auto_rezoom);
+    }
     edit |= ImGui::Checkbox("Show inaccuracy in the scope", &s.sniper_show_inaccuracy);
-    edit |= ImGui::Checkbox("Zoom back in after a shot", &s.sniper_auto_rezoom);
     edit |= SliderI("Scope line width", &s.sniper_width, 1, 6);
+    if (caps.scope && (caps.special >> kSpecialScope & 1u))
+      Help("The lines are drawn with Scopes set to Mine (in place of the game's picture) or Both (over it).");
   }
 
   // [acct2-ocr] 2026-11-14 (owner 17:06 / 17:19) the crosshairs the game draws for something other than an ordinary
@@ -1726,6 +1763,18 @@ bool DrawPage(int* selected, const std::function<bool()>& game_rows) {
     }
   }
   ImGui::EndDisabled();
+
+  // [acct2-ocr] 2026-11-22 (owner 04:31: Titanfall 2's grenade arc) not part of the crosshair, so not greyed with it
+  Section("Grenade arc");
+  {
+    const char* blocked = GrenadeArcBlocked();
+    Greyed g(caps.grenade_arc && blocked == nullptr,
+             blocked != nullptr ? blocked : "Needs the game's throw, which this game's hook doesn't give yet.");
+    edit |= ImGui::Checkbox("Show where my grenade will land", &s.grenade_arc);
+    if (s.grenade_arc) edit |= SliderI("Bounces to follow", &s.grenade_arc_bounces, 0, 3);
+    Help("While you hold a grenade: its path as the game will throw it from where you look now, its bounces, and a "
+         "ring where it comes to rest or goes off (a cooked grenade's fuse counts). In this crosshair's colours.");
+  }
 
   ImGui::Spacing();
   if (players > 1 && ImGui::Button("Give every player this crosshair")) {

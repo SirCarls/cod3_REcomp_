@@ -20,9 +20,7 @@
 #include "game/game_api.h"
 #include "game/settings_sync.h"
 #include "game/guest.h"
-#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
-#include "game/protected_dvars.h"
-#endif
+#include "game/protected_dvars.h"  // [acct2-ocr] 2026-11-22 both programs (it was the campaign's only)
 #include "game/watchdog.h"
 #include "ui/game_console.h"
 
@@ -246,17 +244,21 @@ REX_HOOK_RAW(Cmd_JumpToNode_f) { OneShot(ctx, base, __imp__Cmd_JumpToNode_f, "ju
 // one that refuses cheat-protected dvars while sv_cheats is 0).
 REX_EXTERN(__imp__Cvar_Set2);
 REX_HOOK_RAW(Cvar_Set2) {
-#if !defined(COD3_MP)  // [movement]
   // A server_sided_protected dvar is the port's, never a game dvar: a
   // config, exec, a script or a menu can't write it (game/protected_dvars.h).
+  // [acct2-ocr] 2026-11-22 In cod3mp too (configs, exec, the game's binds of every split-screen player, menu and
+  // map scripts), and only while the game has no dvar of that name: if it ever had one of its own so named, its own
+  // writes to it would go on as before. Refused, none is ever made, so a config can't make one either.
   if (ctx.r3.u32 >= 0x10000) {
     const char* name = reinterpret_cast<const char*>(base + ctx.r3.u32);
-    if (cod3::protected_dvars::RefuseGuestWrite(std::string_view(name, strnlen(name, 65)))) {
+    const std::string_view protected_name(name, strnlen(name, 65));
+    if (cod3::protected_dvars::IsProtectedName(protected_name) &&
+        !cod3::game::CvarFindGuest(ctx, base, ctx.r3.u32) &&
+        cod3::protected_dvars::RefuseGuestWrite(protected_name)) {
       ctx.r3.u64 = 0;
       return;
     }
   }
-#endif
   // No value means "the dvar's default" (Cvar_Reset, the console's
   // "reset <dvar>"), but this game's Cvar_Set2 reads the value before it
   // checks for that, so a reset crashed the game (the Xbox had no console to

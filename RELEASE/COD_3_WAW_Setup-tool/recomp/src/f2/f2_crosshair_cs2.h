@@ -146,6 +146,11 @@ struct Settings {
   float open_scale = 1.0f;         // dynamic styles: how far they open for the game's spread (1: exactly)
   bool ads_dot = false;            // the iron sight dot while the sights are up (CS2 has it on scoped rifles)
   std::array<int, kSpecialCount> special{};  // SpecialMode for each kind: the game's own unless chosen
+  // [acct2-ocr] 2026-11-22 (owner 04:31, Titanfall 2's grenade arc) while this player holds a grenade, its path drawn
+  // as the game will fly it: to where it comes to rest or goes off, following up to `grenade_arc_bounces` bounces.
+  // Not part of the crosshair: shown with the game's own crosshair too.
+  bool grenade_arc = false;
+  int grenade_arc_bounces = 2;  // 0-3
 
   // Storage only: a hash of the old settings as they were when player 1's crosshair was last written (0: none), so
   // a change made to them while the game was closed is taken in at the next start.
@@ -187,8 +192,15 @@ struct Caps {
   bool recoil = false;        // the view's kick, for follow recoil
   bool sights = false;        // how far the sights are up, for the iron sight dot
   bool grenades = false;      // which grenade is out
+  // [acct2-ocr] 2026-11-22 the kinds of grenade the game has (1 << Grenade each); a kind it lacks has its row greyed
+  uint32_t grenade_kinds = (1u << kGrenadeCount) - 1u;
   bool scope = false;         // the sniper scope is up
+  // [acct2-ocr] 2026-11-22 the game takes the scope down after a shot and up again (CS2's delay unscope and auto
+  // rezoom act on that); without it those two rows are greyed while the scope's other rows work
+  bool scope_shots = false;
   bool spectating = false;    // the player watches someone else
+  // [acct2-ocr] 2026-11-22 the game's throw can be flown ahead of time, for the grenade arc
+  bool grenade_arc = false;
   bool dead_color = false;    // the game has a color for a dead body under the crosshair (Call of Duty 3)
   // [acct2-ocr] 2026-11-14 the special crosshairs: the kinds the hooks tell apart (1 << kind, a row each), the game's
   // own name for a kind (nullptr: SpecialName's), and the kinds the game has that its hooks don't tell apart yet (a
@@ -197,6 +209,11 @@ struct Caps {
   std::array<const char*, kSpecialCount> special_label{};
   uint32_t special_later = 0;
 };
+
+// [acct2-ocr] 2026-11-22 Why the grenade arc can't be had now (a multiplayer match whose host switched it off for
+// everyone), or nullptr: the page greys its rows with this. Any thread; the text must outlive the call (a literal).
+void SetGrenadeArcBlocked(const char* why);
+const char* GrenadeArcBlocked();
 
 // One player's crosshair this frame, from the game's hook.
 struct View {
@@ -210,6 +227,10 @@ struct View {
   int grenade = -1;         // kFlash..kDecoy while one is out
   float grenade_seconds = 0;  // since it was taken out
   bool scoped = false;
+  // [acct2-ocr] 2026-11-22 how far the scope's picture is up (0 to 1: the game's own fade), and the view's width in the
+  // window's pixels (0: not known, height x 16 / 9), for the scope's lines (Scopes: Mine or Both)
+  float scope = 1.0f;
+  float width = 0.0f;
   bool watching = false, watching_bot = false;
   double seconds_since_shot = -1;  // < 0: not known
   // [acct2-ocr] 2026-11-15 a cooked grenade's time left, 1 when the pin is pulled to 0 at the bang (< 0: none), drawn

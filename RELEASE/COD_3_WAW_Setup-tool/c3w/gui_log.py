@@ -14,7 +14,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Dict, List, Optional, Set, Tuple
 
-from . import logtools, theme, widgets
+from . import common, logtools, theme, widgets
 from .common import SetupError
 from .widgets import px, tip
 
@@ -24,8 +24,13 @@ MAX_LINES = 20000          # lines kept on screen (and read from a file)
 LEVEL_GROUPS: Dict[str, Set[str]] = {
     "error": {"error", "critical", "fatal"},
     "warn": {"warn", "warning"},
-    "info": {"info", "debug", "trace", "step", "out", "progress", ""},
+    "info": {"info", "step", "out", "progress", ""},
+    # [acct2-ocr] 2026-11-22 the details (commands' folders, times and exit codes, tracebacks, what each step and
+    # download did): always in the log files, on screen with the Details box
+    "detail": {"debug", "trace"},
 }
+DETAIL_TIP = ("The details for finding out what went wrong: each command's folder, time and exit code, each step's "
+              "time and free space, downloads, and every error's traceback. The log files always have them.")
 PREFIX = {"step": "\n== ", "warn": "WARNING: ", "error": "ERROR: "}
 
 
@@ -42,7 +47,8 @@ class LogPage:
         self.v_log_source = tk.StringVar(value=LIVE)
         self.v_log_query = tk.StringVar()
         self.v_log_count = tk.StringVar()
-        self.v_level = {g: tk.BooleanVar(value=True) for g in LEVEL_GROUPS}
+        self.v_level = {g: tk.BooleanVar(value=True if g != "detail" else common.verbose()) for g in LEVEL_GROUPS}
+        self._log_detail_n = 0   # [acct2-ocr] detail lines in log_lines, for the counts
         t.columnconfigure(0, weight=1)
         t.rowconfigure(2, weight=1)
 
@@ -61,13 +67,16 @@ class LogPage:
         row = ttk.Frame(bar)
         row.grid(row=1, column=1, sticky="ew", pady=(px(6), 0))
         self.e_log_query = ttk.Entry(row, textvariable=self.v_log_query, width=26)
-        self.e_log_query.pack(side="left", padx=(0, px(14)))
         tip(self.e_log_query, "Only lines with this text (Ctrl+F). Esc clears it.")
         self.e_log_query.bind("<Escape>", lambda e: self.v_log_query.set(""))
-        for g, label in (("error", "Errors"), ("warn", "Warnings"), ("info", "Info")):
-            ttk.Checkbutton(row, text=label, variable=self.v_level[g], command=self._log_render).pack(
-                side="left", padx=(0, px(8)))
-        ttk.Label(row, textvariable=self.v_log_count, style="Hint.TLabel").pack(side="right")
+        for g, label in (("error", "Errors"), ("warn", "Warnings"), ("info", "Info"), ("detail", "Details")):
+            box = ttk.Checkbutton(row, text=label, variable=self.v_level[g], command=self._log_render)
+            if g == "detail":
+                tip(box, DETAIL_TIP)
+        ttk.Label(row, textvariable=self.v_log_count, style="Hint.TLabel")
+        # [acct2-ocr] 2026-11-22 (owner 00:13: "sizing issues"): the search box, the boxes and the count wrap on
+        # a narrow page (with the Details box the row was 650 px wide)
+        widgets.flow(row, gap=10)
         self._log_query_after: Optional[str] = None
         self.v_log_query.trace_add("write", lambda *a: self._log_query_changed())
 
@@ -75,7 +84,9 @@ class LogPage:
         box.grid(row=2, column=0, sticky="nsew", padx=px(24))
         box.rowconfigure(0, weight=1)
         box.columnconfigure(0, weight=1)
-        self.txt = tk.Text(box, wrap="word", height=14, width=60, font="C3WMono", borderwidth=0, highlightthickness=1,
+        # [acct2-ocr] 2026-11-22 20 characters at least (60 kept the page 650 px wide, 40 still 570); it stretches
+        # to the page
+        self.txt = tk.Text(box, wrap="word", height=14, width=20, font="C3WMono", borderwidth=0, highlightthickness=1,
                            padx=px(10), pady=px(8), undo=False)
         self.txt.grid(row=0, column=0, sticky="nsew")
         sb = ttk.Scrollbar(box, orient="vertical", command=self.txt.yview)
@@ -95,6 +106,7 @@ class LogPage:
         self.btn_log_clear = ttk.Button(bf, text="Clear", command=self._clear_log)
         self.btn_log_clear.pack(side="left", padx=(px(6), 0))
         tip(self.btn_log_clear, "Empty this session's log on screen (the log files stay).")
+        widgets.reflow(bf)   # [acct2-ocr] 2026-11-22 the buttons wrap on a narrow page
         self.root.bind("<Control-f>", lambda e: self._log_focus_search())
         self.pages["log"]["on_show"] = self._log_refresh_sources
         self._theme_log(theme.current)
@@ -109,6 +121,7 @@ class LogPage:
         self.txt.tag_configure("warn", foreground=c["warn"])
         self.txt.tag_configure("error", foreground=c["bad"])
         self.txt.tag_configure("out", foreground=c["text_dim"])
+        self.txt.tag_configure("debug", foreground=c["text_dim"])   # [acct2-ocr] 2026-11-22 the details
         self.txt.tag_configure("info", foreground=c["text"])
         self.txt.tag_configure("match", background=c["accent"], foreground=c["accent_fg"])
         self.txt.tag_raise("match")
@@ -127,6 +140,10 @@ class LogPage:
                 found = list(logtools.known_logs(out))
             except (SetupError, OSError):
                 found = []
+        try:   # [acct2-ocr] 2026-11-22 the tool's own session logs, with the details
+            found += logtools.session_log_entries()
+        except OSError:
+            pass
         self._log_sources = [(LIVE, None)] + [(label, Path(p)) for label, p in found]
         self.cb_log_source.configure(values=[label for label, _ in self._log_sources])
         if self.v_log_source.get() not in [label for label, _ in self._log_sources]:
@@ -251,8 +268,11 @@ class LogPage:
     # ------------------------------------------------------------------ the live log
     def _append(self, kind: str, text: str) -> None:
         self.log_lines.append((kind, text))
+        if _group(kind) == "detail":
+            self._log_detail_n += 1
         if len(self.log_lines) > MAX_LINES:   # keep the window responsive on very long builds
             del self.log_lines[:5000]
+            self._log_detail_n = sum(1 for k, _ in self.log_lines if _group(k) == "detail")
             if self._log_path() is None:
                 self._log_render()
                 return
@@ -281,12 +301,15 @@ class LogPage:
     def _live_counts(self) -> Tuple[int, int]:
         if not self.v_log_query.get().strip() and self._levels() == set(LEVEL_GROUPS):
             return len(self.log_lines), len(self.log_lines)
+        if not self.v_log_query.get().strip() and self._levels() == set(LEVEL_GROUPS) - {"detail"}:
+            return len(self.log_lines) - self._log_detail_n, len(self.log_lines)   # [acct2-ocr] no scan
         groups, q = self._levels(), self.v_log_query.get().strip().lower()
         shown = sum(1 for k, x in self.log_lines if self._live_matches(k, x, groups, q))
         return shown, len(self.log_lines)
 
     def _clear_log(self) -> None:
         self.log_lines.clear()
+        self._log_detail_n = 0
         self._log_render()
 
     # ------------------------------------------------------------------ buttons

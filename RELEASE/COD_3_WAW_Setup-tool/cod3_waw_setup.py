@@ -32,6 +32,12 @@ patch download> (repeatable); `map-pack --list` shows where to get them.
 
 Run `setup.sh` (Linux) or `setup.bat` (Windows) instead if Python/Tkinter
 might be missing; they install them first.
+
+Logs: every start writes config/logs/tool-<date>-<time>-<pid>.log with every
+message, the details for finding out what went wrong (each command's folder,
+time and exit code, each step's time and free space, downloads, tracebacks)
+and any crash; a build also writes <output>/logs/setup-*.log. --verbose
+(anywhere on the line) or COD3_SETUP_VERBOSE=1 shows the details here too.
 """
 from __future__ import annotations
 
@@ -570,6 +576,39 @@ def cmd_bro(a: argparse.Namespace) -> int:
 
 
 def main() -> int:
+    # [acct2-ocr] 2026-11-22 (owner 00:00 "Please make the setup tool logging better and more verbose"): --verbose
+    # anywhere on the line (before or after the command), then this start's session log (common.start_session_log)
+    for flag in ("--verbose", "-v"):
+        while flag in sys.argv[1:]:
+            sys.argv.remove(flag)
+            common.set_verbose(True)
+    from c3w.pipeline import TOOL_VERSION
+    header = [f"setup tool {TOOL_VERSION} ({__file__})"]
+    try:
+        from c3w import pc_check
+        header += pc_check.system_lines()
+    except Exception as e:   # noqa: BLE001 - the session log starts anyway
+        header.append(f"system lines not read: {type(e).__name__}: {e}")
+    common.start_session_log(f"setup tool {TOOL_VERSION}", header=header)
+    try:
+        code = _main()
+    except SystemExit as e:   # argparse's --help and errors, sys.exit() in a command
+        common.end_session_log(e.code)
+        raise
+    except KeyboardInterrupt:
+        common.end_session_log("interrupted (Ctrl+C)")
+        raise
+    except BaseException as e:   # the traceback goes to the console as before, and into the session log
+        common.end_session_log(f"stopped by {type(e).__name__}")
+        log_path = common.session_log()
+        if log_path:
+            print(f"\nThe whole story is in {log_path}", file=sys.stderr)
+        raise
+    common.end_session_log(code)
+    return code
+
+
+def _main() -> int:
     if common.IS_WINDOWS:
         # Output sent to a file or a pipe uses the ANSI code page, which can't
         # spell every folder name (a Cyrillic or Chinese user name): replace
@@ -582,6 +621,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="COD_3_WAW setup tool", formatter_class=argparse.RawDescriptionHelpFormatter,
                                  epilog=__doc__)
     ap.add_argument("--launcher", action="store_true", help="open the GUI on the Play page")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="show the details here too (they are always in config/logs/tool-*.log); may also come "
+                         "after the command")
     sub = ap.add_subparsers(dest="cmd")
 
     b = sub.add_parser("build", help="set everything up without the GUI")
@@ -781,6 +823,8 @@ def main() -> int:
         pp.set_defaults(func=cmd_port)
     a = ap.parse_args()
     if a.cmd:
+        common.session_info(f"command: {a.cmd}; options: " + ", ".join(
+            f"{k}={v!r}" for k, v in sorted(vars(a).items()) if k not in ("func",) and v not in (None, False, [])))
         return a.func(a)
     try:
         from c3w import gui

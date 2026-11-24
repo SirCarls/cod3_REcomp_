@@ -85,6 +85,40 @@ foreach(shader window_cas.frag window_easu.frag window_rcas.frag)               
         COMMENT "Compiling ${shader} to SPIR-V")                                            # [acct2-fh]
     list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [acct2-fh]
 endforeach()                                                                                # [acct2-fh]
+# [acct2-bro] 2026-11-22 rn113b: mesh.frag again with the cut-outs' coverage under MSAA, for the mesh pipelines'
+# MSAA twins alone (src/ngl_vk.c msaa_twin); every one-sample pipeline keeps mesh.frag.inc
+set(NGL_VK_MSAA_MESH_SPIRV "${NGL_VK_SHADER_DIR}/mesh_msaa.frag.inc")                          # [acct2-bro]
+add_custom_command(                                                                         # [acct2-bro]
+    OUTPUT "${NGL_VK_MSAA_MESH_SPIRV}"                                                      # [acct2-bro]
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                     # [acct2-bro]
+    COMMAND "${NGL_VK_GLSLC}" -mfmt=c -DNGL_VK_MSAA_COVERAGE -fshader-stage=frag            # [acct2-bro]
+            -o "${NGL_VK_MSAA_MESH_SPIRV}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.frag"  # [acct2-bro]
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/mesh.frag"                                 # [acct2-bro]
+    COMMENT "Compiling mesh.frag with the cut-outs' coverage to SPIR-V")                    # [acct2-bro]
+list(APPEND NGL_VK_SHADERS "${NGL_VK_MSAA_MESH_SPIRV}")                                     # [acct2-bro]
+# [acct2-bro] 2026-11-22 rn113: MSAA's depth pass (ngl_vk.h ngl_vk_set_msaa; src/ngl_vk.c msaa_resolve_depth)
+foreach(shader msaa_depth.frag)                                                            # [acct2-bro]
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [acct2-bro]
+    add_custom_command(                                                                     # [acct2-bro]
+        OUTPUT "${spirv}"                                                                   # [acct2-bro]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [acct2-bro]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [acct2-bro]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [acct2-bro]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [acct2-bro]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [acct2-bro]
+endforeach()                                                                                # [acct2-bro]
+
+# [acct2-bro] 2026-11-22 Camo lane: the camo pass's two shaders (ngl_vk.h camo_texture; src/ngl_vk.c make_camo)
+foreach(shader camo.vert camo.frag)                                                         # [acct2-bro]
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [acct2-bro]
+    add_custom_command(                                                                     # [acct2-bro]
+        OUTPUT "${spirv}"                                                                   # [acct2-bro]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [acct2-bro]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [acct2-bro]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [acct2-bro]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [acct2-bro]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [acct2-bro]
+endforeach()                                                                                # [acct2-bro]
 
 add_library(ngl_vk STATIC src/ngl_vk.c ${NGL_VK_SHADERS})
 target_include_directories(ngl_vk PUBLIC include PRIVATE "${NGL_VK_SHADER_DIR}")

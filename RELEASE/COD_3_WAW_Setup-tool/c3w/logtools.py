@@ -3,12 +3,14 @@
 Two formats are read:
 
     [2026-10-12 18:49:54.416] [info] [core] [t548] text      the game (spdlog)
-    18:10:43 [info] text                                       this tool (common.Log)
+    18:10:43.217 [info] text                                   this tool (common.Log; before 2026-11-22 without
+                                                               the milliseconds)
 
 A line without that start continues the entry above it (a message over
 several lines). Where the logs are:
 
     <output>/logs/setup-*.log               this tool's builds (the last few)
+    <config>/logs/tool-*.log                this tool's every start, the details included (the last 20)
     <output>/userdata/logs/cod3.log         the game; cod3.1.log ... are older parts
     <output>/userdata/logs/report-*.txt     the game's `cod3_report` reports
 
@@ -42,7 +44,7 @@ _LEVEL_GROUP = {"critical": "error"}
 
 GAME_LINE = re.compile(r"^\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)\] \[(\w+)\] \[([^\]]*)\] "
                        r"(?:\[t\d+\] )?(.*)$")
-SETUP_LINE = re.compile(r"^(\d{2}:\d{2}:\d{2}) \[(\w+)\] (.*)$")
+SETUP_LINE = re.compile(r"^(\d{2}:\d{2}:\d{2}(?:\.\d{3})?) \[(\w+)\] (.*)$")   # [acct2-ocr] 2026-11-22 .mmm
 SESSION_MARK = "---- session ----"
 EXIT_MARK = "; exiting"
 
@@ -58,7 +60,7 @@ SESSION_LEAD = 30.0                  # seconds before the session line that stil
 
 @dataclass
 class Entry:
-    time: str      # as written in the log ("18:10:43" or "2026-10-12 18:49:54.416"), "" if none
+    time: str      # as written in the log ("18:10:43.217", "18:10:43" or "2026-10-12 18:49:54.416"), "" if none
     level: str     # one of LEVELS ("warning" is "warn"), "info" for lines without one
     source: str    # the game's part ("core", "gpu", ...); "" for this tool's logs
     text: str      # the message (more lines joined with "\n")
@@ -183,6 +185,21 @@ def known_logs(out_dir: Path) -> List[Tuple[str, Path]]:
     logs += [(f"Setup log {_stamp(p.name)}", p) for p in _newest(out / SETUP_LOGS, "setup-*.log")]
     logs += [(f"Game log, older part {i}", p) for i, p in enumerate(_rotated(out), 1)]
     return logs
+
+
+def session_log_entries(folder: Optional[Path] = None) -> List[Tuple[str, Path]]:
+    """[acct2-ocr] 2026-11-22 (label, path) for this tool's own sessions (every start, with the details), newest
+    first: in the config folder, whatever the output folder."""
+    return [(f"Setup tool session {_stamp(p.name)}", p) for p in session_logs(folder)]
+
+
+def session_logs(folder: Optional[Path] = None) -> List[Path]:
+    """This tool's session logs (common.start_session_log), newest first."""
+    try:
+        where = Path(folder) if folder else common.config_dir() / common.SESSION_LOGS
+    except OSError:
+        return []
+    return _newest(where, f"{common.SESSION_PREFIX}*.log")
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +452,19 @@ def _read_text(path: Path, limit: int) -> Optional[str]:
         return None
 
 
+def _with_head(path: Path, text: str, limit: int, head_lines: int = 120) -> str:
+    """[acct2-ocr] 2026-11-22 a log cut to its end (_read_text) keeps its first lines too: a session log's header
+    says which tool, Python and system it ran on."""
+    try:
+        if path.stat().st_size <= limit:
+            return text
+        with open(path, encoding="utf-8", errors="replace") as f:
+            head = [next(f, "") for _ in range(head_lines)]
+    except OSError:
+        return text
+    return "".join(head) + "\n... (the middle of this log is left out) ...\n" + text
+
+
 def make_bug_report(out_dir: Path, dest_zip: Path, settings_file: Optional[Path] = None) -> Tuple[Path, List[str]]:
     """Zip what helps with a bug report: the newest setup log, the game's
     last session, the newest game report, cod3.toml, the build's record and
@@ -454,6 +484,11 @@ def make_bug_report(out_dir: Path, dest_zip: Path, settings_file: Optional[Path]
         text = _read_text(setup[0], MAX_TEXT)
         if text is not None:
             files.append(("setup.log", text))
+    # [acct2-ocr] 2026-11-22 the tool's last sessions (this one first): what happened outside a build too
+    for i, path in enumerate(session_logs()[:3]):
+        text = _read_text(path, MAX_TEXT)
+        if text is not None:
+            files.append((f"setup-tool-session-{i + 1}.log", _with_head(path, text, MAX_TEXT)))
     session = last_session(out)
     if session:
         files.append(("game-last-session.log", _cap("\n".join(session) + "\n", MAX_SESSION)))

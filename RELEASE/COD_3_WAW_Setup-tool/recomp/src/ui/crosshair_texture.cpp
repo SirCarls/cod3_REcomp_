@@ -50,6 +50,8 @@ namespace {
 namespace m = math;
 
 thread_local int t_drawing = 0;   // inside the game's CG_DrawCrosshair (nested calls counted)
+thread_local int t_hiding = 0;    // [acct2-ocr] 2026-11-22 inside a Hiding (nested ones counted)
+constexpr float kNowhere = -64.0f;  // [acct2-ocr] 2026-11-22 a hidden quad's corners: one point, off the screen
 
 constexpr uint32_t kQuadTexture = 0x60;   // the quad's NGL texture
 constexpr uint32_t kVertexStride = 0x14;  // four vertices {x, y, u, v, color} (ultrawide's uw::kQuadVertexStride)
@@ -435,7 +437,29 @@ bool AbCopy() {
 Drawing::Drawing() { ++t_drawing; }
 Drawing::~Drawing() { --t_drawing; }
 
+Hiding::Hiding(bool on) : on_(on) {
+  if (on_) ++t_hiding;
+}
+Hiding::~Hiding() {
+  if (on_) --t_hiding;
+}
+
 QuadSwap::QuadSwap(uint8_t* base, uint32_t quad, float hud_scale) {
+  // [acct2-ocr] 2026-11-22 a hidden quad: all four corners on one point off the screen (no area, nothing drawn, and
+  // the same point whatever the hook's mappings do to it), put back after the copy
+  if (t_hiding > 0 && quad) {
+    base_ = base;
+    quad_ = quad;
+    hidden_ = true;
+    for (uint32_t i = 0; i < 4; ++i) {
+      const uint32_t at = quad + kVertexStride * i;
+      corners_[2 * i] = cod3::guest::ReadF32(base, at);
+      corners_[2 * i + 1] = cod3::guest::ReadF32(base, at + 4);
+      cod3::guest::WriteF32(base, at, kNowhere);
+      cod3::guest::WriteF32(base, at + 4, kNowhere);
+    }
+    return;
+  }
   if (t_drawing <= 0 || !quad || !REXCVAR_GET(cod3_crosshair_sharp)) return;
   const uint32_t object = cod3::guest::ReadU32(base, quad + kQuadTexture);
   if (!object) return;
@@ -453,6 +477,13 @@ QuadSwap::QuadSwap(uint8_t* base, uint32_t quad, float hud_scale) {
 }
 
 QuadSwap::~QuadSwap() {
+  if (hidden_) {  // [acct2-ocr] 2026-11-22
+    for (uint32_t i = 0; i < 4; ++i) {
+      cod3::guest::WriteF32(base_, quad_ + kVertexStride * i, corners_[2 * i]);
+      cod3::guest::WriteF32(base_, quad_ + kVertexStride * i + 4, corners_[2 * i + 1]);
+    }
+    return;
+  }
   if (texture_) cod3::guest::WriteU32(base_, quad_ + kQuadTexture, texture_);
 }
 

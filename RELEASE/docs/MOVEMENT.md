@@ -417,6 +417,10 @@ settings to defaults" on the Movement tab no longer touches them.
   by construction, and `cod3.toml` never holds a server's value.
 - All port code reads the **effective value** (`protected_dvars::Get`): the
   server's during a match, the own value otherwise.
+- **Pending value** (2026-11-22): a guest whose host hasn't sent its rules yet
+  (they go out 0.5, 2 and 4 s after a console joins) uses each entry's pending
+  value: the grenade arc off, everything else at the match default. Its arc
+  row says "Waiting for the host's match rules."
 
 ### 5.3 Every path that could change it during a match
 
@@ -425,7 +429,7 @@ settings to defaults" on the Movement tab no longer touches them.
 | The ~ console: `alternate_movement 0`, `set` / `seta` / `sets` / `setu` / `reset` / `toggle` / `togglep` / `setfromcvar` | `HandleConsoleLine` (in `ui/game_console.cpp`, before every other handler) | `alternate_movement is set by the server in this match (1 (Call of Duty 4 movement for everyone)); your own value, 2, comes back when you leave.` |
 | World at War names and aliases | the same: a World at War alias whose target is protected is checked under the target's name (none exists today) | the same |
 | `cod3_autoexec` | the same console path | the same |
-| Config files, `exec`, the console config, guest scripts, the game's menus | they reach the game's `Cvar_Set2`; the hook refuses a protected name **always** (in a match or not: it is the port's setting, never a game dvar) | `alternate_movement is a port setting: set it in the ~ console ..., in F2 > Game > Movement or in the game's Options; a config or a script can't.` (in a match: the line above) |
+| Config files, `exec`, the console config, binds (every split-screen player's), guest scripts (`vstr`), the game's menus | they reach the game's `Cvar_Set2`; the hook refuses a protected name **always** (in a match or not: it is the port's setting, never a game dvar), in both programs since 2026-11-22 (cod3mp had no refusal, and the campaign's quick name filter let `sticky_aim`, `aim_slowdown`, `levitation_fix` and `grenade_arc` through). Only a name the game has no dvar of its own is refused. | `grenade_arc is a port setting: set it in the ~ console (grenade_arc <value>) or in F2 (in a match: the host's F2 > Game > Server); a config, a script, a bind or a menu can't.` (in a match: the line above) |
 | F2 rows | the rows ask `IsLocked`: shown with the server's value, disabled | the reason under the row |
 | The game's Options (MOVEMENT OPTIONS) | the rows the server sets don't step | the line under the rows: "Set by the server in this match." |
 | Any port code (`rex::cvar::SetFlagByName`) | the port settings' validator refuses while locked | a log line |
@@ -438,12 +442,53 @@ per name and path (a script or a key could repeat it every frame).
 
 ### 5.4 The server never takes these from a client
 
+(2026-11-22: in cod3mp's system link every console runs its own players and
+sends only their state, section 5.5. The paragraph below is the first design.)
+
 The values flow from the server to its clients only (section 6.2). The only
 thing a client sends is its mode-2 movement preference (6.3), which is
 checked strictly, applied to that player alone and never becomes a dvar. The
 server simulates every player's movement with the server's rules (section 2:
 clients don't predict positions), so a tampered client changes nothing but
 its own input, view and menus: it gains nothing.
+
+### 5.5 The host and the match state in cod3mp (2026-11-22)
+
+Owner 2026-11-22 07:54-08:03 ("Please check the host and protected DVAR
+logic ... account for alternate accounts or splitscreen binds or scripts ...
+desync, movement alterations"); the review is the project doc
+`claude/acct2-ocr/PROTECTED-DVARS-REVIEW.md`.
+
+- **One match state a frame.** `game/mp/session.cpp`'s `Tick` reads the
+  session once a game frame and tells `protected_dvars::NoteMatch`; every
+  reader on every thread (the overlay, the movement hooks) sees that state, so
+  a read while the game thread changes the session can't return a guest's own
+  values.
+- **Host migration.** A console that has been a guest for a second stays one
+  until the match ends: if the session makes it the host mid-match, it keeps
+  the old host's rules (and sends those to the others) and gets no host rights
+  (no `sv_cheats`, no `map`). A new match starts clean.
+- **Sending the rules.** On a join or a match start at 0.5, 2 and 4 s; a
+  change at most every 2 s (guests take 6 notices in 10 s); and every 10 s.
+  A changed rule is announced once it has held for 0.5 s, so a key or a
+  script flipping one every frame sends one line. The longest rules string
+  (every value at its widest) is checked against the 255 bytes a notice
+  carries; past that the host logs an error.
+- **What guests are told.** When the rules arrive: the movement line and each
+  rule that isn't the match's usual one; later, each rule that changed.
+  Leaving: "your own settings apply again (movement, aim assist, grenade arc)".
+- **The game's own dvars.** A guest's own value of a game dvar that changes
+  how its players move or fight would apply to its players only, so cod3mp
+  registers those cheat protected (docs/DVARS.md, Cheat protection): besides
+  `g_speed` and `g_gravity`, `pmove_fixed`, `pmove_msec`, `g_knockback`,
+  `health_recharge_rate`, `conical_spread`, `g_weaponAmmoPools`,
+  `g_weaponrespawn`, `livegrenadeangle` and `enemy_radar`.
+- **The grenade arc** in cod3mp traces with the grenade's own clipmask, but a
+  body (a player, a vehicle, another entity) that would stop it counts only
+  where the thrower's eye sees that point through the world: every console
+  knows where every player is, so an arc bent by an unseen body would show a
+  player round a corner or behind a wall. (Smoke isn't geometry: a player in
+  smoke the eye could otherwise see still bends it.)
 
 ---
 

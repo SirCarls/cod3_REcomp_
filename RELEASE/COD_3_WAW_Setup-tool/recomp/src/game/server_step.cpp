@@ -4569,3 +4569,54 @@ REX_HOOK_RAW(NET_SendLoopPacket) {
   }
   __imp__NET_SendLoopPacket(ctx, base);
 }
+
+// [acct2-bro] 2026-11-22 (owner 13:35: "the NPC raising on St-Bert is caused by the rocket hitting the car. It looks
+// really janky"). A level script's stopanimscripted (the builtin 0x824AFE78) pops an actor's scripted state (0xF) and
+// takes its scripted animation out of the anim tree: faded over the record's blend-out time (+0x50) when it has one,
+// otherwise cut in one update (0x82500A40 with goal weight 0 and no blend). The St-Bert truck riders' reaction
+// animations (started at the rocket's hit) have none, so when the script stops them each rider stands in the AI's own
+// pose the next update: x283's live frames show a rider go from crouched out of sight to upright in 2 frames, and
+// x278 the same at 30 and 60 fps and at either server rate (the game's own logic). With cod3_scripted_stop_blend_ms
+// above 0, an actor's scripted animation stopped that way with no blend-out gets that blend-out instead, so it goes
+// through the game's own faded path: what the soldiers do afterwards is unchanged, only how they get there. Game time,
+// so the same at every frame rate. Campaign only (server_step.cpp is not part of cod3mp, which has no actors).
+REXCVAR_DEFINE_INT32(cod3_scripted_stop_blend_ms, 250, "cod3/Game",
+                     "Campaign: when a level's script stops a soldier's scripted animation with no blend, he moves "
+                     "into his own pose over this many milliseconds instead of snapping into it (St-Bert's truck "
+                     "riders standing up when the rocket hits); 0: as the game")
+    .range(0, 1000)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+namespace {
+constexpr uint32_t kScriptEntities = 0x82A2DCD0;  // (entity, generation) pairs by a script handle's low 14 bits
+constexpr uint32_t kScriptEntityCount = 0x1000;
+constexpr uint32_t kScriptedAnimIndex = 0x42;     // the scripted record's animation (u16; 0: none)
+constexpr uint32_t kScriptedBlendOut = 0x50;      // and its blend-out time in seconds (float)
+constexpr uint8_t kActorType = 11;
+int g_scripted_stops_logged = 0;  // the game's thread only (script builtins)
+}  // namespace
+
+REX_EXTERN(__imp__sub_824AFE78);
+REX_HOOK_RAW(sub_824AFE78) {
+  const uint32_t handle = ctx.r3.u32, index = handle & 0x3FFF;
+  const int32_t blend_ms = REXCVAR_GET(cod3_scripted_stop_blend_ms);
+  if (index < kScriptEntityCount && (blend_ms > 0 || REXCVAR_GET(cod3_debug_animscripted_log))) {
+    const uint32_t ent = g::ReadU32(base, kScriptEntities + 8 * index);
+    if (ent && (handle >> 14) == g::ReadU32(base, kScriptEntities + 8 * index + 4) &&
+        GuestReadable(ent, kEntNumber + 4) && g::ReadU8(base, ent) == kActorType) {
+      const uint32_t rec = g::ReadU32(base, ent + kEntScripted);  // the game's own pointer, read as the game reads it
+      if (rec && ValidGuest(rec) && g::ReadU16(base, rec + kScriptedAnimIndex) != 0) {
+        const float before = g::ReadF32(base, rec + kScriptedBlendOut);
+        const bool given = blend_ms > 0 && !(before > 0.0f);
+        if (given) g::WriteF32(base, rec + kScriptedBlendOut, static_cast<float>(blend_ms) / 1000.0f);
+        if (g_scripted_stops_logged++ < 200) {
+          REXLOG_INFO("cod3: scripted stop ent {} time {} anim {:04X} blend-out {:g} s{}",
+                      g::ReadS32(base, ent + kEntNumber), g::ReadS32(base, kLevelTime),
+                      g::ReadU16(base, rec + kScriptedAnimIndex), before,
+                      given ? fmt::format(" -> {:g} s (cod3_scripted_stop_blend_ms)", blend_ms / 1000.0) : "");
+        }
+      }
+    }
+  }
+  __imp__sub_824AFE78(ctx, base);
+}

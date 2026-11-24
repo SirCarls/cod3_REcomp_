@@ -243,6 +243,10 @@ uint32_t GuestCopy(uint8_t* base, const std::string& bytes) {
 // [acct2-ocr] 2026-11-21 The port's own words for its in-game rows (kPortWords: the CROSSHAIR page), as "@port" rows.
 #include "game/text_port_words.inc"
 static_assert(sizeof(PortWord::text) / sizeof(PortWord::text[0]) == kLocales.size(), "one text per locale");
+// [acct2-bro Text lane] 2026-11-22 The port's own HUD notices in every language (kNoticeWords, English -> ours), as
+// "@notices" rows: a pack's own row for the same English wins.
+#include "game/text_notice_words.inc"
+static_assert(sizeof(NoticeWord::text) / sizeof(NoticeWord::text[0]) == kLocales.size(), "one text per locale");
 
 // Reads assets/text/<locale>.txt into g_table (g_mutex held).
 void Load(int locale) {
@@ -255,10 +259,12 @@ void Load(int locale) {
   if (locale < 0) return;
   const std::filesystem::path path = FileFor(g_root, locale);
   std::ifstream in(path, std::ios::binary);
+  // [acct2-bro Text lane] 2026-11-22 no pack: the game's own text stays, but the port's own words built in below
+  // (kPortWords, kNoticeWords) are still added (the loop reads nothing from a file that didn't open). Before, Load
+  // returned here, so a build without the packs (every one but the PC that made them) had the port's rows in English.
   if (!in) {
-    REXLOG_WARN("cod3: text: no {} in the game's folder: the game's own text stays",
-                "text/" + std::string(kLocales[size_t(locale)].code) + ".txt");
-    return;
+    REXLOG_WARN("cod3: text: no {} in the game's folder: the game's own text stays (the port's own words are built "
+                "in)", "text/" + std::string(kLocales[size_t(locale)].code) + ".txt");
   }
   const bool overlay = kLocales[size_t(locale)].overlay;
   const std::string_view code = kLocales[size_t(locale)].code;
@@ -351,6 +357,16 @@ void Load(int locale) {
     ++built_in;
   }
   if (built_in) REXLOG_INFO("cod3: text: {} of the port's own rows built in", built_in);
+  // [acct2-bro Text lane] 2026-11-22 the port's own HUD notices (kNoticeWords) where the pack has no "@notices" row
+  // for that English: UTF-8 as written (drawn by ImGui, as the pack's are)
+  int notices_in = 0;
+  for (const NoticeWord& w : kNoticeWords) {
+    const char* text = w.text[size_t(locale)];
+    if (!text || !*text || g_table.notice.count(w.english)) continue;
+    g_table.notice[w.english] = text;
+    ++notices_in;
+  }
+  if (notices_in) REXLOG_INFO("cod3: text: {} of the port's own HUD notices built in", notices_in);
   // [acct2-ocr] cod3_test_raw_line
   if (const std::string t = std::string(REXCVAR_GET(cod3_test_raw_line)); t.find('|') != std::string::npos) {
     const size_t bar = t.find('|');

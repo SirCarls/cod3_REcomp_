@@ -16,6 +16,7 @@
 #include <iterator>
 #include <mutex>
 #include <string>
+#include <utility>  // [acct2-bro Text lane] 2026-11-22 std::pair (Shown)
 #include <vector>
 
 #include <rex/cvar.h>
@@ -24,6 +25,7 @@
 #include "game/engine.h"
 #include "game/frame_rate.h"
 #include "game/hd_textures.h"
+#include "game/menu_port_rows.h"  // [acct2-bro Text lane] 2026-11-22 Words(): the texts in the chosen language
 #include "game/multiplayer.h"
 #include "game/post_effects.h"  // [post-effects]
 #include "game/program.h"       // [post-effects]
@@ -47,6 +49,26 @@ bool GetBool(const char* cvar) { return Get(cvar) == "true"; }
 std::string Upper(std::string s) {
   for (char& c : s) c = char(std::toupper(static_cast<unsigned char>(c)));
   return s;
+}
+
+// [acct2-bro Text lane] 2026-11-22 The rows' help texts, values and notes in the chosen language: each English
+// text has a key whose "@port" row (game/text_port_words.inc, or a pack's own row) answers it, else the English stays
+// (as before). "{0}" in a text: the number or size put in by a plain replace (a text is never a format string).
+std::string Say(const char* key, const char* english) { return cod3::portrows::Words(key, english); }
+std::string SayWith(const char* key, const char* english, const std::string& what) {
+  std::string text = Say(key, english);
+  if (const size_t at = text.find("{0}"); at != std::string::npos) text.replace(at, 3, what);
+  return text;
+}
+// A choice's or a switch's shown word ("OFF", "ON", "ORIGINAL", ...): its key, else as written ("FXAA", sizes).
+std::string Shown(const char* text) {
+  static constexpr std::pair<const char*, const char*> kKeys[] = {
+      {"ON", "COD3_PORT_V_ON"},           {"OFF", "COD3_PORT_V_OFF"},     {"AUTO", "COD3_PORT_V_AUTO"},
+      {"ORIGINAL", "COD3_PORT_V_ORIGINAL"}, {"FXAA EXTREME", "COD3_PORT_V_FXAA_EXTREME"},
+      {"NO LIMIT", "COD3_PORT_V_NO_LIMIT"}};
+  for (const auto& [english, key] : kKeys)
+    if (std::strcmp(text, english) == 0) return Say(key, english);
+  return text;
 }
 
 struct Choice {
@@ -140,7 +162,8 @@ bool HdTexturesPending() {
   return GetBool("cod3_hd_textures") != (now == cod3::HdTextures::kOn);
 }
 
-std::string FrameRateText(int fps) { return fps <= 0 ? "NO LIMIT" : std::to_string(fps); }
+// [acct2-bro Text lane] 2026-11-22 "NO LIMIT" in the chosen language
+std::string FrameRateText(int fps) { return fps <= 0 ? Shown("NO LIMIT") : std::to_string(fps); }
 
 std::mutex g_save_mutex;
 std::function<void()> g_save;
@@ -183,47 +206,59 @@ constexpr const char* kLabelTexts[cod3::videomenu::kRowCount] = {
 };
 
 // The end of a help text for a setting that waits for a restart.
-std::string AfterRestart(bool pending) {
-  return pending ? " Changed: the game uses it from the next start." : " Applies after a restart.";
+std::string AfterRestart(bool pending) {  // [acct2-bro Text lane] 2026-11-22 in the chosen language
+  return " " + (pending ? Say("COD3_PORT_VH_NEXT_START", "Changed: the game uses it from the next start.")
+                        : Say("COD3_PORT_VH_AFTER_RESTART", "Applies after a restart."));
 }
+std::string AtOnce() { return " " + Say("COD3_PORT_VH_AT_ONCE", "Applies at once."); }
 
 // The help text of a row, as it applies now.
 std::string RowHelpText(int row) {
   std::string t;
   switch (row) {
     case cod3::videomenu::kResolution: {
-      t = "How many pixels the game is drawn with. Auto matches the monitor in fullscreen, or the "
-          "window. Natively the game draws every pixel itself, up to about 1920x1080; above that "
-          "the graphics card draws each of its pixels as several.";
-      t += GetBool("cod3_live_resolution") ? " Applies at once." : " Applies after a restart.";
+      // [acct2-bro Text lane] 2026-11-22 each part through Say(): the chosen language's words, else this English
+      t = Say("COD3_PORT_VH_RESOLUTION",
+              "How many pixels the game is drawn with. Auto matches the monitor in fullscreen, or the "
+              "window. Natively the game draws every pixel itself, up to about 1920x1080; above that "
+              "the graphics card draws each of its pixels as several.");
+      t += GetBool("cod3_live_resolution") ? AtOnce() : AfterRestart(false);
       const cod3::RenderPlan plan = cod3::GetRenderPlan();
-      if (plan.game_width) t += " Now: the game draws " + cod3::DescribePlan(plan) + ".";
+      if (plan.game_width)
+        t += " " + SayWith("COD3_PORT_VH_NOW_DRAWS", "Now: the game draws {0}.", cod3::DescribePlan(plan));
       break;
     }
     case cod3::videomenu::kFrameRate:
-      t = "The most frames per second the game may draw (com_maxfps). A limit, not a target: the "
-          "game's speed doesn't change. Applies at once.";
-      if (cod3::mp::IsMatchRunning()) t += " Can't be changed during a multiplayer match.";
+      t = Say("COD3_PORT_VH_FRAMERATE",  // [acct2-bro Text lane] 2026-11-22
+              "The most frames per second the game may draw (com_maxfps). A limit, not a target: the "
+              "game's speed doesn't change. Applies at once.");
+      if (cod3::mp::IsMatchRunning())
+        t += " " + Say("COD3_PORT_VH_NOT_IN_MATCH", "Can't be changed during a multiplayer match.");
       break;
     case cod3::videomenu::kVsync:
-      t = "Shows each new picture only when the monitor starts a new refresh, so there is no "
-          "tearing. It doesn't limit the frame rate.";
+      t = Say("COD3_PORT_VH_VSYNC",  // [acct2-bro Text lane] 2026-11-22
+              "Shows each new picture only when the monitor starts a new refresh, so there is no "
+              "tearing. It doesn't limit the frame rate.");
       t += AfterRestart(VsyncPending());
       break;
     case cod3::videomenu::kAntiAliasing:
-      t = "Smooths jagged edges after the picture is drawn. Extreme smooths more and softens the "
-          "picture a little.";
-      t += RestartOnly("swap_post_effect") ? AfterRestart(AntiAliasingPending()) : " Applies at once.";
+      t = Say("COD3_PORT_VH_AA",  // [acct2-bro Text lane] 2026-11-22
+              "Smooths jagged edges after the picture is drawn. Extreme smooths more and softens the "
+              "picture a little.");
+      t += RestartOnly("swap_post_effect") ? AfterRestart(AntiAliasingPending()) : AtOnce();
       break;
     case cod3::videomenu::kShadows:
-      t = "The shadows soldiers, vehicles and other moving things cast in sunlight. Off: none (at "
-          "once). The level's own light and shade stay.";
+      t = Say("COD3_PORT_VH_SHADOWS",  // [acct2-bro Text lane] 2026-11-22
+              "The shadows soldiers, vehicles and other moving things cast in sunlight. Off: none (at "
+              "once). The level's own light and shade stay.");
       break;
     case cod3::videomenu::kHdTextures:
-      t = "The game's own textures upscaled to twice the detail, made by the setup tool.";
+      t = Say("COD3_PORT_VH_HD",  // [acct2-bro Text lane] 2026-11-22
+              "The game's own textures upscaled to twice the detail, made by the setup tool.");
       t += AfterRestart(HdTexturesPending());
       if (cod3::GetHdTextures() == cod3::HdTextures::kNoPack)
-        t += " Not installed: tick \"Upscale the extracted textures\" in the setup tool.";
+        t += " " + Say("COD3_PORT_VH_HD_NOT_INSTALLED",
+                       "Not installed: tick \"Upscale the extracted textures\" in the setup tool.");
       break;
     case cod3::videomenu::kBattleActions:
 #if !defined(COD3_MP)
@@ -231,13 +266,16 @@ std::string RowHelpText(int row) {
 #endif
       break;
     case cod3::videomenu::kDepthOfField:  // [post-effects]
-      t = cod3::kMultiplayer
-              ? "The background blurs where a map uses depth of field. Off: always sharp. Applies at once."
-              : "The background blurs while you aim down the sights, where a mission uses depth of field. "
-                "Off: always sharp. Applies at once.";
+      t = cod3::kMultiplayer  // [acct2-bro Text lane] 2026-11-22 in the chosen language
+              ? Say("COD3_PORT_VH_DOF_MP",
+                    "The background blurs where a map uses depth of field. Off: always sharp. Applies at once.")
+              : Say("COD3_PORT_VH_DOF_SP",
+                    "The background blurs while you aim down the sights, where a mission uses depth of field. "
+                    "Off: always sharp. Applies at once.");
       break;
     case cod3::videomenu::kMotionBlur:  // [post-effects]
-      t = "The screen trails the game shows at some moments. Off: never. Applies at once.";
+      t = Say("COD3_PORT_VH_MOTIONBLUR",  // [acct2-bro Text lane] 2026-11-22
+              "The screen trails the game shows at some moments. Off: never. Applies at once.");
       break;
   }
   return t;
@@ -260,7 +298,7 @@ std::string Value(int row) {
     case kResolution: {
       const std::string cur = Get("cod3_render_resolution");
       const int i = FindChoice(kResolutions, cur);
-      if (i >= 0) return kResolutions[i].text;
+      if (i >= 0) return Shown(kResolutions[i].text);  // [acct2-bro Text lane] 2026-11-22
       uint32_t w = 0, h = 0;  // a size typed in the console ("1600x900", r_mode)
       if (ParseResolutionChoice(cur, &w, &h)) return std::to_string(w) + " X " + std::to_string(h);
       return Upper(cur);
@@ -268,19 +306,19 @@ std::string Value(int row) {
     case kFrameRate:
       return FrameRateText(FrameRate::Get().limit());
     case kVsync:
-      return VsyncOn() ? "ON" : "OFF";
+      return Shown(VsyncOn() ? "ON" : "OFF");  // [acct2-bro Text lane] 2026-11-22
     case kAntiAliasing: {
       const std::string cur = Get("swap_post_effect");
       const int i = FindChoice(kAAChoices, cur);
-      return i >= 0 ? kAAChoices[i].text : Upper(cur);
+      return i >= 0 ? Shown(kAAChoices[i].text) : Upper(cur);  // [acct2-bro Text lane] 2026-11-22
     }
     case kShadows: {
       const std::string cur = Get("cod3_shadow_quality");
       const int i = FindChoice(kShadowQuality, cur.empty() ? "original" : cur);
-      return i >= 0 ? kShadowQuality[i].text : Upper(cur);
+      return i >= 0 ? Shown(kShadowQuality[i].text) : Upper(cur);  // [acct2-bro Text lane] 2026-11-22
     }
     case kHdTextures:
-      return GetBool("cod3_hd_textures") ? "ON" : "OFF";
+      return Shown(GetBool("cod3_hd_textures") ? "ON" : "OFF");  // [acct2-bro Text lane] 2026-11-22
     case kBattleActions:
 #if !defined(COD3_MP)
       return qte::MenuValue();
@@ -288,20 +326,21 @@ std::string Value(int row) {
       return {};  // multiplayer has no battle actions
 #endif
     case kDepthOfField:  // [post-effects]
-      return post_effects::DepthOfFieldOn() ? "ON" : "OFF";
+      return Shown(post_effects::DepthOfFieldOn() ? "ON" : "OFF");  // [acct2-bro Text lane] 2026-11-22
     case kMotionBlur:  // [post-effects]
-      return post_effects::MotionBlurOn() ? "ON" : "OFF";
+      return Shown(post_effects::MotionBlurOn() ? "ON" : "OFF");  // [acct2-bro Text lane] 2026-11-22
   }
   return {};
 }
 
 std::string Note(int row) {
-  constexpr const char* kAfterRestart = "APPLIES AFTER A RESTART";
+  // [acct2-bro Text lane] 2026-11-22 each note in the chosen language (COD3_PORT_VN_* "@port" rows), else the English
+  const std::string kAfterRestart = Say("COD3_PORT_VN_AFTER_RESTART", "APPLIES AFTER A RESTART");
   switch (row) {
     case kResolution:
       return GetBool("cod3_live_resolution") ? "" : kAfterRestart;
     case kFrameRate:
-      return mp::IsMatchRunning() ? "NOT DURING A MULTIPLAYER MATCH" : "";
+      return mp::IsMatchRunning() ? Say("COD3_PORT_VN_NOT_IN_MATCH", "NOT DURING A MULTIPLAYER MATCH") : "";
     case kVsync:
     case kHdTextures:
       return kAfterRestart;
@@ -310,11 +349,12 @@ std::string Note(int row) {
     case kShadows:
       return "";
     case kBattleActions:
-      return "VALVES, CRANES, CROWBARS, ROWING";
+      return Say("COD3_PORT_VN_QTE", "VALVES, CRANES, CROWBARS, ROWING");
     case kDepthOfField:  // [post-effects]
-      return kMultiplayer ? "BACKGROUND BLUR WHERE A MAP USES IT" : "BACKGROUND BLUR WHILE AIMING";
+      return kMultiplayer ? Say("COD3_PORT_VN_DOF_MP", "BACKGROUND BLUR WHERE A MAP USES IT")
+                          : Say("COD3_PORT_VN_DOF_SP", "BACKGROUND BLUR WHILE AIMING");
     case kMotionBlur:  // [post-effects]
-      return "SCREEN TRAILS AT SOME MOMENTS";
+      return Say("COD3_PORT_VN_MOTIONBLUR", "SCREEN TRAILS AT SOME MOMENTS");
   }
   return {};
 }

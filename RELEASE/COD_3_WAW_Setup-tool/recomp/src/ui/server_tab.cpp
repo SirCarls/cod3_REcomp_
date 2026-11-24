@@ -142,6 +142,12 @@ bool Draw() {
   static const char* kRule[] = {"0: Off for everyone", "1: Each player's own choice"};
   changed |= ChoiceRow(pd::Id::kStickyAim, "Sticky Aim rule", kRule, 2);
   changed |= PercentRow(pd::Id::kAimSlowdown, "Sticky Aim strength");
+
+#if defined(COD3_MP)  // [acct2-ocr] 2026-11-22 the grenade arc (F2 > Crosshair > Grenade arc): the campaign has no match
+  Section("Grenade arc");
+  static const char* kArcRule[] = {"0: Off for everyone", "1: Each player's own choice"};
+  changed |= ChoiceRow(pd::Id::kGrenadeArc, "Grenade arc rule", kArcRule, 2);
+#endif
   return changed;
 }
 

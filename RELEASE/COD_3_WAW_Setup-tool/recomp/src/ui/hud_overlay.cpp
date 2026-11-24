@@ -9,11 +9,13 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>  // [claude-9b] std::atoi, the Display row
+#include <cstring>  // [acct2-ocr] 2026-11-22 std::memcpy, the grenade arc
 #include <initializer_list>
 #include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <mutex>         // [acct2-ocr] 2026-11-22 the grenade arc
 #include <atomic>        // [f2-menus] 2026-11-11 cod3mp's language settings shared with the campaign's cod3.toml
 #include <cctype>        // [f2-menus] the same
 #include <fstream>       // [f2-menus] the same
@@ -57,10 +59,13 @@
 #include "game/screenshot.h"
 #include "game/shadows.h"
 #include "game/viewmodel.h"  // [claude-9b] CS2 weapon position
+#include "ui/grenade_arc_math.h"  // [acct2-ocr] 2026-11-22 the grenade arc (Titanfall 2's)
+#include "game/protected_dvars.h"  // [acct2-ocr] 2026-11-22 the grenade arc's host veto (cod3mp)
 #include "game/aim_sensitivity.h"  // [claude-9b] sensitivity per weapon (F2 > Controls)
 #include "game/pad_settings.h"     // [acct2-ocr] 2026-11-07 the controller's rows, per player
 #include "game/sticky_aim.h"  // [claude-9b] what applies now (F2 > Aim)
 #include "ui/server_tab.h"  // [claude-9b] F2 > Game > Server, the match's rules, host only
+#include "ui/camo_tab.h"  // [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos
 #include "ui/slider_box.h"  // [claude-9b] sliders with a number box (owner: "sliders + textbox")
 #include "f2/f2_accel.h"  // [f2-menus] 2026-11-11 mouse acceleration, sensitivity randomizer and scales (F2 > Controls > Mouse)
 #include "f2/f2_crosshair_cs2.h"  // [acct2-ocr] 2026-11-14 CS2's crosshair, every option, one per split-screen player
@@ -106,6 +111,12 @@ REXCVAR_DEFINE_BOOL(cod3_show_version, true, "cod3/Interface",
 // [claude-9b] 2026-10-27 tests: each view's custom crosshair in the log once a second (screenshots don't show it)
 REXCVAR_DEFINE_BOOL(cod3_debug_crosshair, false, "cod3",
                     "Log once a second where each view's custom crosshair is drawn, its size and alpha (tests)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [acct2-ocr] 2026-11-22 the grenade arc: the game's numbers it flies with and where it ends, and at each of the
+// player's throws the game's own grenade against the prediction (tests and the owner's look)
+REXCVAR_DEFINE_BOOL(cod3_debug_grenade_arc, false, "cod3",
+                    "Log the grenade arc's numbers once a second while it is drawn, and each throw and rest of the "
+                    "player's grenade against what the arc said (tests)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 REXCVAR_DEFINE_INT32(cod3_crosshair_style, 0, "cod3/Crosshair",
                      "0 cross, 1 cross+dot, 2 dot, 3 circle, 4 T")
@@ -264,6 +275,15 @@ struct GameCrosshairView {
   std::atomic<int64_t> countdown_ns{0};
   // [acct2-ocr] 2026-11-15 (owner 20:59) the game's own spread for the dynamic styles, in its 640 x 480 HUD units
   std::atomic<float> spread{0.0f};
+  // [acct2-ocr] 2026-11-22 (owner 02:22) this view's player's scope: how far its picture is up (the game's own fade, 0
+  // to 1) and when the game last drew it, for CS2's scope rows (NotifyScope)
+  std::atomic<float> scope{0.0f};
+  std::atomic<int64_t> scope_ns{0};
+  cod3::prompts::FrameLatch scope_latch;
+  // [acct2-ocr] 2026-11-22 the grenade this view's player has out (f2::xhair::Grenade; -1: none) and since when
+  // (NotifyGrenade, from the grenade button's commands)
+  std::atomic<int> grenade{-1};
+  std::atomic<int64_t> grenade_ns{0};
   // [rexglue-native] 2026-11-17 P0 the game frames the crosshair and the countdown were asked for in (button_prompts.h FrameLatch): while
   // the game's latest complete frame had them, the overlay refreshes ns / countdown_ns before its 150 ms check
   cod3::prompts::FrameLatch cross_latch;
@@ -277,6 +297,7 @@ float g_next_rect[4] = {0.0f, 0.0f, 1.0f, 1.0f};
 // file works it out for the infantry cross; 0 otherwise)
 float g_next_spread = 0.0f;
 constexpr int64_t kCrosshairShownNs = 150'000'000;
+constexpr double kGrenadeHeldMost = 8.0;  // [acct2-ocr] 11-22 seconds a grenade counts as out without its Up
 
 int64_t NowNs() {
   return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -714,7 +735,16 @@ void BindCs2Crosshair() {
   caps.special |= (1u << f2::xhair::kSpecialVehicle) | (1u << f2::xhair::kSpecialCountdown);
   caps.special_label[f2::xhair::kSpecialTurret] = "Mounted guns";
   caps.special_label[f2::xhair::kSpecialVehicle] = "Tanks and jeeps";
-  caps.special_later = 1u << f2::xhair::kSpecialScope;
+  // [acct2-ocr] 2026-11-22 (owner 02:22: "It needs to be 1:1 with features") the scopes: the scope's draw has a hook
+  // (the end of this file), so its row and CS2's sniper rows work (Show inaccuracy, Scope line width; the game keeps
+  // the scope up through a shot, so Delay unscope and Zoom back in stay greyed)
+  caps.scope = true;
+  caps.special |= 1u << f2::xhair::kSpecialScope;
+  // [acct2-ocr] 2026-11-22 the grenade crosshair: Call of Duty 3's two grenades, frag and smoke, from the grenade
+  // button's commands (the end of this file)
+  caps.grenades = true;
+  caps.grenade_kinds = (1u << f2::xhair::kExplosive) | (1u << f2::xhair::kSmoke);
+  caps.grenade_arc = true;  // [acct2-ocr] 2026-11-22 the player's throw flown ahead (UpdateGrenadeArc)
   f2::xhair::SetCaps(caps);
 }
 
@@ -779,6 +809,29 @@ void NotifyCountdown(uint8_t* base, float left) {
   v.countdown_latch.Note();  // [rexglue-native] 2026-11-17 P0
 }
 
+// [acct2-ocr] 2026-11-22 The player of the local client the game works for now took a grenade out (kind) or put it
+// away (-1), from the grenade button's commands at the end of this file.
+void NotifyGrenade(uint8_t* base, int kind) {
+  GameCrosshairView& v = g_crosshair_views[ActiveView(base)];
+  if (kind >= 0) v.grenade_ns.store(NowNs(), std::memory_order_relaxed);
+  v.grenade.store(kind, std::memory_order_relaxed);
+}
+
+// [acct2-ocr] 2026-11-22 That view's player's scope is up, its picture `fraction` faded in (the scope's draw's hook at
+// the end of this file). That draw can run inside CG_DrawCrosshair's infantry cross, after cod3mp's hook named the
+// view for the crosshair the game is about to ask for: that naming is kept.
+void NotifyScope(uint8_t* base, float fraction) {
+  const int view = g_next_view;
+  float rect[4];
+  for (int i = 0; i < 4; ++i) rect[i] = g_next_rect[i];
+  GameCrosshairView& v = NameActiveView(base);
+  v.scope.store(std::isfinite(fraction) ? std::clamp(fraction, 0.0f, 1.0f) : 0.0f, std::memory_order_relaxed);
+  v.scope_ns.store(NowNs(), std::memory_order_relaxed);
+  v.scope_latch.Note();
+  g_next_view = view;
+  for (int i = 0; i < 4; ++i) g_next_rect[i] = rect[i];
+}
+
 // [acct2-ocr] 2026-11-15 The local client's player state, as the IGO widgets read it: its entity (campaign
 // 0x82A2AB40, cod3mp 0x82BCC7FC: a pointer to the entities, client + 1), the entity's +0x210 (cod3mp +0x200). 0 when
 // it can't be read. Its flags are at +0xd0 (cod3mp +0xf0).
@@ -806,6 +859,522 @@ uint32_t PlayerState(uint8_t* base) {
 uint32_t PlayerFlags(uint8_t* base) {
   const uint32_t ps = PlayerState(base);
   return ps != 0 ? cod3::guest::ReadU32(base, ps + kPlayerFlags) : 0;
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// [acct2-ocr] 2026-11-22 (owner 04:31: Titanfall 2's grenade arc, "the grenade/arc star arc-building is one I'm after";
+// 04:40 "just do what you think is right") While a player holds a grenade (the grenade button's commands,
+// NotifyGrenade) and the weapon up is a grenade, its path is flown here each frame the way the game's server will fly
+// it (ui/grenade_arc_math.h), with every number read from the running game: the weapon's speeds and fuse, the throw's
+// start, gravity and the bounce's constants (campaign addresses below; read once a frame, so a mod or a tool that
+// changes them is followed). The world is traced with the game's own CG_Trace (as game/coronas.cpp does). The overlay
+// draws it in that player's view (DrawGrenadeArcs). cod3mp: the same with its own addresses; its host can switch the
+// arc off for everyone in the match (protected_dvars' grenade_arc), which greys the rows and stops it.
+namespace arc {
+#if defined(COD3_MP)
+constexpr uint32_t kCg = 0x82C7D490, kCgSize = 6368;          // cg_t of each local client (game/coronas.cpp)
+constexpr uint32_t kCgTanHalfFov = 4944;                       // the refdef: tan(half the fov) across, down
+constexpr uint32_t kCgViewOrigin = 4960, kCgViewAxis = 4976;   // the view's origin; forward, left, up
+constexpr uint32_t kCgWeapon = 0x82C7E70C;                     // the cg's weapon (its definition), per client
+constexpr uint32_t kWeaponSpeed = 1924, kWeaponSpeedUp = 1928;  // sub_82584CA0, the player's throw
+constexpr uint32_t kFireSwitch = 0x82590D50;                   // FireWeapon's (sub_82590C30) jump table
+constexpr uint32_t kFireGrenade = 0x82590DD0, kFireGrenadeOrRocket = 0x82590F20;  // its grenade cases
+constexpr uint32_t kStartPush = 0x820625C8;                    // the throw: start = muzzle + forward x this
+constexpr uint32_t kGravity = 0x82B2CC30;                      // BG_EvaluateTrajectory's gravity (none of its own)
+constexpr uint32_t kReflect = 0x820853B8;                      // sub_8256F0A0 (the bounce): v + n x (v.n x this)
+constexpr uint32_t kBounce = 0x82062C94, kBounceOther = 0x820853E0;  // its scale after a bounce (the second: rare)
+constexpr uint32_t kRestNormalZ = 0x82085980;                  // (a double) above: ground
+constexpr uint32_t kRestSpeed = 0x82680F84;                    // on ground, under it: at rest
+constexpr uint32_t kNudge = 0x820622B8, kNudgeUpMost = 0x820641A0;  // else: off the surface by n x this (up: at most)
+constexpr uint32_t kCgTrace = 0x824604A8;                      // CG_Trace (game/coronas.cpp)
+constexpr uint32_t kTraceFilterVtable = 0x82065DCC;
+constexpr uint32_t kEntityList = 0x82BCC7FC, kEntityNumber = 484;
+constexpr uint32_t kLevel = 0x82C281D0;                        // level: its time and previous time (the frame, ms)
+// The grenade's own clipmask (fire_grenade sub_82583310 stores 0x02802091 at +628, G_RunMissile sub_8258FF30 traces
+// with it). [acct2-ocr] 2026-11-22 Its bodies (0x02000000) are players, and also the vehicles and other entities the
+// grenade bounces off: without them the arc flew through those (q24-mp20 / mp144: the grenade stopped 318 / 527 units
+// short of the arc's end). Every console knows where every player is, so a body is kept only where the thrower's eye
+// sees it (TraceSeen): the arc never shows a player round a corner or behind a wall.
+constexpr uint32_t kTraceMask = 0x02802091;
+constexpr uint32_t kBodies = 0x02000000;
+constexpr uint32_t kSightMask = 0x00000001;                    // the world's solid only: what the eye can't see through
+#else
+constexpr uint32_t kCg = 0x82A98D90, kCgSize = 5840;          // cg_t of each local client (game/server_step.cpp)
+constexpr uint32_t kCgTanHalfFov = 4464;                       // the refdef: tan(half the fov) across, down
+constexpr uint32_t kCgViewOrigin = 4480, kCgViewAxis = 4496;   // the view's origin; forward, left, up
+constexpr uint32_t kCgWeapon = 0x82A99E2C;                     // the cg's weapon (its definition), per client
+constexpr uint32_t kWeaponSpeed = 1920, kWeaponSpeedUp = 1924;  // sub_82558E58, the player's throw
+constexpr uint32_t kFireSwitch = 0x82569D34;                   // FireWeapon's (sub_82569C40) jump table
+constexpr uint32_t kFireGrenade = 0x82569DB4, kFireGrenadeOrRocket = 0x82569DC8;  // its grenade cases
+constexpr uint32_t kStartPush = 0x820635D0;                    // the throw: start = muzzle + forward x this
+constexpr uint32_t kGravity = 0x829B0980;                      // BG_EvaluateTrajectory's gravity (none of its own)
+constexpr uint32_t kReflect = 0x8207C720;                      // sub_82569538 (the bounce): v + n x (v.n x this)
+constexpr uint32_t kBounce = 0x82062720, kBounceOther = 0x8207C7F0;  // its scale after a bounce (the second: rare)
+constexpr uint32_t kRestNormalZ = 0x8207CEE8;                  // (a double) above: ground
+constexpr uint32_t kRestSpeed = 0x8206272C;                    // on ground, under it: at rest
+constexpr uint32_t kNudge = 0x82001930, kNudgeUpMost = 0x82062C54;  // else: off the surface by n x this (up: at most)
+constexpr uint32_t kCgTrace = 0x824460C0;                      // CG_Trace (game/coronas.cpp)
+constexpr uint32_t kTraceFilterVtable = 0x82067848;
+constexpr uint32_t kEntityList = 0x82A2AB40, kEntityNumber = 500;
+constexpr uint32_t kLevel = 0x82A4E790;                        // level: its time and previous time (the frame, ms)
+constexpr uint32_t kTraceMask = 0x02000001;                    // world solid and characters
+#endif
+constexpr uint32_t kWeaponType = 172, kWeaponClass = 176;      // FireWeapon's switch: the weapon's type, class
+constexpr uint32_t kWeaponFuse = 1588;                         // the weapon's fuse (ms), in both
+constexpr uint32_t kGrenadeClass = 5;                          // the second case's class for a grenade
+constexpr uint32_t kTraceNormal = 0x10, kTraceFraction = 0x20;
+constexpr uint32_t kPlayerVelocity = 16;                       // the player's client (PlayerState): velocity
+constexpr uint32_t kPlayerPmType = 36;                         // its pm_type (game/movement/program_*.h): 4 and up
+                                                               // a killed player (the death camera, between lives)
+constexpr uint32_t kLevelTime = 156, kLevelPreviousTime = 160;
+constexpr float kStep = 0.05f;                                 // seconds of flight traced at a time
+constexpr int kPoints = 256;
+constexpr int64_t kShownNs = 150'000'000;
+constexpr int64_t kEveryNs = 1'000'000'000 / 30;               // flown again at most 30 times a second
+
+bool Valid(uint32_t a) { return a >= 0x10000000u && a < 0xF0000000u; }
+grenade_arc::Vec3 ReadVec(uint8_t* base, uint32_t a) {
+  return {cod3::guest::ReadF32(base, a), cod3::guest::ReadF32(base, a + 4), cod3::guest::ReadF32(base, a + 8)};
+}
+double ReadF64(uint8_t* base, uint32_t a) {
+  const uint64_t hi = cod3::guest::ReadU32(base, a), lo = cod3::guest::ReadU32(base, a + 4);
+  const uint64_t bits = hi << 32 | lo;
+  double d;
+  std::memcpy(&d, &bits, sizeof d);
+  return d;
+}
+
+// Whether the game's FireWeapon would throw this weapon as a grenade (its own switch, read from the game).
+bool IsGrenade(uint8_t* base, uint32_t weapon) {
+  if (!Valid(weapon)) return false;
+  const uint32_t type = cod3::guest::ReadU32(base, weapon + kWeaponType);
+  if (type > 8) return false;
+  const uint32_t to = cod3::guest::ReadU32(base, kFireSwitch + 4 * type);
+  return to == kFireGrenade ||
+         (to == kFireGrenadeOrRocket && cod3::guest::ReadU32(base, weapon + kWeaponClass) == kGrenadeClass);
+}
+
+struct View {
+  std::mutex m;
+  int64_t ns = 0;      // when it was flown
+  int count = 0;
+  grenade_arc::Point points[kPoints];
+  grenade_arc::Camera camera;
+  float rect[4] = {0, 0, 1, 1};
+};
+View g_views[kCrosshairViews];
+
+// The last flight of each view (the game's thread only), flown with the weapon's whole fuse: while the throw stays
+// the same it is used again, and a cooked grenade's shorter fuse only cuts it (grenade_arc::CutAtFuse).
+struct Flown {
+  int count = 0;
+  grenade_arc::Point points[kPoints];
+  grenade_arc::Throw thrown;
+  grenade_arc::Camera camera;
+  int bounces = -1;
+  float fuse = 0.0f;
+  int64_t ns = 0;
+};
+Flown g_flown[kCrosshairViews];
+bool SameThrow(const grenade_arc::Throw& a, const grenade_arc::Throw& b) {
+  const grenade_arc::Vec3 d = grenade_arc::Sub(a.start, b.start), e = grenade_arc::Sub(a.velocity, b.velocity);
+  return grenade_arc::Dot(d, d) < 1e-4f && grenade_arc::Dot(e, e) < 1e-2f;
+}
+
+// The cooked grenade's fuse left, from the cook widget (IGOGrenadeCookWidget's update, at the end of this file).
+std::atomic<float> g_cook_left[kCrosshairViews] = {};  // 0 to 1
+std::atomic<int64_t> g_cook_ns[kCrosshairViews] = {};
+
+// The last throw flown for the debug line's comparison, per view (the game's thread only).
+struct Told {
+  grenade_arc::Throw thrown;
+  grenade_arc::Vec3 end;
+  uint8_t end_kind = 0;
+  bool have = false;
+  uint32_t grenade = 0;  // the game's grenade of the player's last throw
+};
+Told g_told[kCrosshairViews];
+
+uint32_t PlayerEntity(uint8_t* base, uint32_t client) {
+  const uint32_t list = cod3::guest::ReadU32(base, kEntityList);
+  if (client > 3 || !Valid(list)) return 0;
+  const uint32_t ent = cod3::guest::ReadU32(base, list + 4 * (client + 1));
+  return Valid(ent) ? ent : 0;
+}
+
+int32_t PlayerNumber(uint8_t* base, uint32_t client) {
+  const uint32_t list = cod3::guest::ReadU32(base, kEntityList);
+  if (client > 3 || !Valid(list)) return -1;
+  const uint32_t ent = cod3::guest::ReadU32(base, list + 4 * (client + 1));
+  return Valid(ent) ? cod3::guest::ReadS32(base, ent + kEntityNumber) : -1;
+}
+
+// CG_Trace from a to b (a point; the player left out), as game/coronas.cpp calls it.
+grenade_arc::Hit Trace(PPCContext& parent, uint8_t* base, int32_t player, grenade_arc::Vec3 a, grenade_arc::Vec3 b,
+                       uint32_t mask = kTraceMask) {
+  cod3::guest::Call call(parent, base);
+  auto& c = call.ctx();
+  c.r1.u32 = (c.r1.u32 - 0x100) & ~0xFu;  // scratch: [r1, r1 + 0x100), above the callee's frames
+  const uint32_t s = c.r1.u32;
+  const uint32_t trace = s, at_start = s + 0x50, at_end = s + 0x60, zero = s + 0x70, filter = s + 0x80;
+  for (uint32_t x = s; x < s + 0xA0; x += 4) cod3::guest::WriteU32(base, x, 0);
+  const float pa[3] = {a.x, a.y, a.z}, pb[3] = {b.x, b.y, b.z};
+  for (int i = 0; i < 3; ++i) {
+    cod3::guest::WriteF32(base, at_start + 4 * i, pa[i]);
+    cod3::guest::WriteF32(base, at_end + 4 * i, pb[i]);
+  }
+  cod3::guest::WriteU32(base, filter + 0x00, kTraceFilterVtable);
+  cod3::guest::WriteU32(base, filter + 0x04, static_cast<uint32_t>(player));
+  cod3::guest::WriteU32(base, filter + 0x08, static_cast<uint32_t>(player));
+  cod3::guest::WriteU32(base, filter + 0x14, mask);
+  call.Invoke(kCgTrace, {trace, at_start, zero, zero, at_end, filter});
+  grenade_arc::Hit h;
+  const float f = cod3::guest::ReadF32(base, trace + kTraceFraction);
+  h.fraction = std::isfinite(f) ? std::clamp(f, 0.0f, 1.0f) : 1.0f;
+  h.normal = ReadVec(base, trace + kTraceNormal);
+  if (!grenade_arc::Finite(h.normal)) h.normal = {0, 0, 1};
+  // a trace that starts inside something hits at once with no surface: the line goes no further (as the grenade
+  // couldn't be flown from there either)
+  h.start_solid = h.fraction <= 0.0f && grenade_arc::Dot(h.normal, h.normal) < 0.25f;
+  return h;
+}
+
+#if defined(COD3_MP)
+// [acct2-ocr] 2026-11-22 The grenade's trace, but a body (a player, a vehicle, another entity) that stops it first
+// counts only where the thrower's eye sees that point through the world; an unseen one is flown through. (Smoke isn't
+// geometry: a player standing in smoke the eye could see through still bends the arc.)
+grenade_arc::Hit TraceSeen(PPCContext& ctx, uint8_t* base, int32_t player, grenade_arc::Vec3 eye, grenade_arc::Vec3 a,
+                           grenade_arc::Vec3 b) {
+  const grenade_arc::Hit h = Trace(ctx, base, player, a, b, kTraceMask);
+  if (h.fraction >= 1.0f || h.start_solid) return h;
+  const grenade_arc::Hit w = Trace(ctx, base, player, a, b, kTraceMask & ~kBodies);
+  if (!(w.fraction > h.fraction + 1e-4f)) return h;  // the world stops it there anyway
+  const grenade_arc::Vec3 p = grenade_arc::Lerp(a, b, h.fraction);
+  const float len = grenade_arc::Length(grenade_arc::Sub(p, eye));
+  if (!(len > 1.0f)) return h;
+  const grenade_arc::Hit sight = Trace(ctx, base, player, eye, p, kSightMask);
+  const bool seen = !sight.start_solid && sight.fraction * len >= len - 2.0f;
+  return seen ? h : w;
+}
+#endif
+}  // namespace arc
+
+// The game's thread, after CG_DrawCrosshair for the local client the game works for now.
+void UpdateGrenadeArc(PPCContext& ctx, uint8_t* base) {
+  const int view = ActiveView(base);
+  const f2::xhair::Settings& s = f2::xhair::Player(view);
+  if (!s.grenade_arc || f2::xhair::GrenadeArcBlocked() != nullptr) return;
+#if defined(COD3_MP)
+  // [acct2-ocr] 2026-11-22 the host's rule read here too (the overlay's blocked line follows a frame later): 0, or a
+  // guest without the host's rules yet (its pending value), flies nothing
+  if (cod3::protected_dvars::Get(cod3::protected_dvars::Id::kGrenadeArc) == 0) {
+    arc::g_flown[view].count = 0;
+    return;
+  }
+#endif
+  const GameCrosshairView& gv = g_crosshair_views[view];
+  const int64_t now = NowNs();
+  const int held = gv.grenade.load(std::memory_order_relaxed);
+  if (held < 0 || double(now - gv.grenade_ns.load(std::memory_order_relaxed)) / 1e9 > kGrenadeHeldMost) {
+    arc::g_flown[view].count = 0;
+    return;
+  }
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4) return;
+  // [acct2-ocr] 2026-11-22 only while the player is in play: a killed player's grenade button (its playerState's
+  // pm_type 4 and up: the death camera, the kill cam, waiting to spawn) flies nothing. (q20-ms2: player 2's arc was
+  // flown from where its dead view was and fell through the world; the game's own crosshair is no test, as the
+  // game hides it while a grenade is held.)
+  const uint32_t ps = PlayerState(base);
+  const int32_t pm_type = ps != 0 ? cod3::guest::ReadS32(base, ps + arc::kPlayerPmType) : -1;
+  if (pm_type < 0 || pm_type >= 4) {
+    arc::g_flown[view].count = 0;
+    static int64_t told_dead_ns = 0;
+    if (REXCVAR_GET(cod3_debug_grenade_arc) && now - told_dead_ns > 1'000'000'000) {
+      told_dead_ns = now;
+      REXLOG_INFO("cod3: grenade arc: view {}: a grenade is out, but the player isn't in play (pm_type {})", view + 1,
+                  pm_type);
+    }
+    return;
+  }
+  const uint32_t weapon = cod3::guest::ReadU32(base, arc::kCgWeapon + client * arc::kCgSize);
+  if (!arc::IsGrenade(base, weapon)) {  // the grenade isn't up yet
+    static int64_t told_ns = 0;
+    if (REXCVAR_GET(cod3_debug_grenade_arc) && now - told_ns > 1'000'000'000) {
+      told_ns = now;
+      REXLOG_INFO("cod3: grenade arc: view {}: a grenade is out, the weapon up isn't one yet (type {}, class {})",
+                  view + 1, arc::Valid(weapon) ? cod3::guest::ReadS32(base, weapon + arc::kWeaponType) : -1,
+                  arc::Valid(weapon) ? cod3::guest::ReadS32(base, weapon + arc::kWeaponClass) : -1);
+    }
+    return;
+  }
+  const float speed = float(cod3::guest::ReadS32(base, weapon + arc::kWeaponSpeed));
+  const float speed_up = float(cod3::guest::ReadS32(base, weapon + arc::kWeaponSpeedUp));
+  const float fuse = float(cod3::guest::ReadS32(base, weapon + arc::kWeaponFuse)) / 1000.0f;
+  if (!(speed > 0.0f && speed < 10000.0f) || !(fuse > 0.0f && fuse < 60.0f)) return;
+  // that view's place on the picture now (cod3mp's split screen; the campaign: the whole picture)
+  float rect[4];
+  {
+    const GameCrosshairView& named = NameActiveView(base);
+    for (int i = 0; i < 4; ++i) rect[i] = named.rect[i].load(std::memory_order_relaxed);
+  }
+  const uint32_t cg = arc::kCg + client * arc::kCgSize;
+  grenade_arc::Camera cam;
+  cam.origin = arc::ReadVec(base, cg + arc::kCgViewOrigin);
+  cam.forward = arc::ReadVec(base, cg + arc::kCgViewAxis);
+  cam.left = arc::ReadVec(base, cg + arc::kCgViewAxis + 12);
+  cam.up = arc::ReadVec(base, cg + arc::kCgViewAxis + 24);
+  cam.tan_x = grenade_arc::TanHalf(cod3::guest::ReadF32(base, cg + arc::kCgTanHalfFov));
+  cam.tan_y = grenade_arc::TanHalf(cod3::guest::ReadF32(base, cg + arc::kCgTanHalfFov + 4));
+  if (!grenade_arc::Finite(cam.origin) || !grenade_arc::Finite(cam.forward)) return;
+  grenade_arc::ThrowInputs in;
+  in.muzzle = cam.origin;
+  in.forward = cam.forward;
+  in.start_push = cod3::guest::ReadF32(base, arc::kStartPush);
+  in.speed = speed;
+  in.speed_up = speed_up;
+  in.player_velocity = arc::ReadVec(base, ps + arc::kPlayerVelocity);
+  if (!grenade_arc::Finite(in.player_velocity)) in.player_velocity = {};
+  grenade_arc::Flight f;
+  f.gravity = cod3::guest::ReadF32(base, arc::kGravity);
+  // the game's frame: this frame's level time less the last's (in milliseconds; the port's server steps)
+  const int32_t frame_ms = cod3::guest::ReadS32(base, arc::kLevel + arc::kLevelTime) -
+                           cod3::guest::ReadS32(base, arc::kLevel + arc::kLevelPreviousTime);
+  f.frame = frame_ms >= 5 && frame_ms <= 100 ? float(frame_ms) / 1000.0f : 0.05f;
+  f.step = arc::kStep;
+  f.reflect = cod3::guest::ReadF32(base, arc::kReflect);
+  f.bounce = cod3::guest::ReadF32(base, arc::kBounce);
+  f.rest_normal_z = float(arc::ReadF64(base, arc::kRestNormalZ));
+  f.rest_speed = cod3::guest::ReadF32(base, arc::kRestSpeed);
+  f.nudge = cod3::guest::ReadF32(base, arc::kNudge);
+  f.nudge_up_most = cod3::guest::ReadF32(base, arc::kNudgeUpMost);
+  if (!(std::fabs(f.nudge) < 64.0f) || !std::isfinite(f.nudge_up_most)) f.nudge = 0.0f, f.nudge_up_most = 1e9f;
+  f.fuse = fuse;
+  float fuse_left = fuse;
+  if (now - arc::g_cook_ns[view].load(std::memory_order_relaxed) <= arc::kShownNs)
+    fuse_left = fuse * std::clamp(arc::g_cook_left[view].load(std::memory_order_relaxed), 0.0f, 1.0f);
+  if (!(f.gravity > 0.0f && f.gravity < 10000.0f) || !std::isfinite(f.reflect) || !std::isfinite(f.bounce) ||
+      !std::isfinite(f.rest_normal_z) || !std::isfinite(f.rest_speed))
+    return;
+  const grenade_arc::Throw t = grenade_arc::MakeThrow(in);
+  const int bounces = std::clamp(s.grenade_arc_bounces, 0, 3);
+  arc::Flown& fl = arc::g_flown[view];
+  int64_t flown_us = -1;  // -1: the last flight used again
+  if ((fl.count == 0 || !arc::SameThrow(fl.thrown, t) || fl.bounces != bounces || fl.fuse != fuse) &&
+      now - fl.ns >= arc::kEveryNs) {
+    const int32_t player = arc::PlayerNumber(base, client);
+    const int64_t fly_ns = NowNs();
+    fl.count = grenade_arc::Fly(
+        t, f, bounces,
+        [&](grenade_arc::Vec3 a, grenade_arc::Vec3 b) {
+#if defined(COD3_MP)
+          return arc::TraceSeen(ctx, base, player, cam.origin, a, b);  // [acct2-ocr] 2026-11-22
+#else
+          return arc::Trace(ctx, base, player, a, b);
+#endif
+        },
+        fl.points, arc::kPoints);
+    flown_us = (NowNs() - fly_ns) / 1000;
+    fl.thrown = t;
+    fl.camera = cam;
+    fl.bounces = bounces;
+    fl.fuse = fuse;
+    fl.ns = now;
+  }
+  if (fl.count == 0) return;
+  grenade_arc::Point points[arc::kPoints];
+  const int n = grenade_arc::CutAtFuse(fl.points, fl.count, fuse_left, points, arc::kPoints);
+  arc::View& av = arc::g_views[view];
+  {
+    std::lock_guard<std::mutex> lock(av.m);
+    av.count = n;
+    std::copy(points, points + n, av.points);
+    av.camera = fl.camera;
+    for (int i = 0; i < 4; ++i) av.rect[i] = rect[i];
+    av.ns = now;
+  }
+  arc::Told& told = arc::g_told[view];
+  told.thrown = fl.thrown;
+  told.have = n > 0;
+  if (n > 0) {
+    told.end = points[n - 1].p;
+    told.end_kind = points[n - 1].kind;
+  }
+  if (REXCVAR_GET(cod3_debug_grenade_arc)) {
+    static int64_t logged_ns[kCrosshairViews] = {};
+    if (now - logged_ns[view] > 1'000'000'000) {
+      logged_ns[view] = now;
+      REXLOG_INFO("cod3: grenade arc: view {}: speed {:.0f} up {:.0f} fuse {:.2f} s (left {:.2f}); start push {:.2f}; "
+                  "gravity {:.1f}, reflect {:.3f}, bounce {:.3f} (other {:.3f}), rest above z {:.3f} under {:.2f}, "
+                  "off {:.2f} (up at most {:.2f}); tan {:.4f} {:.4f}; player velocity {:.1f} {:.1f} {:.1f}; {} points, "
+                  "the end ({}) at {:.1f} {:.1f} {:.1f} after {:.2f} s; flown in {} us (-1: used again); the game's "
+                  "frame {} ms",
+                  view + 1, speed, speed_up, fuse, fuse_left, in.start_push, f.gravity, f.reflect, f.bounce,
+                  cod3::guest::ReadF32(base, arc::kBounceOther), f.rest_normal_z, f.rest_speed, f.nudge,
+                  f.nudge_up_most, cam.tan_x, cam.tan_y,
+                  in.player_velocity.x, in.player_velocity.y, in.player_velocity.z, n,
+                  n > 0 ? int(points[n - 1].kind) : -1, n > 0 ? points[n - 1].p.x : 0.0f,
+                  n > 0 ? points[n - 1].p.y : 0.0f, n > 0 ? points[n - 1].p.z : 0.0f,
+                  n > 0 ? points[n - 1].time : 0.0f, flown_us, frame_ms);
+    }
+  }
+}
+
+// [acct2-ocr] 2026-11-22 The cook widget's update: that view's fuse left (also while its countdown row is the game's).
+void NoteCook(int view, float left) {
+  if (view < 0 || view >= kCrosshairViews) return;
+  arc::g_cook_left[view].store(std::isfinite(left) ? std::clamp(left, 0.0f, 1.0f) : 1.0f, std::memory_order_relaxed);
+  arc::g_cook_ns[view].store(NowNs(), std::memory_order_relaxed);
+}
+
+// [acct2-ocr] 2026-11-22 cod3_debug_grenade_arc: the player's throw (sub_82558E58's hook): the game's grenade, its
+// start and velocity against the arc's last flight.
+void NoteThrow(uint8_t* base, uint32_t thrower, uint32_t grenade) {
+  if (!REXCVAR_GET(cod3_debug_grenade_arc) || !arc::Valid(thrower) || !arc::Valid(grenade)) return;
+  const uint32_t client = cod3::guest::ReadU32(base, cod3::addr::kActiveLocalClient);
+  if (client >= 4 || thrower != arc::PlayerEntity(base, client)) return;
+  const int view = int(client);
+  arc::Told& told = arc::g_told[view];
+  told.grenade = grenade;
+  const grenade_arc::Vec3 start = arc::ReadVec(base, grenade + 32), vel = arc::ReadVec(base, grenade + 44);
+  const int32_t own_gravity = cod3::guest::ReadS32(base, grenade + 20 + 36);
+  REXLOG_INFO("cod3: grenade arc: view {} threw: the game's start {:.1f} {:.1f} {:.1f} velocity {:.1f} {:.1f} {:.1f} "
+              "(trajectory type {}, its gravity {}); the arc's {} start {:.1f} {:.1f} {:.1f} velocity {:.1f} {:.1f} "
+              "{:.1f}, its end ({}) at {:.1f} {:.1f} {:.1f}",
+              view + 1, start.x, start.y, start.z, vel.x, vel.y, vel.z, cod3::guest::ReadS32(base, grenade + 20),
+              own_gravity, told.have ? "flown" : "not flown", told.thrown.start.x, told.thrown.start.y,
+              told.thrown.start.z, told.thrown.velocity.x, told.thrown.velocity.y, told.thrown.velocity.z,
+              int(told.end_kind), told.end.x, told.end.y, told.end.z);
+}
+
+// [acct2-ocr] 2026-11-22 cod3_debug_grenade_arc: a bounce of the player's last grenade (sub_82569538's hook): where it
+// is now and whether it came to rest (its trajectory stationary), against the arc's end.
+void NoteBounce(uint8_t* base, uint32_t grenade) {
+  if (!REXCVAR_GET(cod3_debug_grenade_arc) || !arc::Valid(grenade)) return;
+  for (int view = 0; view < kCrosshairViews; ++view) {
+    const arc::Told& told = arc::g_told[view];
+    if (told.grenade != grenade) continue;
+    const grenade_arc::Vec3 at = arc::ReadVec(base, grenade + 336);
+    const int32_t type = cod3::guest::ReadS32(base, grenade + 20);
+    const grenade_arc::Vec3 d = grenade_arc::Sub(at, told.end);
+    REXLOG_INFO("cod3: grenade arc: view {}'s grenade bounced at {:.1f} {:.1f} {:.1f}, trajectory type {}; the arc's "
+                "end ({}) {:.1f} units away",
+                view + 1, at.x, at.y, at.z, type, int(told.end_kind), grenade_arc::Length(d));
+  }
+}
+
+// [acct2-ocr] 2026-11-22 The overlay's thread: each view's arc, in that player's crosshair colours, while it was
+// flown in the last 150 ms. `picture` is the game's picture on the window (split screen's views are parts of it).
+void DrawGrenadeArcs(const ImGuiIO& io) {
+#if defined(COD3_MP)
+  // the host's rule for the match (protected_dvars' grenade_arc; outside a match this PC's own): 0 no arc for anyone
+  namespace pd = cod3::protected_dvars;
+  f2::xhair::SetGrenadeArcBlocked(pd::Get(pd::Id::kGrenadeArc) == 0
+                                      ? (!pd::CurrentMatch().running ? "Off for every player here (F2 > Game > Server)."
+                                         : !pd::RulesReceived()      ? "Waiting for the host's match rules."
+                                                                     : "The host has the grenade arc off for this match.")
+                                      : nullptr);
+#endif
+  const int64_t now = NowNs();
+  ImDrawList* dl = ImGui::GetForegroundDrawList();
+  cod3::PictureRect picture{};
+  bool picture_known = false;
+  for (int view = 0; view < kCrosshairViews; ++view) {
+    arc::View& av = arc::g_views[view];
+    grenade_arc::Point points[arc::kPoints];
+    grenade_arc::Camera cam;
+    float rect[4];
+    int n = 0;
+    {
+      std::lock_guard<std::mutex> lock(av.m);
+      if (now - av.ns > arc::kShownNs) continue;
+      n = av.count;
+      std::copy(av.points, av.points + n, points);
+      cam = av.camera;
+      std::copy(av.rect, av.rect + 4, rect);
+    }
+    if (n < 2) continue;
+    // the 3D view's place: on the picture as the presenter shows it (its bars and shape), the view's part of it
+    if (!picture_known) {
+      picture = cod3::PictureInView(uint32_t(io.DisplaySize.x + 0.5f), uint32_t(io.DisplaySize.y + 0.5f),
+                                    cod3::DisplayAspect());
+      picture_known = true;
+    }
+    if (picture.width == 0 || picture.height == 0) return;
+    const ImVec2 at(float(picture.x) + float(picture.width) * rect[0],
+                    float(picture.y) + float(picture.height) * rect[1]);
+    const ImVec2 size(float(picture.width) * rect[2], float(picture.height) * rect[3]);
+    if (!(size.x > 1.0f && size.y > 1.0f)) continue;
+    if (!(cam.tan_x > 0.0f)) continue;
+    if (!(cam.tan_y > 0.0f)) cam.tan_y = cam.tan_x * size.y / size.x;
+    auto to_screen = [&](grenade_arc::Vec3 p, ImVec2* out) {
+      float nx, ny;
+      if (!grenade_arc::Project(cam, p, &nx, &ny)) return false;
+      *out = ImVec2(at.x + (nx * 0.5f + 0.5f) * size.x, at.y + (ny * 0.5f + 0.5f) * size.y);
+      return true;
+    };
+    const f2::xhair::Settings& s = f2::xhair::Player(view);
+    const ImU32 line = IM_COL32(s.color.r, s.color.g, s.color.b, std::max<int>(s.color.a, 160));
+    const ImU32 edge = IM_COL32(s.outline_color.r, s.outline_color.g, s.outline_color.b, 200);
+    const float w = std::max(1.5f, size.y / 400.0f);
+    dl->PushClipRect(at, ImVec2(at.x + size.x, at.y + size.y), true);
+    int drawn = 0, dots = 0;  // for cod3_debug_grenade_arc
+    ImVec2 lo(FLT_MAX, FLT_MAX), hi(-FLT_MAX, -FLT_MAX);
+    // The path: an outline under a line; its first stretch (a quarter second) fainter, as Titanfall 2's first effect.
+    for (int pass = 0; pass < 2; ++pass) {
+      for (int i = 1; i < n; ++i) {
+        grenade_arc::Vec3 a = points[i - 1].p, b = points[i].p;
+        if (!grenade_arc::ClipNear(cam, &a, &b)) continue;
+        ImVec2 sa, sb;
+        if (!to_screen(a, &sa) || !to_screen(b, &sb)) continue;
+        const bool first = points[i].time < 0.25f;
+        ImU32 c = pass == 0 ? edge : line;
+        if (first) c = (c & 0x00FFFFFFu) | (uint32_t((c >> 24) * (pass == 0 ? 0.35f : 0.45f)) << 24);
+        dl->AddLine(sa, sb, c, pass == 0 ? w + 2.0f : w);
+        if (pass == 1) {
+          ++drawn;
+          lo = ImVec2(std::min({lo.x, sa.x, sb.x}), std::min({lo.y, sa.y, sb.y}));
+          hi = ImVec2(std::max({hi.x, sa.x, sb.x}), std::max({hi.y, sa.y, sb.y}));
+        }
+      }
+    }
+    // The bounces, and a ring flat on the ground where it ends (24 units round, as the game's units go).
+    for (int i = 1; i < n; ++i) {
+      ImVec2 p;
+      if (points[i].kind == grenade_arc::kBounce && to_screen(points[i].p, &p)) {
+        dl->AddCircleFilled(p, w * 2.5f, edge, 12);
+        dl->AddCircleFilled(p, w * 1.6f, line, 12);
+        ++dots;
+      }
+    }
+    const grenade_arc::Point& end = points[n - 1];
+    ImVec2 ring[32];
+    int k = 0;
+    for (int j = 0; j < 32; ++j) {
+      const float a = float(j) * 6.2831853f / 32.0f;
+      const grenade_arc::Vec3 q{end.p.x + 24.0f * std::cos(a), end.p.y + 24.0f * std::sin(a), end.p.z + 1.0f};
+      if (!to_screen(q, &ring[k])) {
+        k = 0;
+        break;
+      }
+      ++k;
+    }
+    if (k == 32) {
+      dl->AddPolyline(ring, k, edge, ImDrawFlags_Closed, w + 2.0f);
+      dl->AddPolyline(ring, k, line, ImDrawFlags_Closed, w);
+    }
+    dl->PopClipRect();
+    if (REXCVAR_GET(cod3_debug_grenade_arc)) {  // what was drawn, once a second (the debug pictures lack the overlay)
+      static int64_t logged_ns[kCrosshairViews] = {};
+      if (now - logged_ns[view] > 1'000'000'000) {
+        logged_ns[view] = now;
+        REXLOG_INFO("cod3: grenade arc: view {} drawn: {} of {} stretches, {} bounce marks, the ring {}; on screen x "
+                    "{:.0f}..{:.0f}, y {:.0f}..{:.0f} of the view at {:.0f} {:.0f} size {:.0f} x {:.0f}",
+                    view + 1, drawn, n - 1, dots, k == 32 ? "drawn" : "not drawn", drawn ? lo.x : 0.0f,
+                    drawn ? hi.x : 0.0f, drawn ? lo.y : 0.0f, drawn ? hi.y : 0.0f, at.x, at.y, size.x, size.y);
+      }
+    }
+  }
 }
 
 // Whether IGOTankReticleWidget's draw (vfunc 3) draws the tank's reticle now, by its own checks: the widget is shown
@@ -2030,6 +2599,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
   // (f2/f2_crosshair_cs2.h); claude-9b's places and sizes for each view stay.
   BindCs2Crosshair();
   f2::xhair::Sync();
+  DrawGrenadeArcs(io);  // [acct2-ocr] 2026-11-22 the grenade arc, with or without a custom crosshair
   bool any = false;
   for (int p = 0; p < kCrosshairViews; ++p) any |= f2::xhair::Enabled(p);
   if (REXCVAR_GET(cod3_debug_crosshair)) {  // [acct2-ocr] whether the game asks for a crosshair, and whose are on
@@ -2064,15 +2634,18 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     // [rexglue-native] 2026-11-17 P0 while the game's latest complete frame had them, their last-seen time is now (the latch)
     if (v.cross_latch.Holds()) v.ns.store(now, std::memory_order_relaxed);
     if (v.countdown_latch.Holds()) v.countdown_ns.store(now, std::memory_order_relaxed);
+    if (v.scope_latch.Holds()) v.scope_ns.store(now, std::memory_order_relaxed);  // [acct2-ocr] 2026-11-22
     const bool cross = now - v.ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
     const bool countdown = now - v.countdown_ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
+    // [acct2-ocr] 2026-11-22 the scope's lines and ring are drawn while the game draws the scope, crosshair or not
+    const bool scoped = now - v.scope_ns.load(std::memory_order_relaxed) <= kCrosshairShownNs;
     {  // [rexglue-native flicker 2026-11-17] cod3_debug_overlay_latch: this view's crosshair and countdown shown
       static const char* const kViewNames[kCrosshairViews] = {"crosshair view 1", "crosshair view 2",
                                                               "crosshair view 3", "crosshair view 4"};
       cod3::prompts::NoteOverlayShown(kViewNames[view], (cross ? 1u : 0u) | (countdown ? 2u : 0u), size_t(view));
     }
     if (view == 0) cod3::prompts::PresentProbeShown(cod3::prompts::ProbeElement::kCrosshair, cross);  // [rexglue-native flicker 2026-11-17] (debug)
-    if (!cross && !countdown) continue;
+    if (!cross && !countdown && !scoped) continue;
     const float aim = cross ? v.aim.load(std::memory_order_relaxed) : 0.0f;
     const float fade = std::clamp(1.0f - 2.0f * aim, 0.0f, 1.0f);
     const float rx = v.rect[0].load(std::memory_order_relaxed), ry = v.rect[1].load(std::memory_order_relaxed);
@@ -2084,6 +2657,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     // window, where cutting it here was up to a pixel off).
     ImVec2 c(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
     float view_h = io.DisplaySize.y;
+    float view_w = io.DisplaySize.x;  // [acct2-ocr] 2026-11-22 for the scope's lines
     if (rw < 0.99f || rh < 0.99f) {
       if (!picture_known) {
         picture = cod3::PictureInView(uint32_t(io.DisplaySize.x + 0.5f), uint32_t(io.DisplaySize.y + 0.5f),
@@ -2091,6 +2665,7 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
         picture_known = true;
       }
       view_h = float(picture.height) * rh;
+      view_w = float(picture.width) * rw;
       c = ImVec2(float(picture.x) + float(picture.width) * (rx + rw * 0.5f),
                  float(picture.y) + float(picture.height) * (ry + rh * 0.5f));
     }
@@ -2104,6 +2679,19 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
     if (cross) xv.spread = v.spread.load(std::memory_order_relaxed);  // [acct2-ocr] 2026-11-15
     xv.cross = cross;  // [acct2-ocr] 2026-11-15
     if (countdown) xv.countdown = v.countdown.load(std::memory_order_relaxed);
+    xv.width = view_w;  // [acct2-ocr] 2026-11-22
+    {  // [acct2-ocr] 2026-11-22 the grenade out, for at most a fuse and a half (an Up the game never sent)
+      const int g = v.grenade.load(std::memory_order_relaxed);
+      const double held = double(now - v.grenade_ns.load(std::memory_order_relaxed)) / 1e9;
+      if (g >= 0 && held >= 0.0 && held < kGrenadeHeldMost) {
+        xv.grenade = g;
+        xv.grenade_seconds = float(held);
+      }
+    }
+    if (scoped) {
+      xv.scoped = true;
+      xv.scope = v.scope.load(std::memory_order_relaxed);
+    }
     // [claude-9b] 2026-10-27 cod3_debug_crosshair: screenshots are the game's own picture without this
     // overlay (game/screenshot.cpp), so tests read each view's crosshair from the log instead.
     if (REXCVAR_GET(cod3_debug_crosshair)) {
@@ -2113,10 +2701,11 @@ void HudOverlay::OnDraw(ImGuiIO& io) {
         const f2::xhair::Settings& ps = f2::xhair::Player(view);
         REXLOG_INFO("cod3: crosshair: view {} drawn at {:.0f},{:.0f} of {:.0f}x{:.0f}, view height {:.0f} ({:.2f} of "
                     "the picture's), alpha {:.2f}; player {}'s: style {} ({}), length {:.1f}, thickness {:.1f}, gap "
-                    "{:.1f}, outline {}, color from {}; the game's spread {:.1f} units",  // [acct2-ocr] the spread
+                    "{:.1f}, outline {}, color from {}; the game's spread {:.1f} units"  // [acct2-ocr] the spread
+                    "; the scope {}, grenade {}",  // [acct2-ocr] 2026-11-22
                     view + 1, c.x, c.y, io.DisplaySize.x, io.DisplaySize.y, view_h, rh, xv.rgba[3], view + 1,
                     ps.style, f2::xhair::StyleName(ps.style), ps.length, ps.thickness, ps.gap, ps.outline,
-                    ps.color_from, xv.spread);
+                    ps.color_from, xv.spread, xv.scoped ? xv.scope : -1.0f, xv.grenade);  // [acct2-ocr] -1: none
       }
     }
     f2::xhair::DrawView(dl, view, xv);
@@ -2464,6 +3053,7 @@ void SettingsWindow::DrawVideo() {
                                       "vulkan_allow_present_mode_immediate",
                                       "d3d12_allow_variable_refresh_rate_and_tearing", "present_letterbox",
                                       "swap_post_effect", "present_effect",
+                                      "cod3_native_msaa",  // [acct2-bro] 2026-11-22 rn113c
                                       // [acct2-main] 2026-11-14 the two sharpness rows under Output scaling too
                                       "present_cas_additional_sharpness", "present_fsr_sharpness_reduction",
                                       "anisotropic_override", "cod3_hd_textures",
@@ -3058,6 +3648,16 @@ void SettingsWindow::DrawVideoQuality() {
     Help("Smooths jagged edges after the picture is drawn. Costs very little; Extreme smooths more "
          "and softens the picture a bit more. Applies after a restart.");
   }
+  // [acct2-bro] 2026-11-22 rn113c (owner 08:38: "The gun models need some anti-aliasing", 08:39: "The in-game msaa
+  // needs to be improved", 08:43: tree leaves): the native renderer's MSAA (game/ngl_side.cpp cod3_native_msaa)
+  if (Has("cod3_native_msaa")) {
+    const char* v[] = {"1", "2", "4", "8"};
+    const char* n[] = {"Off", "2x", "4x", "8x"};
+    dirty_ |= CvarCombo("MSAA (native renderer)", "cod3_native_msaa", v, n, 4, &restart_needed_);
+    Help("Real multisampling for the native renderer's 3D scene: smooth edges on guns, soldiers and the world, "
+         "and soft edges on leaves and fences. 4x is a good balance; 8x costs more on slower GPUs. Off draws "
+         "one sample a pixel. Needs the Native renderer. Applies after a restart.");
+  }
   // [claude-9b] 2026-10-27 "Draw the game's 2x MSAA as real 2x" moved to EMULATION > GPU.
   {
     // [acct2-decomp] 2026-11-05 (owner: "remove the references to FSR 2 and 3"): the SDK is built without
@@ -3393,6 +3993,12 @@ void SettingsWindow::DrawGame() {
       Help("Split-screen players 2 to 4, each their own.");
 #endif
     }
+    ImGui::EndTabItem();
+  }
+  // [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos, per player and per gun (ui/camo_tab.h; owner 08:17:
+  // "per-player and per gun basis, account for mid-game switches ... within f2 within game and a sub-tab").
+  if (ImGui::BeginTabItem("Camos")) {
+    dirty_ |= cod3::ui::camo_tab::Draw();
     ImGui::EndTabItem();
   }
   // [claude-9b-think] 2026-10-27 UNTESTED Game > Prompts (owner 13:28, 13:29): campaign and multiplayer.
@@ -5351,11 +5957,65 @@ REX_HOOK_RAW(IGOGrenadeCookWidget__vfunc_2) {
   __imp__IGOGrenadeCookWidget__vfunc_2(ctx, base);
   const int view = CookWidgetView(widget, cod3::ui::ActiveView(base));
   if (cod3::guest::ReadU8(base, widget + kCookHidden) != 0) return;  // no grenade cooked
-  if (!f2::xhair::PlanFor(view, f2::xhair::kSpecialCountdown).mine) return;
   const float left = cod3::guest::ReadF32(base, widget + kCookLeft);
   const float fuse = cod3::guest::ReadF32(base, widget + kCookFuse);
+  cod3::ui::NoteCook(view, fuse > 0.0f ? left / fuse : 1.0f);  // [acct2-ocr] 2026-11-22 the grenade arc's fuse
+  if (!f2::xhair::PlanFor(view, f2::xhair::kSpecialCountdown).mine) return;
   cod3::ui::NotifyCountdown(base, fuse > 0.0f ? left / fuse : 0.0f);
 }
+
+// [acct2-ocr] 2026-11-22 cod3_debug_grenade_arc, for tests: the game's own throw and bounces of the player's grenade
+// against the arc. The player's throw (campaign sub_82558E58, cod3mp sub_82584CA0; from FireWeapon's grenade case: r3
+// the thrower) makes its grenade (sub_82556688 / sub_82583310, which return it), then adds the player's velocity to
+// it; the hook tells once that's done. A grenade's bounce (sub_82569538 / sub_8256F0A0, from the missile's impact: r3
+// the grenade) is told after the game's. Only reads; nothing is changed.
+namespace {
+thread_local bool t_throwing = false;
+thread_local uint32_t t_thrown = 0;
+}  // namespace
+#if defined(COD3_MP)
+REX_EXTERN(__imp__sub_82583310);
+REX_HOOK_RAW(sub_82583310) {
+  __imp__sub_82583310(ctx, base);
+  if (t_throwing) t_thrown = ctx.r3.u32;
+}
+REX_EXTERN(__imp__sub_82584CA0);
+REX_HOOK_RAW(sub_82584CA0) {
+  const uint32_t thrower = ctx.r3.u32;
+  t_throwing = true;
+  t_thrown = 0;
+  __imp__sub_82584CA0(ctx, base);
+  t_throwing = false;
+  cod3::ui::NoteThrow(base, thrower, t_thrown);
+}
+REX_EXTERN(__imp__sub_8256F0A0);
+REX_HOOK_RAW(sub_8256F0A0) {
+  const uint32_t grenade = ctx.r3.u32;
+  __imp__sub_8256F0A0(ctx, base);
+  cod3::ui::NoteBounce(base, grenade);
+}
+#else
+REX_EXTERN(__imp__sub_82556688);
+REX_HOOK_RAW(sub_82556688) {
+  __imp__sub_82556688(ctx, base);
+  if (t_throwing) t_thrown = ctx.r3.u32;
+}
+REX_EXTERN(__imp__sub_82558E58);
+REX_HOOK_RAW(sub_82558E58) {
+  const uint32_t thrower = ctx.r3.u32;
+  t_throwing = true;
+  t_thrown = 0;
+  __imp__sub_82558E58(ctx, base);
+  t_throwing = false;
+  cod3::ui::NoteThrow(base, thrower, t_thrown);
+}
+REX_EXTERN(__imp__sub_82569538);
+REX_HOOK_RAW(sub_82569538) {
+  const uint32_t grenade = ctx.r3.u32;
+  __imp__sub_82569538(ctx, base);
+  cod3::ui::NoteBounce(base, grenade);
+}
+#endif
 
 REX_EXTERN(__imp__IGOGrenadeCookWidget__vfunc_3);
 REX_HOOK_RAW(IGOGrenadeCookWidget__vfunc_3) {
@@ -5369,6 +6029,60 @@ REX_HOOK_RAW(IGOTankReticleWidget__vfunc_3) {
   const f2::xhair::Plan plan = f2::xhair::PlanFor(cod3::ui::ActiveView(base), f2::xhair::kSpecialVehicle);
   if (plan.mine && cod3::ui::TankReticleShown(base, ctx.r3.u32)) cod3::ui::NotifyViewCrosshair(base);
   if (plan.game) __imp__IGOTankReticleWidget__vfunc_3(ctx, base);
+}
+
+// [acct2-ocr] 2026-11-22 (owner 02:22: "Keep going on fixing/adding them. It needs to be 1:1 with features") The
+// scope's picture and its reticle while the sights are up: sub_82440128 (cod3mp sub_824599A0), called by
+// CG_DrawCrosshair and by the infantry cross. It asks the game's scope test (0x82439828, cod3mp 0x82452FA0: the cg's
+// weapon's +0x650 names a picture or its +0x654 a reticle, and the sights are up past the weapon's fade in, +0x648 or
+// +0x64C) and returns 1 less how far the picture has faded in (1: no scope). Each frame it draws, that player's scope
+// rows hear of it (NotifyScope); with Scopes set to Mine or None its quads are drawn nowhere (crosshair_texture's
+// Hiding) while the game still works everything out itself, state and all.
+#if defined(COD3_MP)
+REX_EXTERN(__imp__sub_824599A0);
+REX_HOOK_RAW(sub_824599A0) {
+#else
+REX_EXTERN(__imp__sub_82440128);
+REX_HOOK_RAW(sub_82440128) {
+#endif
+  const bool hide = !f2::xhair::PlanFor(cod3::ui::ActiveView(base), f2::xhair::kSpecialScope).game;
+  {
+    const cod3::crosshair_texture::Hiding hiding(hide);
+#if defined(COD3_MP)
+    __imp__sub_824599A0(ctx, base);
+#else
+    __imp__sub_82440128(ctx, base);
+#endif
+  }
+  const double left = ctx.f1.f64;
+  if (std::isfinite(left) && left < 1.0) cod3::ui::NotifyScope(base, float(1.0 - left));
+}
+
+// [acct2-ocr] 2026-11-22 (owner 02:22) The grenade crosshair's feed: the grenade button's console commands, which the
+// game runs for the local client it works for (they read kActiveLocalClient themselves). Call of Duty 3 has two
+// grenades on one button state (+0x150 of the input buttons): IN_GrenadeattackDown picks the frag (offhand 4,
+// 0x82439AB0) and IN_SmokegrenadeDown the smoke (5); either Up throws it. The names are the same in both programs
+// (campaign 0x8250D978 / 0x8250DA90 / 0x8250C8B0 / 0x8250C908, cod3mp 0x8252BC78 / 0x8252BEA8 / 0x82527210 /
+// 0x82527268). Each calls the game's own first, then tells that view (NotifyGrenade).
+REX_EXTERN(__imp__IN_GrenadeattackDown);
+REX_HOOK_RAW(IN_GrenadeattackDown) {
+  __imp__IN_GrenadeattackDown(ctx, base);
+  cod3::ui::NotifyGrenade(base, f2::xhair::kExplosive);
+}
+REX_EXTERN(__imp__IN_SmokegrenadeDown);
+REX_HOOK_RAW(IN_SmokegrenadeDown) {
+  __imp__IN_SmokegrenadeDown(ctx, base);
+  cod3::ui::NotifyGrenade(base, f2::xhair::kSmoke);
+}
+REX_EXTERN(__imp__IN_GrenadeattackUp);
+REX_HOOK_RAW(IN_GrenadeattackUp) {
+  __imp__IN_GrenadeattackUp(ctx, base);
+  cod3::ui::NotifyGrenade(base, -1);
+}
+REX_EXTERN(__imp__IN_SmokegrenadeUp);
+REX_HOOK_RAW(IN_SmokegrenadeUp) {
+  __imp__IN_SmokegrenadeUp(ctx, base);
+  cod3::ui::NotifyGrenade(base, -1);
 }
 
 #if defined(COD3_MP)
@@ -5386,6 +6100,7 @@ REX_HOOK_RAW(sub_8245D9F8) {  // CG_DrawCrosshair (codmp_xenonf.xex)
   }
   cod3::ui::SetNextSpread(0.0f);
   t_vehicle_crosshair = false;
+  if (on_foot) cod3::ui::UpdateGrenadeArc(ctx, base);  // [acct2-ocr] 2026-11-22 the grenade arc (its player's choice)
 }
 REX_EXTERN(__imp__sub_820B12D8);
 REX_HOOK_RAW(sub_820B12D8) {
@@ -5405,6 +6120,7 @@ REX_HOOK_RAW(CG_DrawCrosshair) {
   }
   cod3::ui::SetNextSpread(0.0f);
   t_vehicle_crosshair = false;
+  if (on_foot) cod3::ui::UpdateGrenadeArc(ctx, base);  // [acct2-ocr] 2026-11-22 the grenade arc (its player's choice)
 }
 REX_EXTERN(__imp__sub_820A1170);
 REX_HOOK_RAW(sub_820A1170) {

@@ -18,9 +18,7 @@
 #include "game/guest.h"
 #include "game/multiplayer.h"
 #include "game/program.h"
-#if !defined(COD3_MP)  // [movement] campaign only for now (cod3mp: with the peer-to-peer glue, later)
-#include "game/protected_dvars.h"
-#endif
+#include "game/protected_dvars.h"  // [acct2-ocr] 2026-11-22 both programs (cod3mp has the host's rules now)
 #include "ui/announcement_feed.h"
 #include "ui/game_console.h"
 
@@ -57,6 +55,10 @@ constexpr const char* kHostOnlyCommands[] = {"map",          "spmap",     "devma
 
 // IsMultiplayerCheatDvar (cheat_guard.h). Kept short: each one changes what
 // a player can see of the others (or the host's debug view of the match).
+// [acct2-ocr] 2026-11-22 (owner 07:56 "account for desync, movement alterations"; claude/acct2-ocr/
+// PROTECTED-DVARS-REVIEW.md finding 2): or how this console's own players move, heal, take hits, shoot or share
+// ammo. Each console runs its own players and only sends their state, so a guest's own value of one of these (a
+// config, exec, a bind, a map pack's script) would change its players and nobody else's, unseen by the host.
 constexpr const char* kMultiplayerCheatDvars[] = {
     "cg_tracerchance",     "cg_tracerlength",        "cg_tracerSpeed",          "cg_tracerwidth",
     "cg_viewKickDeflectTime", "cg_viewKickReturnTime", "cg_hudCompassMaxRange",  "cg_hudCompassMinRange",
@@ -64,7 +66,12 @@ constexpr const char* kMultiplayerCheatDvars[] = {
     "fx_cullbias",         "fx_cullscale",           "r_znear",                 "r_LightScale",
     "r_lodbias",           "r_lodscale",             "mp_debug",                "mp_debugrender",
     "mp_debugrenderspawnpoints", "RadarFakeFriendlies", "showvehmap",           "show_playerdist",
-    "cg_mpDebugAnimEntity"};
+    "cg_mpDebugAnimEntity",
+    // [acct2-ocr] 2026-11-22 movement steps, knockback, health coming back, the spread's shape, shared ammo and
+    // dropped weapons, the live grenade warning's reach, enemies on the compass
+    "pmove_fixed",         "pmove_msec",             "g_knockback",             "health_recharge_rate",
+    "conical_spread",      "g_weaponAmmoPools",      "g_weaponrespawn",         "livegrenadeangle",
+    "enemy_radar"};
 
 // [acct2-ocr] Owner 2026-11-05 18:17: "add g_speed and g_gravity to the
 // cheats list". The game registers them without its cheat flag; the Cvar_Get
@@ -196,15 +203,13 @@ Verdict Check(const std::vector<std::string>& args, Source source, bool cheat_dv
     if (EqualsNoCase(cmd, s)) name_at = 1;
   if (name_at >= args.size()) return v;
   const std::string& name = args[name_at];
-#if !defined(COD3_MP)  // [movement]
   // A server_sided_protected dvar (game/protected_dvars.h) is the server's
-  // in a match: never set by another player's command.
+  // in a match: never set by another player's command. [acct2-ocr] 2026-11-22 cod3mp too.
   if (protected_dvars::Id id; source == Source::kNetwork && protected_dvars::Find(name, &id)) {
     v.allowed = false;
     v.message = "^1" + name + ": not allowed from another player.\n";
     return v;
   }
-#endif
   if (IsSvCheatsName(name)) {
     // Routed to CheatsCommand by the console; anywhere else it's refused
     // (the dvar is read-only in the game as well).

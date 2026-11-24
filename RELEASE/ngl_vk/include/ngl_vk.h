@@ -52,6 +52,28 @@ int ngl_vk_output(uint64_t image, uint64_t view, uint32_t format, uint32_t width
 #define NGL_VK_OUTPUT_BOX 1
 void ngl_vk_set_shown_scale(uint32_t scale);
 
+/* [acct2-bro] 2026-11-22 rn113c: MSAA for the 3D scene. ngl_vk_set_msaa(N), before ngl_vk_init or
+ * ngl_vk_init_on_device: the main pass's first half (the opaque meshes and every cut-out, whose edges then take
+ * their share of a pixel's samples) drawn with N samples a pixel (2, 4 or 8; fewer where the device can't, or the
+ * picture is very large) and resolved into the target; the grass, the second half (blended draws, decals), the
+ * effect layer, the post effects, the quads and ngl_vk_output are drawn as before over the resolved picture. 1
+ * (the default): one sample, every pass and pipeline as before. A setting: it stays across ngl_vk_shutdown.
+ * ngl_vk_msaa: the samples in use once ngl_vk has started (1: none). */
+#define NGL_VK_MSAA 1
+void ngl_vk_set_msaa(uint32_t samples);
+uint32_t ngl_vk_msaa(void);
+
+/* [acct2-bro] 2026-11-22 rn114: the effect layer's samples, for a game that thins its effects by the screen they
+ * cover (Call of Duty 3's effects governor). ngl_vk_set_effect_count(1, precise), before ngl_vk_init or
+ * ngl_vk_init_on_device (precise: the borrowed device has occlusionQueryPrecise on; ngl_vk's own device turns it
+ * on when the GPU has it): every sample of the effect layer's draws that passes the depth test is counted,
+ * overdraw included. ngl_vk_effect_count: the last drawn frame's count and the layer's pixels over the game's
+ * screen (the layer is half the picture's size each way), 1 when there is a count (0: not asked, no layer, or
+ * no frame drawn yet). A frame without effects counts 0. Safe to call from any thread. */
+#define NGL_VK_EFFECT_COUNT 1
+void ngl_vk_set_effect_count(int on, int precise_on_borrowed_device);
+int ngl_vk_effect_count(uint64_t *samples, uint64_t *screen);
+
 /* A window to show the target in (Big Red One's own window). Called before ngl_vk_init: instance_extensions are the
  * instance extensions the window system needs (SDL_Vulkan_GetInstanceExtensions' list; the strings must outlive
  * ngl_vk_init), make_surface makes the window's surface once the instance exists (instance is a VkInstance and surface
@@ -751,7 +773,64 @@ struct ngl_vk_mesh_draw {
      * NGL_VK_METAL_CUBE_GAME_GRADIENTS tells a caller that this header has the field. */
 #define NGL_VK_METAL_CUBE_GAME_GRADIENTS 1
     uint32_t metal_cube_game_gradients;
+    /* [acct2-bro] 2026-11-22 rn111: a shiny draw's strength and tint (env_texture above, without a normal map), as
+     * Call of Duty 3's B0D2C2278FE3586C has them (the bullets on a belt, the shotgun's shells; its last lines read):
+     *   color = (light x base + env_strength x environment x mask) x env_tint
+     * env_strength 0 (memset draws): the environment times the mask added as it is and nothing tinted, as before.
+     * Above 0, env_tint is used as given (set it to 1 1 1 for none). Only on draws with env_texture and no
+     * normal_map, blend_texture or lightmap that are none of the kinds with numbers of their own in the slot (the
+     * fabric's, the glass, the waters, the lookups, the light grid, the detail map); the two ride in the draw's
+     * slot (its last vec4), which such a draw then always has. NGL_VK_ENV_STRENGTH tells a caller that this header
+     * has them. */
+#define NGL_VK_ENV_STRENGTH 1
+    float env_strength;
+    float env_tint[3];
+    /* [acct2-bro] 2026-11-22 rn115a: an alpha-tested draw's own test (alpha NGL_VK_ALPHA_TEST): its pixels are drawn
+     * where the texture's alpha is at or above alpha_cut (0 to 1; k / 255 keeps the texels of k and up, the test of
+     * the games' shaders), in the picture and in the sun's shadow map alike. Call of Duty 3's SpeedTree leaves cut
+     * each level so (84 of 255 fully in, up to 255 as a level fades out for the next). 0 (memset draws): above one
+     * half, as before. Taken on draws with fewer than four lights only (not lit, or extra_light_count under 3: it
+     * rides in the fourth light's place in the push constants); with four, above one half. NGL_VK_ALPHA_CUT tells a
+     * caller that this header has the field. */
+#define NGL_VK_ALPHA_CUT 1
+    float alpha_cut;
+    /* [acct2-bro] 2026-11-22 SP lane, defect E: the multiplayer scopes' tinted glass (the Springfield's and the scoped
+     * Kar98k's lens: Call of Duty 3's pixel shader D464FD2ECA69C5E4, effect "standard_12", over its vertex shader
+     * 136BEC0F23AFBC5A, which lights it). A draw of rn40's glass (lens_cube a cube, a color map, lit 1, shading
+     * NGL_VK_SHADE_LIGHT, no normal map, environment map or second texture) with lens_opaque 2 is drawn so:
+     *   light = the irradiance rows + lens_sun_color x N.L + the nearby point lights (as the glass's, unshadowed)
+     *   highlights = of power lens_power from that sun and the nearby point lights (as the glass's)
+     *   color = (the color map x lens_color_scale x light
+     *            + the tint map x lens_tint x (the cube x lens_reflection + highlights)) x lens_out_scale,
+     *   alpha = the color map's alpha x lens_color_scale (at most 1);
+     * the cube along the eye's reflection about the normal plus lens_cube_bias, as the glass's. lens_tint_map is the
+     * tint map (a 2D texture from ngl_vk_texture, read at the color map's coordinates; 0: white). lens_shadow_floor
+     * and lens_shadow_fade are not read for it, nor lens_show. The shader's numbers: lens_color_scale c252.x (1.519),
+     * lens_tint c255.xyz (0.161504 0.291734 0.392), lens_reflection c255.w (4), lens_out_scale c254.zyx (0.42
+     * 0.410837 0.4053); the vertex shader's power c255.z (200). Blended or not as the draw's alpha and blend say (the
+ * scopes': NGL_VK_BLEND_PREMULTIPLIED, below). Where the
+     * device binds fewer than six descriptor sets, as before (not the glass). lens_opaque 0 or 1 (memset draws): as
+     * before. NGL_VK_LENS_TINTED tells a caller that this header has the fields. */
+#define NGL_VK_LENS_TINTED 1
+    uint32_t lens_tint_map;
+    float lens_color_scale;
+    float lens_out_scale[3];
+    /* [acct2-bro] 2026-11-22 Camo lane (CAMO-PACK-PLAN.md: the player's own camo pack on the first-person guns): an
+     * opaque draw (alpha NGL_VK_ALPHA_OPAQUE) with camo_texture set (a 2D texture from ngl_vk_texture or
+     * ngl_vk_texture_levels) is drawn as before and then once more by the camo pass (src/ngl_vk.c draw_camo, its own
+     * pipeline; nothing else's is changed): what the draw left is multiplied by mix(1, the camo's color / its mean
+     * color, strength), so the gun keeps its own light, highlights and shadow and takes the pattern's colors. The
+     * camo is read at the base texture's coordinates x scale + (offset u, offset v), wrapped. camo_params: scale
+     * (above 0, at most 64), offset u, offset v, strength (0 to 1), the mean red, green and blue (0 to 1), unused.
+     * Drawn where its pipeline was made (and its multisampled twin with MSAA), else not at all. camo_texture 0
+     * (memset draws): as before, nothing more is drawn. NGL_VK_CAMO tells a caller that this header has the fields
+     * and ngl_vk_camo_count. */
+#define NGL_VK_CAMO 1
+    uint32_t camo_texture;
+    float camo_params[8];
 };
+/* [acct2-bro] 2026-11-22 Camo lane: how many camo passes have been drawn since ngl_vk started (for logs and tests) */
+uint32_t ngl_vk_camo_count(void);
 /* [acct2-bro] 2026-11-13 rn69a: ngl_vk_mesh_draw's cull */
 enum {
     NGL_VK_CULL_NONE = 0,
@@ -932,6 +1011,11 @@ void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, flo
  * (Call of Duty 3's RB_DEPTHCONTROL 0x766 at their draws: Saint-Lo's barbed wire strands, bushline and camo net).
  * Without its pipeline, as NGL_VK_BLEND_DECAL. */
 #define NGL_VK_BLEND_DECAL_DEPTH 19u
+/* [acct2-bro] 2026-11-22 SP lane, defect E: a blended mesh draw whose `blend` is NGL_VK_BLEND_PREMULTIPLIED goes onto
+ * what's behind it as color + behind x (1 - alpha): its color not times its alpha (the game's ONE / INV_SRC_ALPHA,
+ * RB_BLENDCONTROL0's color part 0x0701, as Call of Duty 3 draws its scopes' glass), not writing depth, in the blended
+ * part in the order given. Without its pipeline, as NGL_VK_BLEND_ALPHA. */
+#define NGL_VK_BLEND_PREMULTIPLIED 20u
 /* [rexglue-native stlo 2026-11-17] The depth bias of the NGL_VK_BLEND_DECAL, _DECAL_ALPHA and _DECAL_DEPTH draws, as Vulkan's (the constant in
  * steps of the depth format, the slope as Direct3D 9's SlopeScaleDepthBias), set as their pipelines are bound. 0 and 0
  * until set. */

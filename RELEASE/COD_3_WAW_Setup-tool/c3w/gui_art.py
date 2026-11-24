@@ -487,12 +487,15 @@ def draw_hero(cv, game_id: str, wordmark: Tuple[str, str], tagline: str, c: Dict
     small_color = theme.ensure_contrast(c["accent_text"], under, target)
     shadow = theme.mix(c["bg"], "#000000", 0.7)
     base = h * 0.56                     # the title's baseline
+    before_title = set(cv.find_all())   # [acct2-ocr] 2026-11-22 (below)
     if stacked:
         # "CALL OF DUTY" small and spaced over "WORLD AT WAR" / "UNITED OFFENSIVE" big.
         # About the capitals' height: 0.66 to 0.79 of the size in common
         # fonts (Tk's ascent varies too much from font to font to go by).
         cap = size * (1.22 if initials else 1.0) * 0.76
-        _spaced(cv, left + 1, base - cap - small * 0.6, top, small_font, small_color, small * 0.45)
+        # [acct2-ocr] 2026-11-22 never above the header's top edge (United Offensive's line reached 2 px past it)
+        top_base = max(base - cap - small * 0.6, tkfont.Font(font=small_font).metrics("ascent") + 1)
+        _spaced(cv, left + 1, top_base, top, small_font, small_color, small * 0.45)
         under_copy = shadow
         if game_id == "waw" and not strong:
             # Printed slightly off register: a deep red copy under the bone-white one
@@ -525,6 +528,14 @@ def draw_hero(cv, game_id: str, wordmark: Tuple[str, str], tagline: str, c: Dict
         _text(cv, left, base, top, font, text)
         _text(cv, nx, base, big, num_font, accent)
         end = nx + tkfont.Font(font=num_font).measure(big)
+    # [acct2-ocr] 2026-11-22 the title never past the header's top edge: a font can draw a few pixels higher than
+    # its ascent says (United Offensive's small line at 125% and up, Call of Duty 2's numeral at 200%), so the
+    # letters as drawn are measured and moved down to fit
+    title = [i for i in cv.find_all() if i not in before_title]
+    box = cv.bbox(*title) if title else None
+    if box and box[1] < 1:
+        for i in title:
+            cv.move(i, 0, 1 - box[1])
     # A rule under the title with a small diamond, then the tagline.
     rule = theme.ensure_contrast(c["accent"], under, 3.0)
     ry = h * 0.70

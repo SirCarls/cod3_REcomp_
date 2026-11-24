@@ -129,6 +129,12 @@ layout(location = 15) in vec4 shadow_position;  // mesh.vert: in the shadow map'
 
 layout(location = 0) out vec4 color;
 
+#ifdef NGL_VK_MSAA_COVERAGE
+// [acct2-bro] 2026-11-22 rn113b: built a second time with NGL_VK_MSAA_COVERAGE for the mesh pipelines' MSAA twins
+// (ngl_vk.c msaa_twin): the samples a pixel (a specialization constant the twins set to MSAA's count), by which a
+// cut-out's edge takes its share of the pixel's samples (see the alpha test)
+layout(constant_id = 0) const int MSAA_SAMPLES = 4;
+#endif
 const uint ALPHA_TEST = 0x80000000u;        // ngl_vk.c's MESH_ALPHA_TEST
 const uint TEXTURED = 0x40000000u;          // ngl_vk.c's MESH_TEXTURED
 const uint SHADING_SHIFT = 28u;             // MESH_SHADING_SHIFT; the values are NGL_VK_SHADE_*
@@ -433,6 +439,9 @@ vec3 grid_light(uint slot, vec3 n)
 
 void main()
 {
+#ifdef NGL_VK_MSAA_COVERAGE
+    gl_SampleMask[0] = -1;  // [acct2-bro] rn113b: every sample unless a cut-out's edge takes fewer (on every path)
+#endif
     uint shading = (tint >> SHADING_SHIFT) & 3u;
     uint mode = (flags >> MODE_SHIFT) & 255u;
     // rn41q (the same for the whole draw); [acct2-bro] 2026-11-13 rn67a: on unlit draws only, as ngl_vk.h has it
@@ -451,6 +460,14 @@ void main()
     vec3 surface_normal = normal;   // rn40y: the vertex normal, before any normal map bends it (terminator)
     vec3 light, shine = vec3(0.0), gloss = vec3(0.0);
     float alpha = base.a;
+#ifdef NGL_VK_MSAA_COVERAGE
+    float alpha_width = fwidth(base.a);  // [acct2-bro] rn113b: the alpha's change across the pixel (before any discard)
+#endif
+    // [acct2-bro] 2026-11-22 rn115a: the alpha test's edge: the draw's own cut where it has one (ngl_vk.h alpha_cut,
+    // in the fourth light's color while the draw has fewer than four lights), its texels of k / 255 and up kept;
+    // else one half, as before (above 128 / 255)
+    bool own_cut = ((flags >> MORE_LIGHTS_SHIFT) & 3u) < 3u && light_colors[3] != 0u;
+    float cut_edge = own_cut ? uintBitsToFloat(light_colors[3]) - 0.5 / 255.0 : 128.0 / 255.0;
     // [rexglue-native] 2026-11-09: the uniforms' fabric (ngl_vk.h fabric_mask): its numbers ride in the draw's slot
 #ifndef NGL_VK_FOUR_SETS
     uint fabric_slot = (mode & MODE_BUMPED) != 0u && (mode & MODE_SPECULAR) != 0u ? flags >> 16 : 0u;
@@ -486,6 +503,13 @@ void main()
     // rn40: the glass (FC767C09DBD34C2A with a cube): not bumped, mixed or shiny, its slot's third vec4's z 1 (only the
     // fabric's kinds write there otherwise, and they are bumped)
     uint lens_slot = (mode & (MODE_BUMPED | MODE_MIX | MODE_SHINY)) == 0u ? flags >> 16 : 0u;
+    // [acct2-bro] 2026-11-22 rn111: a shiny draw's own strength and tint (ngl_vk.h env_strength): shiny with the
+    // mix's by-alpha bit (ngl_vk.c sets the pair on these draws alone; shiny is never mixed), its slot's last vec4
+    // the tint in rgb and the strength in w (0: as before)
+    uint shiny_slot = (mode & (MODE_SHINY | MODE_BY_ALPHA | MODE_BUMPED | MODE_MIX)) == (MODE_SHINY | MODE_BY_ALPHA)
+                          ? flags >> 16 : 0u;
+    vec4 shiny_numbers = shiny_slot != 0u ? draw_lights[DRAW_LIGHT_VEC4S * (shiny_slot - 1u) + METAL_AT + 3u]
+                                          : vec4(0.0);
     bool lens = lens_slot != 0u && draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].z > 0.0;
     // [waw-decomp] 2026-11-10: Call of Duty 2's water (ngl_vk.h water_cube): in a slot of the glass's kind, its third
     // vec4's y 1 (the glass leaves it 0); its color is made here, before the alpha test, like every lookup
@@ -531,6 +555,7 @@ void main()
     const vec3 k98_specular = vec3(1.0);
     const bool lookup = false;              // [waw-decomp]
     const uint lens_slot = 0u;
+    const vec4 shiny_numbers = vec4(0.0);   // [acct2-bro] 2026-11-22 rn111
     const bool lens = false;
     const bool water = false;               // [waw-decomp]
     const bool detail_add = false;          // [waw-decomp]
@@ -543,6 +568,7 @@ void main()
     vec3 noise = vec3(0.0);     // rn32: the skin's noise swatch, read before the alpha test like every lookup
     vec3 scratch = vec3(0.0);   // rn34: the gun metal's scratch map and its cube's color, the same
     vec3 reflection = vec3(0.0);
+    vec3 lens_tint_rgb = vec3(1.0);     // [acct2-bro] 2026-11-22 defect E: the scopes' glass's tint map (white: none)
     float lookup_sharpness = 0.0;   // [waw-decomp] the specular map's alpha, a lookup draw's highlight's sharpness
 
     if ((mode & MODE_BUMPED) != 0u) {   // the game's per-pixel lit models (pixel shader CDBAC6026B525050)
@@ -723,6 +749,11 @@ void main()
                          dot(n, n) > 0.0 ? normalize(n) : vec3(0.0, 0.0, 1.0)) + draw_lights[at + METAL_AT].w;
 
         reflection = texture(metal_cube, vec3(r.x, r.z, r.y)).rgb;  // read at x, z, y, as the gun metal's
+        // [acct2-bro] 2026-11-22 SP lane, defect E: the scopes' glass (D464FD2ECA69C5E4's 46, ngl_vk.h
+        // lens_tint_map): its tint map at the color map's coordinates (the slot's first number 2; 3: none, white)
+        float lens_kind = draw_lights[at + FABRIC_AT].x;
+        if (lens_kind > 1.5 && lens_kind < 2.5)
+            lens_tint_rgb = wrapped(fabric_mask, texture_uv).rgb;
     }
     if (world_bumped) {     // [waw-decomp] 2026-11-11: 6C7F0E21C61DF68F's instructions 4 and 9 to 13 (ngl_vk.h
                             // world_normal_map): the normal plus the map's two bends along the frame's two ways,
@@ -779,7 +810,25 @@ void main()
             shine *= wrapped(third_texture, texture_uv).rgb;
     }
 
-    if ((tint & ALPHA_TEST) != 0u && alpha <= 128.0 / 255.0)
+#ifdef NGL_VK_MSAA_COVERAGE
+    // [acct2-bro] 2026-11-22 rn113b: under MSAA a cut-out's edge (leaves, grass cards, fences, wires) covers a share
+    // of the pixel's samples by how far its alpha is past the test, over the alpha's change across the pixel (alpha
+    // to coverage, sharpened to the test's edge), turned by the pixel's place so a half-covered run doesn't take the
+    // same samples throughout; the resolve then blends the edge with what is behind it, steady as the view moves.
+    // A pixel with any share passes the test below; the alpha written is the cut-out's own (at least the test's).
+    if ((tint & ALPHA_TEST) != 0u && MSAA_SAMPLES > 1) {
+        float cover = clamp((alpha - cut_edge) / max(alpha_width, 1.0 / 255.0) + 0.5, 0.0, 1.0);  // rn115a
+        int count = int(cover * float(MSAA_SAMPLES) + 0.5);
+        int turn = (int(gl_FragCoord.x) + 3 * int(gl_FragCoord.y)) & (MSAA_SAMPLES - 1);
+        int taken = ((1 << count) - 1) << turn;
+
+        if (count <= 0)
+            discard;
+        gl_SampleMask[0] = (taken | (taken >> MSAA_SAMPLES)) & ((1 << MSAA_SAMPLES) - 1);
+        alpha = max(alpha, own_cut ? cut_edge + 1.0 / 255.0 : 129.0 / 255.0);  // rn115a: past the edge
+    }
+#endif
+    if ((tint & ALPHA_TEST) != 0u && alpha <= cut_edge)    // rn115a: the edge above
         discard;
     // [acct2-bro] 2026-11-13 rn67a: seen from one side only (TINT_ONE_SIDED, see there)
     if ((tint & TEXTURED) != 0u && shading == SHADE_LIGHT && (tint & TINT_ONE_SIDED) != 0u &&
@@ -894,7 +943,16 @@ void main()
 
             if (dot(sun_way, sun_way) > 0.0)
                 highlights += sun_color * pow(clamp(dot(normal, normalize(sun_way + eye)), 0.0, 1.0), numbers.z);
-            if (numbers.x > 0.0) {  // the eyes: (highlights + the cube x 0.072696) x the tint, opaque
+            if (numbers.x > 1.5) {  // [acct2-bro] 2026-11-22 SP lane, defect E: the scopes' glass (D464FD2E's
+                                    // 49-54): (the color map x c252.x x the light + the tint map x c255.xyz x (the
+                                    // cube x c255.w + the highlights)) x c254.zyx, its alpha x c252.x
+                vec4 out_numbers = draw_lights[at + FABRIC_AT + 2u];    // (out r, out g, 1: a cube, out b)
+                vec3 out_scale = vec3(out_numbers.x, out_numbers.y, out_numbers.w);
+
+                shine += lens_tint_rgb * tint * (reflection * numbers.y + highlights) * out_scale;
+                base.rgb *= numbers.w * out_scale;
+                alpha = clamp(alpha * numbers.w, 0.0, 1.0);
+            } else if (numbers.x > 0.0) {  // the eyes: (highlights + the cube x 0.072696) x the tint, opaque
                 shine += (highlights + reflection * numbers.y) * tint;
                 alpha = 1.0;
                 if (numbers.w > 0.5) {  // rn40m: a check (ngl_vk.h lens_show): 1 the light alone, 2 the color map alone,
@@ -1051,6 +1109,10 @@ void main()
         light = water_rgb;
         shine = vec3(0.0);
         alpha = vertex_color.a;
+    }
+    if (shiny_numbers.w > 0.0) {    // [acct2-bro] 2026-11-22 rn111: (light x base + strength x shine) x tint
+        light *= shiny_numbers.rgb;
+        shine *= shiny_numbers.w * shiny_numbers.rgb;
     }
     if (k98) {  // [acct2-bro] 2026-11-15 rn99a: its literal c254.z on the light and the highlights (its 36-37, 45, 73)
         light *= k98_numbers.w;

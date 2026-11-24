@@ -70,6 +70,14 @@ REXCVAR_DEFINE_INT32(levitation_fix, 1, "cod3/Movement",
     .range(0, 1)
     .validator([](std::string_view v) { return OwnWriteAllowed("levitation_fix", v); });
 
+// [acct2-ocr] 2026-11-22 The grenade arc (ui/hud_overlay.cpp, F2 > Crosshair > Grenade arc; owner 11-22: "per player,
+// host can veto"), the match's like aim assist's rule.
+REXCVAR_DEFINE_INT32(grenade_arc, 1, "cod3/Aim",
+                     "Match grenade arc rule (server_sided_protected): 0 the grenade arc off for everyone, 1 each "
+                     "player's own F2 choice. The host's in a match")
+    .range(0, 1)
+    .validator([](std::string_view v) { return OwnWriteAllowed("grenade_arc", v); });
+
 // TEST ONLY: play this machine as a guest in a pretend match, with these
 // server values, so every protection path can be tried in the campaign.
 // "<seconds>:<name>=<value>;...;<seconds>:end" (seconds after the first
@@ -91,27 +99,31 @@ using ui::GameConsole;
 
 const std::vector<Entry>& Entries() {
   static const std::vector<Entry> list = {
-      {Id::kAlternateMovement, "alternate_movement", 0, 2, movement::kProgram.default_alternate_movement, 0,
+      {Id::kAlternateMovement, "alternate_movement", 0, 2, movement::kProgram.default_alternate_movement, 0, 0,
        "How everyone in a match moves: 0 Call of Duty 3 (the console), 1 Call of Duty 4 (with the "
        "alternate_movement_* parts), 2 each player's own Movement style. Set by the host; in the campaign "
        "you are the host."},
-      {Id::kAlternateMovementSprint, "alternate_movement_sprint", 0, 1, 1, 1,
+      {Id::kAlternateMovementSprint, "alternate_movement_sprint", 0, 1, 1, 1, 1,
        "With alternate_movement 1: Call of Duty 4 sprint (4 seconds, aim or fire stops it) for everyone."},
-      {Id::kAlternateMovementSpeeds, "alternate_movement_speeds", 0, 1, 1, 1,
+      {Id::kAlternateMovementSpeeds, "alternate_movement_speeds", 0, 1, 1, 1, 1,
        "With alternate_movement 1: Call of Duty 4 strafe, back and sprint speeds for everyone."},
-      {Id::kAlternateMovementJumps, "alternate_movement_jumps", 0, 1, 1, 1,
+      {Id::kAlternateMovementJumps, "alternate_movement_jumps", 0, 1, 1, 1, 1,
        "With alternate_movement 1: Call of Duty 4 PC bounces off steep slopes for everyone."},
       // [claude-9b] aim assist (game/sticky_aim.h)
-      {Id::kStickyAim, "sticky_aim", 0, 1, 1, 1,
+      {Id::kStickyAim, "sticky_aim", 0, 1, 1, 1, 1,
        "Aim assist in a match: 0 Sticky Aim off for everyone, 1 each player's own Options > Sticky Aim choice "
        "(it is never turned on for anyone who chose off). Set by the host; in the campaign you are the host."},
-      {Id::kAimSlowdown, "aim_slowdown", 0, 100, 100, 100,
+      {Id::kAimSlowdown, "aim_slowdown", 0, 100, 100, 100, 100,
        "How hard Sticky Aim pulls the view toward an enemy, in percent of the game's own (0-100; it can never "
        "be stronger). Set by the host."},
       // [acct2-ocr] the levitation fix (game/movement/stuck_fix.h)
-      {Id::kLevitationFix, "levitation_fix", 0, 1, 1, 1,
+      {Id::kLevitationFix, "levitation_fix", 0, 1, 1, 1, 1,
        "1: a stuck player is freed from walls only, never lifted out of another player or soldier (no "
        "levitation glitch); 0: Call of Duty 3's own. Set by the host; in the campaign you are the host."},
+      // [acct2-ocr] 2026-11-22 the grenade arc (ui/hud_overlay.cpp); off until the host's rules arrive (the game's own)
+      {Id::kGrenadeArc, "grenade_arc", 0, 1, 1, 1, 0,
+       "The grenade arc in a match: 0 off for everyone, 1 each player's own F2 > Crosshair > Grenade arc choice "
+       "(it is never turned on for anyone who chose off). Set by the host."},
   };
   return list;
 }
@@ -124,14 +136,31 @@ int32_t& OwnStorage(Id id) {
     case Id::kStickyAim: return REXCVAR_GET(sticky_aim);        // [claude-9b]
     case Id::kAimSlowdown: return REXCVAR_GET(aim_slowdown);    // [claude-9b]
     case Id::kLevitationFix: return REXCVAR_GET(levitation_fix);  // [acct2-ocr]
-    default: return REXCVAR_GET(alternate_movement_jumps);
+    case Id::kGrenadeArc: return REXCVAR_GET(grenade_arc);  // [acct2-ocr] 2026-11-22
+    case Id::kAlternateMovementJumps: return REXCVAR_GET(alternate_movement_jumps);
+    case Id::kCount: break;  // [acct2-ocr] 2026-11-22 no default: a new entry without its case is a warning here
   }
+  static int32_t none = 0;
+  return none;
 }
 
 std::array<std::atomic<int>, kCount> g_server{};
 std::array<std::atomic<bool>, kCount> g_server_set{};
 std::atomic<bool> g_test_running{false};   // the pretend match
 std::atomic<uint32_t> g_generation{1};
+// [acct2-ocr] 2026-11-22 the match state cod3mp's Tick told (NoteMatch): -1 not told yet (the campaign, cod3mp before
+// its first frame): ask game/multiplayer.h; else bit 0 a match runs, bit 1 this console's rules are the match's.
+std::atomic<int> g_match_state{-1};
+// [acct2-ocr] 2026-11-22 the host's rules arrived in this match (ApplyServerInfo); until then a guest uses the
+// entries' pending values
+std::atomic<bool> g_rules_received{false};
+// [acct2-ocr] 2026-11-22 the host's changes waiting to be told (TellHostChange, FlushHostChanges)
+struct PendingTell {
+  bool due = false;
+  int value = 0;
+  std::chrono::steady_clock::time_point at{};
+};
+std::array<PendingTell, kCount> g_tell{};
 
 std::mutex g_mutex;  // guards the members below
 std::function<void(const std::string&)> g_send;
@@ -216,22 +245,26 @@ ui::domain::Domain DomainFor(const Entry& e) {
 
 void Bump() { g_generation.fetch_add(1, std::memory_order_relaxed); }
 
+// [acct2-ocr] 2026-11-22 One rule as the players are told it ("Grenade arc: grenade_arc 0 (set by the host).").
+std::string RuleLine(Id id, int value) {
+  const Entry& e = Info(id);
+  if (id == Id::kAlternateMovement) return std::string("Movement: ") + movement::DescribeMode(value) + " (set by the host).";
+  const char* what = id == Id::kStickyAim || id == Id::kAimSlowdown ? "Aim assist: "  // [claude-9b]
+                     : id == Id::kGrenadeArc                        ? "Grenade arc: "
+                                                                    : "Movement: ";
+  return std::string(what) + e.name + " " + std::to_string(value) + " (set by the host).";
+}
+
 void TellHostChange(Id id, int value) {
   // The host's change applies at the next server frame; everyone hears of
   // it as a normal server message (cod3mp sends it), the campaign's player
-  // in the console.
-  const Entry& e = Info(id);
-  const std::string text = id == Id::kAlternateMovement
-                               ? std::string("Movement: ") + movement::DescribeMode(value) + " (set by the host)."
-                               : std::string(id == Id::kStickyAim || id == Id::kAimSlowdown ? "Aim assist: "  // [claude-9b]
-                                                                                             : "Movement: ") +
-                                     e.name + " " + std::to_string(value) + " (set by the host).";
-  std::function<void(const std::string&)> send;
-  {
-    std::lock_guard lock(g_mutex);
-    send = g_send;
-  }
-  if (send && mp::IsMatchRunning() && mp::IsHost()) send(text);
+  // in the console. [acct2-ocr] 2026-11-22 Once it has settled (FlushHostChanges): a value a key or a script flips
+  // every frame is told once, not every frame.
+  std::lock_guard lock(g_mutex);
+  PendingTell& t = g_tell[static_cast<size_t>(id)];
+  t.due = true;
+  t.value = value;
+  t.at = std::chrono::steady_clock::now();
 }
 
 }  // namespace
@@ -269,17 +302,26 @@ bool Find(std::string_view name, Id* out) {
 
 Match CurrentMatch() {
   Match m;
+  // [acct2-ocr] 2026-11-22 cod3mp's state of this frame (NoteMatch): every reader on every thread sees the same one,
+  // never the session's memory half changed (which could make a guest's read return its own values).
+  const int state = g_match_state.load(std::memory_order_relaxed);
+  const bool running = state >= 0 ? (state & 1) != 0 : mp::IsMatchRunning();
   // A real match always wins over the test's pretend one.
-  if (!mp::IsMatchRunning() && g_test_running.load(std::memory_order_relaxed)) {
+  if (!running && g_test_running.load(std::memory_order_relaxed)) {
     m.running = true;
     m.host = false;
     m.test = true;
     return m;
   }
-  m.running = mp::IsMatchRunning();
+  m.running = running;
   // [acct2-ocr] 2026-11-07: a match no other console plays (split screen) is this machine's own.
-  m.host = !m.running || mp::IsHost() || mp::IsLocalOnlyMatch();
+  m.host = state >= 0 ? (state & 2) != 0 : (!m.running || mp::IsHost() || mp::IsLocalOnlyMatch());
   return m;
+}
+
+void NoteMatch(bool running, bool host) {
+  const int state = (running ? 1 : 0) | (!running || host ? 2 : 0);
+  if (g_match_state.exchange(state, std::memory_order_relaxed) != state) Bump();
 }
 
 bool IsLocked() {
@@ -300,10 +342,12 @@ int Get(Id id) {
   if (!IsLocked()) return Own(id);
   const size_t i = static_cast<size_t>(id);
   // A server that didn't send a value (an older port): the match default,
-  // never the player's own value.
-  return g_server_set[i].load(std::memory_order_relaxed) ? g_server[i].load(std::memory_order_relaxed)
-                                                         : Info(id).match_default;
+  // never the player's own value. [acct2-ocr] 2026-11-22 Nothing from the host yet: the entry's pending value.
+  if (g_server_set[i].load(std::memory_order_relaxed)) return g_server[i].load(std::memory_order_relaxed);
+  return g_rules_received.load(std::memory_order_relaxed) ? Info(id).match_default : Info(id).pending_value;
 }
+
+bool RulesReceived() { return !IsLocked() || g_rules_received.load(std::memory_order_relaxed); }
 
 uint32_t Generation() { return g_generation.load(std::memory_order_relaxed); }
 
@@ -424,10 +468,18 @@ bool HandleConsoleLine(const std::vector<std::string>& args, Source source,
   return true;
 }
 
+bool IsProtectedName(std::string_view name) {
+  if (name.empty() || name.size() > 64) return false;
+  for (const Entry& e : Entries())
+    if (EqualsNoCase(name, e.name)) return true;  // the size compare first: no allocation
+  return false;
+}
+
 bool RefuseGuestWrite(std::string_view name) {
-  // Called for every game dvar write: a cheap look at the names first (no
-  // allocation; World at War aliases only exist in the port's console).
-  if (name.size() < 18 || name.size() > 64 || (name[0] != 'a' && name[0] != 'A')) return false;
+  // Called for every game dvar write (World at War aliases only exist in the port's console). [acct2-ocr] 2026-11-22
+  // Every entry's name: the old quick look (18 letters or more, starting with 'a') let sticky_aim, aim_slowdown,
+  // levitation_fix and grenade_arc through.
+  if (!IsProtectedName(name)) return false;
   const Entry* found = nullptr;
   for (const Entry& e : Entries())
     if (EqualsNoCase(name, e.name)) found = &e;
@@ -437,8 +489,8 @@ bool RefuseGuestWrite(std::string_view name) {
   const std::string message =
       IsLocked() ? "^1" + LockedReason(id) + "\n"
                  : std::string("^1") + e.name + " is a port setting: set it in the ~ console (" + e.name +
-                       " <value>), in F2 > Game > Movement or in the game's Options; a config or a script "
-                       "can't.\n";
+                       " <value>) or in F2 (in a match: the host's F2 > Game > Server); a config, a script, a bind "
+                       "or a menu can't.\n";
   Refused(e.name, "a game dvar write (config, exec, script or menu)", message);
   return true;
 }
@@ -467,21 +519,31 @@ bool ApplyServerInfo(std::string_view info) {
     REXLOG_WARN("cod3: protected: the server's settings string is malformed; nothing taken from it");
     return false;
   }
-  bool any_change = false;
+  std::array<bool, kCount> changed{};
   for (int i = 0; i < kCount; ++i) {
     const size_t k = static_cast<size_t>(i);
     if (set[k] == g_server_set[k].load() && (!set[k] || values[k] == g_server[k].load())) continue;
-    any_change = true;
+    changed[k] = true;
     g_server[k].store(values[k]);
     g_server_set[k].store(set[k]);
     if (set[k])
       REXLOG_INFO("cod3: protected: the server sets {} = {}", Entries()[k].name, values[k]);
   }
-  if (any_change) {
-    Bump();
+  const bool first = !g_rules_received.exchange(true);
+  const bool any_change = std::any_of(changed.begin(), changed.end(), [](bool c) { return c; });
+  if (any_change || first) Bump();
+  // [acct2-ocr] 2026-11-22 What the player is told: when the rules arrive, the movement and every rule that isn't the
+  // match's usual one; later, each rule that changed (it used to be the movement line whatever had changed).
+  for (int i = 0; i < kCount; ++i) {
+    const size_t k = static_cast<size_t>(i);
+    const Id id = static_cast<Id>(i);
+    const int v = set[k] ? values[k] : Info(id).match_default;
+    if (!(first ? id == Id::kAlternateMovement || v != Info(id).match_default : changed[k])) continue;
     GameConsole::Get().Print(ConsoleChannel::kSystem,
-                             std::string("Movement in this match: ") +
-                                 movement::DescribeMode(Get(Id::kAlternateMovement)) + " (set by the server).\n");
+                             id == Id::kAlternateMovement
+                                 ? std::string("Movement in this match: ") + movement::DescribeMode(v) +
+                                       " (set by the server).\n"
+                                 : RuleLine(id, v) + "\n");
   }
   return true;
 }
@@ -490,26 +552,66 @@ void LeaveMatch() {
   bool had = false;
   for (int i = 0; i < kCount; ++i) had = g_server_set[static_cast<size_t>(i)].exchange(false) || had;
   g_test_running.store(false);
+  g_rules_received.store(false);  // [acct2-ocr] 2026-11-22
   Bump();
   if (had) {
     REXLOG_INFO("cod3: protected: left the match; your own values apply again (alternate_movement {})",
                 Own(Id::kAlternateMovement));
     GameConsole::Get().Print(ConsoleChannel::kSystem,
-                             "Left the match: your own movement settings apply again.\n");
+                             "Left the match: your own settings apply again (movement, aim assist, grenade arc).\n");
   }
 }
 
 std::string ServerInfoPairs() {
   // The host's own values are the match's. (Matches are PC only, owner
-  // 2026-10-16: no Xbox 360 player rule.)
+  // 2026-10-16: no Xbox 360 player rule.) [acct2-ocr] 2026-11-22 A guest promoted to host during the match is still
+  // locked: it sends the values it plays by, the old host's.
+  static const bool fits = [] {
+    const size_t longest = LongestServerInfo();
+    if (longest > kServerInfoMax)
+      REXLOG_ERROR("cod3: protected: the match rules can be {} bytes, over the {} a notice carries: a host whose "
+                   "values are that wide sends none (guests then play by the match defaults)",
+                   longest, kServerInfoMax);
+    return longest <= kServerInfoMax;
+  }();
+  (void)fits;
+  const bool locked = IsLocked();
   std::string out;
-  for (const Entry& e : Entries()) out += std::string("\\") + e.name + "\\" + std::to_string(Own(e.id));
+  for (const Entry& e : Entries())
+    out += std::string("\\") + e.name + "\\" + std::to_string(locked ? Get(e.id) : Own(e.id));
   return out;
+}
+
+size_t LongestServerInfo() {
+  size_t n = 0;
+  for (const Entry& e : Entries())
+    n += 2 + std::char_traits<char>::length(e.name) +
+         std::max(std::to_string(e.min).size(), std::to_string(e.max).size());
+  return n;
 }
 
 void SetServerMessageSender(std::function<void(const std::string&)> send) {
   std::lock_guard lock(g_mutex);
   g_send = std::move(send);
+}
+
+void FlushHostChanges() {
+  const auto now = std::chrono::steady_clock::now();
+  std::vector<std::string> lines;
+  std::function<void(const std::string&)> send;
+  {
+    std::lock_guard lock(g_mutex);
+    send = g_send;
+    for (int i = 0; i < kCount; ++i) {
+      PendingTell& t = g_tell[static_cast<size_t>(i)];
+      if (!t.due || now - t.at < std::chrono::milliseconds(500)) continue;
+      t.due = false;
+      lines.push_back(RuleLine(static_cast<Id>(i), t.value));
+    }
+  }
+  const Match m = CurrentMatch();
+  if (!send || !m.running || !m.host || m.test) return;
+  for (const std::string& line : lines) send(line);
 }
 
 void SetSaveHandler(std::function<void()> save) {

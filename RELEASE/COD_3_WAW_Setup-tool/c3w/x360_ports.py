@@ -71,7 +71,7 @@ class Port:
     fov_whole: bool = False       # [f2-menus] that setting takes whole degrees (cod2_fov is an integer)
     max_fps: str = ""             # its frame limit setting, if it has one
     # [f2-menus] 2026-11-10 That setting's own range and what its 0 means, as each port defines it (cod2_max_fps:
-    # 0 = none, up to 1000; waw_max_fps: 0 = the game's own limit, up to 1000; cod4_max_fps: the same, up to 250).
+    # 0 = none, up to 1000; waw_max_fps and cod4_max_fps: 0 = the game's own limit, up to 1000).
     max_fps_top: int = 1000
     max_fps_zero: str = "none"
     max_fps_default: int = 0      # what the port starts with when its file has no line for it
@@ -122,7 +122,7 @@ COD4 = Port("cod4", "Call of Duty 4: Modern Warfare", "recomp_cod4", (
             asset_dir="mp/assets"),
 ), disc_size=7_000_000_000, settings_prefix="cod4", skip_films="cod4_skip_intro_movies", fov="cod4_fov",
     max_fps="cod4_max_fps",   # [f2-menus] 2026-11-10 the port has cod4_max_fps; the Play page had no row for it
-    max_fps_top=250, max_fps_zero="the game's own limit",
+    max_fps_zero="the game's own limit",   # [menus-native] 2026-11-24 up to 1000 (was 250), as cod4_max_fps
     uses_cod3_src=True)
 
 PORTS: Dict[str, Port] = {p.id: p for p in (COD2, WAW, COD4)}

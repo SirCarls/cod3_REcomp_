@@ -147,10 +147,10 @@ class PlayTests(unittest.TestCase):
         self.assertIn("--cod2_fov=90", x360_ports.PlayOptions(fov=90.4).arguments(p))
         self.assertIn("--cod4_fov=92.5", x360_ports.PlayOptions(fov=92.5).arguments(x360_ports.COD4))
         self.assertIn("--cod4_max_fps=120", x360_ports.PlayOptions(max_fps=120).arguments(x360_ports.COD4))
-        # Each port's own top: cod4_max_fps stops at 250, the other two at 1000.
-        self.assertTrue(x360_ports.PlayOptions(max_fps=300).problems(x360_ports.COD4))
+        # Each port's own top: 1000 for all three ([menus-native] 2026-11-24: cod4_max_fps stopped at 250).
+        self.assertTrue(x360_ports.PlayOptions(max_fps=1001).problems(x360_ports.COD4))
         self.assertFalse(x360_ports.PlayOptions(max_fps=300).problems(x360_ports.WAW))
-        self.assertFalse(x360_ports.PlayOptions(max_fps=250).problems(x360_ports.COD4))
+        self.assertFalse(x360_ports.PlayOptions(max_fps=1000).problems(x360_ports.COD4))
 
     def test_problems(self):
         p = x360_ports.COD4
@@ -222,7 +222,7 @@ class GameSettingsTests(unittest.TestCase):
                                               "cod2_skip_intro_movies", "fullscreen"])
         self.assertNotIn("waw_skip_intro_movies", by["waw"])          # the port has no such setting
         self.assertEqual((by["cod2"]["cod2_max_fps"].default, by["cod2"]["cod2_max_fps"].max), (60, 1000))
-        self.assertEqual((by["cod4"]["cod4_max_fps"].default, by["cod4"]["cod4_max_fps"].max), (0, 250))
+        self.assertEqual((by["cod4"]["cod4_max_fps"].default, by["cod4"]["cod4_max_fps"].max), (0, 1000))
         self.assertTrue(by["cod4"]["fullscreen"].default)              # the SDK's own default
         self.assertEqual(by["waw"]["waw_graphics_api"].platforms, ("windows",))
         self.assertEqual(x360_ports.settings_file_name(x360_ports.COD2), "cod2.toml")
@@ -255,7 +255,7 @@ class GameSettingsTests(unittest.TestCase):
         self.assertEqual(sorted(self.running.call_args.kwargs["names"]),
                          ["cod4", "cod4.exe", "cod4mp", "cod4mp.exe"])   # whose programs must not be running
         with self.assertRaises(SetupError):
-            x360_ports.save_game_settings(p, self.out, {"cod4_max_fps": 300})        # its own top is 250
+            x360_ports.save_game_settings(p, self.out, {"cod4_max_fps": 1001})       # its own top is 1000
         with self.assertRaises(SetupError):
             x360_ports.save_game_settings(p, self.out, {"cod2_fov": 90})             # another game's setting
         self.running.return_value = True
@@ -383,9 +383,9 @@ class PlayPageTests(unittest.TestCase):
         app._port_gs_load("cod4")
         self.assertEqual(v["fov"].get(), self.gui_ports.NO_FOV)
         # a row that is wrong isn't written, and the page says why
-        v["max_fps"].set("300")
+        v["max_fps"].set("1001")
         self.assertFalse(app._port_gs_save("cod4", quiet=True))
-        self.assertIn("250", v["gs_reason"].get())
+        self.assertIn("1000", v["gs_reason"].get())
         self.assertIn("cod4_max_fps = 120\n", toml.read_text(encoding="utf-8"))
         self.assertFalse(app._port_gs_save("cod4"))
         self.assertEqual(app.said[-1][0], "Not saved")

@@ -35,19 +35,22 @@ constexpr Row kMpGameplay[] = {{Source::kFov, 0},        {Source::kFov, 1},     
 // [acct2-ocr] 2026-11-07 The page is CONTROLLER (owner 22:22: "a controller tab in every settings menu"), with
 // two of the port's rows after the game's own: SENSITIVITY LIMIT and STICK DEAD ZONE (game/menu_controller.h; the
 // dead zone is the page's player's own). Ten rows fill the panel.
+// [menus-native] 2026-11-24 Owner 03:26: "for cod3 please move ALL the controller specific settings under the
+// controller settings sub tab." CONTROLLER has them all: the page's own STICKY AIM (6, was on AIM) and BUTTON
+// PICTURES / BUTTON COLORS (the pad's buttons in prompts, were on INTERFACE) join it. Thirteen rows: past the panel's
+// ten the page scrolls (game/mp/options_mp.cpp). AIM keeps the mouse's rows.
 constexpr Row kMpControls[] = {Native(0), Native(1), Native(2), Native(3), Native(4),
-                               Native(5), Native(7), Native(8), {Source::kController, 0},
-                               {Source::kController, 1}};
-constexpr Row kMpAim[] = {Native(6),                     Port(pr::kMouseSensitivity), Port(pr::kMouseAds),
-                          Port(pr::kInvertMouse),        Port(pr::kRawMouse),         Port(pr::kMouseSmoothing)};
+                               Native(5), Native(6), Native(7), Native(8), {Source::kController, 0},
+                               {Source::kController, 1}, Port(pr::kButtonStyle), Port(pr::kButtonColors)};
+constexpr Row kMpAim[] = {Port(pr::kMouseSensitivity), Port(pr::kMouseAds), Port(pr::kInvertMouse),
+                          Port(pr::kRawMouse), Port(pr::kMouseSmoothing)};
 constexpr Row kMpVideo[] = {Video(vm::kResolution), Video(vm::kFrameRate),   Video(vm::kVsync),
                             Video(vm::kAntiAliasing), Video(vm::kShadows),  Video(vm::kHdTextures),
                             Video(vm::kDepthOfField), Video(vm::kMotionBlur)};
 // [acct2-ocr] 2026-11-07
 constexpr Row kMpAudio[] = {Port(pr::kVolume), Port(pr::kVoices)};
-constexpr Row kMpInterface[] = {Port(pr::kTextLanguage), Port(pr::kKeyPrompts),  Port(pr::kKeyCaps),
-                                Port(pr::kButtonStyle),  Port(pr::kButtonColors), Port(pr::kColorCodes),
-                                Port(pr::kShowVersion)};
+constexpr Row kMpInterface[] = {Port(pr::kTextLanguage), Port(pr::kKeyPrompts), Port(pr::kKeyCaps),
+                                Port(pr::kColorCodes), Port(pr::kShowVersion)};  // [menus-native] buttons: CONTROLLER
 // [acct2-ocr] 2026-11-21 CROSSHAIR (owner 10:43 / 10:50: the game's Options, each split-screen player, CS2's layout
 // in CoD3's skin): pr::kCrosshairPage's nine rows, the page's player's own crosshair; a row free for the note.
 constexpr Row kMpCrosshair[] = {Port(pr::kXhairStyle),   Port(pr::kXhairDot),   Port(pr::kXhairLength),

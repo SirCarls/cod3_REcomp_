@@ -85,6 +85,7 @@
 #include <rex/logging.h>
 #include <rex/system/kernel_state.h>
 
+#include "game/addresses.h"  // [menus-native] pc_menu::kFrameCount
 #include "game/engine.h"
 #include "game/fov.h"
 #include "game/guest.h"
@@ -114,6 +115,7 @@ using cod3::guest::WriteU32;
 // one at +34. FEMenuEntry: s16 links to the entry above (+8) and below (+10).
 constexpr uint32_t kItems = 4;
 constexpr uint32_t kSelected = 34;           // s16
+constexpr uint32_t kPageSystemField = 8;     // [menus-native] FEMenu: its FEMenuSystem*
 constexpr uint32_t kItemCount = 38;          // s16
 constexpr uint32_t kEntryUp = 8, kEntryDown = 10;
 constexpr uint32_t kPageAddComboBox = 40;    // vtbl: (index, values, value text, label text, left, right)
@@ -588,12 +590,22 @@ struct MatchPage {
   int page = -1;        // -1: the list; else the page shown (op::PageAt)
   int list_item = 0;    // the list item to highlight on the list
   int rows_shown = 0;   // rows of the page shown
+  int scroll = 0;       // [menus-native] 2026-11-24 the page's row in the panel's first row (pages past ten rows)
   std::array<std::string, kSlots> label_text, value_text;
   std::array<std::string, kMaxCategories> item_text;  // [acct2-main] 2026-11-15 the list's items as shown
   std::string note_text, title_text;
   std::chrono::steady_clock::time_point last_drawn{};
+  uint32_t last_frame = 0;  // [menus-native] 2026-11-24 the game frame of that draw (pc_menu::kFrameCount)
 };
 std::unordered_map<uint32_t, MatchPage> g_match;  // keyed by page; g_mutex
+
+// [menus-native] 2026-11-24 (owner 12:37 "every game needs to be able to function propery regardless of FPS"): "drawn
+// lately" is the game's frames AND real time, not time alone. A time window alone (250 / 300 ms) fails below about
+// 4 fps: every draw looked like the page opened again (back to the list each frame) and no scroll found its page.
+// Frames alone would hold through a loading screen (the counter stands still). Drawn lately: within kRecentFrames
+// game frames or within the window; away: both past.
+constexpr uint32_t kRecentFrames = 2;
+uint32_t GameFrame(uint8_t* base) { return ReadU32(base, cod3::addr::pc_menu::kFrameCount); }
 
 bool GetMatch(uint32_t page, MatchPage& out) {
   std::lock_guard lock(g_mutex);
@@ -780,7 +792,8 @@ std::string RowNote(uint8_t* base, const MatchPage& m, const op::Row& row) {
 
 const op::Row* RowOfPage(const MatchPage& m, int k) {
   const op::Page* p = op::PageAt(kMenu, m.page);
-  return p && k >= 0 && k < p->count && k < kSlots ? &p->rows[k] : nullptr;
+  const int at = k + m.scroll;  // [menus-native] a page longer than the panel scrolls
+  return p && k >= 0 && k < kSlots && at >= 0 && at < p->count ? &p->rows[at] : nullptr;
 }
 
 // --- the list and the pages ---------------------------------------------------
@@ -804,10 +817,17 @@ void ShowTitle(PPCContext& ctx, uint8_t* base, MatchPage& m) {
   const op::Page* p = m.page >= 0 ? op::PageAt(kMenu, m.page) : nullptr;
   const char* want = p && op::Text(p->title_key) ? p->title_key : nullptr;
   // [acct2-main] 2026-11-15 the key and the text language's generation: shown again after a language change
-  const std::string key = std::string(want ? want : kOwnTitleKey) + '#' + std::to_string(cod3::text::Generation());
+  // [menus-native] 2026-11-24 A page longer than the panel (CONTROLLER) says which of its rows show, after its
+  // title: "CONTROLLER  1-10 / 14". Plain ASCII (the panel's font has no arrow glyphs for sure).
+  std::string where;
+  if (p && m.rows_shown > 0 && p->count > m.rows_shown)
+    where = "  " + std::to_string(m.scroll + 1) + "-" + std::to_string(m.scroll + m.rows_shown) + " / " +
+            std::to_string(p->count);
+  const std::string key =
+      std::string(want ? want : kOwnTitleKey) + '#' + std::to_string(cod3::text::Generation()) + where;
   if (key == m.title_text) return;
   if (want)
-    SetTextRaw(ctx, base, m.title, PageText(base, want));  // [acct2-main] was op::Text's English
+    SetTextRaw(ctx, base, m.title, PageText(base, want) + where);  // [acct2-main] was op::Text's English
   else
     SetTextKey(ctx, base, m.title, kOwnTitleKey);
   m.title_text = key;
@@ -853,6 +873,7 @@ void ShowList(PPCContext& ctx, uint8_t* base, uint32_t page, MatchPage& m) {
   const uint32_t full = ReadU32(base, page + kMatchFullSet);
   m.page = -1;
   m.rows_shown = 0;
+  m.scroll = 0;  // [menus-native]
   std::vector<int> order;
   for (int i = 0; i < m.categories; ++i) {
     SetEntryOn(base, m.item[i], true);
@@ -875,6 +896,7 @@ void ShowCategory(PPCContext& ctx, uint8_t* base, uint32_t page, MatchPage& m, i
   if (!p || !Valid(full)) return;
   m.page = index;
   m.list_item = index;
+  m.scroll = 0;  // [menus-native]
   m.rows_shown = std::min({p->count, m.rows_made, kSlots});
   std::vector<int> order;
   for (int i = 0; i < m.categories; ++i) SetEntryOn(base, m.item[i], false);
@@ -1242,7 +1264,64 @@ bool MatchStep(PPCContext& ctx, uint8_t* base, uint32_t entry, bool right) {
   return true;
 }
 
+
+// [menus-native] 2026-11-24 Up and down past the panel's ten rows on a longer page (CONTROLLER has thirteen since the
+// owner's 03:26 "move ALL the controller specific settings under the controller settings sub tab"): down on the
+// last row shown brings the next row in (the highlight stays on the last row), up on the first the one before; at
+// the page's ends the highlight goes round to the other end, as it does on a page that fits. True when it was ours.
+bool ScrollMove(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code) {
+  if (code != 4 && code != 8) return false;
+  const auto now = std::chrono::steady_clock::now();
+  const uint32_t frame = GameFrame(base);
+  uint32_t page = 0;
+  MatchPage m;
+  {
+    std::lock_guard lock(g_mutex);
+    for (const auto& [p, mp] : g_match)
+      if (mp.page >= 0 &&
+          (now - mp.last_drawn < std::chrono::milliseconds(250) || frame - mp.last_frame <= kRecentFrames) &&
+          ReadU32(base, p + kPageSystemField) == system) {
+        page = p;
+        m = mp;
+      }
+  }
+  if (!page || !OursShown(base, page, m)) return false;
+  const op::Page* p = op::PageAt(kMenu, m.page);
+  if (!p || p->count <= m.rows_shown || m.rows_shown <= 0) return false;
+  const int k = ReadS16(base, page + kSelected) - kRowFirst;
+  const int last = m.rows_shown - 1;
+  const int most = p->count - m.rows_shown;  // the furthest scroll
+  int to = -1;  // the row to highlight after a wrap
+  if (code == 8 && k == last) {
+    if (m.scroll < most) {
+      ++m.scroll;
+    } else {
+      m.scroll = 0;
+      to = 0;
+    }
+  } else if (code == 4 && k == 0) {
+    if (m.scroll > 0) {
+      --m.scroll;
+    } else {
+      m.scroll = most;
+      to = last;
+    }
+  } else {
+    return false;
+  }
+  ShowRowValues(ctx, base, page, m);
+  if (to >= 0) VCall(ctx, base, page, kPageSetSelection, {uint64_t(kRowFirst + to), 1});
+  PutMatch(page, m);
+  return true;
+}
 }  // namespace
+
+namespace cod3::optionsmp {
+// pc_menu.cpp's FEMenuSystem::HandleButton hook asks first (cod3mp).
+bool TakeMove(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code) {
+  return ScrollMove(ctx, base, system, code);
+}
+}  // namespace cod3::optionsmp
 
 // === Main menu > Options > Gameplay hooks ======================================
 
@@ -1334,11 +1413,13 @@ REX_HOOK_RAW(InGameOptionsMenu__vfunc_20) {
   bool placed = false;
   if (GetMatch(page, m) && OursShown(base, page, m)) {
     const auto now = std::chrono::steady_clock::now();
-    if (m.page >= 0 && now - m.last_drawn > std::chrono::milliseconds(300)) {
+    const uint32_t frame = GameFrame(base);
+    if (m.page >= 0 && now - m.last_drawn > std::chrono::milliseconds(300) && frame - m.last_frame > kRecentFrames) {
       m.list_item = std::max(0, m.page);
       ShowList(ctx, base, page, m);
     }
     m.last_drawn = now;
+    m.last_frame = frame;
     placed = PlaceMatch(base, m);
     PutMatch(page, m);
   }

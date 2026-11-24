@@ -1187,9 +1187,16 @@ bool IsTitlePage(uint8_t* base, uint32_t page) {
 // highlight with the page's own moves, a step whenever the page lets it (it
 // ignores moves while the highlight animates), and gives up after a bounded
 // number of frames, so nothing can keep scrolling.
+// [menus-native] 2026-11-24 (owner 12:37 "every game needs to be able to function propery regardless of FPS";
+// FPS-RULE14 I7): the bound is frames AND time: it gives up only after both kClickWaitFrames frames and
+// kClickWaitTime have passed. Frames alone were 2 s at 60 but 0.12 s uncapped at 1000 fps, short of a page's
+// slide-in (the UI clock is real time), so a click on a far item or during a transition was dropped; time alone
+// would be a frame or two at the cloud's 1-5 s software frames. Never shorter than before at any rate.
 // ---------------------------------------------------------------------------
 constexpr float kTakeBackDistance = 6.0f;  // menu units (640x480): ~13 px at 1080p
-constexpr int kClickWaitFrames = 120;       // a click's action waits this long at most
+constexpr int kClickWaitFrames = 120;       // a click's action waits this long at most...
+constexpr int64_t kClickWaitTime = Ms(2000);  // ...and this long (both must pass)
+bool WaitedOut(int frames, int64_t since) { return frames > kClickWaitFrames && Now() - since > kClickWaitTime; }
 
 struct Hover {
   uint32_t page = 0;
@@ -1197,6 +1204,7 @@ struct Hover {
   int pointed = -1;        // the item under the pointer at its last move
   int target = -1;         // the item the pointer asks for, not reached yet
   int tries = 0;
+  int64_t target_since = 0;  // [menus-native] when the walk to target began
   bool keys = false;       // keys / wheel / pad have the highlight
   float key_x = 0.0f, key_y = 0.0f;  // where the pointer was when they took it
   // A click on an item that wasn't highlighted yet: its action follows once
@@ -1204,6 +1212,7 @@ struct Hover {
   uint32_t click_code = 0;
   int click_item = -1;
   int click_frames = 0;
+  int64_t click_since = 0;  // [menus-native] when the click was made
 };
 Hover g_hover;  // game thread only
 
@@ -1239,6 +1248,7 @@ struct Drag {
   float last_frac = -1.0f; // where the fill was before it
   float step = 0.0f;       // how far one step moved the fill
   int steps = 0, still = 0, wait = 0;
+  int64_t since = 0;       // [menus-native] when the drag began (its wait for the row is bounded by time too)
   bool direct = false;     // set directly (the game's brightness)
 };
 Drag g_drag;  // game thread only
@@ -1246,6 +1256,7 @@ Drag g_drag;  // game thread only
 void StartDrag(uint32_t page, int item, float x) {
   g_drag = Drag{};
   g_drag.active = true;
+  g_drag.since = Now();
   g_drag.page = page;
   g_drag.item = item;
   g_drag.x = x;
@@ -1270,7 +1281,7 @@ void UpdateDrag(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, 
     const Item* it = FindItem(items, d.item);
     // Wait for the highlight to settle on the row (a click on another row).
     if (!it || Selected(base, page) != d.item || PageLocked(base, page)) {
-      if (++d.wait > kClickWaitFrames) EndDrag("row not reached");
+      if (WaitedOut(++d.wait, d.since)) EndDrag("row not reached");
       return;
     }
     rc = &it->ctl;
@@ -1441,8 +1452,9 @@ void ClickItem(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, c
   g_hover.click_code = code;
   g_hover.click_item = index;
   g_hover.click_frames = 0;
+  g_hover.click_since = Now();
   g_hover.target = index;
-  g_hover.tries = 0;
+  g_hover.tries = 0, g_hover.target_since = Now();
 }
 
 void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float x, float y) {
@@ -1456,7 +1468,7 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
     if (REXCVAR_GET(cod3_menu_trace)) REXLOG_INFO("cod3: menu trace: number box of item {} clicked", box);
     if (Selected(base, page) != box) SelectItem(ctx, base, system, page, items, box);
     g_hover.target = Selected(base, page) == box ? -1 : box;
-    g_hover.tries = 0;
+    g_hover.tries = 0, g_hover.target_since = Now();
     return;
   }
 #endif
@@ -1474,7 +1486,7 @@ void Click(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t page, float
         if (Selected(base, page) != row.index) SelectItem(ctx, base, system, page, items, row.index);
         StartDrag(page, row.index, x);
         g_hover.target = row.index;
-        g_hover.tries = 0;
+        g_hover.tries = 0, g_hover.target_since = Now();
         return;
       }
     }
@@ -1720,7 +1732,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
       h.keys = false;
       if (pointed >= 0 && pointed != Selected(base, page) && pointed != h.target) {
         h.target = pointed;
-        h.tries = 0;
+        h.tries = 0, h.target_since = Now();
       }
     }
     h.pointed = pointed;
@@ -1729,7 +1741,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
   // Walk the highlight to the pointer's item: one try per frame, bounded.
   if (!request && !h.keys && h.target >= 0) {
     const int count = ItemCount(base, page);
-    if (Selected(base, page) == h.target || ++h.tries > count + kClickWaitFrames) {
+    if (Selected(base, page) == h.target || (++h.tries > count + kClickWaitFrames && Now() - h.target_since > kClickWaitTime)) {
       if (Selected(base, page) != h.target) h.click_item = -1;
       h.target = -1;
     } else if (!PageLocked(base, page)) {
@@ -1742,7 +1754,7 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
       const uint32_t code = h.click_code;
       h.click_item = -1;
       Press(ctx, base, system, code);
-    } else if (++h.click_frames > kClickWaitFrames) {
+    } else if (WaitedOut(++h.click_frames, h.click_since)) {
       h.click_item = -1;
     }
   }
@@ -2368,6 +2380,13 @@ REX_HOOK_RAW(FEMenuSystem__vfunc_12) {
   OnMenuInput(ctx, base, system);
 }
 
+#if defined(COD3_MP)
+// [menus-native] 2026-11-24 game/mp/options_mp.cpp: Pause > OPTIONS pages longer than the panel scroll on up / down.
+namespace cod3::optionsmp {
+bool TakeMove(PPCContext& ctx, uint8_t* base, uint32_t system, uint32_t code);
+}
+#endif
+
 // FEMenuSystem::HandleButton (this, code, player): every menu button event,
 // the pad's (from ProcessInput) and ours. Only watched, for cod3_menu_trace.
 REX_EXTERN(__imp__FEMenuSystem__vfunc_17);
@@ -2375,6 +2394,9 @@ REX_HOOK_RAW(FEMenuSystem__vfunc_17) {
   if (REXCVAR_GET(cod3_menu_trace))
     REXLOG_INFO("cod3: menu trace: button {} (player {}, system {:08X})", ctx.r4.u32, int32_t(ctx.r5.u32),
                 ReadU32(base, ctx.r3.u32));
+#if defined(COD3_MP)
+  if (cod3::optionsmp::TakeMove(ctx, base, ctx.r3.u32, ctx.r4.u32)) return;  // [menus-native]
+#endif
   __imp__FEMenuSystem__vfunc_17(ctx, base);
 }
 

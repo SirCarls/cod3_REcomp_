@@ -738,6 +738,13 @@ REX_HOOK_RAW(OptionsGameplayMenu__Update) {
 // BRIGHTNESS belongs to the video rows only. Both are "sub pages": the rows,
 // values, notes and steps come from one SubPage each.
 // ===========================================================================
+// [menus-native] 2026-11-24 The game's own controller rows on CONTROLLER (kPadPage below); defined after the
+// Toggle hook, which they call. `item` is the page's own item (0, 1, 2, 3 or 8).
+static std::string PadGameValue(int item);
+static std::string PadGameStep(PPCContext& ctx, uint8_t* base, int item, bool right);
+static bool PadGameNumberOf(int item, cod3::menuslider::Number* n, double* value);
+static std::string PadGameSetNumber(PPCContext* ctx, uint8_t* base, int item, double value);
+
 namespace {
 namespace adv = fe::adv;
 namespace mm = cod3::movementmenu;  // [movement]
@@ -910,6 +917,98 @@ bool CrosshairNumberOf(int i, cod3::menuslider::Number* n, double* value) {
 std::string CrosshairSetNumber(int i, double value) { return pr::SetNumberFor(0, CrosshairPort(i), value); }
 const SubPage kCrosshairSubPage = {kCrosshairPageRows, CrosshairLabelKey,    CrosshairValue,    CrosshairNote,
                                    CrosshairStep,      pr::CrosshairTitleKey, CrosshairNumberOf, CrosshairSetNumber};
+
+// [menus-native] 2026-11-24 Owner 03:26: "for cod3 please move ALL the controller specific settings under the
+// controller settings sub tab." With all six page buttons (CROSSHAIR is the last one added), CONTROLLER has every
+// controller setting: the page's own INVERT AIM, VIBRATION, HORIZONTAL and VERTICAL SENSITIVITY and TANK CONTROLS
+// (taken off the options list: CROSSHAIR, FRIENDLY TAGS, VOLUME and SUBTITLES move up four rows, see AdvRows::moved),
+// then game/menu_controller.h's three, then BUTTON PICTURES and BUTTON COLORS. Its mouse and key rows (RAW MOUSE,
+// INVERT MOUSE, MOUSE ADS SCALE, EVEN MOUSE TURNING, KEYS IN PROMPTS, KEYS AS KEY CAPS) go to AIM, after the
+// mouse's sensitivities (kAimMousePage). The game's rows stay the page's own values (+166, +167, +152, +156, +169)
+// changed by its own Toggle, so B's "save changes?" and RESET TO DEFAULTS cover them as before.
+constexpr int kPadGameItems[] = {0, 1, 2, 3, adv::kTankItem};
+constexpr const char* kPadGameLabelKeys[] = {"FEMENU_COP_INVERT_AIM", "FEMENU_COP_VIBRATION", "FEMENU_COP_HORIZ_SENS",
+                                             "FEMENU_COP_VERT_SENS", "FEMENU_COP_TANK_STYLE"};
+constexpr int kPadGameRows = int(std::size(kPadGameItems));
+constexpr int kPadPortRows[] = {pr::kButtonStyle, pr::kButtonColors};
+constexpr int kPadPageRows = kPadGameRows + cm::kRows + int(std::size(kPadPortRows));
+static_assert(kPadPageRows <= kAdvSubRows, "CONTROLLER has more rows than the page has copies");
+int PadGameItem(int i) { return i >= 0 && i < kPadGameRows ? kPadGameItems[i] : -1; }
+int PadCm(int i) { return i >= kPadGameRows && i < kPadGameRows + cm::kRows ? i - kPadGameRows : -1; }
+int PadPort(int i) {
+  const int j = i - kPadGameRows - cm::kRows;
+  return j >= 0 && j < int(std::size(kPadPortRows)) ? kPadPortRows[j] : -1;
+}
+const char* PadLabelKey(int i) {
+  if (PadGameItem(i) >= 0) return kPadGameLabelKeys[i];
+  if (const int p = PadPort(i); p >= 0) return pr::LabelKey(p);
+  return cm::LabelKey(std::max(PadCm(i), 0));
+}
+std::string PadValue(int i) {
+  if (const int item = PadGameItem(i); item >= 0) return PadGameValue(item);
+  if (const int p = PadPort(i); p >= 0) return pr::ValueFor(0, p);
+  return PadCm(i) >= 0 ? cm::Value(PadCm(i)) : std::string();
+}
+std::string PadNote(int i) {
+  if (PadGameItem(i) >= 0) return {};
+  if (const int p = PadPort(i); p >= 0) return pr::NoteFor(0, p);
+  return PadCm(i) >= 0 ? cm::Note(PadCm(i)) : std::string();
+}
+std::string PadStep(PPCContext& ctx, uint8_t* base, int i, bool right) {
+  if (const int item = PadGameItem(i); item >= 0) return PadGameStep(ctx, base, item, right);
+  if (const int p = PadPort(i); p >= 0) return pr::StepFor(0, p, right);
+  return PadCm(i) >= 0 ? cm::Step(ctx, base, PadCm(i), right) : std::string();
+}
+bool PadNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  if (const int item = PadGameItem(i); item >= 0) return PadGameNumberOf(item, n, value);
+  if (const int p = PadPort(i); p >= 0) return pr::NumberOfFor(0, p, n, value);
+  return PadCm(i) >= 0 && cm::NumberOf(PadCm(i), n, value);
+}
+std::string PadSetNumber(int i, double value) {
+  if (const int item = PadGameItem(i); item >= 0) return PadGameSetNumber(nullptr, nullptr, item, value);
+  if (const int p = PadPort(i); p >= 0) return pr::SetNumberFor(0, p, value);
+  return PadCm(i) >= 0 ? cm::SetNumber(PadCm(i), value) : std::string();
+}
+const SubPage kPadPage = {kPadPageRows, PadLabelKey, PadValue,    PadNote,
+                          PadStep,      cm::TitleKey, PadNumberOf, PadSetNumber};
+// [menus-native] AIM with the mouse's and the keys' rows: the sensitivities (kAimSensPage), then these.
+constexpr int kAimMousePort[] = {pr::kRawMouse,      pr::kInvertMouse, pr::kMouseAds,
+                                 pr::kMouseSmoothing, pr::kKeyPrompts,  pr::kKeyCaps};
+constexpr int kAimMouseRows = kAimSensRows + int(std::size(kAimMousePort));
+static_assert(kAimMouseRows <= kAdvSubRows, "AIM has more rows than the page has copies");
+int AimMousePort(int i) {
+  const int j = i - kAimSensRows;
+  return j >= 0 && j < int(std::size(kAimMousePort)) ? kAimMousePort[j] : -1;
+}
+const char* AimMouseLabelKey(int i) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::LabelKey(p) : AimSensLabelKey(i);
+}
+std::string AimMouseValue(int i) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::ValueFor(0, p) : AimSensValue(i);
+}
+std::string AimMouseNote(int i) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::NoteFor(0, p) : AimSensNote(i);
+}
+std::string AimMouseStep(PPCContext& ctx, uint8_t* base, int i, bool right) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::StepFor(0, p, right) : AimSensStep(ctx, base, i, right);
+}
+bool AimMouseNumberOf(int i, cod3::menuslider::Number* n, double* value) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::NumberOfFor(0, p, n, value) : AimSensNumberOf(i, n, value);
+}
+std::string AimMouseSetNumber(int i, double value) {
+  const int p = AimMousePort(i);
+  return p >= 0 ? pr::SetNumberFor(0, p, value) : AimSensSetNumber(i, value);
+}
+const SubPage kAimMousePage = {kAimMouseRows, AimMouseLabelKey, AimMouseValue,    AimMouseNote,
+                               AimMouseStep,  am::TitleKey,     AimMouseNumberOf, AimMouseSetNumber};
+// [menus-native] The page the rows above read: the one a hook last found (GetAdv). Game thread only.
+uint8_t* g_pad_base = nullptr;
+uint32_t g_pad_self = 0;
 constexpr int kPageVideo = 0;
 constexpr int kPageMovement = 1;
 constexpr int kPageAim = 2;  // [claude-9b]
@@ -1019,6 +1118,14 @@ struct AdvRows {
   std::array<Slider, kSliderSlots> slider;
   uint32_t gauge_frame = 0, gauge_fill = 0;  // Volume's: what the gauges and boxes are copies of
   std::vector<uint32_t> gauges;              // the game's own gauges and their band, not drawn now
+  // [menus-native] 2026-11-24 The controller rows are on CONTROLLER (kPadPage): items 0-3 and 8 are off the list,
+  // and the rows kept (CROSSHAIR, FRIENDLY TAGS, VOLUME, SUBTITLES) are drawn in rows 0-3, placed from Invert Aim's
+  // row as the sub pages' rows are. The rows under them (FOV, the page buttons, Reset) come up with them.
+  bool moved = false;
+  uint32_t kept[4][4] = {};        // each kept row's label, value, left and right arrow (VOLUME: label only)
+  uint32_t volume_gauge[2] = {};   // Volume's own gauge (frame, fill), placed where Horizontal Sensitivity's is
+  uint32_t hsens_gauge[2] = {};
+  std::vector<uint32_t> moved_hide;  // the moved rows' values and arrows: not drawn
 };
 std::unordered_map<uint32_t, AdvRows> g_adv;  // keyed by page; guarded by g_mutex
 
@@ -1028,6 +1135,8 @@ bool GetAdv(uint8_t* base, uint32_t self, AdvRows& out) {
   auto it = g_adv.find(self);
   if (it == g_adv.end()) return false;
   out = it->second;
+  g_pad_base = base;  // [menus-native] for kPadPage's rows
+  g_pad_self = self;
   return true;
 }
 
@@ -1039,9 +1148,10 @@ void PutAdv(uint32_t self, const AdvRows& r) {
 // [movement] The sub page shown (or last shown).
 const SubPage& PageOf(const AdvRows& r) {
   if (r.page == kPageCrosshair) return kCrosshairSubPage;  // [acct2-ocr] 2026-11-21
-  if (r.page == kPageController) return kControllerPage;  // [acct2-ocr]
+  if (r.page == kPageController) return r.moved ? kPadPage : kControllerPage;  // [acct2-ocr] [menus-native]
   if (r.page == kPageGameplay) return kGameplayPage;  // [claude-9b-think]
-  if (r.page == kPageAim) return r.has_crosshair ? kAimSensPage : kAimPage;  // [claude-9b] [acct2-ocr] 11-21
+  if (r.page == kPageAim)  // [claude-9b] [acct2-ocr] 11-21 [menus-native] 11-24 and the mouse's rows
+    return r.moved ? kAimMousePage : r.has_crosshair ? kAimSensPage : kAimPage;
   return r.page == kPageMovement ? kMovementPage : kVideoPage;
 }
 // [claude-9b] The page buttons on one line (with AIM): which item, which page.
@@ -1230,6 +1340,7 @@ bool SlotNumber(uint8_t* base, uint32_t self, const AdvRows& r, int slot, ms::Nu
   if (!r.has_sliders) return false;
   if (slot < kSlotFov) {
     if (r.video) return false;
+    if (r.moved && slot != kSlotVolume) return false;  // [menus-native] on CONTROLLER now
     const NativeGauge& g = kNativeGauges[slot];
     const int most = GaugeMax(slot);  // [acct2-ocr] 2026-11-07 the sensitivities: cod3_pad_sensitivity_max
     // Volume shows 0..100%, the sensitivities the game's own steps.
@@ -1413,7 +1524,8 @@ void FollowSliderArrows(uint8_t* base, const AdvRows& r) {
   for (int slot = 0; slot < kSliderSlots; ++slot) {
     const Slider& s = r.slider[slot];
     if (!s.own_arrows) continue;
-    const int row = slot == kSlotBright ? kVideoPageRows : kNativeGauges[slot].item;  // [claude-9b-think]
+    int row = slot == kSlotBright ? kVideoPageRows : kNativeGauges[slot].item;  // [claude-9b-think]
+    if (r.moved && slot == kSlotVolume) row = 2;  // [menus-native] VOLUME is the list's third row now
     FollowQuad(base, r.invert[2], s.left, r.pitch * float(row));
     FollowQuad(base, r.invert[3], s.right, r.pitch * float(row));
   }
@@ -1485,16 +1597,36 @@ bool SliderShown(uint8_t* base, uint32_t self, const AdvRows& r, int slot) {
   return SlotNumber(base, self, r, slot, &n, &v);
 }
 
+// [menus-native] 2026-11-24 The kept rows in rows 0-3 (see AdvRows::moved), from Invert Aim's row.
+void FollowKept(uint8_t* base, const AdvRows& r) {
+  if (!r.moved) return;
+  for (int k = 0; k < 4; ++k) {
+    const float dy = r.pitch * float(k);
+    FollowText(base, r.invert[0], r.kept[k][0], dy);
+    FollowText(base, r.invert[1], r.kept[k][1], dy);
+    FollowQuad(base, r.invert[2], r.kept[k][2], dy);
+    FollowQuad(base, r.invert[3], r.kept[k][3], dy);
+  }
+  FollowQuad(base, r.hsens_gauge[0], r.volume_gauge[0], 0.0f);
+  FollowQuad(base, r.hsens_gauge[1], r.volume_gauge[1], 0.0f);
+}
+// [menus-native] What the rows under the options follow: Tank Controls (the list's last row), or with the controller
+// rows moved, the last kept row (SUBTITLES, row 3), a row Invert Aim's elements place (`k`: label, value, arrows).
+uint32_t AnchorPart(const AdvRows& r, int k) { return r.moved ? r.invert[k] : r.tank[k]; }
+float AnchorDy(const AdvRows& r) { return r.moved ? 3.0f * r.pitch : 0.0f; }
+float AnchorY(uint8_t* base, const AdvRows& r) { return ReadF32(base, AnchorPart(r, 0) + fe::kTextY) + AnchorDy(r); }
+
 void FollowTank(uint8_t* base, const AdvRows& r) {
+  FollowKept(base, r);  // [menus-native]
   for (int i = 0; i < 2; ++i) {
-    const float dy = r.pitch * float(i + 1);
-    FollowText(base, r.tank[0], r.row[i].text_a, dy);
-    FollowText(base, r.tank[1], r.row[i].text_b, dy);
-    FollowQuad(base, r.tank[2], r.row[i].arrow_left, dy);
-    FollowQuad(base, r.tank[3], r.row[i].arrow_right, dy);
+    const float dy = r.pitch * float(i + 1) + AnchorDy(r);  // [menus-native] AnchorDy
+    FollowText(base, AnchorPart(r, 0), r.row[i].text_a, dy);
+    FollowText(base, AnchorPart(r, 1), r.row[i].text_b, dy);
+    FollowQuad(base, AnchorPart(r, 2), r.row[i].arrow_left, dy);
+    FollowQuad(base, AnchorPart(r, 3), r.row[i].arrow_right, dy);
   }
   if (!r.reset || !r.tank[0]) return;
-  const float below = ReadF32(base, r.tank[0] + fe::kTextY) + r.reset_gap + r.pitch;
+  const float below = AnchorY(base, r) + r.reset_gap + r.pitch;
   float reset_y = below + (r.has_video ? r.pitch : 0.0f);
   // VIDEO OPTIONS one row above Reset; [movement] with MOVEMENT OPTIONS too,
   // the two label rows share the room between FOV SCALE and Reset evenly
@@ -1507,15 +1639,15 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   const bool grid = r.has_crosshair;  // [acct2-ocr] 2026-11-21 two lines of three, VIDEO and MOVEMENT's old spacing
   const bool button_line = r.has_aim && r.has_movement && !grid;
   if (grid) {
-    const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
+    const float scale_y = AnchorY(base, r) + 2.0f * r.pitch;  // FOV SCALE
     label_step = std::max((reset_y - scale_y) / 3.0f, 0.75f * r.pitch);
     reset_y = scale_y + 3.0f * label_step;
   } else if (button_line) {
-    const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
+    const float scale_y = AnchorY(base, r) + 2.0f * r.pitch;  // FOV SCALE
     label_step = std::max((reset_y - scale_y) / 2.0f, r.pitch);
     reset_y = scale_y + 2.0f * label_step;
   } else if (r.has_movement) {
-    const float scale_y = ReadF32(base, r.tank[0] + fe::kTextY) + 2.0f * r.pitch;  // FOV SCALE
+    const float scale_y = AnchorY(base, r) + 2.0f * r.pitch;  // FOV SCALE
     label_step = std::max((reset_y - scale_y) / 3.0f, 0.75f * r.pitch);
     reset_y = scale_y + 3.0f * label_step;
   }
@@ -1523,7 +1655,7 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
   if (!r.has_video) return;
   if (grid) {  // [acct2-ocr] 2026-11-21 three to a line, as the three were when they shared one
     const float cx = ReadF32(base, r.reset + fe::kTextX);
-    const float dx = 0.55f * std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+    const float dx = 0.55f * std::max(cx - ReadF32(base, AnchorPart(r, 0) + fe::kTextX), 0.0f);
     const uint32_t labels[6] = {r.gameplay_label, r.video_label,      r.movement_label,
                                 r.aim_label,      r.controller_label, r.crosshair_label};
     for (int i = 0; i < 6; ++i) {
@@ -1543,7 +1675,7 @@ void FollowTank(uint8_t* base, const AdvRows& r) {
     for (const uint32_t l : all)
       if (l) labels[n++] = l;
     const float dx = (n >= 5 ? 0.36f : n == 4 ? 0.45f : 0.55f) *
-                     std::max(cx - ReadF32(base, r.tank[0] + fe::kTextX), 0.0f);
+                     std::max(cx - ReadF32(base, AnchorPart(r, 0) + fe::kTextX), 0.0f);
     for (int i = 0; i < n; ++i) {
       FollowText(base, r.reset, labels[i], -label_step);
       const float at = float(i) - 0.5f * float(n - 1);  // -2 .. 2, -1.5 .. 1.5, or -1 .. 1
@@ -1968,6 +2100,62 @@ void AddSliders(PPCContext& ctx, uint8_t* base, uint32_t panel, AdvRows& r) {
   REXLOG_INFO("cod3: in-game options: slider rows with number boxes ready (the game's {} gauge pictures hidden)",
               r.gauges.size());
 }
+
+// [menus-native] 2026-11-24 The options list without the controller rows (owner 03:26, see kPadPage): items 0-3 and
+// 8 hidden and skipped; CROSSHAIR, FRIENDLY TAGS, VOLUME and SUBTITLES drawn in rows 0-3 (FollowKept); FOV and
+// what is under it come up with them (AnchorPart). Only with all six page buttons, so CONTROLLER and AIM have room.
+constexpr int kMovedItems[] = {0, 1, 2, 3, adv::kTankItem};
+constexpr int kFirstKeptItem = 4;  // CROSSHAIR
+constexpr int kLastKeptItem = 7;   // SUBTITLES
+void SetUpMoved(PPCContext& ctx, uint8_t* base, uint32_t self, uint32_t panel, AdvRows& r) {
+  if (!r.has_crosshair || !r.has_video || !r.invert[0] || !r.invert[1] || !r.invert[2] || !r.invert[3]) return;
+  static constexpr const char* kKept[4][4] = {{"Crosshair", "Crosshair2", "arrowL3", "arrowR3"},
+                                              {"FriendlyTags", "FriendlyTags2", "arrowL4", "arrowR4"},
+                                              {"MusicVol", nullptr, nullptr, nullptr},
+                                              {"Subtitle", "SubtitleOnOff", "arrowL5", "arrowR5"}};
+  AdvRows m = r;
+  for (int k = 0; k < 4; ++k)
+    for (int part = 0; part < 4; ++part) {
+      const char* name = kKept[k][part];
+      if (!name) continue;
+      m.kept[k][part] = part < 2 ? FindElement(ctx, base, panel, name) : FindQuad(ctx, base, panel, name);
+      if (!m.kept[k][part]) {
+        REXLOG_WARN("cod3: in-game options: no '{}' on the panel; the controller rows stay on the list", name);
+        return;
+      }
+    }
+  m.volume_gauge[0] = FindQuad(ctx, base, panel, kNativeGauges[2].frame);
+  m.volume_gauge[1] = FindQuad(ctx, base, panel, kNativeGauges[2].fill);
+  m.hsens_gauge[0] = FindQuad(ctx, base, panel, kNativeGauges[0].frame);
+  m.hsens_gauge[1] = FindQuad(ctx, base, panel, kNativeGauges[0].fill);
+  for (const char* name : {"InvertAimOnOff", "VibrationOnOff", "TankControlOnOff"})
+    if (const uint32_t e = FindElement(ctx, base, panel, name)) m.moved_hide.push_back(e);
+  for (const char* name : {"arrowL1", "arrowR1", "arrowL2", "arrowR2", "arrowL6", "arrowR6"})
+    if (const uint32_t e = FindQuad(ctx, base, panel, name)) m.moved_hide.push_back(e);
+  for (const NativeGauge& g : {kNativeGauges[0], kNativeGauges[1]})
+    for (const char* name : {g.frame, g.fill})
+      if (const uint32_t e = FindQuad(ctx, base, panel, name)) m.moved_hide.push_back(e);
+  for (const int item : kMovedItems) SetItemShown(ctx, base, AdvItem(base, self, item), false);
+  m.moved = true;
+  r = m;
+  FollowTank(base, r);
+  const int sel = Selected(base, self);
+  if (sel >= 0 && sel < kFirstKeptItem) AdvSelect(ctx, base, self, kFirstKeptItem);
+  if (sel == adv::kTankItem) AdvSelect(ctx, base, self, kLastKeptItem);
+  REXLOG_INFO("cod3: in-game options: the controller rows are on CONTROLLER (the list keeps {} rows)", 4);
+}
+
+// [menus-native] The list's controller rows stay off it (a refresh may show them again), and the highlight off them.
+void EnforceMoved(PPCContext& ctx, uint8_t* base, uint32_t self, const AdvRows& r) {
+  if (!r.moved || r.video) return;
+  for (const int item : kMovedItems) {
+    const uint32_t it = AdvItem(base, self, item);
+    if (it && !ReadU8(base, it + 22)) SetItemShown(ctx, base, it, false);
+  }
+  const int sel = Selected(base, self);
+  if (sel >= 0 && sel < kFirstKeptItem) AdvSelect(ctx, base, self, kFirstKeptItem);
+  if (sel == adv::kTankItem) AdvSelect(ctx, base, self, kLastKeptItem);
+}
 }  // namespace
 
 namespace cod3::videomenu {
@@ -2061,6 +2249,7 @@ REX_HOOK_RAW(sub_824E60E8) {
   }
   SetItemCount(base, self, used);
   FollowTank(base, r);
+  SetUpMoved(ctx, base, self, panel, r);  // [menus-native] 2026-11-24 the controller rows on CONTROLLER
 
   std::lock_guard lock(g_mutex);
   g_adv[self] = r;
@@ -2109,11 +2298,12 @@ REX_HOOK_RAW(sub_824E6588) {
   __imp__sub_824E6588(ctx, base);
   AdvRows r;
   if (!GetAdv(base, self, r)) return;
+  EnforceMoved(ctx, base, self, r);  // [menus-native]
   SetTextRaw(ctx, base, r.row[0].text_b, FovText(CurrentFov()));
   SetTextRaw(ctx, base, r.row[1].text_b, ScaleText(CurrentScale()));
   if (r.video && r.reopened) {
     LeaveAdvVideo(ctx, base, self, r, /*select_row=*/false);
-    AdvSelect(ctx, base, self, 0);
+    AdvSelect(ctx, base, self, r.moved ? kFirstKeptItem : 0);  // [menus-native]
   } else if (r.video) {
     ShowAdvVideoValues(ctx, base, r);
     ShowAdvNote(ctx, base, self, r);
@@ -2130,13 +2320,14 @@ REX_HOOK_RAW(sub_824EE128) {
   __imp__sub_824EE128(ctx, base);
   AdvRows r;
   if (!GetAdv(base, self, r)) return;
+  EnforceMoved(ctx, base, self, r);  // [menus-native]
   FollowTank(base, r);
   ShowBrightFill(ctx, base, r);  // [menus-brightness]
   if (UpdateSliders(ctx, base, self, r)) PutAdv(self, r);  // [claude-9b] the number boxes
   if (!r.video) return;
   if (r.reopened) {  // opened again from the pause menu
     LeaveAdvVideo(ctx, base, self, r, /*select_row=*/false);
-    AdvSelect(ctx, base, self, 0);
+    AdvSelect(ctx, base, self, r.moved ? kFirstKeptItem : 0);  // [menus-native]
     PutAdv(self, r);
     return;
   }
@@ -2171,6 +2362,7 @@ REX_HOOK_RAW(AdvancedOptionsMenu__vfunc_14) {
     return;
   }
   std::vector<uint32_t> skip = r.gauges;  // [claude-9b]
+  skip.insert(skip.end(), r.moved_hide.begin(), r.moved_hide.end());  // [menus-native] the moved rows' parts
   if (r.video) skip.insert(skip.end(), r.hide.begin(), r.hide.end());
   else if (SliderShown(base, self, r, kSlotFov)) skip.push_back(r.row[0].text_b);  // [claude-9b]
   std::vector<std::pair<uint32_t, uint8_t>> shown;
@@ -2222,6 +2414,8 @@ REX_HOOK_RAW(sub_824C41B8) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.moved && sel == kLastKeptItem) return AdvSelect(ctx, base, self, kAdvFovItem);  // [menus-native]
+    if (r.moved && sel == adv::kResetItem) return AdvSelect(ctx, base, self, kFirstKeptItem);  // [menus-native]
     if (r.has_crosshair) {  // [acct2-ocr] 2026-11-21 two lines of buttons: down by column, then Reset
       const int col = std::max(GridPlace(ButtonItem(r)), 0) % 3;
       const int at = GridPlace(sel);
@@ -2264,6 +2458,8 @@ REX_HOOK_RAW(sub_824C4218) {
       return;
     }
     const bool scale = count > kAdvScaleItem;
+    if (r.moved && sel == kAdvFovItem) return AdvSelect(ctx, base, self, kLastKeptItem);  // [menus-native]
+    if (r.moved && sel == kFirstKeptItem) return AdvSelect(ctx, base, self, adv::kResetItem);  // [menus-native]
     if (r.has_crosshair) {  // [acct2-ocr] 2026-11-21 two lines of buttons: up by column, then FOV SCALE
       const int col = std::max(GridPlace(ButtonItem(r)), 0) % 3;
       const int at = GridPlace(sel);
@@ -2319,6 +2515,76 @@ void StepSensitivity(PPCContext& ctx, uint8_t* base, uint32_t self, int item, bo
   Call c(ctx, base);
   c.Invoke(kGaugeFillCall, {self, ReadU32(base, self + kSensGaugePart[slot]), uint32_t(next)}, {double(cap)});
   cod3::pad::FollowPage(0, item, next);
+}
+
+// [menus-native] 2026-11-24 The page's own controller rows on CONTROLLER (kPadPage). Each is the page's value as its
+// own Toggle changes it: the selection is set to the row's own item for the call (Toggle reads it) and put back.
+// INVERT AIM, VIBRATION, TANK CONTROLS: a byte (the game's value text, in the game's language, is what shows);
+// HORIZONTAL and VERTICAL SENSITIVITY: a step up to cod3_pad_sensitivity_max (StepSensitivity), a slider row.
+namespace {
+uint32_t PadGameByte(int item) { return item == 0 ? 166u : item == 1 ? 167u : 169u; }
+uint32_t PadGameText(int item) { return item == 0 ? 0x40u : item == 1 ? 0x44u : 0x54u; }  // the FEText of its value
+int PadGameSlot(int item) { return item == kNativeGauges[0].item ? 0 : item == kNativeGauges[1].item ? 1 : -1; }
+}  // namespace
+
+static std::string PadGameValue(int item) {
+  uint8_t* base = g_pad_base;
+  const uint32_t self = g_pad_self;
+  if (!base || !self) return {};
+  if (const int slot = PadGameSlot(item); slot >= 0)
+    return std::to_string(std::clamp(cod3::guest::ReadS32(base, self + kNativeGauges[slot].value), 0, GaugeMax(slot)));
+  const uint32_t text = ReadU32(base, self + PadGameText(item));
+  const uint32_t str = text >= 0x10000 ? ReadU32(base, text + 28) : 0;  // FEText: String*, its characters at +12
+  std::string shown = str >= 0x10000 ? cod3::guest::ReadString(base, str + 12, 64) : std::string();
+  if (shown.empty() || shown == " ") shown = ReadU8(base, self + PadGameByte(item)) ? "ON" : "OFF";
+  return shown;
+}
+
+static std::string PadGameStep(PPCContext& ctx, uint8_t* base, int item, bool right) {
+  const uint32_t self = g_pad_self;
+  if (!self || ReadU32(base, self) != adv::kVtable) return {};
+  const uint16_t sel = ReadU16(base, self + fe::kSelected);
+  cod3::guest::WriteU16(base, self + fe::kSelected, uint16_t(item));
+  ctx.r3.u64 = self;
+  ctx.r4.u64 = right ? 1 : 0;
+  if (PadGameSlot(item) >= 0) {
+    StepSensitivity(ctx, base, self, item, right);
+  } else {
+    __imp__sub_824DC1C0(ctx, base);
+    if (item == 0 || item == 1) cod3::pad::FollowPage(0, item, ReadU8(base, self + PadGameByte(item)));
+  }
+  cod3::guest::WriteU16(base, self + fe::kSelected, sel);
+  {
+    Call c(ctx, base);
+    c.Invoke(adv::kSyncValueHighlight, {self});
+  }
+  return PadGameValue(item);
+}
+
+static bool PadGameNumberOf(int item, cod3::menuslider::Number* n, double* value) {
+  const int slot = PadGameSlot(item);
+  if (slot < 0 || !g_pad_base || !g_pad_self) return false;
+  const int most = GaugeMax(slot);
+  *n = cod3::menuslider::Number{0.0, double(most), 1.0, 1.0, 0, ""};
+  *value = std::clamp(cod3::guest::ReadS32(g_pad_base, g_pad_self + kNativeGauges[slot].value), 0, most);
+  return true;
+}
+
+// A typed number or a click on the gauge: the value set straight (no step sound), the page's own gauge refilled.
+static std::string PadGameSetNumber(PPCContext* ctx, uint8_t* base, int item, double value) {
+  const int slot = PadGameSlot(item);
+  if (!base) base = g_pad_base;
+  const uint32_t self = g_pad_self;
+  if (slot < 0 || !base || !self) return {};
+  const int cap = GaugeMax(slot);
+  const int target = std::clamp(int(std::lround(value)), 0, cap);
+  cod3::guest::WriteU32(base, self + kNativeGauges[slot].value, uint32_t(target));
+  if (ctx) {
+    Call c(*ctx, base);
+    c.Invoke(kGaugeFillCall, {self, ReadU32(base, self + kSensGaugePart[slot]), uint32_t(target)}, {double(cap)});
+  }
+  cod3::pad::FollowPage(0, item, target);
+  return std::to_string(target);
 }
 
 REX_HOOK_RAW(sub_824DC1C0) {

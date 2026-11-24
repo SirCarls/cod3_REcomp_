@@ -53,7 +53,7 @@ extern const char* const kResolutionSettings[8];
 // slider (present_fsr_sharpness_reduction / present_cas_additional_sharpness), and anisotropic filtering. A row whose
 // setting this build's SDK doesn't have is left out. Its settings, for the page's Reset: kPictureSettings.
 void DrawPictureSection(PageContext& c);
-extern const char* const kPictureSettings[5];
+extern const char* const kPictureSettings[8];
 
 // EMULATION: Call of Duty 3's EMULATION rows that belong to the SDK, not to one game, so every game has them: how the
 // Xbox 360's video memory is emulated, resolve readback, the Vulkan speed-ups, shader building, and the sound
@@ -107,7 +107,7 @@ void DrawSpeakersRow(PageContext& c);
 // (input_player_order, at once). Rows whose setting this build's SDK doesn't have are left out; nothing at all (not
 // even the heading) when it has none. Its settings, for the page's Reset: kPlayerSettings.
 void DrawPlayerSection(PageContext& c);
-extern const char* const kPlayerSettings[5];
+extern const char* const kPlayerSettings[6];
 
 // INTERFACE: theme, text size and opacity, the settings the game named in SetLook (f2_theme.h).
 void DrawInterfacePage(PageContext& c);

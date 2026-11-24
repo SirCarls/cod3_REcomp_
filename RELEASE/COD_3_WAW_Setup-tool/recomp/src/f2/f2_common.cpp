@@ -30,6 +30,10 @@
 
 // [f2-menus] 2026-11-11 02:10 the GPU emulation's running totals (SDK patch 0012), as Call of Duty 3's
 // game/perf_stats.cpp reads them; a build whose SDK lacks the header says so in the log and shows nothing.
+#if __has_include(<rex/ui/hdr_output.h>)
+#include <rex/ui/hdr_output.h>  // SDK patch 0044: whether the HDR10 picture is on now
+#define F2_HAVE_HDR_OUTPUT 1
+#endif
 #if __has_include(<rex/graphics/gpu_stats.h>)
 #include <rex/graphics/gpu_stats.h>
 #define F2_HAS_GPU_STATS 1
@@ -616,8 +620,9 @@ void DrawResolutionSection(PageContext& c) {
 }
 
 // ------------------------------------------------------------------------------------------------- picture
-const char* const kPictureSettings[5] = {"swap_post_effect", "present_effect", "present_fsr_sharpness_reduction",
-                                         "present_cas_additional_sharpness", "anisotropic_override"};
+const char* const kPictureSettings[8] = {"swap_post_effect", "present_effect", "present_fsr_sharpness_reduction",
+                                         "present_cas_additional_sharpness", "anisotropic_override",
+                                         "display_hdr", "display_hdr_paper_white", "display_hdr_peak"};
 
 namespace {
 
@@ -673,6 +678,50 @@ void DrawPictureSection(PageContext& c) {
     c.dirty |= Choice("Anisotropic filtering", "anisotropic_override", v, n, 7, Applies::kAtOnce, &c.restart);
     Help("Keeps floors, roads and walls sharp when you look along them at a distance. 16x costs almost nothing on a "
          "modern GPU.");
+  }
+  // [menus-native] 2026-11-24 Call of Duty 3's Video > Colors HDR rows (owner 15:55: "Start working all of what can
+  // be ported from our cod3 f2 menu to the other games"). SDK patch 0044 (rex/ui/hdr_output.h): an HDR10 picture
+  // (BT.2020, PQ) that keeps the game's look at the white level and lifts only its highlights. Live.
+  if (Has("display_hdr")) {
+    c.dirty |= Check("HDR output (HDR10, BT.2020)", "display_hdr", Applies::kAtOnce, &c.restart);
+    Help("For an HDR display. The game keeps its look at the white level below; only its brightest highlights (sky, "
+         "sun, lamps, fire, muzzle flashes) get brighter, up to the highlight level. This window and the console stay "
+         "at the white level. Needs HDR turned on in your system's display settings (on Linux a Wayland desktop with "
+         "HDR on, such as KDE Plasma or GNOME) and the Vulkan graphics API. Applies at once.");
+    if (GetBool("display_hdr")) {
+#if defined(F2_HAVE_HDR_OUTPUT)
+      switch (rex::ui::GetHdrOutput()) {
+        case rex::ui::HdrOutput::kActive:
+          Help("Now: HDR10 picture.");
+          break;
+        case rex::ui::HdrOutput::kNotOffered:
+          Help("Now: normal (SDR) picture: the display doesn't offer HDR to this window. Turn on HDR in your "
+               "system's display settings, then switch this off and on again.");
+          break;
+        case rex::ui::HdrOutput::kNotSupported:
+          Help("Now: normal (SDR) picture: HDR output needs the Vulkan graphics API.");
+          break;
+        default:
+          break;
+      }
+#endif
+      // Whole nits, as Call of Duty 3's rows keep them.
+      auto nits = [&](const char* label, const char* name, float lo, float hi, double fallback) {
+        if (!Has(name)) return;
+        float value = static_cast<float>(GetDouble(name, fallback));
+        if (ImGui::SliderFloat(label, &value, lo, hi, "%.0f nits", ImGuiSliderFlags_AlwaysClamp)) {
+          rex::cvar::SetFlagByName(name, std::to_string(static_cast<int>(std::clamp(value, lo, hi) + 0.5f)));
+          c.dirty = true;
+        }
+      };
+      nits("HDR white level", "display_hdr_paper_white", 80.0f, 500.0f, 203.0);
+      Help("How bright the game's white is (and this window's). Match your desktop's brightness for normal content "
+           "(KDE: SDR brightness; Windows: SDR content brightness). 203 is the standard.");
+      nits("HDR highlight level", "display_hdr_peak", 200.0f, 4000.0f, 1000.0);
+      Help("The brightest the highlights get. At or below your display's peak brightness (its HDR rating: HDR400 = "
+           "400, HDR600 = 600, HDR1000 = 1000). The game's own pure white text counts as a highlight too: lower this "
+           "if it's too bright. Equal to the white level: no brighter highlights.");
+    }
   }
 }
 
@@ -950,8 +999,8 @@ void DrawSpeakersRow(PageContext& c) {
 }
 
 // ------------------------------------------------------------------------------------------------- player
-const char* const kPlayerSettings[5] = {"user_name", "user_name_2", "user_name_3", "user_name_4",
-                                        "input_player_order"};
+const char* const kPlayerSettings[6] = {"user_name", "user_name_2", "user_name_3", "user_name_4",
+                                        "input_player_order", "user_language"};
 
 namespace {
 
@@ -989,8 +1038,9 @@ bool NameRow(const char* label, const char* hint, const char* setting, size_t ma
 void DrawPlayerSection(PageContext& c) {
   const bool names = Has("user_name");
   const bool order_row = Has("input_player_order");
-  if (!names && !order_row) return;
-  Section("Player");
+  const bool language = Has("user_language");  // [menus-native] 2026-11-24 drawn last, under its own heading
+  if (!names && !order_row && !language) return;
+  if (names || order_row) Section("Player");
   if (names) {
     static char name[32] = "";
     static bool editing = false;
@@ -1071,6 +1121,24 @@ void DrawPlayerSection(PageContext& c) {
     }
     Help("Which player each controller plays as, by the order the controllers connected. It applies at once. The "
          "keyboard and mouse always play as player 1, together with the controller that is player 1.");
+  }
+  if (language) {
+    // [menus-native] 2026-11-24 Call of Duty 3's LANGUAGE > Console language (the SDK's user_language, what
+    // XGetLanguage answers; the setup tool's "Console language", the same setting). Xbox 360 language numbers.
+    Section("Language");
+    static const char* const kValues[] = {"1", "3", "4", "5", "6", "2", "7", "9", "11", "12"};
+    static const char* const kNames[] = {"English", "German",   "French",     "Spanish", "Italian",
+                                         "Japanese", "Korean", "Portuguese", "Polish",  "Russian"};
+    constexpr int kCount = static_cast<int>(std::size(kValues));
+    const std::string now = Get("user_language");
+    if (std::find_if(std::begin(kValues), std::end(kValues), [&](const char* v) { return now == v; }) ==
+        std::end(kValues))
+      ImGui::TextDisabled("Console language now: %s (set outside this list)", now.c_str());
+    c.dirty |= Choice("Console language", "user_language", kValues, kNames, kCount, Applies::kAfterRestart,
+                      &c.restart);
+    Help("The console's language, the setup tool's Console language (the same setting). The game reads it when it "
+         "starts and takes its text and voices in it when the disc has them; a disc without that language keeps its "
+         "own. Applies after a restart.");
   }
 }
 

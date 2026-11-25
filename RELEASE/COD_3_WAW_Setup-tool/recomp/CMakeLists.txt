@@ -204,11 +204,12 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/game/prompt_text_kbm.inc.in"
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/config/prompt_text_kbm.tsv")
 target_include_directories(cod3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/prompt_text")
 
-# [waw-decomp/menus2] 2026-11-23 The native menus' file (assets/menus/cod3/pause_options.toml, beside the code that
-# reads it), built into the game as cod3_menus_data.inc (ui/menus/cod3_menukit.cpp) and copied beside the
+# [waw-decomp/menus2] 2026-11-23 The native menus' file (menus/cod3/pause_options.toml, beside the code that
+# reads it; [win-builds] 2026-11-24 moved out of assets/, which tools/make_release.py and .gitignore leave out as
+# disc data, so a build from the release stopped here: "file failed to open for reading"), built into the game as cod3_menus_data.inc (ui/menus/cod3_menukit.cpp) and copied beside the
 # program as menus/cod3/pause_options.toml (read first, so it can be changed without a build). An edit
 # of it runs the configure step again.
-set(COD3_MENUS_TOML "${CMAKE_CURRENT_SOURCE_DIR}/assets/menus/cod3/pause_options.toml")
+set(COD3_MENUS_TOML "${CMAKE_CURRENT_SOURCE_DIR}/menus/cod3/pause_options.toml")
 file(READ "${COD3_MENUS_TOML}" COD3_MENU_PAUSE_OPTIONS)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${COD3_MENUS_TOML}")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/menus/cod3_menus_data.inc.in"

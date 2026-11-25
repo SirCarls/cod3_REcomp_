@@ -7,7 +7,7 @@
 // the end of a match); while it is up its draw is skipped and ours is drawn (cod3_menu_style: modern, left-aligned
 // with a category list, or original, the game's one page at a time), and its buttons come to us first. Back on the
 // top level goes on to the game's own Back, so leaving the page is the game's. The rows are
-// assets/menus/cod3/pause_options.toml (built into the program, cod3_menus_data.inc.in); each row is one of the
+// recomp/menus/cod3/pause_options.toml (built into the program, cod3_menus_data.inc.in); each row is one of the
 // port's existing row functions (game/menu_port_rows.h, menu_video.h, menu_controller.h, menu_aim.h,
 // movement/menu_movement.h, fov.h), the same ones the game's own Options pages and F2 change. Split screen: one page
 // per local player, each with its own rows' values, drawn in that player's view.

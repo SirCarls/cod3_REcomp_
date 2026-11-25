@@ -1,6 +1,6 @@
 // menukit - a self-test with a pretend game: reads a menu file, walks it with every input, checks the layout.
 // [waw-decomp/menus1] 2026-11-23. Built and run by hand on Linux and Windows (no game, no SDK):
-//   menukit_selftest <path to assets/menus/cod3/pause_options.toml>
+//   menukit_selftest <path to recomp/menus/cod3/pause_options.toml>
 // Prints one line per failed check and a summary; exit code 0 when every check passed.
 
 #include <cstdio>

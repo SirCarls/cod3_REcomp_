@@ -171,7 +171,8 @@ target_link_libraries(cod3mp PRIVATE inputkit::inputkit)  # [input-port] 2026-11
 # [waw-decomp/menus2] 2026-11-23 the native menus' file, built in and copied as the campaign's CMakeLists.txt does
 # [rexglue-native] 2026-11-23 22:10 normalised, so ninja sees one spelling of the path (fresh configures failed with
 # "multiple rules generate .../pause_options.toml"); board 21:52.
-cmake_path(SET COD3MP_MENUS_TOML NORMALIZE "${COD3_SRC}/../assets/menus/cod3/pause_options.toml")
+# [win-builds] 2026-11-24 recomp/menus/, not recomp/assets/ (left out of the release: the 2.55.1 configure stopped here)
+cmake_path(SET COD3MP_MENUS_TOML NORMALIZE "${COD3_SRC}/../menus/cod3/pause_options.toml")
 file(READ "${COD3MP_MENUS_TOML}" COD3_MENU_PAUSE_OPTIONS)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${COD3MP_MENUS_TOML}")
 configure_file("${COD3_SRC}/ui/menus/cod3_menus_data.inc.in"

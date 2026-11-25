@@ -38,7 +38,7 @@
 #include "menukit/menukit.h"
 #include "ui/menus/cod3_menukit_shown.h"
 
-// The menus' data, built in from assets/menus/cod3/ (CMakeLists.txt, cod3_menus_data.inc.in).
+// The menus' data, built in from recomp/menus/cod3/ (CMakeLists.txt, cod3_menus_data.inc.in).
 #include "cod3_menus_data.inc"
 
 REXCVAR_DEFINE_BOOL(cod3_native_menus, false, "cod3",
@@ -505,7 +505,7 @@ std::unordered_map<uint32_t, Open>& Opens() {  // by menu system
 
 // The menu file, read once (game thread, the first time a page is taken): the copy beside the program
 // (menus/cod3/pause_options.toml, put there by the build, so it can be edited without a build) when it reads
-// well, else the one built in (assets/menus/cod3/pause_options.toml when the program was built).
+// well, else the one built in (recomp/menus/cod3/pause_options.toml when the program was built).
 bool ReadMenu(std::string_view text, std::string_view source, menukit::Menu* menu) {
   std::vector<std::string> problems;
   const bool usable = menukit::ParseMenu(text, source, TheAdapter(), menu, &problems);
@@ -531,7 +531,7 @@ const menukit::Menu* TheMenu() {
     }
     if (!usable) {
       menu = menukit::Menu{};
-      usable = ReadMenu(kPauseOptionsToml, "assets/menus/cod3/pause_options.toml (built in)", &menu);
+      usable = ReadMenu(kPauseOptionsToml, "menus/cod3/pause_options.toml (built in)", &menu);
     }
     size_t rows = 0;
     for (const menukit::Page& page : menu.pages) rows += page.rows.size();

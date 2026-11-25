@@ -1,0 +1,129 @@
+# Call of Duty 3, Pause > Options, both programs. The rows and pages are f2-menus' (2026-11-16); the format is
+# menukit's (src/menukit/menukit.h). [waw-decomp/menus1] 2026-11-23; [waw-decomp/menus2] 2026-11-23 moved beside the
+# code that reads it (recomp/menus/cod3/; [win-builds] 2026-11-24 out of recomp/assets/, which the release leaves out), built into both programs and copied beside them as
+# menus/cod3/pause_options.toml (the copy beside the program is read first, so a change needs no build).
+#
+# A row is "provider:name" or a table with row and: only (a program tag, "cod3" or "cod3mp"; several separated by
+# spaces), note (a text key in place of the row's own note), when (in_level, host, split_screen). A page can have
+# only too. A row this program doesn't have and isn't tagged for the other one is logged at start and left out.
+# Rows show in the order given. Adding an option is one line here. "game:" rows are the page's own options, changed
+# through the game's own handlers (the campaign's page).
+
+[menu]
+id = "pause_options"
+title = "FEMENU_OPTIONS"
+takes_over = "AdvancedOptionsMenu"   # cod3mp: InGameOptionsMenu (step 3)
+back = "game"                        # B on the page list: the game's own Back ("save changes?")
+
+[[page]]
+id = "gameplay"
+label = "COD3_OPTIONS_GAMEPLAY"
+title = "COD3_OPTIONS_GAMEPLAY_TITLE"
+rows = [
+  "fov:field_of_view",
+  "fov:fov_scale",
+  "video:battle_actions",
+  { row = "port:skip_cutscenes", only = "cod3" },
+  { row = "port:hold_to_skip", only = "cod3" },
+  { row = "port:cutscene_bars", only = "cod3" },
+  "port:use_hold_time",
+  "port:left_handed_weapon",
+  "port:vehicle_fov_scale",
+]
+
+[[page]]
+id = "controller"
+label = "COD3_OPTIONS_CONTROLLER"
+title = "COD3_OPTIONS_CONTROLLER_TITLE"
+rows = [
+  { row = "game:invert_aim", only = "cod3" },
+  { row = "game:vibration", only = "cod3" },
+  { row = "game:horizontal_sensitivity", only = "cod3" },
+  { row = "game:vertical_sensitivity", only = "cod3" },
+  "controller:sensitivity_limit",
+  "controller:stick_dead_zone",
+  { row = "controller:vibrate_with_keyboard", only = "cod3" },
+  "port:keys_in_prompts",
+  "port:keys_as_key_caps",
+  "port:button_pictures",
+  "port:button_colors",
+]
+
+[[page]]
+id = "mouse"
+label = "COD3_OPTIONS_MOUSE"
+title = "COD3_OPTIONS_MOUSE_TITLE"
+rows = [
+  "port:raw_mouse",
+  "port:invert_mouse",
+  { row = "port:mouse_sensitivity", only = "cod3mp" },  # the campaign's is on AIM
+  "port:mouse_ads_scale",
+  "port:even_mouse_turning",
+]
+
+[[page]]
+id = "aim"
+only = "cod3"
+label = "COD3_OPTIONS_AIM"
+title = "COD3_OPTIONS_AIM_TITLE"
+rows = [
+  "aim:crosshair",
+  "aim:crosshair_style",
+  "aim:crosshair_length",
+  "aim:crosshair_gap",
+  "aim:crosshair_thickness",
+  "aim:crosshair_color",
+  "aim:mouse_sensitivity",
+  "aim:sensitivity_for",
+  "aim:from_the_hip",
+  "aim:aiming_down_sights",
+]
+
+[[page]]
+id = "video"
+label = "COD3_OPTIONS_VIDEO"
+title = "COD3_OPTIONS_VIDEO_TITLE"
+rows = [
+  "video:resolution",
+  "video:frame_rate_limit",
+  "video:vsync",
+  "video:anti_aliasing",
+  "video:shadows",
+  "video:hd_textures",
+  "video:depth_of_field",
+  "video:motion_blur",
+]
+
+[[page]]
+id = "audio"
+label = "COD3_OPTIONS_AUDIO"
+title = "COD3_OPTIONS_AUDIO_TITLE"
+rows = [
+  "port:master_volume",
+  "port:voices",
+]
+
+[[page]]
+id = "movement"
+only = "cod3"
+label = "COD3_OPTIONS_MOVEMENT"
+title = "COD3_OPTIONS_MOVEMENT_TITLE"
+rows = [
+  "movement:sprint",
+  "movement:sprint_button",
+  "movement:movement_style",
+  "movement:cod4_sprint",
+  "movement:cod4_speeds",
+  "movement:cod4_jump_tricks",
+]
+
+[[page]]
+id = "interface"
+label = "COD3_OPTIONS_INTERFACE"
+title = "COD3_OPTIONS_INTERFACE_TITLE"
+rows = [
+  "port:text_language",
+  "port:colors_in_names",
+  "port:show_version",
+  { row = "port:split_screen_hud", only = "cod3mp" },
+]

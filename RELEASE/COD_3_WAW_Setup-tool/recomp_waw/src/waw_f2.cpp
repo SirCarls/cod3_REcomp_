@@ -224,7 +224,8 @@ constexpr int kGameOptionRowCount = int(sizeof(kGameOptionRows) / sizeof(kGameOp
 
 void DrawGame(PageContext& c) {
   if (f2::ResetButton("reset_game", "game settings")) {
-    c.restart |= f2::ResetSettings({"waw_move_snap_hz", "waw_move_hz", "waw_fix_rifle_grenade_switch",
+    c.restart |= f2::ResetSettings({"waw_skip_intro_movies", "waw_move_snap_hz", "waw_move_hz",
+                                    "waw_fix_rifle_grenade_switch",
                                     "waw_fix_vehicle_push_while_mantling", "waw_fix_standing_but_looks_crouched",
                                     "waw_fix_dpad_item_firing"});
     for (const char* name : f2::kPlayerSettings)
@@ -240,6 +241,10 @@ void DrawGame(PageContext& c) {
     c.dirty = true;
   }
   f2::DrawPlayerSection(c);  // the player's name, split-screen names, which player each controller is
+  // [menus-native] 2026-11-24 Call of Duty 3's "Skip cutscenes automatically", as Call of Duty 2's and 4's start rows.
+  Section("Start");
+  c.dirty |= f2::Check("Skip the start-up film", "waw_skip_intro_movies", Applies::kAfterRestart, &c.restart);
+  Help("Treyarch's film at start is left out, so the main menu comes at once. Applies at the next start.");
   Section("Movement");
   {
     const char* v[] = {"60", "0"};
@@ -306,7 +311,8 @@ void DrawControls(PageContext& c) {
   };
   if (f2::ResetButton("reset_controls", "control settings")) {
     c.restart |= f2::ResetSettings({"mnk_mode", "mnk_mouse", "mnk_sensitivity", "waw_f2_pad_shortcut",
-                                    "waw_mouse_look", "waw_pc_keys"});  // [f2-menus] ctl 14:50 + waw_pc_keys
+                                    "waw_mouse_look", "waw_mouse_resample",  // [menus-native] 11-24 resample
+                                    "waw_pc_keys"});  // [f2-menus] ctl 14:50 + waw_pc_keys
     for (const auto& bind : kBinds) c.restart |= f2::ResetSettings({bind[0]});
     {  // [f2-menus] 2026-11-11 ctl 14:50 the mouse acceleration, the randomizer and the scales, as the shared page
       const char* const* names = nullptr;
@@ -325,6 +331,11 @@ void DrawControls(PageContext& c) {
   Help("The mouse turns the view through World at War's own PC mouse code: the game's look sensitivity in its "
        "Options (and sensitivity, m_yaw, m_pitch, m_filter, cl_mouseAccel in the console), as on the PC, and the "
        "pointer is held while you play. Off: the mouse moves the right stick, at the mouse sensitivity above.");
+  // [menus-native] 2026-11-24 for input-port: Call of Duty 3's "Even turning at high frame rates" (waw_mouse.cpp).
+  c.dirty |= f2::Check("Even turning at high frame rates", "waw_mouse_resample", Applies::kAtOnce, &c.restart);
+  Help("On (the default): the mouse's motion is spread over the time it arrived in, so every frame turns by "
+       "its share (up to a few milliseconds later). Off: each frame takes what arrived since the last one. "
+       "Applies at once.");
   // [f2-menus] 2026-11-11 ctl 14:50 (owner 14:29: "Check all control options and make sure they work."): the PC keys
   // (waw_keys.cpp, on by default) had no row, and the acceleration rows weren't drawn though waw_mouse.cpp applies them.
   c.dirty |= f2::Check("The PC copy's keys in a level", "waw_pc_keys", Applies::kAtOnce, &c.restart);  // [f2-menus]
@@ -656,4 +667,23 @@ REX_HOOK_RAW(sub_82128788) {  // CG_DrawVehicleReticle: the HUD's vehicle reticl
 REX_EXTERN(__imp__sub_82104F38);
 REX_HOOK_RAW(sub_82104F38) {  // CG_DrawAdsOverlay: a scope's overlay, also a scoped turret's
   f2::crosshair::RunSpecial(f2::xhair::kSpecialScope, [&] { __imp__sub_82104F38(ctx, base); });
+}
+
+// [menus-native] 2026-11-24 The campaign's start-up film, left out with waw_skip_intro_movies (default off, as Call of
+// Duty 3's cod3_skip_movies, Call of Duty 2's and Call of Duty 4's cod*_skip_intro_movies). World at War has no
+// COM_PlayIntroMovies of its own: Com_Init 0x8223CC68 queues "cinematic treyarch\n" (0x82030C34, referenced only at
+// 0x8223D2B0) through Cbuf_AddText 0x82238978 when neither launch byte is set (0x8363F9D0, 0x8363F64C), the game
+// isn't dedicated, com_introPlayed (dvar at 0x831B9080) is false and one more switch is on (dev/waw-decomp/x360_sp,
+// 82230000.c). The hook drops only that one text, by its address, so the launch-data path and every other command
+// stay the game's. The multiplayer program has no start-up film (no "cinematic treyarch" in its image).
+REXCVAR_DEFINE_BOOL(waw_skip_intro_movies, false, "waw",
+                    "Campaign: skip the start-up film (Treyarch's), so the main menu comes at once");
+REX_EXTERN(__imp__sub_82238978);
+REX_HOOK_RAW(sub_82238978) {  // Cbuf_AddText(local client r3, text r4)
+  constexpr uint32_t kIntroFilm = 0x82030C34u;  // "cinematic treyarch\n"
+  if (ctx.r4.u32 == kIntroFilm && REXCVAR_GET(waw_skip_intro_movies)) {
+    REXLOG_INFO("waw: start-up film skipped (waw_skip_intro_movies)");
+    return;
+  }
+  __imp__sub_82238978(ctx, base);
 }

@@ -8,12 +8,13 @@
 //
 // CONTROLS has the PC copy's Look options (sensitivity, invert, smoothing; free look is always on), the switch for
 // its keys (cod2_pc_input.h) and a row for each action of the PC copy's controls menus: click the row's button, then
-// press the key or mouse button for it (the rows edit the one setting cod2_pc_binds). Not here yet: a crosshair page
-// (the hooks are Call of Duty 4's and World at War's).
+// press the key or mouse button for it (the rows edit the one setting cod2_pc_binds). CROSSHAIR is the shared custom
+// crosshair ([menus-native] 2026-11-24), with its hooks at the end of this file.
 
 #include "cod2_f2.h"
 
 #include <cctype>
+#include <atomic>  // [menus-native] the crosshair hooks' log clock
 #include <chrono>
 #include <cstddef>
 #include <cstdio>
@@ -25,6 +26,7 @@
 #include <imgui.h>
 
 #include <rex/cvar.h>
+#include <rex/hook.h>  // [menus-native] the crosshair hooks at the end of this file
 #include <rex/logging.h>
 #include <rex/ui/style.h>
 
@@ -501,6 +503,11 @@ void DrawControls(PageContext& c) {
         Help("Pushing the mouse away looks down.");
         g.dirty |= f2::Check("Smooth mouse", "cod2_mouse_smooth", Applies::kAtOnce, &g.restart);
         Help("Each turn is the average of the last two reads of the mouse: smoother, and a little later.");
+        // [menus-native] 2026-11-24 for input-port: Call of Duty 3's "Even turning at high frame rates".
+        g.dirty |= f2::Check("Even turning at high frame rates", "cod2_mouse_resample", Applies::kAtOnce, &g.restart);
+        Help("On (the default): the mouse's motion is spread over the time it arrived in, so every frame turns by "
+             "its share (up to a few milliseconds later). Off: each frame takes what arrived since the last one. "
+             "Applies at once.");
         g.dirty |= f2::Check("The PC copy's keys", "cod2_pc_keys", Applies::kAtOnce, &g.restart);
         Help("While a level plays, the keys do what they do in the PC copy: W A S D, lean on Q and E, Space to "
              "stand or jump, C to crouch, Ctrl to go prone, the right mouse button toggles aiming, 1 or 2 switch "
@@ -511,7 +518,7 @@ void DrawControls(PageContext& c) {
         if (f2::GetBool("cod2_pc_keys")) DrawKeyRows(g);
       },
       {"cod2_mouse_look", "cod2_mouse_sensitivity", "cod2_mouse_match_pc", "cod2_mouse_invert", "cod2_mouse_smooth",
-       "cod2_pc_keys", "cod2_pc_binds"});
+       "cod2_mouse_resample", "cod2_pc_keys", "cod2_pc_binds"});
 }
 
 // ------------------------------------------------------------------------------------------------- EMULATION
@@ -531,6 +538,7 @@ void DrawConsole(PageContext& c) {
 // ------------------------------------------------------------------------------------------------- once a UI frame
 // Settings that follow a change made anywhere (F2, the command line, the setup tool), and the test script.
 void OnUiFrame(f2::Overlay& overlay) {
+  f2::crosshair::Draw();  // [menus-native] 2026-11-24 the custom crosshair, window open or not
   // The field of view: the game's cg_fov follows cod2_fov while it is above 0, on a change and every three seconds
   // (a level's start sets the game's own again). Back at 0, cg_fov is reset once.
   using Clock = std::chrono::steady_clock;
@@ -598,6 +606,7 @@ void Attach(rex::ui::ImGuiDrawer* drawer, rex::ui::Window* window, std::filesyst
 #endif
   options.spec.pages = {
       {"VIDEO", DrawVideo},       {"SOUND", f2::DrawSoundPage},         {"GAME", DrawGame},
+      {"CROSSHAIR", f2::crosshair::DrawPage},  // [menus-native] 2026-11-24
       {"CONTROLS", DrawControls}, {"INTERFACE", f2::DrawInterfacePage}, {"PERFORMANCE", DrawPerformance},
       {"EMULATION", DrawEmulation},   {"CONSOLE", DrawConsole},
   };
@@ -623,3 +632,121 @@ bool HasCommands() { return g_commands.Has(); }
 void TakeCommands(std::vector<std::string>& out) { g_commands.Take(out); }
 
 }  // namespace cod2::f2ui
+
+// ------------------------------------------------------------------------------------------------- crosshair
+// [menus-native] 2026-11-24 The custom crosshair (f2/f2_common.h, f2::crosshair), as Call of Duty 4's (cod4_f2.cpp),
+// whose crosshair code is Call of Duty 2's. Found in dev/waw-decomp/cod2_360 by reading the code:
+// CG_DrawCrosshair, the only reader of cg_crosshairDynamic (campaign 0x8245B370, multiplayer 0x8244B900), takes one
+// of three ways. A turret (the player's flags 0x300) gets the turret crosshair (0x82458CC0 / 0x82449470). A vehicle
+// (campaign only: flag 0x20000 without 0x80000) gets 0x8245B248. On foot, the weapon's (weapon table: campaign
+// 0x826F51D8, multiplayer 0x82722E98) center piece (0x82457AA8 / 0x82449240) and sides (0x8245B0A8 / 0x8244B428).
+// Both take (x f1, y f2, scale f3, the weapon's data r3, its index r4, the color r5). The sides draw their four
+// pieces, top, right, bottom and left, with CG_DrawRotatedPicPhysical (0x82456AE8 / 0x824471A0). That function puts
+// each rectangle through CalcScreenPlacement(&x r3, &y r4, &w r5, &h r6) (0x824217E8 / 0x8240BAB0) before the
+// picture is drawn (0x82456930 / 0x82446E58). The pieces' x are the same as Call of Duty 4's, x right - x left =
+// 2 spread + w + w / 8 (the side picture's offset, w x 0.125), so f2::crosshair's spread formula holds as it is.
+// The weapon's crosshair pictures aren't in its weapon data here (the center piece's is in the game's per-weapon
+// table at 0x826FBBFC + 0x1B8 x index), so "a weapon with a crosshair of its own" isn't offered for Call of Duty 2.
+// The ADS fade (0x82457BB8 / 0x824493A8: the center piece shrinking in while aiming with cg_drawGun off) stays the
+// game's.
+namespace {
+[[maybe_unused]] const bool kSpecialOffered =
+    (f2::crosshair::OfferSpecial((1u << f2::xhair::kSpecialTurret)
+#ifndef COD2_MP
+                                 | (1u << f2::xhair::kSpecialVehicle)
+#endif
+                                     ),
+     true);
+
+f2::xhair::Plan HipPlan() {
+  if (!f2::crosshair::Enabled()) return {};
+  return f2::crosshair::PlanFor(f2::xhair::kHipFire);
+}
+
+// `game` runs the game's own sides: with the capture on it works out its spread and asks for its four pieces, which
+// the two hooks below measure and leave undrawn (or, with `keep`, drawn). `notify`: the custom crosshair is drawn.
+template <typename Ctx, typename Game>
+void CrosshairSides(Ctx& ctx, uint8_t* base, Game game, bool keep, bool notify) {
+  float rgba[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+  const bool colored = f2::crosshair::ReadGuestColor(base, ctx.r5.u32, rgba);  // the color is r5 (read above)
+  f2::crosshair::CaptureBegin(keep);
+  game();
+  float spread = 0.0f;
+  const int rects = f2::crosshair::CaptureEnd(&spread);
+  if (rects > 0 && notify) f2::crosshair::Notify(0, rgba, spread);
+  static std::atomic<int64_t> logged{0};
+  const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(
+                          std::chrono::steady_clock::now().time_since_epoch())
+                          .count();
+  if (f2::GetBool("f2_debug_crosshair") && logged.exchange(now) != now)
+    REXLOG_INFO("f2: crosshair hook: r3 {:08X} r4 {:08X} r5 {:08X}, color {} = {:.2f} {:.2f} {:.2f} {:.2f}, {} "
+                "rectangles, spread {:.2f}, the game's kept {}, the custom one {}",
+                ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, colored ? "read" : "not read", rgba[0], rgba[1], rgba[2],
+                rgba[3], rects, spread, keep, notify);
+}
+
+template <typename Game>
+void CenterPiece(Game game) {
+  if (HipPlan().game) game();
+}
+template <typename Ctx, typename Game>
+void Sides(Ctx& ctx, uint8_t* base, Game game) {
+  const f2::xhair::Plan plan = HipPlan();
+  if (plan.mine || !plan.game)  // None also goes through the capture, so the game's spread still runs
+    CrosshairSides(ctx, base, game, plan.game, plan.mine);
+  else
+    game();
+}
+}  // namespace
+
+#ifdef COD2_MP
+REX_EXTERN(__imp__sub_82449240);
+REX_HOOK_RAW(sub_82449240) {  // the center piece
+  CenterPiece([&] { __imp__sub_82449240(ctx, base); });
+}
+REX_EXTERN(__imp__sub_8244B428);
+REX_HOOK_RAW(sub_8244B428) {  // the sides
+  Sides(ctx, base, [&] { __imp__sub_8244B428(ctx, base); });
+}
+REX_EXTERN(__imp__sub_8240BAB0);
+REX_HOOK_RAW(sub_8240BAB0) {  // CalcScreenPlacement(&x r3, &y r4, &w r5, &h r6)
+  if (f2::crosshair::Capturing()) f2::crosshair::CaptureRect(base, ctx.r3.u32, ctx.r5.u32);
+  __imp__sub_8240BAB0(ctx, base);
+}
+REX_EXTERN(__imp__sub_82446E58);
+REX_HOOK_RAW(sub_82446E58) {  // a side piece's picture, after its placement
+  if (f2::crosshair::Hiding()) return;
+  __imp__sub_82446E58(ctx, base);
+}
+REX_EXTERN(__imp__sub_82449470);
+REX_HOOK_RAW(sub_82449470) {  // the turret crosshair
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialTurret, [&] { __imp__sub_82449470(ctx, base); });
+}
+#else
+REX_EXTERN(__imp__sub_82457AA8);
+REX_HOOK_RAW(sub_82457AA8) {  // the center piece
+  CenterPiece([&] { __imp__sub_82457AA8(ctx, base); });
+}
+REX_EXTERN(__imp__sub_8245B0A8);
+REX_HOOK_RAW(sub_8245B0A8) {  // the sides
+  Sides(ctx, base, [&] { __imp__sub_8245B0A8(ctx, base); });
+}
+REX_EXTERN(__imp__sub_824217E8);
+REX_HOOK_RAW(sub_824217E8) {  // CalcScreenPlacement(&x r3, &y r4, &w r5, &h r6)
+  if (f2::crosshair::Capturing()) f2::crosshair::CaptureRect(base, ctx.r3.u32, ctx.r5.u32);
+  __imp__sub_824217E8(ctx, base);
+}
+REX_EXTERN(__imp__sub_82456930);
+REX_HOOK_RAW(sub_82456930) {  // a side piece's picture, after its placement
+  if (f2::crosshair::Hiding()) return;
+  __imp__sub_82456930(ctx, base);
+}
+REX_EXTERN(__imp__sub_82458CC0);
+REX_HOOK_RAW(sub_82458CC0) {  // the turret crosshair
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialTurret, [&] { __imp__sub_82458CC0(ctx, base); });
+}
+REX_EXTERN(__imp__sub_8245B248);
+REX_HOOK_RAW(sub_8245B248) {  // a vehicle's crosshair
+  f2::crosshair::RunSpecial(f2::xhair::kSpecialVehicle, [&] { __imp__sub_8245B248(ctx, base); });
+}
+#endif

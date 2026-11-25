@@ -87,6 +87,8 @@
 #include "ui/console_view.h"
 #include "ui/qte_spinner.h"
 #include "ui/theme.h"
+#include "ui/menus/cod3_menukit.h"  // [waw-decomp/menus2] 2026-11-23 native menus
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 REXCVAR_DECLARE(bool, cod3_raw_mouse);
 REXCVAR_DECLARE(bool, cod3_ultrawide_hud);
@@ -877,8 +879,9 @@ constexpr uint32_t kCgTanHalfFov = 4944;                       // the refdef: ta
 constexpr uint32_t kCgViewOrigin = 4960, kCgViewAxis = 4976;   // the view's origin; forward, left, up
 constexpr uint32_t kCgWeapon = 0x82C7E70C;                     // the cg's weapon (its definition), per client
 constexpr uint32_t kWeaponSpeed = 1924, kWeaponSpeedUp = 1928;  // sub_82584CA0, the player's throw
-constexpr uint32_t kFireSwitch = 0x82590D50;                   // FireWeapon's (sub_82590C30) jump table
-constexpr uint32_t kFireGrenade = 0x82590DD0, kFireGrenadeOrRocket = 0x82590F20;  // its grenade cases
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kFireSwitch = A(0x82590D50);                   // FireWeapon's (sub_82590C30) jump table
+constexpr uint32_t kFireGrenade = A(0x82590DD0), kFireGrenadeOrRocket = A(0x82590F20);  // its grenade cases
 constexpr uint32_t kStartPush = 0x820625C8;                    // the throw: start = muzzle + forward x this
 constexpr uint32_t kGravity = 0x82B2CC30;                      // BG_EvaluateTrajectory's gravity (none of its own)
 constexpr uint32_t kReflect = 0x820853B8;                      // sub_8256F0A0 (the bounce): v + n x (v.n x this)
@@ -886,7 +889,8 @@ constexpr uint32_t kBounce = 0x82062C94, kBounceOther = 0x820853E0;  // its scal
 constexpr uint32_t kRestNormalZ = 0x82085980;                  // (a double) above: ground
 constexpr uint32_t kRestSpeed = 0x82680F84;                    // on ground, under it: at rest
 constexpr uint32_t kNudge = 0x820622B8, kNudgeUpMost = 0x820641A0;  // else: off the surface by n x this (up: at most)
-constexpr uint32_t kCgTrace = 0x824604A8;                      // CG_Trace (game/coronas.cpp)
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kCgTrace = A(0x824604A8);                      // CG_Trace (game/coronas.cpp)
 constexpr uint32_t kTraceFilterVtable = 0x82065DCC;
 constexpr uint32_t kEntityList = 0x82BCC7FC, kEntityNumber = 484;
 constexpr uint32_t kLevel = 0x82C281D0;                        // level: its time and previous time (the frame, ms)
@@ -1438,7 +1442,8 @@ namespace {  // [acct2-ocr] 2026-11-15 this file's own, for the hooks at its end
 // the weapon has no cross pieces (+0x4DC empty: the game draws none) or the player can't be read.
 float GameSpread(PPCContext& ctx, uint8_t* base) {
 #if defined(COD3_MP)
-  constexpr uint32_t kCgWeapon = 0x82C7E70C, kCgStride = 0x18E0, kSpreadFunc = 0x82452A70;
+  // [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+  constexpr uint32_t kCgWeapon = 0x82C7E70C, kCgStride = 0x18E0, kSpreadFunc = A(0x82452A70);
 #else
   constexpr uint32_t kCgWeapon = 0x82A99E2C, kCgStride = 0x16D0, kSpreadFunc = 0x82439378;
 #endif
@@ -2555,6 +2560,7 @@ void ShareLanguageSettings(const std::filesystem::path& campaign_config, const s
 
 void HudOverlay::OnDraw(ImGuiIO& io) {
   if (on_frame) on_frame();
+  cod3::nativemenus::DrawOverlay();  // [waw-decomp/menus2] 2026-11-23 the native menus' page (cod3_native_menus)
 #if defined(COD3_MP)
   FlushSharedLanguage();  // [f2-menus] 2026-11-11 a language changed here goes into the campaign's cod3.toml too
 #endif
@@ -3369,6 +3375,11 @@ void SettingsWindow::DrawVideoResolution() {
       // render targets.
       static int percent = 100;
       if (!ImGui::IsAnyItemActive()) percent = std::atoi(Get("cod3_render_percent").c_str());
+      // [rexglue-native thread2] 2026-11-24 (owner 07:48: the native renderer draws the required resolution, never
+      // scaled up or down): the native picture is always the window's own size (game/ngl_side.cpp ChooseTargetSize),
+      // so the scale, which only draws fewer or more pixels to be stretched or shrunk, is greyed while it is on
+      const bool native_picture = Get("cod3_native_vulkan") == "true";
+      if (native_picture) ImGui::BeginDisabled();
       // [claude-9b] up to 200%: more pixels than the window shows, shrunk to fit (supersampling)
       ImGui::SliderInt("Resolution scale", &percent, int(cod3::kMinRenderPercent), int(cod3::kMaxRenderPercent),
                        "%d%%");
@@ -3376,6 +3387,11 @@ void SettingsWindow::DrawVideoResolution() {
         rex::cvar::SetFlagByName("cod3_render_percent", std::to_string(percent));
         cod3::RequestRenderResolution();
         dirty_ = true;
+      }
+      if (native_picture) {
+        ImGui::EndDisabled();
+        ImGui::TextDisabled("The native renderer always draws the window's own size, pixel for pixel: the scale "
+                            "doesn't apply.");
       }
     }
     ImGui::EndDisabled();
@@ -4299,26 +4315,25 @@ void SettingsWindow::DrawGamePrompts() {
   // long Use is held (game/use_hold.h), both programs.
   if (Has("cod3_use_hold_ms")) {
     Section("Use: hold or press");
+    // [rexglue-native] 2026-11-24 (owner 06:15: "our options for hold to press needs to be revisited and corrected.
+    // Please just logically fix it"): one slider on one scale, as the game's OPTIONS row (menu_port_rows.cpp): 0 a
+    // press ... 250 the game's own ... 1000. Before: a "game's hold" box and a slider, two ways to say 250 ms.
     const int ms = std::clamp(GetInt("cod3_use_hold_ms", -1), -1, 1000);
-    bool game = ms < 0;
-    if (ImGui::Checkbox("The game's hold (250 ms)", &game)) {
-      rex::cvar::SetFlagByName("cod3_use_hold_ms", game ? "-1" : "0");
+    int v = ms < 0 ? 250 : ms;
+    if (SliderIntBox("Hold Use for", &v, 0, 1000, "%d ms")) {
+      v = std::clamp(v, 0, 1000);
+      rex::cvar::SetFlagByName("cod3_use_hold_ms", v == 250 ? "-1" : std::to_string(v));
       dirty_ = true;
     }
-    Help("Picking up a weapon or ammo, manning a gun and getting into a vehicle need Use held for a moment "
-         "(\"Press and hold\"). Untick to choose the time: 0 makes Use a press, and the hints then say \"Press\".");
-    if (!game) {
-      int v = std::max(ms, 0);
-      if (SliderIntBox("Hold Use for", &v, 0, 1000, "%d ms")) {
-        rex::cvar::SetFlagByName("cod3_use_hold_ms", std::to_string(std::clamp(v, 0, 1000)));
-        dirty_ = true;
-      }
-      Help("0: a press uses at once. The controller's Use button also reloads: a press shorter than this reloads, "
-           "so at 0 it uses what is in reach (a weapon on the ground, a mounted gun) instead of reloading. The "
-           "keyboard's Use and Reload keys are separate. Planting a charge and the other scripted holds keep their "
-           "own time. Multiplayer: player 1's; players 2 to 4 of a split screen have their own below.");  // [acct2-ocr]
-      if (v == 0) ImGui::TextDisabled("Now: a press. The hints say \"Press [USE]\".");
-    }
+    ImGui::TextDisabled("%s", v == 0     ? "Now: a press. The hints say \"Press [USE]\"."
+                              : v == 250 ? "Now: the game's own hold (250 ms)."
+                                         : "Now: held this long. The hints say \"Press and hold [USE]\".");
+    Help("How long Use is held to pick up a weapon or ammo, man a gun or get into a vehicle. 0: a press, and the "
+         "hints say \"Press\" instead of \"Press and hold\". 250 ms is the game's own. The controller's Use button "
+         "also reloads: a press shorter than this reloads, so at 0 it uses what is in reach (a weapon on the ground, "
+         "a mounted gun) instead of reloading. The keyboard's Use and Reload keys are separate. Planting a charge and "
+         "the other scripted holds keep their own time. Multiplayer: player 1's; players 2 to 4 of a split screen "
+         "have their own below.");  // [acct2-ocr]
 #if defined(COD3_MP)
     // [acct2-ocr] 2026-11-07 (owner 23:40 "it's per person"): split-screen players 2 to 4's own (game/use_hold.h).
     if (ImGui::TreeNode("Split screen: players 2 to 4")) {
@@ -4327,29 +4342,31 @@ void SettingsWindow::DrawGamePrompts() {
         if (!name) continue;
         ImGui::PushID(p);
         const int own = cod3::use_hold::OwnSettingMs(p);
-        int mode = own == -1 ? 0 : own == -2 ? 1 : 2;
-        const char* modes[] = {"Player 1's", "The game's hold (250 ms)", "Its own time"};
+        // [rexglue-native] 2026-11-24: player 1's, or its own on the same scale (250 = the game's own, stored -2)
+        int mode = own == -1 ? 0 : 1;
+        const char* modes[] = {"Player 1's", "Its own"};
         char label[24];
         std::snprintf(label, sizeof(label), "Player %d", p + 1);
-        if (ImGui::Combo(label, &mode, modes, 3)) {
-          const int start = std::max(cod3::use_hold::SettingMsFor(p), 0);
+        if (ImGui::Combo(label, &mode, modes, 2)) {
+          const int start = cod3::use_hold::SettingMsFor(p);  // what it has now: player 1's (-1: the game's)
           rex::cvar::SetFlagByName(name, mode == 0 ? std::string("-1")
-                                       : mode == 1 ? std::string("-2")
-                                                   : std::to_string(start));
+                                       : start < 0 || start == 250 ? std::string("-2")
+                                                                   : std::to_string(start));
           dirty_ = true;
         }
-        if (mode == 2) {
-          int v = std::max(own, 0);
-          if (SliderIntBox("Hold Use for", &v, 0, 1000, "%d ms")) {
-            rex::cvar::SetFlagByName(name, std::to_string(std::clamp(v, 0, 1000)));
+        if (mode == 1) {
+          int pv = own < 0 || own == 250 ? 250 : own;
+          if (SliderIntBox("Hold Use for", &pv, 0, 1000, "%d ms")) {
+            pv = std::clamp(pv, 0, 1000);
+            rex::cvar::SetFlagByName(name, pv == 250 ? std::string("-2") : std::to_string(pv));
             dirty_ = true;
           }
         }
         ImGui::PopID();
       }
-      Help("Each split-screen player's own Use hold (cod3_use_hold_ms_p2 .. _p4): player 1's (the start), the "
-           "game's own, or its own time (0: a press). The hints follow each player's own. Each player can also set "
-           "it in their own Pause > OPTIONS > GAMEPLAY.");
+      Help("Each split-screen player's own Use hold (cod3_use_hold_ms_p2 .. _p4): player 1's (the start), or its "
+           "own on the same scale (0: a press; 250 ms: the game's own). The hints follow each player's own. Each "
+           "player can also set it in their own Pause > OPTIONS > GAMEPLAY.");
       ImGui::TreePop();
     }
 #endif

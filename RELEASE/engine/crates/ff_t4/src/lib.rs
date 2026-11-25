@@ -46,7 +46,8 @@
 //! crate (it was made with a type header that is not published; see
 //! docs/formats/waw.md); with it, all 129 fastfiles of the PC game read
 //! exactly. Xbox 360 zones are read up to the asset table; their raw files
-//! are found by their inline layout ([`Zone::scan_raw_files`]).
+//! are found by their inline layout ([`Zone::scan_raw_files`]), and their
+//! images by their records ([`Zone::xbox_images`], `xbox_images.rs`).
 //!
 //! The asset type order follows OpenAssetTools' T4 definitions; see
 //! docs/formats/waw.md and docs/SOURCES.md.
@@ -54,10 +55,12 @@
 #![forbid(unsafe_code)]
 
 pub mod layout;
+pub mod xbox_images;
 pub mod zone;
 
 use std::fmt;
 
+pub use xbox_images::{XboxImage, XboxImages};
 pub use zone::{LoadedAsset, LoadedZone, ZoneError};
 
 pub use fastfile::{MAGIC_AUTH, MAGIC_SIGNED, MAGIC_UNSIGNED};
@@ -245,6 +248,8 @@ pub enum Error {
     Zone(ZoneError),
     /// Only PC zones are read asset by asset so far.
     NotPc,
+    /// Image records are looked for in Xbox 360 zones only (`xbox_images`).
+    NotXbox360,
 }
 
 impl fmt::Display for Error {
@@ -257,6 +262,7 @@ impl fmt::Display for Error {
             Error::Truncated(what) => write!(f, "zone truncated while reading {what}"),
             Error::Zone(e) => write!(f, "{e}"),
             Error::NotPc => write!(f, "only PC zones are read asset by asset so far"),
+            Error::NotXbox360 => write!(f, "image records are looked for in Xbox 360 zones only"),
         }
     }
 }

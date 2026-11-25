@@ -44,6 +44,9 @@
 #include <string>
 
 struct PPCContext;
+namespace rex::ui {
+class Window;
+}
 
 namespace cod3 {
 
@@ -211,6 +214,28 @@ RenderPlan PlanForView(const std::string& choice, uint32_t view_width, uint32_t 
 // depends on did, the new plan is asked for (RequestRenderResolution). The
 // first call only notes the size the start planned for.
 void NoteWindowSize(uint32_t width, uint32_t height);
+
+// [rexglue-native thread2] 2026-11-24 (owner 07:48: the native renderer draws the required resolution, never scaled
+// up or down): where the presenter shows the picture in the window NoteWindowSize saw last, by the presenter's own
+// rule (PictureInView: the picture's shape, its bars or its stretch), and that shape as the presenter takes it
+// (ShapeRatio). The native renderer (game/ngl_side.cpp) draws exactly picture_width x picture_height and hands it to
+// the presenter with shape_x:shape_y, so the presenter copies it one to one. Any thread; false before the first
+// window size.
+struct WindowPicture {
+  uint32_t window_width = 0, window_height = 0;    // the window (or screen), in pixels
+  int32_t picture_x = 0, picture_y = 0;            // the picture's place in it
+  uint32_t picture_width = 0, picture_height = 0;  // and its size
+  uint32_t shape_x = 16, shape_y = 9;              // its shape for Presenter::RefreshGuestOutput
+};
+bool GetWindowPicture(WindowPicture* picture);
+
+// [rexglue-native thread2] 2026-11-24 (owner 07:48: the native renderer draws the required resolution, never scaled):
+// UI thread, every frame. With the native renderer (cod3_native_vulkan) and a windowed window, a named resolution
+// (720p ... 4320p, or WxH) sets the window's client area to that size in pixels (SDK 0322
+// Window::SetClientPhysicalSize), once each time the choice changes (and at start), so the native picture is drawn at
+// exactly that size; a resize by hand afterwards is kept. "auto", "original", fullscreen and the emulated GPU: nothing.
+// Without SDK 0322: nothing (the native picture draws the window's size either way).
+void NamedResolutionSizesWindow(rex::ui::Window* window);
 
 // Plans the resolution the settings ask for (cod3_render_resolution,
 // cod3_render_method, cod3_render_percent, cod3_aspect_ratio,

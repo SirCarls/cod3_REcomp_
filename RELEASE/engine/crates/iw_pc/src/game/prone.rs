@@ -3,11 +3,13 @@
 //! ground under both, and the angles the body would bend at. Call of Duty
 //! 2's version (see [`super::pmove`] for the conventions).
 
-use super::pmove::{pm, pm_flags, ps, Pmove};
+use super::pmove::{
+    add_predictable_event, pm, pm_flags, pml, ps, MoveLocal, PlayerState, Pmove, ENTITY_NONE,
+};
 use super::trace::MoveHost;
 use crate::shared::math::{
-    angle_normalize180, angle_subtract, angle_vectors, vec3_lerp, vec3_normalize,
-    vec3_normalize_to, vectopitch,
+    angle_normalize180, angle_subtract, angle_vectors, angle_wrap180, angle_wrap360,
+    pitch_for_yaw_on_normal, vec3_lerp, vec3_normalize, vec3_normalize_to, vectopitch,
 };
 use crate::x87::F24;
 
@@ -355,4 +357,146 @@ pub fn verify_prone_position(
         pm.ps.set_velocity(*start_velocity);
     }
     fits
+}
+
+/// Whether a prone player fits turned toward `new_yaw`: [`check_prone`]
+/// already prone, on the ground unless in the air, a box of
+/// [`ps::PRONE_CHECK_SIZE`] by 30, the body pointing `new_yaw - (1 - t) *
+/// delta` (wrapped to [0, 360)) and the feet `(1 - t) * 66 + t * 45` behind,
+/// `delta` the turn from the view's yaw (to (-180, 180]) and `t = |delta| /
+/// 240`; the angles go to the player state.
+///
+/// Original: `BG_CheckProneTurned` at 0x00519260 (CoD2MP_s.exe 1.3; Call of Duty 4's name; ps in eax, then (newProneYaw, handler) on the stack; al)
+pub fn check_prone_turned(
+    ps: &mut PlayerState,
+    new_yaw: f32,
+    handler: u8,
+    host: &mut dyn MoveHost,
+) -> bool {
+    let l = F24::load;
+    let delta = angle_normalize180((l(new_yaw) - l(ps.float(ps::VIEW_ANGLES + 4))).store());
+    let t = (l(l(delta).abs().store()) / l(240.0)).store();
+    let rest = (l(1.0) - l(t)).store();
+    let yaw = angle_wrap360((l(new_yaw) - l(rest) * l(delta)).store());
+    let feet = (l(rest) * l(66.0) + l(t) * l(45.0)).store();
+    let q = ProneQuery {
+        pass_entity: ps.int(ps::CLIENT_NUM),
+        origin: ps.vec3(ps::ORIGIN),
+        size: ps.float(ps::PRONE_CHECK_SIZE),
+        height: 30.0,
+        yaw,
+        already_prone: true,
+        on_ground: ps.int(ps::GROUND_ENTITY_NUM) != ENTITY_NONE,
+        ground_normal: None,
+        handler,
+        check_type: 0,
+        feet_distance: feet,
+    };
+    let mut angles = [
+        ps.float(ps::PRONE_TORSO_HEIGHT),
+        ps.float(ps::PRONE_TORSO_PITCH),
+        ps.float(ps::PRONE_WAIST_PITCH),
+    ];
+    let [h, p, w] = &mut angles;
+    let out = ProneAngles {
+        torso_height: Some(h),
+        torso_pitch: Some(p),
+        waist_pitch: Some(w),
+    };
+    let fits = check_prone(&q, out, host);
+    ps.set_float(ps::PRONE_TORSO_HEIGHT, angles[0]);
+    ps.set_float(ps::PRONE_TORSO_PITCH, angles[1]);
+    ps.set_float(ps::PRONE_WAIST_PITCH, angles[2]);
+    fits
+}
+
+/// The event of a prone player made to crouch (Call of Duty 4's
+/// `EV_STANCE_FORCE_CROUCH`; [`super::duck::EV_STANCE_FORCE_CROUCH`]).
+const EV_STANCE_FORCE_CROUCH: i32 = 0x8D;
+
+/// A prone player's body on the ground this move (only lying down): in
+/// the air, unless he still fits ([`check_prone`] already prone, not on
+/// the ground, the ground plane's normal if any; 30 high, 66 feet), the
+/// stance is forced to crouching ([`pm_flags::PRONE_VIEW_TURNED`] set); on
+/// the ground, a ground plane steeper than 0.7 forces it too. Then the
+/// body's pitch along its direction ([`ps::PRONE_DIRECTION_PITCH`]) and the
+/// view's prone pitch along the view's yaw ([`ps::PRONE_PITCH_BASE`]) turn
+/// toward the ground plane's pitch there (0 without one,
+/// [`pitch_for_yaw_on_normal`]) by at most 70 degrees a second, wrapped
+/// into (-180, 180].
+///
+/// Original: `PM_UpdatePronePitch` at 0x00519CE0 (CoD2MP_s.exe 1.3; Call of Duty 4's name; pm in eax, pml in ebx)
+pub fn update_prone_pitch(pm: &mut Pmove, pml: &MoveLocal, host: &mut dyn MoveHost) {
+    let l = F24::load;
+    if pm.ps.pm_flags() & pm_flags::PRONE == 0 {
+        return;
+    }
+    let on_plane = pml.int(pml::GROUND_PLANE) != 0;
+    let normal = pml.vec3(pml::GROUND_NORMAL);
+    if pm.ps.int(ps::GROUND_ENTITY_NUM) == ENTITY_NONE {
+        let q = ProneQuery {
+            pass_entity: pm.ps.int(ps::CLIENT_NUM),
+            origin: pm.ps.vec3(ps::ORIGIN),
+            size: pm.ps.float(ps::PRONE_CHECK_SIZE),
+            height: 30.0,
+            yaw: pm.ps.float(ps::PRONE_DIRECTION),
+            already_prone: true,
+            on_ground: false,
+            ground_normal: on_plane.then_some(normal),
+            handler: pm.bytes[pm::HANDLER],
+            check_type: 0,
+            feet_distance: 66.0,
+        };
+        let mut angles = [
+            pm.ps.float(ps::PRONE_TORSO_HEIGHT),
+            pm.ps.float(ps::PRONE_TORSO_PITCH),
+            pm.ps.float(ps::PRONE_WAIST_PITCH),
+        ];
+        let [h, t, w] = &mut angles;
+        let out = ProneAngles {
+            torso_height: Some(h),
+            torso_pitch: Some(t),
+            waist_pitch: Some(w),
+        };
+        let fits = check_prone(&q, out, host);
+        pm.ps.set_float(ps::PRONE_TORSO_HEIGHT, angles[0]);
+        pm.ps.set_float(ps::PRONE_TORSO_PITCH, angles[1]);
+        pm.ps.set_float(ps::PRONE_WAIST_PITCH, angles[2]);
+        if !fits {
+            add_predictable_event(EV_STANCE_FORCE_CROUCH, 0, &mut pm.ps);
+            let flags = pm.ps.pm_flags() | pm_flags::PRONE_VIEW_TURNED;
+            pm.ps.set_int(ps::PM_FLAGS, flags);
+        }
+    // (`fcomp` 0.7, test ah,5, jp: only below is too steep; NaN isn't.)
+    } else if on_plane && l(normal[2]) < l(0.7) {
+        add_predictable_event(EV_STANCE_FORCE_CROUCH, 0, &mut pm.ps);
+    }
+    let frame_time = pml.frame_time();
+    for (at, yaw_at) in [
+        (ps::PRONE_DIRECTION_PITCH, ps::PRONE_DIRECTION),
+        (ps::PRONE_PITCH_BASE, ps::VIEW_ANGLES + 4),
+    ] {
+        let target = if on_plane {
+            pitch_for_yaw_on_normal(pm.ps.float(yaw_at), &normal)
+        } else {
+            0.0
+        };
+        let delta = angle_normalize180((l(target) - l(pm.ps.float(at))).store());
+        // (`fucompp` with 0, jnp: only 0 stays; NaN turns.)
+        if l(delta) == l(0.0) {
+            continue;
+        }
+        let step = (l(frame_time) * l(70.0)).store();
+        let size = l(delta).abs().store();
+        // (`fcomp` the step, test ah,0x41, jne: only above is limited; NaN isn't.)
+        let change = if l(size) > l(step) {
+            // (The sign is the `float`'s sign bit, read as an integer.)
+            let sign = if (delta.to_bits() as i32) < 0 { -1 } else { 1 };
+            l(F24::int(sign).store()) * l(step)
+        } else {
+            l(delta)
+        };
+        let turned = (change + l(pm.ps.float(at))).store();
+        pm.ps.set_float(at, angle_wrap180(turned));
+    }
 }

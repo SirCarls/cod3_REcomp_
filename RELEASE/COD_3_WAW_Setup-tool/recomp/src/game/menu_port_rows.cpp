@@ -220,30 +220,43 @@ bool SetText(const char* name, const std::string& value) {
 
 // USE HOLD TIME, the player's own (game/use_hold.h; owner 23:40 "it's per person"). Player 1: -1 the game's own
 // (g_useholdtime, 250 ms), 0 a press, else milliseconds. cod3mp's players 2 to 4 also -1 = player 1's (the start)
-// and -2 = the game's own: PLAYER 1'S, GAME'S, PRESS, 50 MS ... 1000 MS.
+// and -2 = the game's own.
+// [rexglue-native] 2026-11-24 (owner 06:15: "our options for hold to press needs to be revisited and corrected.
+// Please just logically fix it"): one scale in order, PRESS, 50 MS ... 200 MS, GAME'S (250 MS), 300 MS ... 1000 MS
+// (players 2 to 4: PLAYER 1'S first). Before, GAME'S came before PRESS (right from 250 ms went down to 0) and 250 MS
+// showed again further on as a value of its own; the game's own is now at its place on the scale, and a stored 250
+// counts as the game's (the same hold).
+constexpr int kUseHoldGame = 250;  // g_useholdtime with every controller layout
+// Its place on the scale: -1 for PLAYER 1'S (players 2 to 4), else milliseconds (the game's own at 250).
+int UseHoldPlace(int player, int v) {
+  if (player > 0 && v == -1) return -1;
+  return v < 0 ? kUseHoldGame : v;
+}
+// The setting's value for a place: the game's own is stored as such (-1; players 2 to 4: -2), not as 250.
+int UseHoldValue(int player, int place) {
+  if (place < 0) return -1;
+  if (place == kUseHoldGame) return player > 0 ? -2 : -1;
+  return place;
+}
 std::string UseHoldText(int player, int v) {
   // [acct2-bro Text lane] 2026-11-22 the values in the chosen language (COD3_PORT_V_* "@port" rows), else the English
-  if (player > 0 && v == -1) return Words("COD3_PORT_V_PLAYER1", "PLAYER 1'S");
-  if (v < 0) return Words("COD3_PORT_V_GAMES", "GAME'S");
-  return v == 0 ? Words("COD3_PORT_V_PRESS", "PRESS") : fmt::format("{} MS", v);
+  const int place = UseHoldPlace(player, v);
+  if (place < 0) return Words("COD3_PORT_V_PLAYER1", "PLAYER 1'S");
+  if (place == kUseHoldGame) return Words("COD3_PORT_V_GAMES", "GAME'S") + " (250 MS)";
+  return place == 0 ? Words("COD3_PORT_V_PRESS", "PRESS") : fmt::format("{} MS", place);
 }
 bool StepUseHold(int player, bool right) {
   const char* name = use_hold::SettingName(player);
   if (!name) return false;
   const int v = use_hold::OwnSettingMs(player);
-  // The order of the special values: player 1 GAME'S (-1), PRESS; players 2-4 PLAYER 1'S (-1), GAME'S (-2), PRESS.
-  const int game = player > 0 ? -2 : -1;
-  int next = v;
-  if (v < 0) {
-    if (player > 0 && v == -1)
-      next = right ? -2 : -1;
-    else
-      next = right ? 0 : (player > 0 ? -1 : game);
-  } else if (v == 0) {
-    next = right ? kUseHoldStep : game;
-  } else {
-    next = int(std::lround(NextStep(v, kUseHoldStep, right, 0, kUseHoldMax)));
-  }
+  const int place = UseHoldPlace(player, v);
+  int next_place;
+  if (right)
+    next_place = place < 0 ? 0 : int(std::lround(NextStep(place, kUseHoldStep, true, 0, kUseHoldMax)));
+  else
+    next_place = place <= 0 ? (player > 0 ? -1 : 0)
+                            : int(std::lround(NextStep(place, kUseHoldStep, false, 0, kUseHoldMax)));
+  const int next = UseHoldValue(player, next_place);
   return next != v && rex::cvar::SetFlagByName(name, std::to_string(next));
 }
 

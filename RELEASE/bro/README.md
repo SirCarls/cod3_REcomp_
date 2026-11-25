@@ -177,6 +177,9 @@ Environment variables, read when the game starts.
 | `BRO_PAD=0` | no gamepad |
 | `BRO_SOUND_MUTE=1` | silence (the game still runs its sound) |
 | `BRO_FRAME_PACING=0` | frames don't wait for the display's vblank (for test runs that should go as fast as they can) |
+| `BRO_GLOW=0` | no glow: the game's own glow (the sky and the farthest scenery bled over the picture, blurred) is left out |
+| `BRO_DECAL_BIAS=0` | decals (bullet marks, scorches, posters) are not pulled toward the eye as the game's draws pull them (they then take turns with the surface under them) |
+| `BRO_PHYSICS_HZ=<n>` | the physics (boxes, debris, doors, ragdolls, vehicles) in fixed steps of 1/n s whatever the frame rate (60 by default; 0: one step a frame with the frame's time, as the Xbox game did at its 30) |
 
 For development and test runs:
 

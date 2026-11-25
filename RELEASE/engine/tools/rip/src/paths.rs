@@ -104,7 +104,10 @@ mod tests {
         );
         assert_eq!(safe_join(root, "a\\..\\..\\x"), None);
         assert_eq!(safe_join(root, ""), None);
-        assert_eq!(safe_join(root, "/etc/passwd"), Some(root.join("etc").join("passwd")));
+        assert_eq!(
+            safe_join(root, "/etc/passwd"),
+            Some(root.join("etc").join("passwd"))
+        );
         let drive = if cfg!(windows) {
             None
         } else {

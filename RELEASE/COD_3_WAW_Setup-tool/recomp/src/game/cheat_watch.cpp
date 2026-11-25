@@ -17,6 +17,7 @@
 #include "game/diagnostics.h"
 #include "game/engine.h"
 #include "game/fov.h"
+#include "game/frame_rate.h"  // [rexglue-native thread 3] the frame rate limit (the level-start hold)
 #include "game/game_api.h"
 #include "game/settings_sync.h"
 #include "game/guest.h"
@@ -32,7 +33,8 @@ REXCVAR_DEFINE_BOOL(cod3_debug_cheats, false, "cod3",
 // hold, a torn frame and a black frame with garbage stripes in the first 0.4 s;
 // with it, the loading screen stays ~0.45 s longer and no broken frame shows.
 REXCVAR_DEFINE_BOOL(cod3_level_start_hold, true, "cod3/Display",
-                    "Just after a level loads, don't show a frame that took over 50 ms (the first one "
+                    "Just after a level loads, don't show a frame that took over 50 ms and over 1.5 "
+                    "frames of the frame rate limit (the first one "
                     "makes most of the level's textures): the loading picture stays a moment longer "
                     "and the level appears without a jump or a broken frame. For 2 seconds after "
                     "each load (SDK patch 0149)");
@@ -309,6 +311,24 @@ REX_HOOK_RAW(Cvar_Set2) {
   cod3::CheatWatch::Get().CheatDvar(name, var, at_default);
 }
 
+#if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 10
+namespace {
+// [rexglue-native thread 3] 2026-11-24 (owner: every game works the same at any frame rate): "slow"
+// for the level-start hold is judged against the frame rate limit (com_maxfps), not a fixed 50 ms.
+// At a 20 fps limit every frame takes about 50 ms, and the fixed 50 ms held about half of the first
+// 2 s of frames: waw-decomp-menus2-mp-20-modern-033615 held 18 (17 of them 50-82 ms), the campaign
+// at 20 held 20; at 30, 60 and 144 fps each held 1 (the level's first frame). Now a frame is held
+// when it took over 50 ms AND over 1.5 frames of the limit: 50 ms at 30 fps and above or with no
+// limit (as before), 75 ms at 20, 150 ms at 10.
+uint32_t LevelStartSlowMs() {
+  const int limit = cod3::FrameRate::Get().limit();
+  if (limit <= 0) return 50;
+  const uint32_t one_and_a_half_frames = uint32_t((1500 + limit - 1) / limit);
+  return one_and_a_half_frames > 50 ? one_and_a_half_frames : 50;
+}
+}  // namespace
+#endif
+
 // Level start: SV_SpawnServer(mapname, ...), map_restart, map_restart_internal.
 // (SV_SpawnServer also times the load for the log: game/diagnostics.h.)
 REX_EXTERN(__imp__SV_SpawnServer);
@@ -322,8 +342,10 @@ REX_HOOK_RAW(SV_SpawnServer) {
   cod3::diag::LevelLoadEnd();
 #if defined(REX_GRAPHICS_STATS_VERSION) && REX_GRAPHICS_STATS_VERSION >= 10
   // [claude-9b] SDK 0149: the level's first frames, if slow, aren't shown (the
-  // SDK logs each one held).
-  if (REXCVAR_GET(cod3_level_start_hold)) rex::graphics::stats::HoldSlowPresentsFor(2000, 50);
+  // SDK logs each one held). "Slow": over 50 ms and over 1.5 frames of the frame rate limit
+  // (LevelStartSlowMs above; rexglue-native thread 3).
+  if (REXCVAR_GET(cod3_level_start_hold))
+    rex::graphics::stats::HoldSlowPresentsFor(2000, LevelStartSlowMs());
 #endif
   cod3::settings::NoteLevelStart();  // the player's settings over the profile's (game/settings_sync.h)
   cod3::watchdog::Mark("SV_SpawnServer returned (the level is loaded)");

@@ -55,6 +55,7 @@
 #include <rex/ppc.h>
 
 #include "game/guest.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 // [claude-9b-think] 2026-10-27 UNTESTED: the rare crash about a second after the start (see TreeShaderReady below).
 REXCVAR_DEFINE_INT32(cod3_tree_shader_wait_ms, 10000, "cod3/Game",
@@ -221,8 +222,9 @@ REX_HOOK_RAW(sub_822F1340) {
 constexpr uint32_t kNameHashInit = 0x820B00C0;
 constexpr uint32_t kPackages = 0x82BCC828;       // the package manager* (the campaign's 0x82A2AB6C)
 constexpr uint32_t kAssetLibrary = 0x82BCC824;   // the asset library* (0x82A2AB68)
-constexpr uint32_t kCurrentPackage = 0x8246F1A0;
-constexpr uint32_t kFindAsset = 0x82474FD8;
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kCurrentPackage = A(0x8246F1A0);
+constexpr uint32_t kFindAsset = A(0x82474FD8);
 constexpr uint32_t kOperatorDelete = 0x820DE980;
 #else
 constexpr uint32_t kNameHashInit = 0x820A0118;

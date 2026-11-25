@@ -135,8 +135,14 @@ REX_HOOK_RAW(sub_8249AD48) {
 }
 
 // Pass 2, the wall push: unchanged; seen by the probe (levitate_probe_mp.cpp) and the debug log.
+// [rexglue-native thread2] 2026-11-24 hooks_mp.cpp (cod3mp_move_hz): ClientThink_real's call right after a usercmd
+// that ran no movement step is left out (the origin stayed because no step ran, not because the player is stuck).
+namespace cod3::movement::mp {
+bool MoveStepUnstickLeftOut(uint32_t lr);
+}  // namespace cod3::movement::mp
 REX_EXTERN(__imp__sub_8249F070);
 REX_HOOK_RAW(sub_8249F070) {
+  if (cod3::movement::mp::MoveStepUnstickLeftOut(static_cast<uint32_t>(ctx.lr))) return;
   const uint32_t pm = ctx.r3.u32;
   const bool debug = REXCVAR_GET(cod3_debug_stuck_fix);
   const sf::Observer observer = g_observer.load(std::memory_order_relaxed);

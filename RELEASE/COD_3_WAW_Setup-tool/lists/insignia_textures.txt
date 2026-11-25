@@ -62,7 +62,9 @@ panzezriv_c	aede510890dfb141	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 819
 sp_bs_veh_main_icon_02	fe2665c6dacb3f45	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (vehicles): an Iron Cross on red behind a German tank; no swastika	frontend
 sp_bs_wpn_main_icon_02	2beac860929168f5	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	yes	military	Bonus menu (weapons): the same cross on red behind a P38 pistol; no swastika	frontend
 # The other levels: world insignia (flags, crates, posters, a knife, the Stuka)
-cloth$of_germanflag_dirty_c	d616f2029e2f1500	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	no	party	Hanging party banner (cloth version): a swastika on a white disc, dirty red cloth	mayenne/court, hall, town_i, twn_i_a
+# [rexglue-native-settings] 2026-11-11 (coordinator 09:02): mp yes (was no): the same banner hangs in the
+# multiplayer map mp/mpmaynne zn01-zn04 (named decal$of_germanflag_dirty_c there); world decor.
+cloth$of_germanflag_dirty_c	d616f2029e2f1500	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	yes	party	Hanging party banner (cloth version): a swastika on a white disc, dirty red cloth	mayenne/court, hall, town_i, twn_i_a; mp/mpmaynne zn01-zn04
 wood$of_crate_top_axis_c	78f187697b49bea1	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	Crate lid stencil: an eagle with a swastika in its wreath, "Deutsches Wehrmacht", a small eagle stamp and "Der Reichsfuehrer-SS" with SS runes	chambois/zn06; crssrds/zn03_a; forest/zn07; fuelplnt/wrhs, zn05; hostage/zn13; island/z2/zn02ab, z4/zn04a, z5/zn05a; laison/zn07; mace2/zn01, zn02a, zn03, zn03a, zn04a; mayenne/phantomz, town_n; stbert/zn07
 wood$crate_top_axis_c	6fd792844e53aa72	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	The same crate lid, edited: the eagle over an empty wreath (no swastika), a small eagle stamp	falaise/zn10
 of_knife148_c	f7b23274ceea0665	512	128	DXT1	512x128, 1024x256, 2048x512, 4096x1024	opaque	no	party	Hitler Youth knife: the red and white diamond emblem with a swastika on the grip, "Blut und Ehre" on the blade	crssrds/zn03
@@ -71,6 +73,10 @@ decal$german_propaganda5_c	8fe7a1b07761ef73	256	256	DXT3	256x256, 512x512, 1024x
 cloth$germankriegsflag_dirt	87c95b90af7d844a	256	512	DXT1	256x512, 512x1024, 1024x2048, 2048x4096	transparent parts	no	military	German war flag as the game has it: an Iron Cross in the center disc (where the real flag has a swastika)	crssrds/zn03, zn06_a, zn07, zn08, zn09
 metal$stuka_body	4f951004958dffc5	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	military	Stuka (Ju 87) dive bomber in flight: Balkenkreuz crosses; no swastika in this picture	crssrds/vehicles; mayenne/dpbridge
 metal$stuka_wingtip_c	fb61d0649fcd34a3	512	512	DXT1	512x512, 1024x1024, 2048x2048, 4096x4096	opaque	no	military	A Stuka's wrecked wing: a Balkenkreuz	crssrds/zn07
+# [rexglue-native-settings] 2026-11-11 (coordinator 09:02): the party flag's own copies in the multiplayer
+# archive mp/weapusge.cod (settings/locate-mp.txt; the built-in censor adds them to the rip under these names).
+cloth_masked$of_flag_german__c29b5537965c10a9	c29b5537965c10a9	512	256	DXT3	512x256, 1024x512, 2048x1024, 4096x2048	transparent parts	yes	party	Nazi party flag, the multiplayer copy: a black swastika on a white disc, red field	mp/weapusge
+cloth_masked$of_flag_german__8d1ca8959ce5b8a9	8d1ca8959ce5b8a9	256	128	DXT3	256x128, 512x256, 1024x512, 2048x1024	transparent parts	yes	party	The same flag, smaller	mp/weapusge
 # The other levels: soldiers (uniforms, the gorget, helmets, heads)
 of_c_wrmcht2_body_c	d3f42c269537bc8a	1024	1024	DXT1	1024x1024, 2048x2048, 4096x4096, 8192x8192	opaque	no	party	Military police (Feldgendarmerie) uniform: breast eagle with a swastika, a sleeve eagle and a cuff title	fuelplnt/chars; hostage/chars
 of_c_wrmcht2_emb_c	e962e352d4e48663	256	256	DXT1	256x256, 512x512, 1024x1024, 2048x2048	opaque	no	party	Military police gorget ("Feldjaegerkorps"): an eagle over a wreath with a swastika	fuelplnt/chars; hostage/chars

@@ -25,6 +25,9 @@ The Finest Hour tab (games.py) builds it in Big Red One's steps (c3w/bro.py, who
    SDK the system's SDL3 is used and the films and the F2 window are left out (the log says so).
 6. Install bin/fh, fh.toml (the port's settings, next to bin/; a player's own is kept), saves/, logs/, a launcher
    (play.sh) and fh.json in <output>/fh.
+7. With "Make HD textures" on, the HD texture pack from the disc's own textures (c3w/disc_hd.py, [setup-layout]
+   2026-11-24): `rip fh-hd-textures` reads COD.PAK, waifu2x upscales the pictures into <output>/fh/hd. The Play
+   page's "HD textures" starts the game with FH_HD_TEXTURES at that folder.
 
 Linux for now (owner 11:18's choice: Linux first, then Windows). Plain logic, no Tk, so the tests run without
 Tkinter. The disc and default.xbe are only read; what runs is the port's own C.
@@ -38,13 +41,14 @@ import re
 import shutil
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from . import bro, bro_windows, common
+from . import bro, bro_windows, common, controller_db, disc_hd, upscale
 from .common import IS_LINUX, IS_WINDOWS, APPROVAL, Log, Runner, SetupError, human
 from .xiso import XisoImage
+from . import build_speed   # [waw-decomp/speed1] 2026-11-23 jobs, linker, compiler cache and link pool for this PC
 
 GAME_NAME = "Call of Duty: Finest Hour"
 OUTPUT_SUBDIR = "fh"           # <output>/fh: the game, its settings, saves and launcher
@@ -470,7 +474,11 @@ def build(lay: Layout, t: "bro.Tools", parts: SdkParts, jobs: int, runner: Runne
           keep: bool = False) -> Path:
     """fh/ with CMake against the recompiled C; returns the program. keep (cleanup off): the build folder of the
     last build is used again when it was configured the same way (bro_windows.configure_folder)."""
-    bro_windows.configure_folder(configure_command(lay, t, parts), lay.build, keep, lay, runner, log)
+    # [waw-decomp/speed1] 2026-11-23: speed for this PC (c3w/build_speed.py); a folder not kept starts new
+    jobs = build_speed.jobs(jobs, log)
+    speed = build_speed.cmake_args(lay.build, bro.host_compilers(), ninja=bool(t.ninja),
+                                   fresh=True if not keep else None, log=log)
+    bro_windows.configure_folder(configure_command(lay, t, parts) + speed, lay.build, keep, lay, runner, log)
     runner.run([str(t.cmake), "--build", str(lay.build), "-j", str(max(1, jobs))],
                line_filter=compile_lines(log))
     exe = lay.build / common.exe_name(EXE)
@@ -504,10 +512,12 @@ exec "$here/bin/fh" "$here/game" "$here/saves" "$@"
 """
 
 
-def install(lay: Layout, exe: Path, disc: Disc, tool_version: str) -> None:
+def install(lay: Layout, exe: Path, disc: Disc, tool_version: str, log: Optional[Log] = None) -> None:
     """The program into <output>/fh/bin, fh.toml beside bin/ (the port's defaults the first time; a player's own
-    is kept), the launcher (play.sh), saves/, logs/ and fh.json."""
+    is kept), the launcher (play.sh), saves/, logs/ and fh.json; [input-port] the controller database beside it."""
     bro._place(exe, lay.exe, True)
+    # [input-port] 2026-11-24: fh_pad.c reads gamecontrollerdb.txt next to the program (SDL_GameControllerDB)
+    controller_db.copy_next_to(lay.exe.parent, log.warn if log is not None else None)
     lay.saves.mkdir(parents=True, exist_ok=True)
     lay.logs.mkdir(parents=True, exist_ok=True)
     if not lay.settings.is_file():
@@ -531,6 +541,7 @@ class PlayOptions:
     size: str = ""            # "1280x960"; "" = fh.toml's
     language: str = ""        # LANGUAGES; "" = fh.toml's
     skip_films: bool = False
+    hd_textures: bool = True  # the HD pack (disc_hd.py), when a build made one
 
     def problems(self) -> List[str]:
         out = []
@@ -558,10 +569,13 @@ class PlayOptions:
         return o
 
 
-PLAY_VARIABLES = ("RECOMP_GUEST_LOCK", "FH_FULLSCREEN", "FH_VSYNC", "FH_SIZE", "FH_LANGUAGE", "FH_SKIP_FILMS")
+PLAY_VARIABLES = ("RECOMP_GUEST_LOCK", "FH_FULLSCREEN", "FH_VSYNC", "FH_SIZE", "FH_LANGUAGE", "FH_SKIP_FILMS",
+                  disc_hd.GAMES["fh"].variable)
 
 
-def play_env(opts: PlayOptions, base: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def play_env(opts: PlayOptions, base: Optional[Dict[str, str]] = None, game_out: Optional[Path] = None
+             ) -> Dict[str, str]:
+    """The variables a start sets; `game_out` (<output>/fh) is where the HD pack is looked for."""
     env = dict(os.environ if base is None else base)
     for name in PLAY_VARIABLES:
         env.pop(name, None)
@@ -576,6 +590,7 @@ def play_env(opts: PlayOptions, base: Optional[Dict[str, str]] = None) -> Dict[s
         env["FH_LANGUAGE"] = opts.language
     if opts.skip_films:
         env["FH_SKIP_FILMS"] = "1"
+    env.update(disc_hd.play_variables("fh", game_out, opts.hd_textures))
     return env
 
 
@@ -620,6 +635,11 @@ class BuildOptions:
     install_deps: bool = True
     cleanup: bool = True
     tool_version: str = ""
+    clear_lift_cache: bool = False   # [waw-decomp/speed1] 2026-11-23 empty the lift cache first (--clear-lift-cache)
+    # [setup-layout] 2026-11-24 the HD texture pack (disc_hd.py) and waifu2x's settings (the App's, as the other
+    # games use them).
+    hd_build: bool = False
+    upscale_settings: upscale.Settings = field(default_factory=upscale.Settings)
 
 
 TITLES = ("Checking the disc", "Checking this PC", "Copying the game's files (beside the next steps)",
@@ -674,7 +694,8 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
 def check_room(disc: Disc, lay: Layout) -> None:
     """Enough free space for the game's files (output) and the build (work)."""
     have = sum(f.stat().st_size for f in bro._folder_files(lay.game)) if lay.game.is_dir() else 0
-    for folder, need in ((lay.out, max(0, disc.size - have)), (lay.work, WORK_ROOM)):
+    # [waw-decomp/speed1] 2026-11-23 and the lift cache's entry (bro.LiftCache)
+    for folder, need in ((lay.out, max(0, disc.size - have)), (lay.work, WORK_ROOM + bro.LIFT_CACHE_ROOM)):
         probe = folder
         while not probe.exists() and probe != probe.parent:
             probe = probe.parent
@@ -693,7 +714,8 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
              f"output {lay.out}, work {lay.work}")
     step(1)
     found = bro.find_tools(runner, lay.sdk_sdl3)
-    APPROVAL.require(bro.downloads(lay, found, runner, o.install_deps), log)   # one list, before anything
+    hd_downloads = disc_hd.downloads(lay.tools) if o.hd_build else []
+    APPROVAL.require(bro.downloads(lay, found, runner, o.install_deps) + hd_downloads, log)   # one list, first
     tools = ensure_tools(runner, log, o.install_deps, found, lay.sdk_sdl3)
     parts = sdk_parts(lay)
     log.info("SDL3: " + (f"Call of Duty 3's SDK's ({parts.sdl3})" if parts.sdl3 else "the system's") +
@@ -709,8 +731,17 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
         if not (common.read_json(lay.source_stamp) == source_key(lay) and (lay.xboxrecomp / ".git").exists()):
             prepare_xboxrecomp(lay, tools.git, runner, log)
         keys = step_keys(lay, py, disc.xbe_md5, runner)
+        # [waw-decomp/speed1] 2026-11-23 (owner 21:00): the recompiler's output kept between builds,
+        # cleanup on or off, as Big Red One's (bro.LiftCache, <work>/tools/lift-cache/fh)
+        cache = bro.LiftCache(lay.lift_cache, log, GAME_NAME)
+        if o.clear_lift_cache:
+            cache.clear()
+        bro.restore_lift(lay, keys, disc.xbe_md5, cache, log)
         step(4)
-        recompile(lay, py, keys, disc.row.loader_back_edge if disc.row else "", runner, log, keep_gen=not o.cleanup)
+        ran = recompile(lay, py, keys, disc.row.loader_back_edge if disc.row else "", runner, log,
+                        keep_gen=not o.cleanup)
+        bro.keep_lift(cache, lay, disc.xbe_md5, keys, ran, {**source_key(lay), "xbe_md5": disc.xbe_md5},
+                      cancel, log)
         step(5)
         exe = build(lay, tools, parts, o.jobs, runner, log, keep=not o.cleanup)
         copier.finish()
@@ -718,7 +749,13 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
         copier.stop()
         raise
     step(6)
-    install(lay, exe, disc, o.tool_version)
+    install(lay, exe, disc, o.tool_version, log)
+    if o.hd_build:
+        # Before the cleanup: the ripper may be built in the work folder. A failure here is only a warning.
+        log.step("Making HD textures")
+        tool_root = lay.repo / Path(__file__).resolve().parent.parent.name
+        disc_hd.build("fh", lay.out, tool_root, lay.tools, lay.work / "hd", o.upscale_settings, o.jobs, runner, log,
+                      cancel)
     if o.cleanup:
         common.safe_rmtree(lay.work, work, [lay.out, disc.path], log)
         log.info(f"Removed the build files in {lay.work}. xboxrecomp and Capstone stay in {lay.tools}.")

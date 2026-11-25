@@ -188,6 +188,17 @@ pub fn angle_vectors(
     }
 }
 
+/// Each component rounded to the nearest whole number (`fistp` in the
+/// default rounding: halves to even; NaN and anything past the 32-bit range
+/// become -2147483648), as a `float`.
+///
+/// Original: `SnapVector` at 0x00467F80 (CoD2MP_s.exe 1.3; Quake III's name; v in eax)
+pub fn snap_vector(v: &mut [f32; 3]) {
+    for c in v.iter_mut() {
+        *c = F24::int(F24::load(*c).round_to_int()).store();
+    }
+}
+
 /// The point `fraction` of the way from `from` to `to`: `(to - from) *
 /// fraction + from` per component, stored.
 ///
@@ -238,6 +249,110 @@ pub fn angle_subtract(a1: f32, a2: f32) -> f32 {
     a
 }
 
+/// `angle` brought into [0, 360) by whole turns, one at a time (each step
+/// stored); NaN stays. The original never returns once a turn no longer
+/// changes the value (an infinite or huge angle); the port then returns it
+/// as it is.
+///
+/// Original: `AngleWrap360` at 0x00429CC0 (CoD2MP_s.exe 1.3; our name; the angle on the stack, the result on the x87 stack)
+pub fn angle_wrap360(angle: f32) -> f32 {
+    let mut a = angle;
+    // (`fcomp` 0, test ah,5, jp: only below turns on.)
+    if a < 0.0 {
+        while a < 0.0 {
+            let next = (F24::load(a) + F24::load(360.0)).store();
+            if next == a {
+                return a;
+            }
+            a = next;
+        }
+        return a;
+    }
+    // (`fcomp` 360, test ah,1: at or above turns back; NaN doesn't.)
+    while a >= 360.0 {
+        let next = (F24::load(a) - F24::load(360.0)).store();
+        if next == a {
+            return a;
+        }
+        a = next;
+    }
+    a
+}
+
+/// `angle` brought into (-180, 180] by whole turns, one at a time (each
+/// step stored); NaN stays; no progress ends it, as in [`angle_wrap360`].
+///
+/// Original: `AngleWrap180` at 0x00429D40 (CoD2MP_s.exe 1.3; our name; the angle on the stack, the result on the x87 stack)
+pub fn angle_wrap180(angle: f32) -> f32 {
+    let mut a = angle;
+    // (`fcomp` -180, test ah,0x41, jp: at or below turns on; NaN doesn't.)
+    if a <= -180.0 {
+        while a <= -180.0 {
+            let next = (F24::load(a) + F24::load(360.0)).store();
+            if next == a {
+                return a;
+            }
+            a = next;
+        }
+        return a;
+    }
+    // (`fcomp` 180, test ah,0x41: only above turns back.)
+    while a > 180.0 {
+        let next = (F24::load(a) - F24::load(360.0)).store();
+        if next == a {
+            return a;
+        }
+        a = next;
+    }
+    a
+}
+
+/// [`angle_normalize180`] of `a1 - a2` (stored).
+///
+/// Original: `AngleDelta` at 0x00429DC0 (CoD2MP_s.exe 1.3; Quake III's name; (a1, a2) on the stack, the result on the x87 stack)
+pub fn angle_delta(a1: f32, a2: f32) -> f32 {
+    angle_normalize180((F24::load(a1) - F24::load(a2)).store())
+}
+
+/// Moves `position` sideways for a lean: along the right of the view (yaw
+/// `yaw`, rolled by `roll` times the lean's ease `(2 - |lean|) * lean`,
+/// [`angle_vectors`]' right) by `dist` times the ease; nothing for no lean.
+///
+/// Original: `AddLeanToPosition` at 0x0044B380 (CoD2MP_s.exe 1.3; Call of Duty 4's name; position in edx, then (yaw, leanFrac, roll, leanDist) on the stack)
+pub fn add_lean_to_position(position: &mut [f32; 3], yaw: f32, lean: f32, roll: f32, dist: f32) {
+    let l = F24::load;
+    // (`fucompp` with 0, jnp: only 0 skips; NaN leans.)
+    if lean == 0.0 {
+        return;
+    }
+    let ease = ((l(2.0) - l(l(lean).abs().store())) * l(lean)).store();
+    let rolled = (l(ease) * l(roll)).store();
+    let mut right = [0f32; 3];
+    angle_vectors(&[0.0, yaw, rolled], None, Some(&mut right), None);
+    let dist = (l(ease) * l(dist)).store();
+    for i in 0..3 {
+        position[i] = (l(right[i]) * l(dist) + l(position[i])).store();
+    }
+}
+
+/// The pitch of the yaw `yaw`'s level direction along a surface of normal
+/// `normal` (the direction less its part along the normal, `(0 * n2 - c *
+/// n0) - s * n1` of it): [`vectopitch`].
+///
+/// Original: `PitchForYawOnNormal` at 0x0042BDC0 (CoD2MP_s.exe 1.3; Call of Duty 4's name; normal in edx, yaw on the stack, the result on the x87 stack)
+pub fn pitch_for_yaw_on_normal(yaw: f32, normal: &[f32; 3]) -> f32 {
+    let l = F24::load;
+    let (s, c) = sin_cos_degrees(yaw);
+    let [n0, n1, n2] = normal.map(l);
+    let d = (n2 * l(0.0) - l(c) * n0 - l(s) * n1).store();
+    let along = [
+        (l(d) * n0 + l(c)).store(),
+        (l(d) * n1 + l(s)).store(),
+        (l(d) * n2 + l(0.0)).store(),
+    ];
+    vectopitch(&along)
+}
+
 /// A `float` rounded to the nearest integer (ties to even): `x + 2^-30`
 /// at the x87's precision, then `fistp` (NaN and out of range give
 /// `i32::MIN`).
@@ -245,6 +360,47 @@ pub fn angle_subtract(a1: f32, a2: f32) -> f32 {
 /// Original: `RoundFloatToInt` at 0x00403710 (CoD2MP_s.exe 1.3; our name; x on the stack, the result in eax)
 pub fn round_float_to_int(x: f32) -> i32 {
     (F24::load(x) + F24::double(9.313_225_746_154_785e-10)).round_to_int()
+}
+
+/// `val` kept in `min` to `max`, as the game's branch-free clamp does it:
+/// `val` unless `val - max` isn't below 0 (then `max`), then `min` unless
+/// `min - val` is below 0 (NaN counts as below in both).
+///
+/// Original: `I_fclamp` at 0x004036D0 (CoD2MP_s.exe 1.3; Call of Duty 4's name; (val, min, max) on the stack, the result on the x87 stack)
+pub fn i_fclamp(val: f32, min: f32, max: f32) -> f32 {
+    let below = |a: f32, b: f32| {
+        !matches!(
+            (F24::load(a) - F24::load(b)).partial_cmp(&F24::load(0.0)),
+            Some(std::cmp::Ordering::Greater | std::cmp::Ordering::Equal)
+        )
+    };
+    let upper = if below(val, max) { val } else { max };
+    if below(min, val) {
+        upper
+    } else {
+        min
+    }
+}
+
+/// `cur` moved toward `tgt` by `(tgt - cur) * rate * delta_time` (each
+/// stored): `tgt` itself when they are within 0.001 or the step would go
+/// past it.
+///
+/// Original: `DiffTrack` at 0x00426640 (CoD2MP_s.exe 1.3; Call of Duty 4's name; (tgt, cur, rate, deltaTime) on the stack, the result on the x87 stack)
+pub fn diff_track(tgt: f32, cur: f32, rate: f32, delta_time: f32) -> f32 {
+    let l = F24::load;
+    let d = (l(tgt) - l(cur)).store();
+    let step = (l(d) * l(rate) * l(delta_time)).store();
+    let size = l(d).abs().store();
+    // (`fcomp` 0.001, test ah,0x41, jne: only above moves; NaN doesn't.)
+    if l(size) > l(0.001) {
+        let step_size = l(step).abs().store();
+        // (`fcomp`, test ah,5, jnp: only below stops at tgt; NaN moves.)
+        if l(size).partial_cmp(&l(step_size)) != Some(std::cmp::Ordering::Less) {
+            return (l(step) + l(cur)).store();
+        }
+    }
+    tgt
 }
 
 #[cfg(test)]

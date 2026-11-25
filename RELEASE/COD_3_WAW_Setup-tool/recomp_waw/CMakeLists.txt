@@ -37,8 +37,12 @@ set(WAW_SOURCES
     src/waw_native.cpp  # [waw-decomp-waw] 2026-11-11 the native renderer's hooks and the struct map's capture
     src/waw_native_side.cpp  # [waw-decomp-waw] 2026-11-11 a frame drawn natively (ngl_vk) beside the game's own
     src/waw_native_textures.cpp  # [waw-decomp-waw] 2026-11-11 Xbox 360 textures decoded for the native side
+    src/waw_addons.cpp  # [map-compat] 2026-11-11 the Xbox 360 map packs (Map Packs 1-3 known, their zones found)
+    src/waw_tu7.cpp  # [map-compat] 2026-11-11 title update 7 redone (the zombie map packs' script builtins)
     src/waw_native_window.cpp  # [waw-decomp-waw] 2026-11-11 round 5 the native picture shown (waw_native_vulkan)
     src/waw_mods.cpp  # [acct2-mods] 2026-11-14 a converted PC mod's zones after a level's (waw_mod; empty, the default: off)
+    src/waw_rumble.cpp  # [input-port] 2026-11-24 no vibration on controller 1 while the keyboard and mouse are in use
+    src/waw_ads.cpp  # [input-port] 2026-11-24 the turn while aiming down the sights (monitor distance, a percentage)
     ${COD3_RECOMP_SRC}/test_input.cpp
     # [f2-menus] The F2 settings window shared by every game's port (../recomp/src/f2/), built from its own folder.
     ${COD3_RECOMP_SRC}/f2/f2_common.cpp  # [f2-menus] the F2 rows every port shares
@@ -75,6 +79,25 @@ target_include_directories(waw PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${COD3_RE
 # GPU_PLUGINS stages librexgpu-xenos next to the executable (the Xenos GPU emulation: Vulkan, and Direct3D 12 on
 # Windows). It is loaded at start; see WawApp::OnPreSetup.
 rexglue_setup_target(waw GPU_PLUGINS xenos)
+
+# [input-port] 2026-11-24: inputkit (the project's inputkit/ folder, the input code every game shares: the mouse
+# motion queue and the pointer capture waw's mouse look uses). The setup tool passes INPUTKIT_DIR; otherwise it
+# is found next to COD3_RECOMP_SRC's COD_3_WAW_Setup-tool/ (the tool passes that too, for a copy in its work folder),
+# or 2 up from this folder (a build in place). The mouse code needs it, so it is required.
+if(NOT INPUTKIT_DIR)
+    foreach(_ik IN ITEMS "${COD3_RECOMP_SRC}/../../../inputkit" "${CMAKE_CURRENT_SOURCE_DIR}/../../inputkit")
+        if(NOT INPUTKIT_DIR AND EXISTS "${_ik}/cmake/Inputkit.cmake")
+            get_filename_component(INPUTKIT_DIR "${_ik}" ABSOLUTE)
+        endif()
+    endforeach()
+endif()
+if(NOT EXISTS "${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+    message(FATAL_ERROR "waw: the project's inputkit/ folder wasn't found (INPUTKIT_DIR, next to "
+        "COD3_RECOMP_SRC's tool folder, or 2 up). Configure with -DINPUTKIT_DIR=<project>/inputkit.")
+endif()
+include("${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+inputkit_add_library()
+target_link_libraries(waw PRIVATE inputkit::inputkit)
 
 # [waw-decomp-waw] 2026-11-11: ngl_vk (the project's ngl_vk/ folder, the Vulkan library Call of Duty 3's, Big Red
 # One's and Call of Duty 2's native renderers draw with) for waw_debug_native_side (src/waw_native_side.cpp), a check

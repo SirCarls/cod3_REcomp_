@@ -2,15 +2,16 @@
 each game, each tab's own sidebar, and the pages of the World at War, Call
 of Duty 2 and United Offensive tabs.
 
-- Big Red One [acct2-bro]: Set up (your Xbox disc, then Build: c3w/bro.py), Play
-  and Port status.
+- Big Red One [acct2-bro]: Set up (your Xbox disc, then Build: c3w/bro.py) and
+  Play (gui_tabkit.py has the ones in use).
 - World at War: Content (its sources, map packs and "Rip content", moved
-  here from Call of Duty 3's Set up page), Mods & maps (when switched on)
-  and Port status.
+  here from Call of Duty 3's Set up page) and Mods & maps (when switched on).
 - United Offensive: New copy (the tool newcopy: find the install, make and
-  check the data-only copy), LAN server (iw-server, started and stopped
-  from here) and Port status. [f2-menus] 2026-11-10: Call of Duty 2's tab
-  had the two pages too; the owner took them out (games.py).
+  check the data-only copy) and LAN server (iw-server, started and stopped
+  from here). [f2-menus] 2026-11-10: Call of Duty 2's tab had the two pages
+  too; the owner took them out (games.py).
+- Every tab's Port status section, at the top of its About page
+  ([setup-layout] 2026-11-24; it was a page of its own).
 
 A mixin for gui.App, like gui_pages.Pages: it uses the App's variables and
 helpers (v_out, _row, _open, _info, _start_task ...).
@@ -456,6 +457,14 @@ class Games:
         tip(ttk.Checkbutton(opts, text="Delete the build files when done", variable=self.v_cleanup),
             "The same setting as Call of Duty 3's. The recompiled C is the game's code; it stays in the work "
             "folder only while it is needed.").pack(anchor="w")
+        # [waw-decomp/speed1] 2026-11-23 (owner 21:00): the kept recompiler output (bro.LiftCache), emptied on purpose
+        if not hasattr(self, "v_clear_lift_cache"):
+            self.v_clear_lift_cache = tk.BooleanVar(value=False)   # shared by Big Red One's and Finest Hour's tabs
+        tip(ttk.Checkbutton(opts, text="Clear the lift cache (recompile from scratch)",
+                            variable=self.v_clear_lift_cache),
+            "Each disc's recompiled C is kept, compressed, in the work folder's tools/lift-cache (cleanup or not), "
+            "so the next build of the same disc skips the long recompile. Tick this to delete it first: the next "
+            "build recompiles. It unticks itself when that build starts.").pack(anchor="w")
         ok, why = bro.supported()
         if not ok:
             hint(b, why, style="Warn.TLabel").pack(anchor="w", pady=(px(8), 0))
@@ -508,6 +517,15 @@ class Games:
             return "Build needs an output folder: choose one on Set up."
         return ""
 
+    def _take_clear_lift_cache(self) -> bool:
+        """[waw-decomp/speed1] 2026-11-23: whether the build clears the lift cache first; the box unticks itself
+        (a one-time request)."""
+        var = getattr(self, "v_clear_lift_cache", None)
+        if var is None or not var.get():
+            return False
+        var.set(False)
+        return True
+
     def _bro_build(self) -> None:
         why = self._bro_build_reason()
         if why:
@@ -516,7 +534,8 @@ class Games:
         opts = bro.BuildOptions(source=self.v_bro_source.get(), output_dir=str(self._out_path()),
                                 work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
                                 jobs=self._jobs(), install_deps=bool(self.v_install.get()),
-                                cleanup=bool(self.v_cleanup.get()), tool_version=TOOL_VERSION)
+                                cleanup=bool(self.v_cleanup.get()), tool_version=TOOL_VERSION,
+                                clear_lift_cache=self._take_clear_lift_cache())   # [waw-decomp/speed1] 2026-11-23
         self._save_quietly()
         common.APPROVAL.reset()
 
@@ -650,27 +669,24 @@ class Games:
             self.lbl_bro_play_reason.configure(style="Warn.TLabel" if play_why else "Good.TLabel")
         return why
 
-    # ------------------------------------------------------------------ port status pages
-    def _page_status(self, t, game_id: str) -> None:
-        g = games.game(game_id)
-        t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "Port status", f"How far {g.name} is, step by step.", columns=1)
-        s = section(t, "Steps", 1, columns=1)
+    # ------------------------------------------------------------------ port status (on each About page)
+    # [setup-layout] 2026-11-24 a section at the top of the tab's About page (gui_tabkit._page_game_about); it was a
+    # page of its own on six tabs, between the game's pages and Tools. Its documents are in About's Documents.
+    def _status_section(self, t, game_id: str, row: int) -> int:
+        """The Port status section of a tab's About page, at `row`; returns the next free row (unchanged when the
+        tab has no status rows)."""
+        rows = games.PORT_STATUS.get(game_id, ())
+        if not rows:
+            return row
+        s = section(t, "Port status", row, columns=1)
         s.columnconfigure(2, weight=1)
-        for r, m in enumerate(games.PORT_STATUS.get(game_id, ())):
+        for r, m in enumerate(rows):
             ttk.Label(s, text=games.STATE_LABELS[m.state], style=STATE_STYLES[m.state], width=8).grid(
                 row=r, column=0, sticky="nw", pady=px(4))
             ttk.Label(s, text=m.what, style="Bold.TLabel").grid(row=r, column=1, sticky="nw", padx=(px(12), px(12)),
                                                                 pady=px(4))
             hint(s, m.note).grid(row=r, column=2, sticky="nw", pady=px(4))
-        docs = [(rel, label) for rel, label in games.STATUS_DOCS.get(game_id, ()) if self._doc_path(rel)]
-        if docs:
-            d = section(t, "Read more", 3, columns=1)
-            row = ttk.Frame(d)
-            row.pack(anchor="w", pady=(0, px(18)))
-            for rel, label in docs:
-                path = self._doc_path(rel)
-                widgets.link(row, label, lambda p=path: self._open_file(p)).pack(side="left", padx=(0, px(14)))
+        return row + 2
 
     # ------------------------------------------------------------------ World at War: Content
     def _page_waw_content(self, t) -> None:
@@ -732,9 +748,12 @@ class Games:
         for wdg in self.alt_widgets:
             tip(wdg, reason=lambda: "Not used: a Steam folder is set." if self.v_steam.get().strip() else "")
 
-        o = section(t, "Options", 5, columns=1)
-        ttk.Checkbutton(o, text="Also rip it when Call of Duty 3 is built", variable=self.v_use_waw,
-                        command=self._update_build_state).pack(anchor="w")
+        # [setup-layout] 2026-11-24 "Also rip it when Call of Duty 3 is built" was here too: the same setting
+        # (v_use_waw) as Call of Duty 3's Set up box "Also rip World at War", which stays (it changes what Call of
+        # Duty 3's Build does). This section is the rip's result now.
+        o = section(t, "Ripped files", 5, columns=1)
+        hint(o, "Rip content (below) rips World at War now. To rip it with every Call of Duty 3 build, tick "
+                "\"Also rip World at War\" on Call of Duty 3's Set up page.").pack(anchor="w")
         bf = ttk.Frame(o)
         bf.pack(anchor="w", pady=(px(10), px(18)))
         b = ttk.Button(bf, text="Open ripped files", command=self._open_waw_data)

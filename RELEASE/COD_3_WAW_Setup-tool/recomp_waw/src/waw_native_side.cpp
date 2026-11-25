@@ -59,6 +59,16 @@
 // drawn it would fill the log. With waw_native_vulkan off everything here runs as before (the drawn frames are the
 // saved ones). With it on, the 2D is drawn too (Keep2D, from the tess buffers) and the skinned models' corners are
 // given frame by frame (SkinnedMeshFor).
+//
+// [waw-decomp-waw] 2026-11-11 round 6: with waw_native_vulkan, new textures go to the GPU with the frame (ngl_vk's
+// batched textures, as Call of Duty 3's native picture sends them), the 2D's texture coordinates are read as the two
+// floats they are, and KeepMesh reads a draw's indices through one pointer and fingerprints them a word at a time; the
+// cost line every 600 frames says where a frame's time goes (WindowCost).
+//
+// [waw-decomp/waw2] 2026-11-23 round 7: the film is drawn (FilmOf, ngl_vk_set_film_tweak), an unblended draw's alpha
+// test is the one the Direct3D device has at the draw (AlphaTestOf), and the fog is the game's exponential curve from
+// where it starts when ngl_vk can draw that (FogOf, NGL_VK_FOG_START). Each can be turned off (waw_native_film,
+// waw_native_device_alpha, waw_native_fog_start) to size it against the game's own picture.
 
 #include "waw_native_side.h"
 
@@ -112,6 +122,22 @@ REXCVAR_DEFINE_INT32(waw_debug_native_light_test, 0, "waw",
 REXCVAR_DEFINE_INT32(waw_debug_native_only_surface, -1, "waw",
                      "Tests: with waw_debug_native_side, draw only the 3D draws of one surface type (0 the world's "
                      "triangles, 1 static models, 2 brush models, 3 rigid models, 4 skinned models); -1 all of them");
+// [waw-decomp/waw2] 2026-11-23 round 7: round 7's three changes, each on by default and each with its own switch, so
+// a run without one shows what it adds against the game's own picture (the paired compare).
+REXCVAR_DEFINE_BOOL(waw_native_film, true, "waw",
+                    "The native picture's film: the level's tint, contrast and desaturation as the game's post effect "
+                    "makes them (its view's colorBias, colorTintBase and colorTintDelta); off: none");
+REXCVAR_DEFINE_BOOL(waw_native_device_alpha, true, "waw",
+                    "The native picture's alpha test as the Direct3D device has it at each draw (its function and "
+                    "reference); off: the pass's state word alone (on or off, at one half)");
+REXCVAR_DEFINE_BOOL(waw_native_fog_start, true, "waw",
+                    "The native picture's fog as the game makes it (exponential from where it starts), when this "
+                    "build's ngl_vk can draw that; off: round 4's linear stand-in");
+// [waw-decomp/waw2] 2026-11-24 round 9 (owner 07:48: every native renderer draws at the requested output resolution,
+// nothing up- or downscaled; RESOLUTION-WAW-2026-11-24.md)
+REXCVAR_DEFINE_STRING(waw_native_size, "", "waw",
+                      "The native picture's size: empty or 0, the window's (fitted to 16:9); or WxH (1920x1080), "
+                      "720p, 1080p, 1440p or 2160p. From 640x360 to 7680x4320");
 
 namespace waw::native {
 namespace {
@@ -196,6 +222,11 @@ struct MeshDraw {
   uint64_t shape_key = 0;      // [waw-decomp-waw] 2026-11-11 round 5: the stride and the indices alone (SkinnedMeshFor)
   uint32_t material = 0, pass = 0;
   uint32_t state_bits = 0;     // the pass's first state word (IW3's GFXS0: blend, alpha test, cull)
+  // [waw-decomp/waw2] 2026-11-23 round 7: the alpha test as the Direct3D device has it at the draw (AlphaTestOf):
+  // RB_COLORCONTROL (bits 0-2 the function, bit 3 on) and RB_ALPHA_REF (0 to 1); device_alpha false when not read
+  bool device_alpha = false;
+  uint32_t color_control = 0;
+  float alpha_ref = 0.0f;
   // the textures' fetch constants as the device has them at the draw (first word 0: none)
   std::array<uint32_t, 6> color_fetch{}, lightmap_fetch{}, sun_map_fetch{};
   float world[16] = {}, view_projection[16] = {};  // Direct3D's row-vector matrices, row by row
@@ -226,6 +257,15 @@ struct MeshDraw {
   // and whether its pass names no view-projection (then the first world draw's is taken)
   bool sky = false, sky_view_missing = false;
   float sky_radius = 0.0f;
+  // [waw-decomp/waw2] 2026-11-24 round 8 (draft): the sky's cloud scroll this frame, uvScroll x gameTime.w (the PC's
+  // sky vertex shaders: uv + uvScroll.xy x gameTime.w, mod tools shader_bin), kept to 0..1; 0 0: none
+  // (SkyScrollMeshFor)
+  float uv_scroll[2] = {0.0f, 0.0f};
+  // [waw-decomp/waw2] 2026-11-24 round 8 (draft): a "transition" sky (pby_fly): its second map and the share of it,
+  // skyTransition (code constant 0x32, the PC's sky_noncubemap_transition.hlsl: lerp(map 1, map 2, its x)); share < 0:
+  // not a transition sky (SkyTransitionDraw)
+  std::array<uint32_t, 6> sky_second_fetch{};
+  float sky_transition = -1.0f;
 };
 
 // [waw-decomp-waw] 2026-11-11 round 3: how the models' light was found in a kept frame (record only).
@@ -305,6 +345,19 @@ struct Frame {
   }
 };
 
+// [waw-decomp-waw] 2026-11-11 round 6: parts of the frames drawn for the window (waw_native_vulkan), in ms summed since
+// the last cost line (WindowCost), record only: KeepMesh in the game's draws, and in SetMeshes the skinned models'
+// corners (SkinnedMeshFor) and ngl_vk_set_meshes (which first waits for the GPU's last frame), and the 2D (Quads2D,
+// with its textures).
+struct FrameParts {
+  double keep_ms = 0.0, skinned_ms = 0.0, set_meshes_ms = 0.0, quads_ms = 0.0;
+};
+FrameParts g_parts;
+
+double MillisecondsSince(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
 // The draws and the swap run on one thread at a time (the back end's; at the start the movies' and the loading
 // screen's threads swap too), so everything here is under one lock, and a frame's draws count only on the thread that
 // swapped last.
@@ -329,8 +382,8 @@ bool DeviceTexture(const uint8_t* base, uint32_t device, uint32_t slot, std::arr
 template <typename Visit>
 void ForEachArgument(const uint8_t* base, uint32_t pass, Visit visit) {
   const uint32_t args = Load32(base, pass + kPassArgs);
-  const uint32_t count = uint32_t(base[pass + kPassPerPrimArgs]) + base[pass + kPassPerPrimArgs + 1] +
-                         base[pass + kPassPerPrimArgs + 2];
+  const uint32_t count = uint32_t(Load8(base, pass + kPassPerPrimArgs)) + Load8(base, pass + kPassPerPrimArgs + 1) +
+                         Load8(base, pass + kPassPerPrimArgs + 2);
   if (!Readable(args)) return;
   for (uint32_t i = 0; i < count && i < 96; ++i) {
     const uint32_t word0 = Load32(base, args + 8u * i);
@@ -352,7 +405,7 @@ int RegisterOf(const uint8_t* base, uint32_t pass, uint32_t type, uint32_t code_
 // first one whose texture has the color map's semantic in the material's table; -1 when the pass reads none.
 int ColorMapSlot(const uint8_t* base, uint32_t material, uint32_t pass) {
   int named = -1, by_semantic = -1;
-  const uint32_t count = base[material + kMaterialTextureCount];
+  const uint32_t count = Load8(base, material + kMaterialTextureCount);
   const uint32_t table = Load32(base, material + kMaterialTextures);
   ForEachArgument(base, pass, [&](uint32_t arg_type, uint32_t destination, uint32_t hash) {
     if (arg_type != kArgMaterialSampler || destination >= 16) return;
@@ -360,7 +413,7 @@ int ColorMapSlot(const uint8_t* base, uint32_t material, uint32_t pass) {
     if (by_semantic >= 0 || !Readable(table)) return;
     for (uint32_t i = 0; i < count; ++i) {
       const uint32_t entry = table + kMaterialTextureBytes * i;
-      if (Load32(base, entry) == hash && base[entry + 7] == kSemanticColorMap) by_semantic = int(destination);
+      if (Load32(base, entry) == hash && Load8(base, entry + 7) == kSemanticColorMap) by_semantic = int(destination);
     }
   });
   return named >= 0 ? named : by_semantic;
@@ -684,14 +737,14 @@ void LogLayer(const uint8_t* base, uint32_t state, const MeshDraw& m) {
     }
   }
   std::string samplers;
-  const uint32_t count = base[m.material + kMaterialTextureCount];
+  const uint32_t count = Load8(base, m.material + kMaterialTextureCount);
   const uint32_t table = Load32(base, m.material + kMaterialTextures);
   ForEachArgument(base, m.pass, [&](uint32_t arg_type, uint32_t destination, uint32_t hash) {
     if (arg_type != kArgMaterialSampler) return;
     uint32_t semantic = 255;
     for (uint32_t i = 0; i < count && Readable(table); ++i)
       if (const uint32_t entry = table + kMaterialTextureBytes * i; Load32(base, entry) == hash)
-        semantic = base[entry + 7];
+        semantic = Load8(base, entry + 7);
     char text[40];
     std::snprintf(text, sizeof text, " slot %u %08X (semantic %u)", destination, hash, semantic);
     samplers += text;
@@ -712,12 +765,12 @@ void LogLayer(const uint8_t* base, uint32_t state, const MeshDraw& m) {
 // literal the game hands the pixel shader for a material constant argument (type 6). False, out untouched, when the
 // material has none of that name or its numbers are not plausible (outside -64..64).
 bool MaterialConstant(const uint8_t* base, uint32_t material, const char* name, float out[4]) {
-  const uint32_t count = base[material + kMaterialConstantCount];
+  const uint32_t count = Load8(base, material + kMaterialConstantCount);
   const uint32_t table = Load32(base, material + kMaterialConstants);
   for (uint32_t i = 0; i < count && Readable(table) && Readable(table + 32u * i + 32u); ++i) {
     const uint32_t entry = table + 32u * i;
     char text[13] = {};
-    std::memcpy(text, base + entry + 4u, 12);
+    std::memcpy(text, At(base, entry + 4u), 12);  // [waw-decomp/waw2] round 8: At
     if (std::strcmp(text, name) != 0) continue;
     float value[4];
     for (uint32_t k = 0; k < 4; ++k) {
@@ -757,13 +810,13 @@ bool LayerOf(const uint8_t* base, uint32_t state, uint32_t device, MeshDraw& m) 
   const uint32_t fetch1 = Load32(base, buffer1 + kVertexBufferFetch);
   if ((fetch1 & 3u) != 3u) return false;
   int slot = -1;
-  const uint32_t count = base[m.material + kMaterialTextureCount];
+  const uint32_t count = Load8(base, m.material + kMaterialTextureCount);
   const uint32_t table = Load32(base, m.material + kMaterialTextures);
   ForEachArgument(base, m.pass, [&](uint32_t arg_type, uint32_t destination, uint32_t hash) {
     if (slot >= 0 || arg_type != kArgMaterialSampler || hash == kHashColorMap || destination >= 16) return;
     for (uint32_t i = 0; i < count && Readable(table); ++i)
       if (const uint32_t entry = table + kMaterialTextureBytes * i;
-          Load32(base, entry) == hash && base[entry + 7] == kSemanticColorMap)
+          Load32(base, entry) == hash && Load8(base, entry + 7) == kSemanticColorMap)
         slot = static_cast<int>(destination);
   });
   if (slot < 0 || !DeviceTexture(base, device, uint32_t(slot), m.layer_fetch)) return false;
@@ -784,17 +837,74 @@ bool LayerOf(const uint8_t* base, uint32_t state, uint32_t device, MeshDraw& m) 
 // [waw-decomp-waw] 2026-11-11 round 4: record only, once: the sky pass's arguments (type/destination/its word), to
 // see which matrices its vertex shader ("sky_noncubemap.hlsl*packed" in pel1a) takes.
 void LogSkyArguments(const uint8_t* base, uint32_t pass) {
-  static bool logged = false;
-  if (logged) return;
-  logged = true;
+  // [waw-decomp/waw2] 2026-11-24 round 8 (draft): once for each of the first 6 sky passes, not only the first, so a
+  // level's other skies (pby_fly's "transition": its skyTransition code constant, pixel c5 on the PC) show theirs
+  static uint32_t seen[6] = {};
+  static int count = 0;
+  for (int i = 0; i < count; ++i)
+    if (seen[i] == pass) return;
+  if (count >= 6) return;
+  seen[count++] = pass;
   std::string arguments;
   ForEachArgument(base, pass, [&](uint32_t type, uint32_t destination, uint32_t word) {
     char text[32];
     std::snprintf(text, sizeof text, " %u/%u/%08X", type, destination, word);
     arguments += text;
   });
-  REXLOG_INFO("waw: native side: the sky's pass arguments (type/register/word):{}", arguments);
+  REXLOG_INFO("waw: native side: the sky's pass arguments (type/register/word), ps \"{}\":{}",
+              NameOf(base, Load32(base, pass + kPassPixelShader)), arguments);
 }
+
+// [waw-decomp-waw] 2026-11-11 round 6: the meshes' fingerprints (KeepMesh), a 32-bit word at a time: FNV-1a's step
+// (xor, then multiply by its 64-bit prime) over words instead of bytes, and at the end SplitMix64's finish so that
+// every bit of the words reaches every bit of the key.
+constexpr uint64_t kFingerprintStart = 14695981039346656037ull;  // FNV-1a's offset basis
+
+inline uint64_t MixWord(uint64_t key, uint32_t word) { return (key ^ word) * 1099511628211ull; }
+
+inline uint64_t FinishKey(uint64_t key) {
+  key = (key ^ (key >> 30)) * 0xBF58476D1CE4E5B9ull;
+  key = (key ^ (key >> 27)) * 0x94D049BB133111EBull;
+  return key ^ (key >> 31);
+}
+
+// A skinned draw's fingerprint with its corners' positions: the game's skinning writes them into its cache each frame
+// at the same place, so a mesh made from them is only good while they stay. For MeshFor (the check's pictures, and the
+// window's when the frame has no more room for corners: SkinnedMeshFor).
+uint64_t PositionsKey(const uint8_t* base, const MeshDraw& m) {
+  uint64_t key = MixWord(MixWord(kFingerprintStart, m.vertices), m.stride);
+  for (const uint32_t index : m.used) {
+    key = MixWord(key, index);
+    for (uint32_t k = 0; k < 3; ++k) key = MixWord(key, GpuU32(base, m.vertices + index * m.stride + 4u * k));
+  }
+  return FinishKey(key);
+}
+
+// Whether the name a record starts with holds `part`, as NameOf(...).find(part) without making a copy (KeepMesh asks
+// it of every draw's technique).
+bool NameHolds(const uint8_t* base, uint32_t record, const char* part) {
+  if (!Readable(record)) return false;
+  const uint32_t address = Load32(base, record);
+  if (!Readable(address) || !Readable(address + 128)) return false;
+  const char* text = reinterpret_cast<const char*>(At(base, address));  // [waw-decomp/waw2] round 8
+  const size_t length = strnlen(text, 128);
+  if (length < 3 || length == 128) return false;
+  for (size_t i = 0; i < length; ++i)
+    if (text[i] < 0x20 || text[i] > 0x7E) return false;
+  const size_t part_length = std::strlen(part);
+  for (size_t i = 0; i + part_length <= length; ++i)
+    if (std::memcmp(text + i, part, part_length) == 0) return true;
+  return false;
+}
+
+// [waw-decomp/waw2] 2026-11-23 round 7: where World at War's Direct3D device keeps the alpha test it sends (the same
+// shadow as Call of Duty 4's): RB_COLORCONTROL at device + 0x293C (bits 0-2 the function, bit 3 on), written by
+// AlphaTestEnable 0x82356350 and AlphaFunc 0x82356810, and RB_ALPHA_REF at device + 0x2904, the reference byte x 1/255
+// as a float, written by AlphaRef 0x823567B0. Only Direct3D's own functions store there (those three, and 0x82357900
+// and 0x82357930 for RB_COLORCONTROL's other fields), and they write the device at once (the draw's flush only sends
+// it), so at the game's draw the two words are that draw's.
+constexpr uint32_t kDeviceColorControl = 0x293Cu;
+constexpr uint32_t kDeviceAlphaRef = 0x2904u;
 
 // Keeps one lit draw of a kept frame: the world's (44-byte vertices) or a model's (32-byte packed ones).
 // direct_world: where the caller wrote the placement's four registers itself (static and rigid models), or 0.
@@ -832,7 +942,7 @@ void KeepMesh(const uint8_t* base, uint32_t state, uint32_t arguments, uint32_t 
   const int world_register = RegisterOf(base, pass, kArgCodeVertexConst, kCodeWorldMatrix);
   // [waw-decomp-waw] 2026-11-11 round 4: the sky's model is kept without those registers (LogSkyArguments says which
   // its pass has): its placement from its caller or none, the view-projection from the world's draws
-  const bool sky = NameOf(base, Load32(base, state + kStateTechnique)).find("sky") != std::string::npos;
+  const bool sky = NameHolds(base, Load32(base, state + kStateTechnique), "sky");  // round 6: without a copy
   if (sky) LogSkyArguments(base, pass);
   if (!sky && (view_register < 0 || world_register < 0)) {
     ++f.no_matrices;
@@ -846,8 +956,55 @@ void KeepMesh(const uint8_t* base, uint32_t state, uint32_t arguments, uint32_t 
   m.material = material;
   m.pass = pass;
   m.state_bits = Load32(base, state + kStateBits);
+  m.color_control = Load32(base, device + kDeviceColorControl);  // [waw-decomp/waw2] 2026-11-23 round 7
+  m.alpha_ref = LoadF32(base, device + kDeviceAlphaRef);
+  m.device_alpha = true;
   m.sky = sky;
   m.sky_view_missing = view_register < 0;
+  if (sky) {
+    // [waw-decomp/waw2] 2026-11-24 round 8 (draft): the material's uvScroll and the pass's gameTime (code constant
+    // 0x12: the sky pass's vertex c22 in run r4b1, where the PC's sky shaders keep gameTime); none when either is
+    // missing or not finite
+    constexpr uint32_t kCodeGameTime = 0x12;
+    float scroll[4] = {};
+    const int time_register = RegisterOf(base, pass, kArgCodeVertexConst, kCodeGameTime);
+    if (time_register >= 0 && MaterialConstant(base, material, "uvScroll", scroll)) {
+      const float time = LoadF32(base, device + kDeviceVertexConstants + 16u * uint32_t(time_register) + 12u);
+      // [waw-decomp/waw2] 2026-11-24 round 9: the product and its fraction in double (ZOMBIES-FIXES-2026-11-24.md
+      // section 2): after hours of play gameTime is a large float and a float product keeps few bits below the point;
+      // the input is still the game's float gameTime, so the scroll steps no finer than the game's own clock
+      for (int k = 0; k < 2; ++k) {
+        const double moved = static_cast<double>(scroll[k]) * static_cast<double>(time);
+        m.uv_scroll[k] = std::isfinite(moved) ? static_cast<float>(moved - std::floor(moved)) : 0.0f;
+      }
+      static int logged_scroll = 0;  // (the transition's share is read below, with or without a scroll)
+      if (logged_scroll < 3) {
+        ++logged_scroll;
+        REXLOG_INFO("waw: native side: the sky's scroll: uvScroll {:.5f} {:.5f}, gameTime.w {:.3f} (vertex c{})",
+                    scroll[0], scroll[1], time, time_register);
+      }
+    }
+    // the transition's share and second map: code constant 0x32 (the PC's table of code constants in CoDWaW.exe gives
+    // skyTransition 0x32; its other entries checked there equal this file's: gameTime 0x12, fogConsts 0x2A), and the
+    // material sampler that isn't the color map
+    constexpr uint32_t kCodeSkyTransition = 0x32;
+    if (const int share = RegisterOf(base, pass, kArgCodePixelConst, kCodeSkyTransition); share >= 0) {
+      const float x = LoadF32(base, device + kDevicePixelConstants + 16u * uint32_t(share));
+      int second = -1;
+      ForEachArgument(base, pass, [&](uint32_t arg_type, uint32_t destination, uint32_t hash) {
+        if (second < 0 && arg_type == kArgMaterialSampler && hash != kHashColorMap && destination < 16)
+          second = static_cast<int>(destination);
+      });
+      if (std::isfinite(x) && second >= 0 && DeviceTexture(base, device, uint32_t(second), m.sky_second_fetch))
+        m.sky_transition = std::clamp(x, 0.0f, 1.0f);
+      static int logged_transition = 0;
+      if (logged_transition < 3) {
+        ++logged_transition;
+        REXLOG_INFO("waw: native side: a transition sky: skyTransition {:.3f} (pixel c{}), its second map in slot {}",
+                    x, share, second);
+      }
+    }
+  }
   if (view_register >= 0)
     MatrixFrom(base, device + kDeviceVertexConstants + 16u * uint32_t(view_register), m.view_projection);
   // the placement: where the caller itself wrote it for the GPU, else the device's copy of the register (the sky
@@ -864,34 +1021,35 @@ void KeepMesh(const uint8_t* base, uint32_t state, uint32_t arguments, uint32_t 
     ++f.no_matrices;
     return;
   }
-  // the indices now, before the game moves on; the fingerprint is FNV-1a over the vertices' address and the indices,
-  // and for the skinned models' cache, which holds other corners each frame, their positions too. From the buffer's
-  // exact address (FirstIndexAddress) [waw-decomp-waw] 2026-11-11 11:05.
+  // the indices now, before the game moves on. From the buffer's exact address (FirstIndexAddress) [waw-decomp-waw]
+  // 2026-11-11 11:05.
+  // [waw-decomp-waw] 2026-11-11 round 6: read through one pointer when the whole run lies in the GPU's memory
+  // (GpuPointer; else one GpuU16 / GpuU32 an index as before), and fingerprinted a word at a time (MixWord): the
+  // shape's fingerprint (shape_key) over the stride and the indices, the draw's (key) over that and the vertices'
+  // address, and for a skinned model drawn for the check's pictures alone (MeshFor), whose cache holds other corners
+  // each frame, their positions too (PositionsKey). With the window's picture its corners are given frame by frame
+  // (SkinnedMeshFor) and the positions aren't read here. Before, FNV-1a a byte made eight multiplies of every index
+  // (two fingerprints) and twelve more of a skinned corner's, for the ~2,000 draws of a pel1a frame, in game time.
   const bool wide = (Load32(base, index_buffer) >> 31) != 0;
   const uint32_t first =
       FirstIndexAddress(Load32(base, index_buffer + kIndexBufferAddress), wide, first_index);
-  uint64_t key = 14695981039346656037ull;
-  auto mix = [&key](uint32_t word) {
-    for (int b = 0; b < 4; ++b) key = (key ^ ((word >> (8 * b)) & 0xFFu)) * 1099511628211ull;
-  };
-  mix(m.vertices);
-  mix(stride);
-  const bool moving = surface_type == kSkinnedSurfaceType;
-  uint64_t shape = 14695981039346656037ull;  // [waw-decomp-waw] 2026-11-11 round 5: the stride and the indices alone
-  auto mix_shape = [&shape](uint32_t word) {
-    for (int b = 0; b < 4; ++b) shape = (shape ^ ((word >> (8 * b)) & 0xFFu)) * 1099511628211ull;
-  };
-  mix_shape(stride);
-  m.used.resize(3u * triangles);
-  for (uint32_t i = 0; i < 3u * triangles; ++i) {
-    m.used[i] = wide ? GpuU32(base, first + 4u * i) : GpuU16(base, first + 2u * i);
-    mix(m.used[i]);
-    mix_shape(m.used[i]);
-    if (moving)
-      for (uint32_t k = 0; k < 3; ++k) mix(GpuU32(base, m.vertices + m.used[i] * stride + 4u * k));
+  const uint32_t index_count = 3u * triangles;
+  m.used.resize(index_count);
+  const size_t index_bytes = size_t{index_count} * (wide ? 4u : 2u);
+  if (PhysicalRoom(first) >= index_bytes) {
+    const uint8_t* p = GpuPointer(base, first);
+    for (uint32_t i = 0; i < index_count; ++i, p += wide ? 4 : 2)
+      m.used[i] = wide ? uint32_t{p[0]} << 24 | uint32_t{p[1]} << 16 | uint32_t{p[2]} << 8 | p[3]
+                       : uint32_t{p[0]} << 8 | p[1];
+  } else {
+    for (uint32_t i = 0; i < index_count; ++i)
+      m.used[i] = wide ? GpuU32(base, first + 4u * i) : GpuU16(base, first + 2u * i);
   }
-  m.key = key;
-  m.shape_key = shape;
+  uint64_t shape = MixWord(kFingerprintStart, stride);
+  for (const uint32_t index : m.used) shape = MixWord(shape, index);
+  m.shape_key = FinishKey(shape);
+  m.key = FinishKey(MixWord(shape, m.vertices));
+  if (surface_type == kSkinnedSurfaceType && !NativeVulkanOn()) m.key = PositionsKey(base, m);
   if (sky) {  // [waw-decomp-waw] 2026-11-11 round 4: how far its corners reach (SetMeshes scales it out)
     for (const uint32_t vertex_index : m.used) {
       float d2 = 0.0f;
@@ -904,7 +1062,7 @@ void KeepMesh(const uint8_t* base, uint32_t state, uint32_t arguments, uint32_t 
   }
   const int color_slot = ColorMapSlot(base, material, pass);
   if (color_slot >= 0) DeviceTexture(base, device, uint32_t(color_slot), m.color_fetch);
-  const uint32_t custom = base[pass + kPassCustomSamplers];
+  const uint32_t custom = Load8(base, pass + kPassCustomSamplers);
   const bool world = stride == kWorldStride;
   if (world && (custom & 2u)) DeviceTexture(base, device, 2, m.sun_map_fetch);
   if (world && (custom & 4u)) DeviceTexture(base, device, 3, m.lightmap_fetch);
@@ -1223,12 +1381,35 @@ void ForgetAll() {
   g_forget = false;
 }
 
+// [waw-decomp-waw] 2026-11-11 round 5: the textures decoded, and those found decoded already under another sampler's
+// words (SamePicture), since the last cost line (WindowCost); record only.
+struct TextureCount {
+  uint64_t decoded = 0, reused = 0;
+};
+TextureCount g_texture_count;
+
+// [waw-decomp-waw] 2026-11-11 round 5: two fetch constants of the same picture: the same address, format and byte
+// order (word 1), size (word 2) and smaller levels and dimension (word 5), and the same type, pitch and tiling in
+// word 0 (bits 0-1 and 22-31). What may differ is how it is sampled: word 0's clamp and sign bits, words 3 and 4
+// (filters, level bias). With the window's picture every frame is drawn, and run r5c1 ran out of texture room every
+// ~200 frames in the level (3 forgets in 600); the likely cause, a texture sampled two ways made again at each change
+// of the constant, is what this takes away (counted in the cost line).
+bool SamePicture(const std::array<uint32_t, 6>& a, const std::array<uint32_t, 6>& b) {
+  return a[1] == b[1] && a[2] == b[2] && a[5] == b[5] && (a[0] & 0xFFC00003u) == (b[0] & 0xFFC00003u);
+}
+
 // ngl_vk's texture for a fetch constant, decoded once (again when the constant changes); 0 when it can't be.
 uint32_t TextureFor(const uint8_t* base, const std::array<uint32_t, 6>& fetch) {
   if (fetch[0] == 0) return 0;
   const uint32_t address = fetch[1] & 0x1FFFF000u;
   auto found = g_textures.find(address);
   if (found != g_textures.end() && found->second.fetch == fetch) return found->second.id;
+  // round 5: with the window's picture, the same picture sampled another way is the texture made already
+  if (found != g_textures.end() && NativeVulkanOn() && SamePicture(found->second.fetch, fetch)) {
+    ++g_texture_count.reused;
+    return found->second.id;
+  }
+  ++g_texture_count.decoded;
   if (g_textures.size() >= kMaxTextures) g_forget = true;  // forgotten before the next frame (meshes would go too)
   CachedTexture& cached = g_textures[address];
   cached.fetch = fetch;
@@ -1341,19 +1522,34 @@ double AverageAlpha(const uint8_t* base, const std::array<uint32_t, 6>& fetch) {
 // no start (mesh.vert), so it is drawn linear here: from the start (kept 1) to where kept is 1/4, 3/4 fog there and
 // held beyond; in between and beyond it is up to about 0.14 under the game's. F is taken as ln 2 everywhere (the
 // height left out). WAW-NATIVE.md round 4 has the ngl_vk lines that would draw it exactly.
+// [waw-decomp/waw2] 2026-11-23 round 7: with those lines in ngl_vk (NGL_VK_FOG_START: a start below 0 is exponential
+// fog from the distance in fog[1] on), the curve is the game's: 1 - kept = 1 - 2^(c21.w - rate x distance)
+// = 1 - 2^(-rate x (distance - c21.w / rate)), so fog[0] = -rate, fog[1] = c21.w / rate (below 0: some fog at the eye
+// already) and fog[2] = 1 (all fog far away). The height is still left out (F = ln 2). waw_native_fog_start off, or an
+// ngl_vk without those lines: the linear stand-in above.
 void FogOf(const MeshDraw& m, ngl_vk_mesh_draw& d) {
   // the rate in halvings a unit of distance
   const float rate = m.fog_consts[1] * m.fog_consts[2] * (m.fog_consts[0] > 0.0f ? 0.693147f : 1.0f);
   if (!m.fogged || !(rate > 0.0f) || !std::isfinite(rate) || !std::isfinite(m.fog_consts[3])) return;
   const float offset = m.fog_consts[3];
+  auto byte = [](float v) { return static_cast<uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
+  const uint32_t color = byte(m.fog_color[0]) | byte(m.fog_color[1]) << 8 | byte(m.fog_color[2]) << 16;
+#if defined(NGL_VK_FOG_START)
+  if (REXCVAR_GET(waw_native_fog_start) && std::isfinite(offset / rate)) {  // [waw-decomp/waw2] round 7
+    d.fog[0] = -rate;
+    d.fog[1] = offset / rate;
+    d.fog[2] = 1.0f;
+    d.fog_color = color;  // the amount before the start is the linear fog's alone
+    return;
+  }
+#endif
   const float start = std::max(offset, 0.0f) / rate, end = (offset + 2.0f) / rate;
   if (!(end > start)) return;
   d.fog[0] = start;
   d.fog[1] = end;
   d.fog[2] = 0.75f;
   const float before = offset < 0.0f ? 1.0f - std::exp2(offset) : 0.0f;  // the fog at the eye
-  auto byte = [](float v) { return static_cast<uint32_t>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f); };
-  d.fog_color = byte(m.fog_color[0]) | byte(m.fog_color[1]) << 8 | byte(m.fog_color[2]) << 16 | byte(before) << 24;
+  d.fog_color = color | byte(before) << 24;
 }
 
 // [waw-decomp-waw] 2026-11-11 round 4: the sky, as Call of Duty 2's native side draws its own (SkyBoxFor and
@@ -1567,12 +1763,15 @@ void UnpackNormal(uint32_t word, float out[3]) {
 float HalfToFloat(uint32_t half) {
   const uint32_t exponent = (half >> 10) & 0x1Fu, mantissa = half & 0x3FFu;
   float value;
+  // [waw-decomp-waw] 2026-11-11 round 6: the same values as std::ldexp gave, made from the bits (the skinned models'
+  // corners are read every frame with the window's picture)
   if (exponent == 0) {
-    value = std::ldexp(static_cast<float>(mantissa), -24);
+    value = static_cast<float>(mantissa) * (1.0f / 16777216.0f);  // mantissa x 2^-24, exact
   } else if (exponent == 31) {
     value = 65504.0f;  // infinities and not-a-numbers: the largest half, so nothing downstream breaks
   } else {
-    value = std::ldexp(static_cast<float>(mantissa | 0x400u), static_cast<int>(exponent) - 25);
+    const uint32_t bits = (exponent + 112u) << 23 | mantissa << 13;  // the exponent from 15's bias to 127's
+    std::memcpy(&value, &bits, sizeof value);
   }
   return (half & 0x8000u) ? -value : value;
 }
@@ -1633,9 +1832,11 @@ bool MeshCorners(const uint8_t* base, const MeshDraw& m, std::vector<float>& cor
   return true;
 }
 
-uint32_t MeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built) {
-  if (auto found = g_meshes.find(m.key); found != g_meshes.end()) return found->second;
-  uint32_t& id = g_meshes[m.key];
+// [waw-decomp-waw] 2026-11-11 round 6: by the key given (SkinnedMeshFor's, with the positions), else the draw's own.
+uint32_t MeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built, uint64_t key = 0) {
+  if (key == 0) key = m.key;
+  if (auto found = g_meshes.find(key); found != g_meshes.end()) return found->second;
+  uint32_t& id = g_meshes[key];
   id = 0;
   std::vector<float> corners;
   std::vector<uint16_t> indices;
@@ -1678,7 +1879,61 @@ uint32_t SkinnedMeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built,
   std::vector<float> corners(shape.order.size() * NGL_VK_CORNER_FLOATS);
   for (size_t i = 0; i < shape.order.size(); ++i) CornerAt(base, m, shape.order[i], &corners[i * NGL_VK_CORNER_FLOATS]);
   frame_corners = ngl_vk_frame_corners(corners.data(), static_cast<uint32_t>(shape.order.size()));
-  return frame_corners != 0 ? shape.mesh : MeshFor(base, m, built);
+  // round 6: KeepMesh no longer puts the positions in the key with the window's picture; a mesh of this frame's own
+  // corners has them in its key here
+  return frame_corners != 0 ? shape.mesh : MeshFor(base, m, built, PositionsKey(base, m));
+}
+
+// [waw-decomp/waw2] 2026-11-24 round 8 (draft): a sky draw whose clouds scroll: its triangles made once by their shape
+// (as SkinnedMeshFor's), and each frame its corners again with uv moved by uv_scroll (ngl_vk has no per-draw uv
+// move; the sky is 3 draws of 80-128 triangles, so this is cheap). MeshFor when the frame's room for corners is used.
+uint32_t SkyScrollMeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built, uint32_t& frame_corners) {
+  frame_corners = 0;
+  if (g_shapes.find(m.shape_key) == g_shapes.end()) return SkinnedMeshFor(base, m, built, frame_corners);
+  const Shape& shape = g_shapes[m.shape_key];  // made by SkinnedMeshFor on the shape's first frame
+  if (shape.mesh == 0) return 0;
+  std::vector<float> corners(shape.order.size() * NGL_VK_CORNER_FLOATS);
+  for (size_t i = 0; i < shape.order.size(); ++i) {
+    float* corner = &corners[i * NGL_VK_CORNER_FLOATS];
+    CornerAt(base, m, shape.order[i], corner);
+    corner[3] += m.uv_scroll[0];  // the base texture's u and v (CornerAt's order)
+    corner[4] += m.uv_scroll[1];
+  }
+  frame_corners = ngl_vk_frame_corners(corners.data(), static_cast<uint32_t>(shape.order.size()));
+  return frame_corners != 0 ? shape.mesh : MeshFor(base, m, built, PositionsKey(base, m));
+}
+
+// [waw-decomp/waw2] 2026-11-24 round 8 (draft): a transition sky's second map over the first (the PC's shader mixes
+// them by skyTransition): the same triangles, this frame's corners with their alpha byte the share (moved by the
+// scroll too), drawn blended by the corners' alpha (corner_alpha 1). Its draw, or false when there is nothing to add.
+bool SkyTransitionDraw(const uint8_t* base, const MeshDraw& m, const ngl_vk_mesh_draw& first, ngl_vk_mesh_draw& out) {
+  if (m.sky_transition <= 0.0f) return false;  // none, or all of map 1
+  const auto found = g_shapes.find(m.shape_key);
+  const uint32_t texture = TextureFor(base, m.sky_second_fetch);
+  if (found == g_shapes.end() || found->second.mesh == 0 || texture == 0) return false;
+  const Shape& shape = found->second;
+  const uint32_t alpha = static_cast<uint32_t>(std::lround(m.sky_transition * 255.0f));
+  const uint32_t color = alpha << 24 | 0x00FFFFFFu;  // a D3DCOLOR: alpha in the top byte
+  float color_bits;
+  std::memcpy(&color_bits, &color, 4);
+  std::vector<float> corners(shape.order.size() * NGL_VK_CORNER_FLOATS);
+  for (size_t i = 0; i < shape.order.size(); ++i) {
+    float* corner = &corners[i * NGL_VK_CORNER_FLOATS];
+    CornerAt(base, m, shape.order[i], corner);
+    corner[3] += m.uv_scroll[0];
+    corner[4] += m.uv_scroll[1];
+    corner[7] = color_bits;
+  }
+  const uint32_t frame_corners = ngl_vk_frame_corners(corners.data(), static_cast<uint32_t>(shape.order.size()));
+  if (frame_corners == 0) return false;
+  out = first;
+  out.mesh = shape.mesh;
+  out.corners = frame_corners;
+  out.texture = texture;
+  out.alpha = NGL_VK_ALPHA_BLEND;
+  out.blend = NGL_VK_BLEND_ALPHA;
+  out.corner_alpha = 1;
+  return true;
 }
 
 // [waw-decomp-waw] 2026-11-11 round 3: the ngl_vk mesh of a layered world draw's second layer (LayerOf), made once: the
@@ -1729,8 +1984,8 @@ uint32_t LayerMeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built) {
 // reticle, text and the menus, drawn by the game from the tess buffers (surface type 16, technique type 4: every one of
 // the 42 tess draws of frame 4200 in run r4b1). The tess draw 0x824322B8 hands Direct3D (0x82352E60) the vertex count
 // (arguments + 0), the triangle count (arguments + 4), the 16-bit indices at *(state + 0x114C) and the vertices at
-// *(state + 0x1150), 32 bytes each laid out as the models' packed ones: +0x00 x, y, z (the screen's pixels for 2D),
-// +0x10 the color (a D3DCOLOR), +0x14 the texture coordinates as two 16-bit floats. Each kept draw's corners are copied
+// *(state + 0x1150), 32 bytes each: +0x00 x, y, z (the screen's pixels for 2D), +0x10 the color (a D3DCOLOR), +0x14
+// the texture coordinates (two floats: round 6, below). Each kept draw's corners are copied
 // at the draw, with its color map's fetch constant from the device (the slot its pass's "colorMap" names, else slot
 // 0). Left out: what reads the game's own GPU pictures (round 4's list: "glow_*", "filter_*", "postfx_*" (the film),
 // "feedback*"; and "cinematic", the loading movie), the additive draws ngl_vk's quads can't blend (destination blend
@@ -1738,6 +1993,12 @@ uint32_t LayerMeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built) {
 // world blurred behind a menu) become ngl_vk's blur blanket by their corners' alpha, as Call of Duty 2's 4z60
 // (IsBlurredScreen). The screen's size is the largest whole-screen quad's (any 2D draw from 0, 0, kept or not), else
 // 1280 x 720 (run r5b1: 1280 x 720, the loading screen's movie quad).
+// [waw-decomp-waw] 2026-11-11 round 6: the tess vertex is not the models' packed one. The 2D's quads are written so
+// (read in the generated code, gen.py: 0x82420800, one of the quad functions at 0x82417C78 ... 0x82424DE0, its first
+// corner at 0x82420988 ... 0x824209A4): x, y, z, w as four floats at +0x00, the color at +0x10 (stw), the texture
+// coordinates as two FLOATS at +0x14 and +0x18 (stfs), a packed normal at +0x1C (stw). Read as two 16-bit floats at
+// +0x14 (round 5), u was the top half of the float u and v its low half, so the reticle was drawn as grey blocks and
+// the flamethrower's icon from one corner of its texture (crop waw-decomp-waw-r5c1-auto4-hud.png).
 constexpr uint32_t kTechniqueType2D = 4;
 constexpr uint32_t kTessStride = 32;
 constexpr size_t kMax2DCorners = 98304;          // a frame's (ngl_vk_draw_quads draws them all)
@@ -1746,7 +2007,7 @@ constexpr uint32_t kBlendOne = 2;                // GFXS0's blend factor "one"
 
 uint32_t Load16(const uint8_t* base, uint32_t address) {
   uint16_t value;
-  std::memcpy(&value, base + address, sizeof(value));
+  std::memcpy(&value, At(base, address), sizeof(value));  // [waw-decomp/waw2] round 8: At
   return __builtin_bswap16(value);
 }
 
@@ -1777,9 +2038,8 @@ void Keep2D(const uint8_t* base, uint32_t state, uint32_t arguments, Frame& f) {
     c.x = LoadF32(base, v);
     c.y = LoadF32(base, v + 4u);
     c.color = Load32(base, v + 0x10u);
-    const uint32_t packed = Load32(base, v + 0x14u);
-    c.u = HalfToFloat(packed >> 16);
-    c.v = HalfToFloat(packed & 0xFFFFu);
+    c.u = LoadF32(base, v + 0x14u);  // [waw-decomp-waw] 2026-11-11 round 6: two floats (see Keep2D's comment)
+    c.v = LoadF32(base, v + 0x18u);
     left = std::min(left, c.x), right = std::max(right, c.x), top = std::min(top, c.y), bottom = std::max(bottom, c.y);
     f.corners_2d.push_back(c);
   }
@@ -1830,12 +2090,20 @@ void Quads2D(const uint8_t* base, uint64_t frame, bool saved, const Frame& kept,
       v.texture = texture;
       out.push_back(v);
     }
-    if (saved && k < 10) {
+    if (saved && k < 10) {  // round 5 (r5d): with the coordinates' range and the texture's format and size
       const Corner2D& c = kept.corners_2d[d.first_corner];
-      char text[160];
-      std::snprintf(text, sizeof text, "%s\"%s\" (%u corners, the first at %.0f %.0f, color %08X, texture %s)",
+      float u0 = 1e30f, u1 = -1e30f, v0 = 1e30f, v1 = -1e30f;
+      for (uint32_t i = 0; i < d.corner_count; ++i) {
+        const Corner2D& e = kept.corners_2d[d.first_corner + i];
+        u0 = std::min(u0, e.u), u1 = std::max(u1, e.u), v0 = std::min(v0, e.v), v1 = std::max(v1, e.v);
+      }
+      char text[240];
+      std::snprintf(text, sizeof text,
+                    "%s\"%s\" (%u corners, the first at %.0f %.0f, color %08X, u %.3f to %.3f, v %.3f to %.3f, "
+                    "texture %s: format %u, %ux%u)",
                     names.empty() ? "" : ", ", NameOf(base, d.material).c_str(), d.corner_count, c.x, c.y, c.color,
-                    texture ? "yes" : "no");
+                    u0, u1, v0, v1, texture ? "yes" : "no", d.fetch[1] & 0x3Fu, (d.fetch[2] & 0x1FFFu) + 1u,
+                    ((d.fetch[2] >> 13) & 0x1FFFu) + 1u);
       names += text;
     }
   }
@@ -1848,10 +2116,53 @@ void Quads2D(const uint8_t* base, uint64_t frame, bool saved, const Frame& kept,
   }
 }
 
+// [waw-decomp/waw2] 2026-11-24 round 8 (draft): how a blended draw goes onto what's behind it, from the same state
+// word: destination ONE (2) is added (the PC zones' "mc_sky_noncubemap_add" skies, Makin's and Nacht der Untoten's
+// moon glow, read in the Steam copy's zone names: every campaign level's sky is a skybox model, none a cube), else by
+// its alpha. ngl_vk's add is behind + color x alpha: source ONE draws with an opaque alpha come out the same.
+uint32_t BlendOf(uint32_t state_bits) {
+  return ((state_bits >> 4) & 0xFu) == 2u ? NGL_VK_BLEND_ADD : NGL_VK_BLEND_ALPHA;
+}
+
 uint32_t AlphaOf(uint32_t state_bits) {
   const uint32_t source = state_bits & 0xFu, destination = (state_bits >> 4) & 0xFu;
   if (source != 0 && !(source == 2 && destination == 1)) return NGL_VK_ALPHA_BLEND;
   return (state_bits & 0x800u) == 0 ? NGL_VK_ALPHA_TEST : NGL_VK_ALPHA_OPAQUE;
+}
+
+// [waw-decomp/waw2] 2026-11-23 round 7: an unblended draw's alpha test as the device had it at the draw (KeepMesh's
+// color_control and alpha_ref), given to ngl_vk as the draw's own cut (alpha_cut, as Call of Duty 3's native side
+// gives its leaves theirs). Off, or "always": opaque; "greater or equal": cut at the reference; "greater": one step
+// (1/255) above it. ngl_vk's cut can't draw the other functions (never, less, equal, less or equal, not equal), so
+// those draws keep the state word's test (AlphaOf). Returns whether the device's test was taken.
+constexpr uint32_t kAlphaGreater = 4, kAlphaGreaterOrEqual = 6, kAlphaAlways = 7;  // RB_COLORCONTROL bits 0-2
+
+bool AlphaTestOf(const MeshDraw& m, ngl_vk_mesh_draw& d) {
+  if (!m.device_alpha || d.alpha == NGL_VK_ALPHA_BLEND || !REXCVAR_GET(waw_native_device_alpha)) return false;
+  const uint32_t function = m.color_control & 7u;
+  const bool on = (m.color_control & 8u) != 0;
+  const float reference = std::isfinite(m.alpha_ref) ? std::clamp(m.alpha_ref, 0.0f, 1.0f) : 0.5f;
+  if (!on || function == kAlphaAlways || (function == kAlphaGreaterOrEqual && reference <= 0.0f)) {
+    d.alpha = NGL_VK_ALPHA_OPAQUE;
+    return true;
+  }
+  if (function != kAlphaGreater && function != kAlphaGreaterOrEqual) return false;
+  d.alpha = NGL_VK_ALPHA_TEST;
+  d.alpha_cut = function == kAlphaGreater ? std::min(reference + 1.0f / 255.0f, 1.0f) : reference;
+  return true;
+}
+
+// [waw-decomp/waw2] 2026-11-23 round 7: the first few draws whose test from the device is not the state word's (a
+// different kind, or a cut away from one half), for the record
+void LogDeviceAlpha(const MeshDraw& m, uint32_t word_alpha, const ngl_vk_mesh_draw& d) {
+  static int logged = 0;
+  if (logged >= 8) return;
+  ++logged;
+  static const char* const kinds[] = {"opaque", "alpha-tested", "blended"};
+  REXLOG_INFO("waw: native side: alpha test from the device: state word {:08X} ({}), RB_COLORCONTROL {:08X}, "
+              "reference {:.3f}: drawn {}, cut {:.3f}; surface type {}", m.state_bits,
+              word_alpha < 3 ? kinds[word_alpha] : "?", m.color_control, m.alpha_ref,
+              d.alpha < 3 ? kinds[d.alpha] : "?", d.alpha_cut, m.surface_type);
 }
 
 // [waw-decomp-waw] 2026-11-11 round 3: a model's light from its block (ModelLightAt) as ngl_vk's irradiance rows and
@@ -1949,13 +2260,24 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
   uint32_t model_lit = 0;  // models lit by their block of the model lighting texture [waw-decomp-waw] 2026-11-11
   uint32_t layers = 0;     // second layers drawn over layered world draws (LayerOf) [waw-decomp-waw] 2026-11-11
   uint32_t fogged = 0;     // draws given the fog (FogOf) [waw-decomp-waw] 2026-11-11 round 4
+  // [waw-decomp/waw2] 2026-11-23 round 7 (AlphaTestOf): draws given the device's alpha test, those of them unlike
+  // the state word's, and alpha-tested draws whose function ngl_vk can't draw
+  uint32_t device_tests = 0, device_unlike = 0, device_undrawable = 0;
   const int only_surface = REXCVAR_GET(waw_debug_native_only_surface);
   for (const MeshDraw& m : kept.meshes) {
     if (only_surface >= 0 && m.surface_type != static_cast<uint32_t>(only_surface)) continue;
     uint32_t frame_corners = 0;  // [waw-decomp-waw] 2026-11-11 round 5: SkinnedMeshFor, with the window's picture
-    const uint32_t mesh = NativeVulkanOn() && m.surface_type == kSkinnedSurfaceType
-                              ? SkinnedMeshFor(base, m, built, frame_corners)
-                              : MeshFor(base, m, built);
+    uint32_t mesh = 0;
+    if (NativeVulkanOn() && m.surface_type == kSkinnedSurfaceType) {
+      const auto skinned_start = std::chrono::steady_clock::now();  // round 6: its share (WindowCost)
+      mesh = SkinnedMeshFor(base, m, built, frame_corners);
+      g_parts.skinned_ms += MillisecondsSince(skinned_start);
+    } else if (NativeVulkanOn() && m.sky &&
+               (m.uv_scroll[0] != 0.0f || m.uv_scroll[1] != 0.0f || m.sky_transition >= 0.0f)) {
+      mesh = SkyScrollMeshFor(base, m, built, frame_corners);  // [waw-decomp/waw2] 2026-11-24 round 8 (draft)
+    } else {
+      mesh = MeshFor(base, m, built);
+    }
     if (mesh == 0) {
       ++failed;
       continue;
@@ -1966,6 +2288,17 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
     d.tint = 0x7F7F7Fu;  // a draw without a texture: mid grey (not 0x808080: bit 23 is one of ngl_vk's flags)
     d.texture = test == 3 ? WhiteTexture() : TextureFor(base, m.color_fetch);
     d.alpha = AlphaOf(m.state_bits);
+    const uint32_t word_alpha = d.alpha;  // [waw-decomp/waw2] 2026-11-23 round 7: the device's test (AlphaTestOf)
+    if (AlphaTestOf(m, d)) {
+      ++device_tests;
+      const bool half = d.alpha != NGL_VK_ALPHA_TEST || std::fabs(d.alpha_cut - 0.5f) < 1.5f / 255.0f;
+      if (d.alpha != word_alpha || !half) {
+        ++device_unlike;
+        LogDeviceAlpha(m, word_alpha, d);
+      }
+    } else if (m.device_alpha && d.alpha != NGL_VK_ALPHA_BLEND && (m.color_control & 8u) != 0) {
+      ++device_undrawable;
+    }
     std::memcpy(d.world, m.world, sizeof(d.world));
     std::memcpy(d.view_projection, m.view_projection, sizeof(d.view_projection));
     // the sun: the way its light travels, and its color (none for a pass without it, or with the test's 1)
@@ -1988,7 +2321,7 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
       d.shading = NGL_VK_SHADE_VERTEX_COLOR;
       d.light_once = 1;
       for (int k = 0; k < 3; ++k) d.light_color[k] = 0.0f;
-      if (d.alpha == NGL_VK_ALPHA_BLEND) d.blend = NGL_VK_BLEND_ALPHA;
+      if (d.alpha == NGL_VK_ALPHA_BLEND) d.blend = BlendOf(m.state_bits);  // [waw-decomp/waw2] round 8: add too
       float reach = 0.0f;  // the placement's largest scale x the model's farthest corner
       for (int j = 0; j < 3; ++j)
         reach = std::max(reach, std::sqrt(m.world[4 * j] * m.world[4 * j] + m.world[4 * j + 1] * m.world[4 * j + 1] +
@@ -2029,7 +2362,7 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
     // first color map with its tint and cut (BakedTextureFor; opaque when cut, black where the cut hides it; not with
     // the light tests 3, 8 and 10)
     if (test != 9) FogOf(m, d);
-    fogged += d.fog[1] > d.fog[0];
+    fogged += d.fog[0] < 0.0f || d.fog[1] > d.fog[0];  // [waw-decomp/waw2] round 7: or exponential
     const bool layered = m.layer && d.lightmap != 0 && test != 3 && test != 8;
     if (layered && test != 10) {
       const uint32_t baked = BakedTextureFor(base, m.color_fetch, m.tint, m.layer_cut);
@@ -2040,6 +2373,10 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
     textured += d.texture != 0;
     blended += d.alpha == NGL_VK_ALPHA_BLEND;
     draws.push_back(d);
+    if (m.sky) {  // [waw-decomp/waw2] 2026-11-24 round 8 (draft): a transition sky's second map over its first
+      ngl_vk_mesh_draw second_map;
+      if (SkyTransitionDraw(base, m, d, second_map)) draws.push_back(second_map);
+    }
     // [waw-decomp-waw] 2026-11-11 round 3: a layered world draw's second layer, drawn again over the first, lit the
     // same way, mixed in by its corners' share (LayerOf); not with the light tests 3 (no color maps) and 8
     if (layered) {
@@ -2060,12 +2397,19 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
         second.alpha = NGL_VK_ALPHA_BLEND;
         second.blend = NGL_VK_BLEND_ALPHA;
         second.corner_alpha = 1;
+#ifdef NGL_VK_CORNER_TIMES_MAP
+        // [waw-decomp/waw2] 2026-11-24 round 8 (draft): the share as the game's shader takes it, the corner's green
+        // times the second map's own alpha (ngl_vk's corner_alpha 2, proposed; a map opaque everywhere: the same)
+        second.corner_alpha = NGL_VK_CORNER_TIMES_MAP;
+#endif
         draws.push_back(second);
         ++layers;
       }
     }
   }
+  const auto set_start = std::chrono::steady_clock::now();  // [waw-decomp-waw] 2026-11-11 round 6 (WindowCost)
   ngl_vk_set_meshes(draws.data(), static_cast<uint32_t>(draws.size()));
+  if (NativeVulkanOn()) g_parts.set_meshes_ms += MillisecondsSince(set_start);
   std::string callers;  // the left-out draws' callers (return addresses) and how many each
   for (const auto& [caller, count] : kept.stale_callers) {
     char text[32];
@@ -2078,6 +2422,8 @@ std::string SetMeshes(const uint8_t* base, const Frame& kept) {
          std::to_string(model_lit) + " of them by the model lighting texture, " + std::to_string(layers) +
          " second layers (their corners so far " + std::to_string(g_layer_corners) + ", " +
          std::to_string(g_layer_corners_dim) + " with red under 0xFF), " + std::to_string(fogged) + " fogged, " +
+         std::to_string(device_tests) + " with the device's alpha test (" + std::to_string(device_unlike) +
+         " unlike the state word's, " + std::to_string(device_undrawable) + " with a test ngl_vk can't draw), " +
          std::to_string(built) + " meshes made now, " + std::to_string(textured) + " with a color map, " +
          std::to_string(lightmapped) + " lightmapped, " + std::to_string(sunlit) + " in the sun, " +
          std::to_string(blended) + " blended, " + std::to_string(failed) + " not made, " +
@@ -2104,7 +2450,7 @@ bool ShownColors(const uint8_t* base, uint8_t table[3][256]) {
     for (int i = 0; i < 256; ++i) table[channel][i] = static_cast<uint8_t>(i);
   const uint32_t device = Load32(base, kGammaDevicePointer);
   if (device < 0xA0000000u || device >= 0xFFF00000u) return false;
-  const uint8_t* p = base + device + kDeviceGammaRamp;
+  const uint8_t* p = At(base, device + kDeviceGammaRamp);  // [waw-decomp/waw2] round 8: At
   uint8_t read[3][256];
   for (int channel = 0; channel < 3; ++channel) {
     uint32_t before = 0;
@@ -2142,8 +2488,166 @@ struct WindowCost {
 };
 WindowCost g_window_cost;
 
-double MillisecondsSince(std::chrono::steady_clock::time_point start) {
-  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+// [waw-decomp/waw2] 2026-11-23 round 7: the film as the game draws it over the 3D (its post effect postfx_color, PC
+// ps_3_0_2acda88e), from the view LogFilm reads (0x82402978 leaves colorBias, colorTintBase and colorTintDelta there),
+// taken at each drawn frame's swap and handed to ngl_vk_set_film_tweak, whose formula is the shader's, the way Call of
+// Duty 3's native side hands ngl_vk the game's own post effects each frame (its Tint and Brightness). On when the
+// view's on byte is set and every number is finite, with colorBias.w (the share of the pixel's own color, 1 / the
+// desaturation - 1) not below 0.
+struct Film {
+  bool on = false;
+  float color_bias[4] = {}, tint_base[3] = {}, tint_delta[3] = {};
+};
+Film g_film;  // the drawn frame's (SideFrameEnd), under g_side_mutex
+
+Film FilmOf(const uint8_t* base) {
+  Film film;
+  const uint32_t data = Load32(base, kFrontEndDataPointer);
+  if (!Readable(data) || !Readable(data + kFrontEndViews + 4u)) return film;
+  const uint32_t views = Load32(base, data + kFrontEndViews), index = Load32(base, data + kFrontEndViewIndex);
+  const uint32_t view = views + kViewBytes * index;
+  if (index > 16 || !Readable(views) || !Readable(view + kViewFilmTintDelta + 16u) ||
+      Load8(base, view + kViewFilmEnable) == 0)
+    return film;
+  bool usable = true;
+  for (uint32_t k = 0; k < 4; ++k) {
+    film.color_bias[k] = LoadF32(base, view + kViewFilmColorBias + 4u * k);
+    usable = usable && std::isfinite(film.color_bias[k]);
+  }
+  for (uint32_t k = 0; k < 3; ++k) {
+    film.tint_base[k] = LoadF32(base, view + kViewFilmTintBase + 4u * k);
+    film.tint_delta[k] = LoadF32(base, view + kViewFilmTintDelta + 4u * k);
+    usable = usable && std::isfinite(film.tint_base[k]) && std::isfinite(film.tint_delta[k]);
+  }
+  film.on = usable && film.color_bias[3] >= 0.0f;
+  return film;
+}
+
+// The first few times the film comes on or goes off, for the record
+void LogFilmChange(uint64_t frame, const Film& film) {
+  static bool was_on = false;
+  static int logged = 0;
+  if (film.on == was_on || logged >= 6) return;
+  was_on = film.on;
+  ++logged;
+  REXLOG_INFO("waw: native side: frame {}: the film {}: colorBias {:.4f} {:.4f} {:.4f} {:.4f}, colorTintBase {:.4f} "
+              "{:.4f} {:.4f}, colorTintDelta {:.4f} {:.4f} {:.4f}", frame, film.on ? "drawn" : "off",
+              film.color_bias[0], film.color_bias[1], film.color_bias[2], film.color_bias[3], film.tint_base[0],
+              film.tint_base[1], film.tint_base[2], film.tint_delta[0], film.tint_delta[1], film.tint_delta[2]);
+}
+
+// [waw-decomp/waw2] 2026-11-24 round 9: the size ngl_vk draws the window's picture at: waw_native_size, else the
+// window's size in pixels; fitted to 16:9 (the game's projection and 2D are 16:9: other windows get black bars) and
+// kept within 640x360 .. 7680x4320 (Call of Duty 3's ChooseTargetSize in recomp/src/game/ngl_side.cpp, the model).
+// Without the window's picture (check pictures only) the size stays 1280x720, the game's own frame's, for the compare.
+bool ParseSize(const std::string& text, uint32_t& width, uint32_t& height) {
+  if (text == "720p") { width = 1280; height = 720; return true; }
+  if (text == "1080p") { width = 1920; height = 1080; return true; }
+  if (text == "1440p") { width = 2560; height = 1440; return true; }
+  if (text == "2160p" || text == "4k") { width = 3840; height = 2160; return true; }
+  unsigned w = 0, h = 0;
+  char tail = 0;
+  if (std::sscanf(text.c_str(), "%ux%u%c", &w, &h, &tail) != 2 || !w || !h) return false;
+  width = w;
+  height = h;
+  return true;
+}
+
+void FitTargetSize(uint32_t& width, uint32_t& height) {
+  if (uint64_t{width} * 9 > uint64_t{height} * 16)  // wider than 16:9: as wide as the height allows
+    width = height * 16 / 9;
+  else
+    height = width * 9 / 16;
+  if (width > 7680 || height > 4320) {
+    width = 7680;
+    height = 4320;
+  }
+  if (width < 640 || height < 360) {
+    width = 640;
+    height = 360;
+  }
+}
+
+// The size wanted now; from says where it came from (for the log)
+void WantedTargetSize(uint32_t& width, uint32_t& height, const char*& from) {
+  const std::string asked = REXCVAR_GET(waw_native_size);
+  width = height = 0;
+  if (!asked.empty() && asked != "0") {
+    if (ParseSize(asked, width, height)) {
+      from = "waw_native_size";
+    } else {
+      static bool warned = false;
+      if (!warned) {
+        warned = true;
+        REXLOG_WARN("waw: native side: waw_native_size \"{}\" isn't a size (WxH, 720p, 1080p, 1440p or 2160p); the "
+                    "window's size is used", asked);
+      }
+      width = height = 0;
+    }
+  }
+  if (!width || !height) {
+    if (WindowPixels(width, height)) {
+      from = "the window";
+    } else {
+      width = kPictureWidth;
+      height = kPictureHeight;
+      from = "no window size yet";
+    }
+  }
+  FitTargetSize(width, height);
+}
+
+uint32_t g_target_width = kPictureWidth, g_target_height = kPictureHeight;  // ngl_vk's target now
+
+void LogTargetSize(const char* when, const char* from) {
+  uint32_t window_width = 0, window_height = 0;
+  WindowPixels(window_width, window_height);
+  REXLOG_INFO("waw: native side: the target is {}x{} {} (window {}x{}, from {})", g_target_width, g_target_height,
+              when, window_width, window_height, from);
+}
+
+// Between frames, on the drawing thread: when the wanted size has changed and stayed the same for 10 frames (a window
+// being dragged larger isn't remade on every frame), ngl_vk's target is made that size (ngl_vk_set_target_size) and
+// the window's picture follows it. A size ngl_vk refused isn't asked again until another is wanted. Without
+// ngl_vk_set_target_size (an older ngl_vk) the size from the start stays, said once.
+void FollowWindowSize(uint64_t frame) {
+  uint32_t width = 0, height = 0;
+  const char* from = "";
+  WantedTargetSize(width, height, from);
+  static uint32_t pending_width = 0, pending_height = 0, refused_width = 0, refused_height = 0;
+  static uint64_t pending_since = 0;
+  if (width == g_target_width && height == g_target_height) {
+    pending_width = pending_height = 0;
+    return;
+  }
+  if (width == refused_width && height == refused_height) return;
+  if (width != pending_width || height != pending_height) {
+    pending_width = width;
+    pending_height = height;
+    pending_since = frame;
+    return;
+  }
+  if (frame - pending_since < 10) return;
+#if defined(NGL_VK_SET_TARGET_SIZE)
+  if (ngl_vk_set_target_size(width, height) == 0) {
+    g_target_width = width;
+    g_target_height = height;
+    SetPictureSize(width, height);
+    pending_width = pending_height = 0;
+    LogTargetSize("now", from);
+  } else {
+    refused_width = width;
+    refused_height = height;
+    REXLOG_WARN("waw: native side: ngl_vk couldn't make the target {}x{} (see its reason on stderr); it stays {}x{}",
+                width, height, g_target_width, g_target_height);
+  }
+#else
+  refused_width = width;
+  refused_height = height;
+  REXLOG_INFO("waw: native side: {} asks for {}x{}, but this build's ngl_vk can't change its target's size while it "
+              "runs; it stays {}x{} until the game starts again", from, width, height, g_target_width,
+              g_target_height);
+#endif
 }
 
 // The kept frame drawn into a picture and handed to the helper to save. [waw-decomp-waw] 2026-11-11 round 5: with
@@ -2154,16 +2658,32 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   const bool saved = SavedFrame(frame);
   if (g_state == 0) {
     // round 5: with waw_native_vulkan, on the window's own Vulkan device when ngl_vk can use it
-    if ((window ? StartNglVkForWindow(kPictureWidth, kPictureHeight) : ngl_vk_init(kPictureWidth, kPictureHeight)) !=
-        0) {
+    // round 9: the window's picture at the window's size (or waw_native_size); the check pictures alone at 1280x720
+    const char* from = "the check pictures (the game's own frame's size)";
+    g_target_width = kPictureWidth;
+    g_target_height = kPictureHeight;
+    if (window) WantedTargetSize(g_target_width, g_target_height, from);
+    if ((window ? StartNglVkForWindow(g_target_width, g_target_height)
+                : ngl_vk_init(g_target_width, g_target_height)) != 0) {
       REXLOG_WARN("waw: native side: ngl_vk couldn't start (see its reason on stderr); nothing more is drawn");
       g_state = -1;
       return;
     }
     g_state = 1;
-    REXLOG_INFO("waw: native side: ngl_vk started on {}, a {}x{} picture", ngl_vk_device_name(), kPictureWidth,
-                kPictureHeight);
+    REXLOG_INFO("waw: native side: ngl_vk started on {}, a {}x{} picture", ngl_vk_device_name(), g_target_width,
+                g_target_height);
+    LogTargetSize("at the start", from);
+    // [waw-decomp-waw] 2026-11-11 round 6: with the window's picture, new textures go to the GPU with the frame's own
+    // commands (ngl_vk_set_batched_textures), not one at a time with a wait each (about 10 ms a texture on a shared
+    // device, ngl_vk.h; Call of Duty 3's cod3_native_batched_textures does the same): after a forget (ForgetAll) every
+    // texture of the view is made again in one frame
+    if (window) {
+      const bool batched = ngl_vk_set_batched_textures(1) == 0;
+      REXLOG_INFO("waw: native Vulkan: new textures go to the GPU {}", batched ? "with the frame (batched)" :
+                  "one at a time (no room for the batch's staging buffer)");
+    }
   }
+  if (window) FollowWindowSize(frame);  // round 9: between frames, before anything of this one is drawn
   const auto setup_start = std::chrono::steady_clock::now();
   // between frames, on the drawing thread: forgotten when ngl_vk ran out of room, or before a frame could
   uint32_t corners_used = 0, corner_room = 0;
@@ -2187,13 +2707,18 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   std::vector<ngl_vk_vertex> quads;
   float screen_width = static_cast<float>(kPictureWidth), screen_height = static_cast<float>(kPictureHeight);
   if (window) {
+    const auto quads_start = std::chrono::steady_clock::now();  // [waw-decomp-waw] 2026-11-11 round 6 (WindowCost)
     Quads2D(base, frame, saved, kept, quads);
+    g_parts.quads_ms += MillisecondsSince(quads_start);
     if (kept.screen_width >= 320.0f && kept.screen_height >= 200.0f) {
       screen_width = kept.screen_width;
       screen_height = kept.screen_height;
     }
     if (kept.blur > 0.0f && !kept.meshes.empty()) ngl_vk_set_depth_of_field(2.0f, 2.0f, 0.0f, kept.blur);
   }
+  // [waw-decomp/waw2] 2026-11-23 round 7: the film over the whole 3D (keep_depth 0: the gun too, as the game's)
+  if (g_film.on && !kept.meshes.empty() && REXCVAR_GET(waw_native_film))
+    ngl_vk_set_film_tweak(g_film.color_bias, g_film.tint_base, g_film.tint_delta, 0.0f);
   const ngl_vk_vertex none{};
   if (ngl_vk_draw_quads(quads.empty() ? &none : quads.data(), static_cast<uint32_t>(quads.size()), screen_width,
                         screen_height, nullptr, 0, 0, 0) != 0) {
@@ -2228,11 +2753,27 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
     c.show_ms += MillisecondsSince(show_start);
     c.meshes += kept.meshes.size();
     if (++c.frames == 600) {
+      // [waw-decomp-waw] 2026-11-11 round 6: the parts (FrameParts), the time ngl_vk waited for the GPU's last frame,
+      // and what went to the GPU through ngl_vk's staging buffers (full halves: a copy and a wait at once)
+      uint32_t gpu_waits = 0;
+      uint64_t texture_flushes = 0, staging_flushes = 0;
+      const double gpu_wait_ms = static_cast<double>(ngl_vk_take_gpu_wait(&gpu_waits)) / 1e6;
+      const uint64_t batched_textures = ngl_vk_take_texture_uploads(&texture_flushes);
+      const double staged_mb = static_cast<double>(ngl_vk_take_staging(&staging_flushes)) / (1024.0 * 1024.0);
       REXLOG_INFO("waw: native Vulkan: frame {}: over the last 600 frames everything made was forgotten {} times (no "
                   "room); on average {:.0f} 3D draws kept, the 3D's setup {:.2f} ms, the drawing {:.2f} ms, the "
-                  "hand-over to the window {:.2f} ms", frame, c.forgets, double(c.meshes) / 600.0, c.setup_ms / 600.0,
-                  c.draw_ms / 600.0, c.show_ms / 600.0);
+                  "hand-over to the window {:.2f} ms; {} textures decoded, {} found made under other sampler words",
+                  frame, c.forgets, double(c.meshes) / 600.0, c.setup_ms / 600.0, c.draw_ms / 600.0,
+                  c.show_ms / 600.0, g_texture_count.decoded, g_texture_count.reused);
+      REXLOG_INFO("waw: native Vulkan: frame {}: a frame's parts in ms: KeepMesh in the game's draws {:.2f}; of the "
+                  "setup, the skinned corners {:.2f} and ngl_vk_set_meshes {:.2f}; the 2D {:.2f}; ngl_vk waited for "
+                  "the GPU {:.2f} ({} waits in 600 frames); {} textures batched ({} full halves), {:.2f} MB a frame "
+                  "staged ({} full halves)", frame, g_parts.keep_ms / 600.0, g_parts.skinned_ms / 600.0,
+                  g_parts.set_meshes_ms / 600.0, g_parts.quads_ms / 600.0, gpu_wait_ms / 600.0, gpu_waits,
+                  batched_textures, texture_flushes, staged_mb / 600.0, staging_flushes);
       c = WindowCost{};
+      g_texture_count = TextureCount{};
+      g_parts = FrameParts{};
     }
   }
   if (!saved) return;  // round 5: drawn for the window alone
@@ -2314,7 +2855,8 @@ void LogFilm(const uint8_t* base, uint64_t frame) {
   }
   REXLOG_INFO("waw: native side: frame {}: film (view {} of {} at {:08X}, enable byte {}): colorBias {:.4f} {:.4f} "
               "{:.4f} {:.4f}, colorTintBase {:.4f} {:.4f} {:.4f}, colorTintDelta {:.4f} {:.4f} {:.4f}", frame, index,
-              count, view, static_cast<uint32_t>(base[view + kViewFilmEnable]), bias[0], bias[1], bias[2], bias[3],
+              count, view, static_cast<uint32_t>(Load8(base, view + kViewFilmEnable)), bias[0], bias[1], bias[2],
+              bias[3],
               tint_base[0], tint_base[1], tint_base[2], tint_delta[0], tint_delta[1], tint_delta[2]);
 }
 
@@ -2418,8 +2960,10 @@ void SideIndexedDraw(const uint8_t* base, uint32_t source, uint32_t state, uint3
     return;
   }
   g_frame.direct += direct;
+  const auto keep_start = std::chrono::steady_clock::now();  // [waw-decomp-waw] 2026-11-11 round 6 (WindowCost)
   KeepMesh(base, state, arguments, surface_type, technique_type, by_registers ? caller_r11 : by_source ? source : 0,
            by_registers ? caller_r11 : 0, saved, g_frame);
+  if (NativeVulkanOn()) g_parts.keep_ms += MillisecondsSince(keep_start);
 }
 
 void SideTessDraw(const uint8_t* base, uint32_t source, uint32_t state, uint32_t arguments, uint32_t surface_type) {
@@ -2454,6 +2998,8 @@ void SideFrameEnd(const uint8_t* base) {
     LogFilm(base, frame);  // [waw-decomp-waw] 2026-11-11 round 3, record only
   }
 #if defined(WAW_NGL_VK)
+  g_film = FilmOf(base);  // [waw-decomp/waw2] 2026-11-23 round 7
+  LogFilmChange(frame, g_film);
   DrawFrame(base, frame, g_frame);
 #else
   (void)base;

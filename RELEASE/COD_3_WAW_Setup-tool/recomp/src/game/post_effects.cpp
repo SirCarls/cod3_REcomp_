@@ -23,6 +23,7 @@
 #include "game/addresses.h"
 #include "game/guest.h"
 #include "game/program.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 REXCVAR_DEFINE_BOOL(cod3_depth_of_field, true, "cod3/Display",
                     "Depth of field: the background blurs while you aim down the sights, where a "
@@ -199,7 +200,8 @@ uint32_t ViewportBuffer() {
 #if defined(COD3_MP)
 constexpr uint32_t kFilmOn = 0x82BCC8E8;
 constexpr uint32_t kFilmStep = 0x82BCC938;
-constexpr uint32_t kFilmRandomReturn[2] = {0x82431430, 0x82431448};
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kFilmRandomReturn[2] = {A(0x82431430), A(0x82431448)};
 #else
 constexpr uint32_t kFilmOn = 0x82A2AC00;
 constexpr uint32_t kFilmStep = 0x82A2AC04;
@@ -209,6 +211,7 @@ constexpr uint32_t kSceneViewPlayer = 40;  // cod3mp: the end of the scene's r3 
 constexpr int kFilmViews = cod3::kMultiplayer ? 4 : 1;
 constexpr int32_t kFilmLastStep = 149;
 constexpr double kFilmStepSeconds = 1.0 / 60.0;
+constexpr double kFilmMaxSteps = 6.0;  // [rexglue-native thread2] 2026-11-24: the most steps one frame takes (10 fps)
 
 struct FilmView {
   bool running = false;                            // the look was on at this view's last frame
@@ -275,9 +278,15 @@ void OldFilmBefore(PPCContext& ctx, uint8_t* base) {
     f.owed = 0.0;
     return;
   }
-  f.owed += std::min(dt, kFilmStepSeconds);  // at most one step a frame: 60 fps and below as the game
+  // [rexglue-native thread2] 2026-11-24 rule 14 (FPS-RULE14.md A3): the frame's whole time is owed (it was at most one
+  // step a frame, so below 60 fps the fade-in took 60/fps as long: 3x at 20); a frame due several steps (at most 6:
+  // 10 fps) adds the extra ones before the game's own +1.
+  f.owed += std::min(dt, kFilmMaxSteps * kFilmStepSeconds);
   if (f.owed >= kFilmStepSeconds - 1e-9) {
-    f.owed = std::max(0.0, f.owed - kFilmStepSeconds);
+    const int steps = static_cast<int>((f.owed + 1e-9) / kFilmStepSeconds);
+    f.owed = std::max(0.0, f.owed - steps * kFilmStepSeconds);
+    if (steps > 1 && step < kFilmLastStep)
+      WriteU32(base, step_at, static_cast<uint32_t>(std::min(step + steps - 1, kFilmLastStep - 1)));
     t_film_record = &f;
     return;
   }
@@ -397,6 +406,96 @@ REX_HOOK_RAW(sub_82149950) {
   }
 }
 
+// [rexglue-native thread2] 2026-11-24 rule 14 (FPS-RULE14.md A5): the motion blur (post effect 4, the afterimage of
+// a hit or a close shell burst) blends once per drawn frame: kept = s x kept + (1 - s) x picture, the kept picture read
+// d in from every edge, s = the amount (0x82A2ABF8) and d the second word (0x825CDAB0), both set by the game in real
+// time (0x824167D8, its fade, adds the frame's seconds). s is the history's weight: the dispatcher (0x8214B0B0, type 4)
+// makes c1 = s and c0 = 1 - s, and the shader draws c0 x texture 0 (the screen copy) + c1 x texture 1 (the effect's kept
+// picture) (ngl_side.cpp rn47g, from the shader's microcode), so s^(60 dt) (not 1 - (1 - s)^(60 dt)). So a trail's half-life was ln 0.5 / ln s / fps: 60/fps times
+// the console's 60 fps one (3x longer at 20, 0.42x at 144), and the picture streamed outward fps/60 as fast. Here, for
+// the end of the scene's call (it queues the effect with both words: both renderers draw from them), the per-frame
+// weight is s^(60 dt) and the inset d x 60 dt, dt the real time since this view's last end of the scene (at most
+// 0.1 s): every rate has the 60 fps half-life and spread. Off (cod3_fix_motion_blur_rate false): as the game. cod3mp:
+// one amount per view (0x82BCC928 + 4 x view, the scene's view at r3 + 40) and one second word for all (0x825D68F4,
+// its end of the scene 0x824311E0 queues lfs 26868(0x825D)), each view with its own clock.
+REXCVAR_DEFINE_BOOL(cod3_fix_motion_blur_rate, true, "cod3/Video",
+                    "The motion blur's trails (a hit, a close shell burst) last the same time at any frame rate, as "
+                    "at the console's 60; off: per drawn frame, as the game (shorter above 60, longer below)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(cod3_debug_post_effects, false, "cod3",
+                    "Log every 2 s how many times a second each view ended its scene (the motion blur's per-view "
+                    "clock; a test of the frame-rate rule)");
+namespace {
+#if defined(COD3_MP)
+constexpr uint32_t kBlurInset = 0x825D68F4;  // the effect's second word (d), one for every view
+#else
+constexpr uint32_t kBlurInset = 0x825CDAB0;  // the effect's second word (d), as the end of the scene queues it
+#endif
+struct BlurRate {
+  bool scaled = false;
+  uint32_t amount_at = 0;
+  float amount = 0.0f, inset = 0.0f, amount_set = 0.0f, inset_set = 0.0f;
+};
+std::chrono::steady_clock::time_point g_blur_last[4]{};  // each view's last end of the scene (the render thread's)
+BlurRate ScaleBlur(PPCContext& ctx, uint8_t* base) {
+  BlurRate b;
+  int view = 0;
+  if (cod3::kMultiplayer) {
+    const uint32_t scene = ctx.r3.u32;
+    view = Readable(scene) ? static_cast<int>(ReadU32(base, scene + kSceneViewPlayer)) : 0;
+    if (view < 0 || view >= kBlurAmounts) return b;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  auto& last = g_blur_last[view];
+  const double dt = last.time_since_epoch().count() == 0
+                        ? 1.0 / 60.0
+                        : std::clamp(std::chrono::duration<double>(now - last).count(), 0.0, 0.1);
+  last = now;
+  // cod3_debug_post_effects: each view's ends of the scene a second (both split-screen views end every drawn frame)
+  if (REXCVAR_GET(cod3_debug_post_effects)) {
+    static std::chrono::steady_clock::time_point since[4]{};
+    static int count[4]{};
+    ++count[view];
+    if (since[view].time_since_epoch().count() == 0) since[view] = now;
+    const double span = std::chrono::duration<double>(now - since[view]).count();
+    if (span >= 2.0) {
+      REXLOG_INFO("cod3: motion blur: view {} ended its scene {:.1f} times a second (cod3_debug_post_effects)",
+                  view + 1, count[view] / span);
+      count[view] = 0;
+      since[view] = now;
+    }
+  }
+  if (!REXCVAR_GET(cod3_fix_motion_blur_rate)) return b;
+  b.amount_at = kBlurAmount + 4u * uint32_t(view);
+  b.amount = ReadF32(base, b.amount_at);
+  if (!(b.amount > 0.0f && b.amount < 1.0f)) return b;
+  b.inset = ReadF32(base, kBlurInset);
+  const double rate = 60.0 * dt;
+  b.amount_set = static_cast<float>(std::pow(double(b.amount), rate));
+  // the kept picture grows by 1 / (1 - 2d) each frame (drawn into itself with its corners d in): rate frames' worth of
+  // that growth is 1 / (1 - 2d)^rate, i.e. an inset of (1 - (1 - 2d)^rate) / 2 (d x rate to first order)
+  b.inset_set = std::isfinite(b.inset) && b.inset > 0.0f && b.inset < 0.5f
+                    ? static_cast<float>(0.5 * (1.0 - std::pow(1.0 - 2.0 * double(b.inset), rate)))
+                    : b.inset;
+  WriteF32(base, b.amount_at, b.amount_set);
+  WriteF32(base, kBlurInset, b.inset_set);
+  b.scaled = true;
+  static std::atomic<int> said[4]{};  // the first 3 of each view
+  if (said[view].fetch_add(1, std::memory_order_relaxed) < 3)
+    REXLOG_INFO("cod3: motion blur: {:.3f} kept a frame at {:.0f} fps (the game's {:.3f} at 60), inset {:.4f} "
+                "({:.4f}), view {} (cod3_fix_motion_blur_rate)",
+                b.amount_set, dt > 0.0 ? 1.0 / dt : 0.0, b.amount, b.inset_set, b.inset, view + 1);
+  return b;
+}
+// (the inset is one word for every view in cod3mp: each view's scaling writes it for its own call and puts it back)
+void RestoreBlur(uint8_t* base, const BlurRate& b) {
+  if (!b.scaled) return;
+  // put back only what the end of the scene left as it was set (it doesn't write them; the game's fade might)
+  if (ReadF32(base, b.amount_at) == b.amount_set) WriteF32(base, b.amount_at, b.amount);
+  if (ReadF32(base, kBlurInset) == b.inset_set) WriteF32(base, kBlurInset, b.inset);
+}
+}  // namespace
+
 // The end of the scene's post effects (tint, color curves, motion blur, the
 // death fade, old film, and depth of field before them; cod3mp 0x824311E0),
 // a layer callback of the scene (RE_RenderScene). Here for the settings' log
@@ -407,7 +506,9 @@ REX_HOOK_RAW(sub_82426500) {
   OldFilmScope film_scope;     // [claude-9b-think] cod3_fix_old_film
   OldFilmBefore(ctx, base);
   if (!TestMode()) {
+    const BlurRate blur = ScaleBlur(ctx, base);  // [rexglue-native thread2] rule 14 A5
     __imp__sub_82426500(ctx, base);
+    RestoreBlur(base, blur);
     return;
   }
   std::array<float, kBlurAmounts> saved{};
@@ -427,7 +528,9 @@ REX_HOOK_RAW(sub_82426500) {
       g_dof_by_test.fetch_add(1, std::memory_order_relaxed);
     }
   }
+  const BlurRate blur = ScaleBlur(ctx, base);  // [rexglue-native thread2] rule 14 A5 (after the test's amount)
   __imp__sub_82426500(ctx, base);
+  RestoreBlur(base, blur);
   for (int i = 0; i < kBlurAmounts; ++i) {
     const uint32_t at = kBlurAmount + 4u * uint32_t(i);
     if (saved[i] == 0.0f && ReadF32(base, at) == kTestBlur) WriteF32(base, at, 0.0f);

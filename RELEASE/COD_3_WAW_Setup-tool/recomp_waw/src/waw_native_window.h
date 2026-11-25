@@ -21,6 +21,10 @@
 
 #include <rex/runtime.h>  // rex::RuntimeConfig
 
+namespace rex::ui {
+class Window;
+}
+
 namespace waw::native {
 
 // From WawApp::OnPreSetup, before the graphics start: when waw_native_vulkan is on and this build and PC can draw
@@ -44,5 +48,15 @@ void ShowOnGpu(const uint8_t table[3][256]);
 // Hands a width x height picture (4 bytes a pixel: red, green, blue, unused) to the window through the CPU, through
 // table (as ShowOnGpu).
 void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint8_t table[3][256]);
+
+// [waw-decomp/waw2] 2026-11-24 round 9 (the owner's native-resolution rule, RESOLUTION-WAW-2026-11-24.md): the
+// window's size in pixels, kept by a listener on the window from WawApp::OnPostSetup (WatchWindow) to OnShutdown
+// (UnwatchWindow). WindowPixels gives false (and 0 0) before the window has a size.
+void WatchWindow(rex::ui::Window* window);
+void UnwatchWindow(rex::ui::Window* window);
+bool WindowPixels(uint32_t& width, uint32_t& height);
+
+// The picture's size handed to the window from now on (after ngl_vk_set_target_size made the target that size).
+void SetPictureSize(uint32_t width, uint32_t height);
 
 }  // namespace waw::native

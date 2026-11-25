@@ -98,7 +98,8 @@ void Cod2App::OnConfigurePaths(rex::PathConfig& paths) {
   userdata_dir_ = paths.user_data_root;
   if (userdata_dir_.empty()) {
     const std::string flag{rex::cvar::GetFlagByName("user_data_root")};
-    userdata_dir_ = flag.empty() ? root / "userdata" : std::filesystem::path(flag);
+    userdata_dir_ = flag.empty() ? root / "userdata"  // [rexglue-native-platform] 2026-11-16: the setting is UTF-8 text
+                                 : std::filesystem::path(std::u8string(flag.begin(), flag.end()));
   }
 
   // The log goes to userdata/logs/<program>.log unless the command line names one
@@ -107,7 +108,8 @@ void Cod2App::OnConfigurePaths(rex::PathConfig& paths) {
       source != rex::cvar::Source::kCommandLine && source != rex::cvar::Source::kEnvironment) {
     const auto logs = (paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root) / "logs";
     std::filesystem::create_directories(logs, ec);
-    rex::cvar::SetFlagByName("log_file", (logs / (std::string(kProgram) + ".log")).generic_string());
+    // [rexglue-native-platform] 2026-11-16: UTF-8 (generic_string() is the ANSI code page on Windows and throws outside it)
+    rex::cvar::SetFlagByName("log_file", [](const std::filesystem::path& p) { const auto u8 = p.generic_u8string(); return std::string(u8.begin(), u8.end()); }(logs / (std::string(kProgram) + ".log")));
   }
 }
 
@@ -183,6 +185,8 @@ void Cod2App::OnPostSetup() {
     g_pc_input_listener.window = win;
     win->AddInputListener(&g_pc_input_listener, 199);
   }
+  // [cod2-native] 2026-11-24 g10: the native picture is drawn at the window's size (game/native_window.h)
+  cod2::native::SetWindow(window());
 }
 
 // [f2-menus] The F2 settings window (cod2_f2.h): Call of Duty 3's window with Call of Duty 2's pages.
@@ -200,6 +204,7 @@ void Cod2App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
 
 void Cod2App::OnShutdown() {
   if (auto* win = window()) win->RemoveInputListener(&g_pc_input_listener);  // [f2-menus]
+  cod2::native::SetWindow(nullptr);  // [cod2-native] g10: before the window goes
   cod2::f2ui::Detach();  // [f2-menus] saves what changed; before the ImGui drawer goes
   cod2::native::SideStop();  // [waw-decomp] 2026-11-10
   cod2::compare::Detach(window());  // [waw-decomp] 2026-11-11: before the presenter goes

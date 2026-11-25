@@ -62,6 +62,17 @@ foreach(shader effect_depth.frag effect_back.frag glow_first.frag glow_blur.frag
         COMMENT "Compiling ${shader} to SPIR-V")                                            # [rexglue-native]
     list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [rexglue-native]
 endforeach()                                                                                # [rexglue-native]
+# [cod2-native] 2026-11-24: the IW bloom's two shaders (ngl_vk.h ngl_vk_set_bloom; src/ngl_vk.c make_bloom)
+foreach(shader bloom_first.frag bloom_blur.frag sky_bleed.frag)                             # [cod2-native] g4
+    set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [cod2-native]
+    add_custom_command(                                                                     # [cod2-native]
+        OUTPUT "${spirv}"                                                                   # [cod2-native]
+        COMMAND "${CMAKE_COMMAND}" -E make_directory "${NGL_VK_SHADER_DIR}"                 # [cod2-native]
+        COMMAND "${NGL_VK_GLSLC}" -mfmt=c -o "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"  # [cod2-native]
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/shaders/${shader}"                             # [cod2-native]
+        COMMENT "Compiling ${shader} to SPIR-V")                                            # [cod2-native]
+    list(APPEND NGL_VK_SHADERS "${spirv}")                                                  # [cod2-native]
+endforeach()                                                                                # [cod2-native]
 # [rexglue-native-fx] 2026-11-11 fx1: the screen warp's two shaders (ngl_vk.h ngl_vk_set_screen_warp; src/ngl_vk.c make_heat)
 foreach(shader heat_warp.vert heat_warp.frag)                                               # [rexglue-native-fx]
     set(spirv "${NGL_VK_SHADER_DIR}/${shader}.inc")                                         # [rexglue-native-fx]

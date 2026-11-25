@@ -292,6 +292,31 @@ class UpscaleTests(unittest.TestCase):
                                                    threading.Event())
             self.assertEqual((done, missing, len(fake.calls)), (0, 0, 1))
 
+    def test_copies_at_another_scale_are_made_again_when_the_scale_comes_back(self):
+        # [setup-layout] 2026-11-24 2x, then an interrupted 4x run (the recorded scale stays 2), then 2x again: the
+        # 4x copy made in between is made again at 2x instead of being packed at 4x
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            src, dst = root / "textures", root / "textures_upscaled"
+            src.mkdir()
+            dst.mkdir()
+            for name in ("a", "b"):
+                (src / f"{name}.png").write_bytes(png_bytes(16, 8))
+            write_keys(src, ["a", "b"])
+            (dst / "a.png").write_bytes(png_bytes(32, 16))
+            (dst / "b.png").write_bytes(png_bytes(64, 32))
+            future = time.time() + 60
+            for name in ("a", "b"):
+                os.utime(dst / f"{name}.png", (future, future))
+            upscale.record_scale(dst, 2)
+            fake = FakeWaifu2x()
+            done, missing = upscale.upscale_folder(make_tool(root), src, dst, root / "work" / "upscale",
+                                                   upscale.Settings("photo", 1, 2), fake, Log(sinks=[]),
+                                                   threading.Event())
+            self.assertEqual((done, missing), (1, 0))
+            self.assertEqual(fake.calls[0]["files"], ["b.png"])
+            self.assertEqual(upscale.png_size(dst / "b.png"), (32, 16))
+
     def test_1x_reduces_noise_with_cunet_and_copies_what_it_would_not_change(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -580,9 +605,15 @@ class HdPackStepTests(unittest.TestCase):
         # an older ripper (which gave several textures one picture, or
         # upscaled normal maps and read small textures from the wrong
         # place) is rebuilt and the game ripped again.
-        self.assertEqual(rippers.RIP_OUTPUT_VERSION, 6)
-        self.assertFalse(rippers._works(Path("rip"), Capture("rip 0.1.0, output layout 5")))
-        self.assertTrue(rippers._works(Path("rip"), Capture("rip 0.1.0, output layout 6")))
+        # 7: the captured-textures command; a ripper without it is rebuilt,
+        # but CoD3 files ripped at 6 still fit and are not ripped again.
+        # 8 added waw-hd-textures (World at War's HD textures from its disc
+        # files): a 7 ripper is rebuilt, CoD3's files are kept as well.
+        # 9 added fh-hd-textures and bro-hd-textures: the same again.
+        self.assertEqual(rippers.RIP_OUTPUT_VERSION, 9)
+        self.assertEqual(rippers.COD3_DATA_LAYOUT, 6)
+        self.assertFalse(rippers._works(Path("rip"), Capture("rip 0.1.0, output layout 8")))
+        self.assertTrue(rippers._works(Path("rip"), Capture("rip 0.1.0, output layout 9")))
 
 
 if __name__ == "__main__":

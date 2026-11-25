@@ -214,10 +214,9 @@ void Cod3App::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
 #endif
-  // [rexglue-native-io] 2026-11-16: userdata/ and the settings go where they can be written: the game folder as
-  // before, or (a read-only folder, Program Files, Controlled folder access) a folder of the player's own
-  // (user_root.h), instead of ending before the window (Linux) or with a box (Windows). A user_data_root given on
-  // the command line still wins.
+  // [rexglue-native-io] 2026-11-16, [setup-layout] 2026-11-24 (owner: "it should be portable."): userdata/ and the
+  // settings stay in the game folder; one that can't be written ends the game with a message saying to move it
+  // (user_root.h). A user_data_root given on the command line still wins.
   cod3::user_root::DataRoot() = root;
   const std::filesystem::path data_root =
       rex::cvar::GetFlagByName("user_data_root").empty() ? cod3::user_root::Pick(root) : root;
@@ -622,6 +621,9 @@ void Cod3App::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     // The picture follows the window's shape live (game/ultrawide.h).
     if (auto* win = window()) {
       cod3::UpdateDisplayAspect(win->GetActualPhysicalWidth(), win->GetActualPhysicalHeight());
+      // [rexglue-native thread2] 2026-11-24 (SDK 0322): with the native renderer, a named resolution is the window's
+      // own size (game/render_resolution.h)
+      cod3::NamedResolutionSizesWindow(win);
       // A new instance (mission end, quit to menu, multiplayer) opens the same way (game/relaunch.h).
       cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight(),
                             win->HasFocus());

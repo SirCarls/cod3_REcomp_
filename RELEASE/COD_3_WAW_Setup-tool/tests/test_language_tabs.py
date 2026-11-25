@@ -1,8 +1,8 @@
 """[acct2-decomp] 2026-11-21 Tests for the language settings' grouping (owner 10:38: "f2 and setup tool for languages
 needs organization/grouping/tabbing"; asked how, he chose tabs in both):
 
-- the setup tool's Game settings are tabs (gui_pages.GS_GROUPS), every language row in Language under its headings,
-  with "Add voices from another disc" under Voices;
+- the setup tool's Game settings are tabs (gui_pages.GS_GROUPS); Language has two rows, Voices and Text, with "Add
+  voices from another disc" under Voices, and saving Voices sets the console language ([setup-layout] 2026-11-24);
 - F2 has a LANGUAGE tab after SOUND with Text, Voices and Console language, SOUND has none of them, and the F2 tour
   visits the three (the sources are read; nothing is built).
 
@@ -25,9 +25,11 @@ from c3w import game_settings  # noqa: E402
 TOOL = Path(__file__).resolve().parent.parent
 SRC = TOOL / "recomp" / "src"
 TABS = ["Display", "Graphics", "Sound", "Language", "Controls", "Cutscenes", "Player"]
-LANGUAGE = ["cod3_voice_language", "cod3_text_language", "cod3_text_subtitles", "cod3_text_menus",
-            "cod3_text_prompts", "cod3_text_objectives", "cod3_text_loading", "cod3_text_credits",
-            "cod3_text_film_cards", "cod3_font_fill", "user_language"]
+# [setup-layout] 2026-11-24 (owner: "Allow for two selections. One for voices and the other for text."): two rows;
+# the rest are F2's (gui_pages.GS_F2_ONLY) and the console language follows Voices (game_settings).
+LANGUAGE = ["cod3_voice_language", "cod3_text_language"]
+F2_ONLY = ["user_language", "cod3_text_subtitles", "cod3_text_menus", "cod3_text_prompts", "cod3_text_objectives",
+           "cod3_text_loading", "cod3_text_credits", "cod3_text_film_cards", "cod3_font_fill"]
 
 
 def _literal(path: Path, name: str):
@@ -49,6 +51,7 @@ class SetupToolGroups(unittest.TestCase):
     def setUp(self):
         self.groups = _literal(TOOL / "c3w" / "gui_pages.py", "GS_GROUPS")
         self.headings = _literal(TOOL / "c3w" / "gui_pages.py", "GS_HEADINGS")
+        self.f2_only = _literal(TOOL / "c3w" / "gui_pages.py", "GS_F2_ONLY")
 
     def test_the_tabs(self):
         self.assertEqual([title for title, _ in self.groups], TABS)
@@ -66,10 +69,52 @@ class SetupToolGroups(unittest.TestCase):
         known = {st.key for st in game_settings.SETTINGS}
         self.assertFalse(set(keys) - known)
 
-    def test_headings(self):
-        self.assertEqual(self.headings, {"cod3_voice_language": "Voices", "cod3_text_language": "Text",
-                                         "cod3_text_subtitles": "Text by kind", "user_language": "Console language"})
-        self.assertTrue(set(self.headings) <= set(LANGUAGE))
+    def test_no_headings(self):
+        self.assertEqual(self.headings, {})
+
+    def test_the_rest_are_left_to_f2_and_known(self):
+        self.assertEqual(sorted(self.f2_only), sorted(F2_ONLY))
+        known = {st.key for st in game_settings.SETTINGS}
+        self.assertFalse(set(self.f2_only) - known)
+        self.assertFalse(set(self.f2_only) & {k for _, group in self.groups for k in group})
+
+
+class ConsoleLanguageFollowsVoices(unittest.TestCase):
+    """[setup-layout] 2026-11-24 saving Voices sets user_language; "The game's own" leaves it."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.out = Path(self.tmp.name)
+
+    def _save(self, values):
+        from unittest import mock
+        with mock.patch.object(game_settings, "game_running", return_value=False):
+            game_settings.save(self.out, values)
+        return game_settings.load(self.out)
+
+    def test_the_numbers_match_the_game(self):
+        voice_paths = (SRC / "game" / "voice_paths.h").read_text(encoding="utf-8")
+        self.assertIn("kConsole[kLanguages] = {1, 3, 4, 5, 6}", voice_paths)
+        st = game_settings.BY_KEY["cod3_voice_language"]
+        langs = [v for v, _ in st.choices if v != "disc"]
+        self.assertEqual(langs, ["en", "de", "fr", "es", "it"])
+        self.assertEqual([game_settings.console_language_for(v) for v in langs], [1, 3, 4, 5, 6])
+        self.assertIsNone(game_settings.console_language_for("disc"))
+
+    def test_voices_sets_it_and_the_games_own_leaves_it(self):
+        self.assertEqual(self._save({"cod3_voice_language": "fr"})["user_language"], 4)
+        self.assertEqual(self._save({"cod3_voice_language": "it"})["user_language"], 6)
+        loaded = self._save({"cod3_voice_language": "disc"})
+        self.assertEqual(loaded["cod3_voice_language"], "disc")
+        self.assertEqual(loaded["user_language"], 6)   # left as F2 or an earlier save had it
+
+    def test_an_explicit_console_language_wins(self):
+        self.assertEqual(self._save({"cod3_voice_language": "de", "user_language": 5})["user_language"], 5)
+
+    def test_other_ports_settings_are_left_alone(self):
+        self.assertEqual(game_settings.with_console_language({"x": 1}), {"x": 1})
 
 
 class F2Language(unittest.TestCase):
@@ -161,6 +206,8 @@ class GameSettingsTabsTests(unittest.TestCase):
         lang = app._gs_tab_frames["Language"]
         for key in LANGUAGE:
             self.assertIs(app._gs_vars[key][2].master, lang, key)
+        for key in F2_ONLY:
+            self.assertNotIn(key, app._gs_vars)
         buttons = [w for w in lang.winfo_children() if isinstance(w, ttk.Button)]
         add = [b for b in buttons if b.cget("text") == "Add voices from another disc..."]
         self.assertEqual(len(add), 1)
@@ -169,8 +216,10 @@ class GameSettingsTabsTests(unittest.TestCase):
         add[0].invoke()
         self.assertEqual(app.added, 1)
         labels = [w.cget("text") for w in lang.winfo_children() if isinstance(w, ttk.Label)]
-        for heading in ("Voices", "Text", "Text by kind", "Console language"):
-            self.assertIn(heading, labels)
+        for row in ("Voices", "Text"):
+            self.assertIn(row, labels)
+        for gone in ("Text by kind", "Console language"):
+            self.assertNotIn(gone, labels)
         # One tab at a time: the first, then the one chosen.
         self.assertEqual(app._gs_tab_frames["Display"].winfo_manager(), "grid")
         self.assertEqual(lang.winfo_manager(), "")

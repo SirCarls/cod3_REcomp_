@@ -10,7 +10,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <mutex>
-#include <sstream>
 #include <string>
 
 #include <imgui.h>
@@ -21,6 +20,7 @@
 #include "game/addresses.h"
 #include "game/guest.h"
 #include "game/program.h"
+#include "inputkit/weapon_sens.h"
 #include "ui/slider_box.h"
 #include "ui/theme.h"
 
@@ -102,82 +102,30 @@ int GroupOf(uint32_t game_class, uint32_t ammo, bool scope) {
 }
 
 // --- the settings ---------------------------------------------------------------
-struct Table {
-  std::array<std::array<int, 2>, kGroupCount> pct;  // [group][0 hip, 1 aiming]
-  Table() {
-    for (auto& g : pct) g = {100, 100};
-  }
-  bool AllDefault() const {
-    for (const auto& g : pct)
-      if (g[0] != 100 || g[1] != 100) return false;
-    return true;
-  }
-};
+// [input-port] 2026-11-24: the text rules ("group=hip/aiming", 0-200, a group
+// left out is 100/100) and the hip-to-sights blend are the shared inputkit
+// library's (inputkit/src/weapon_sens.cpp, the code that was here), so every
+// game reads the same text the same way; CoD3 names its groups.
+namespace ws = inputkit::weaponsens;
+using Table = ws::Table;
+static_assert(kGroupCount <= ws::kMaxGroups);
+constexpr ws::Groups kGroups{kKeys.data(), kGroupCount};
 
-std::string Text(int player) {
-  switch (player) {
-    case 1: return REXCVAR_GET(cod3_weapon_sensitivity_p2);
-    case 2: return REXCVAR_GET(cod3_weapon_sensitivity_p3);
-    case 3: return REXCVAR_GET(cod3_weapon_sensitivity_p4);
-    default: return REXCVAR_GET(cod3_weapon_sensitivity);
-  }
-}
-
-int Clamp(long v) { return int(std::clamp<long>(v, kMinPercent, kMaxPercent)); }
-
-// "group=hip/aiming" or "group=both" items, separated by spaces or commas;
-// anything else is skipped.
-Table Parse(const std::string& text) {
-  Table t;
-  std::string norm = text;
-  std::replace(norm.begin(), norm.end(), ',', ' ');
-  std::istringstream in(norm);
-  std::string item;
-  while (in >> item) {
-    const auto eq = item.find('=');
-    if (eq == std::string::npos) continue;
-    const std::string key = item.substr(0, eq);
-    int g = -1;
-    for (int i = 0; i < kGroupCount; ++i)
-      if (key == kKeys[i]) g = i;
-    if (g < 0) continue;
-    const char* v = item.c_str() + eq + 1;
-    char* end = nullptr;
-    const long hip = std::strtol(v, &end, 10);
-    if (end == v) continue;
-    long ads = hip;
-    if (*end == '/') {
-      const char* a = end + 1;
-      ads = std::strtol(a, &end, 10);
-      if (end == a) ads = hip;
-    }
-    t.pct[g] = {Clamp(hip), Clamp(ads)};
-  }
-  return t;
-}
-
-std::string Format(const Table& t) {
-  std::string out;
-  for (int g = 0; g < kGroupCount; ++g) {
-    const auto& p = t.pct[g];
-    if (p[0] == 100 && p[1] == 100) continue;
-    if (!out.empty()) out += ' ';
-    out += kKeys[g];
-    out += '=' + std::to_string(p[0]);
-    if (p[1] != p[0]) out += '/' + std::to_string(p[1]);
-  }
-  return out;
-}
+int Clamp(long v) { return ws::ClampPercent(v); }
+Table Parse(const std::string& text) { return ws::Parse(kGroups, text); }
+std::string Format(const Table& t) { return ws::Format(kGroups, t); }
 
 std::mutex g_mutex;
 std::array<std::string, kPlayers> g_text;
 std::array<Table, kPlayers> g_table;
 std::array<bool, kPlayers> g_parsed{};
 
-// The player's table now (parsed again when the setting's text changed).
-Table Get(int player) {
-  player = std::clamp(player, 0, kPlayers - 1);
-  const std::string text = Text(player);
+// The player's table for the setting's text now: parsed again only when the
+// text changed. [input-port] 2026-11-24 FIX: the text is compared where the
+// setting keeps it, not copied first: the guest thread asks twice a usercmd
+// (the mouse and the stick), and the copy allocated each time for any text
+// longer than a few characters (the no-allocation-per-frame rule).
+Table Lookup(int player, const std::string& text) {
   std::lock_guard lock(g_mutex);
   if (!g_parsed[player] || text != g_text[player]) {
     g_text[player] = text;
@@ -189,6 +137,15 @@ Table Get(int player) {
                               : shown + " (hip/aiming %; the rest 100%)");
   }
   return g_table[player];
+}
+
+Table Get(int player) {
+  switch (std::clamp(player, 0, kPlayers - 1)) {
+    case 1: return Lookup(1, REXCVAR_GET(cod3_weapon_sensitivity_p2));
+    case 2: return Lookup(2, REXCVAR_GET(cod3_weapon_sensitivity_p3));
+    case 3: return Lookup(3, REXCVAR_GET(cod3_weapon_sensitivity_p4));
+    default: return Lookup(0, REXCVAR_GET(cod3_weapon_sensitivity));
+  }
 }
 
 // What the guest thread saw last, per local client (F2's "now" line).
@@ -269,8 +226,7 @@ double Multiplier(uint8_t* base, uint32_t client) {
   const Table t = Get(int(client));
   float aim = 0.0f;
   const int group = HeldGroup(base, client, &aim);
-  const double hip = t.pct[group][0], ads = t.pct[group][1];
-  const double m = (hip + (ads - hip) * aim) / 100.0;
+  const double m = t.Multiplier(group, aim);
   Seen& s = g_seen[client];
   s.group.store(group, std::memory_order_relaxed);
   s.aim.store(aim, std::memory_order_relaxed);

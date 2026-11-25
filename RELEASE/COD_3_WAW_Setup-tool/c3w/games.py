@@ -41,14 +41,19 @@ PAGE_LABELS: Dict[str, str] = {
     # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): "Textures & censoring"
     "setup": "Set up", "play": "Play", "textures": "Textures & censoring", "tools": "Tools", "log": "Log",
     "about": "About",
-    "bro_setup": "Set up", "bro_play": "Play", "bro_status": "Port status",   # [acct2-bro]
-    "fh_setup": "Set up", "fh_play": "Play", "fh_status": "Port status",   # [acct2-decomp] 2026-11-21
+    "bro_setup": "Set up", "bro_play": "Play",   # [acct2-bro]
+    "fh_setup": "Set up", "fh_play": "Play",   # [acct2-decomp] 2026-11-21
     "waw_setup": "Set up", "waw_play": "Play", "cod2_setup": "Set up", "cod2_play": "Play",   # [waw-decomp]
-    "cod4_setup": "Set up", "cod4_play": "Play", "cod4_status": "Port status",
-    "waw_content": "Content", "maps": "Mods & maps", "waw_status": "Port status",
-    "cod2_status": "Port status",   # [f2-menus] 2026-11-10 its New copy and LAN server pages are gone (see COD2)
-    "coduo_copy": "New copy", "coduo_server": "LAN server", "coduo_status": "Port status",
+    "cod4_setup": "Set up", "cod4_play": "Play",
+    "waw_content": "Content", "maps": "Mods & maps",
+    "coduo_copy": "New copy", "coduo_server": "LAN server",
 }
+# [setup-layout] 2026-11-24 (owner 08:00: "Please add chat dedicated to organizing the setup tool. Please review every
+# tab and sub tab."): every tab's sidebar has one order: Set up (United Offensive: its New copy and LAN server), Play,
+# the game's own pages (Call of Duty 3's Textures & censoring, World at War's Content and Mods & maps), Tools, Log,
+# About. The Port status pages (six tabs had one, Call of Duty 3 none) became the first section of each About page
+# (PORT_STATUS below); a status page saved by an older tool opens that About page (OLD_PAGES).
+OLD_PAGES: Dict[str, str] = {f"{gid}_status": f"{gid}_about" for gid in (BRO, FH, WAW, COD2, COD4, CODUO)}
 # [acct2-ocr] 2026-11-22 (owner 00:26: "the other game's tabs need to be more akin to cod3's"): every tab has its own
 # Tools and About pages, as Call of Duty 3's has (gui_tabkit.py); its sidebar ends as Call of Duty 3's does.
 KIT_TABS = (BRO, FH, WAW, COD2, COD4, CODUO)
@@ -63,12 +68,12 @@ GAMES: Tuple[Game, ...] = (
     # [acct2-bro] Call of Duty 2: Big Red One (the original Xbox game), built like Call of Duty 3 (c3w/bro.py).
     Game(BRO, "Call of Duty 2: Big Red One", "Big Red One", "BRO", ("CALL OF DUTY 2", "BIG RED ONE"),
          "The Xbox original, recompiled for PC from your own disc", "bro",
-         ("bro_setup", "bro_play", "bro_status", "bro_tools", "log", "bro_about"), ("build", "play")),
+         ("bro_setup", "bro_play", "bro_tools", "log", "bro_about"), ("build", "play")),
     # [acct2-decomp] 2026-11-21 (owner 11:18: "add finest hour to the tabs"): Call of Duty: Finest Hour, the original Xbox
     # game, built like Big Red One (c3w/fh.py; the port in fh/ is acct2-fh's).
     Game(FH, "Call of Duty: Finest Hour", "Finest Hour", "FH", ("CALL OF DUTY", "FINEST HOUR"),
          "The Xbox original, recompiled for PC from your own disc", "fh",
-         ("fh_setup", "fh_play", "fh_status", "fh_tools", "log", "fh_about"), ("build", "play")),
+         ("fh_setup", "fh_play", "fh_tools", "log", "fh_about"), ("build", "play")),
     # [waw-decomp] 2026-11-09: World at War and Call of Duty 2 recompiled from the Xbox 360 disc on Call of Duty 3's
     # SDK (owner 11-07 11:49: "the setup tool says rust, but it should be the same as cod3's SDK"); Call of Duty 4
     # new. World at War keeps its Content page (the rip for Call of Duty 3).
@@ -76,17 +81,17 @@ GAMES: Tuple[Game, ...] = (
     # tab is the Xbox 360 port only. The two pages were tools for the PC game; United Offensive's tab still has them.
     Game(WAW, "World at War", "World at War", "WaW", ("CALL OF DUTY", "WORLD AT WAR"),
          "Recompiled for PC from your own Xbox 360 disc", "waw",
-         ("waw_setup", "waw_play", "waw_content", "maps", "waw_status", "waw_tools", "log", "waw_about"),
+         ("waw_setup", "waw_play", "waw_content", "maps", "waw_tools", "log", "waw_about"),
          ("build", "play", "rip")),
     Game(COD2, "Call of Duty 2", "Call of Duty 2", "CoD2", ("CALL OF DUTY", "2"),
          "Recompiled for PC from your own Xbox 360 disc", "cod2",
-         ("cod2_setup", "cod2_play", "cod2_status", "cod2_tools", "log", "cod2_about"), ("build", "play")),
+         ("cod2_setup", "cod2_play", "cod2_tools", "log", "cod2_about"), ("build", "play")),
     Game(COD4, "Call of Duty 4: Modern Warfare", "Call of Duty 4", "CoD4", ("CALL OF DUTY 4", "MODERN WARFARE"),
          "Recompiled for PC from your own Xbox 360 disc", "cod4",
-         ("cod4_setup", "cod4_play", "cod4_status", "cod4_tools", "log", "cod4_about"), ("build", "play")),
+         ("cod4_setup", "cod4_play", "cod4_tools", "log", "cod4_about"), ("build", "play")),
     Game(CODUO, "Call of Duty: United Offensive", "United Offensive", "UO", ("CALL OF DUTY", "UNITED OFFENSIVE"),
          "Tools for your PC game: a data-only copy and a LAN server", "coduo",   # [f2-menus] no "Rust engine"
-         ("coduo_copy", "coduo_server", "coduo_status", "coduo_tools", "log", "coduo_about"), ("copy", "server")),
+         ("coduo_copy", "coduo_server", "coduo_tools", "log", "coduo_about"), ("copy", "server")),
 )
 GAME_ORDER: List[str] = [g.id for g in GAMES]
 BY_ID: Dict[str, Game] = {g.id: g for g in GAMES}
@@ -141,6 +146,8 @@ class TabState:
             if owner:
                 pages = dict(pages, **{owner: old_page})
         for g, p in pages.items():
+            if isinstance(p, str):
+                p = OLD_PAGES.get(p, p)   # [setup-layout] 2026-11-24 a Port status page: About now has it
             if g in pages_available and isinstance(p, str) and p in pages_available[g]:
                 st.pages[g] = p
         themes = s.get("ui_themes") if isinstance(s.get("ui_themes"), dict) else {}
@@ -225,7 +232,7 @@ def hero_height(window_h: int, scale: float = 1.0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# How far each port is (the "Port status" pages). One place to update.
+# How far each port is (the Port status section at the top of each About page). One place to update.
 # ---------------------------------------------------------------------------
 READY, TESTING, NEXT, LATER = "ready", "testing", "next", "later"
 STATE_LABELS = {READY: "Ready", TESTING: "Testing", NEXT: "Next", LATER: "Later"}
@@ -249,10 +256,11 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
     BRO: (   # [acct2-bro] dev/agents/acct2-bro/NOTES.md has the runs behind these
         Milestone("Recompile", READY, "Your default.xbe to C with xboxrecomp; every call lifted."),
         Milestone("Picture", TESTING, "Drawn natively with Vulkan: menus, levels, lights, fog, effects."),
-        Milestone("Sound and music", TESTING, "The game's own sound and music, out through SDL2."),
+        Milestone("Sound and music", TESTING, "The game's own sound and music, out through SDL3."),   # [setup-layout] bro/CMakeLists.txt
         Milestone("Controls", TESTING, "A gamepad, or keyboard and mouse with mouse look."),
         Milestone("Levels", TESTING, "Most levels checked for a few minutes each, no crash."),
-        Milestone("Windows", NEXT, "Builds on Linux for now."),
+        # [setup-layout] 2026-11-24 wording from the Big Red One thread (bro.supported(): 64-bit Windows builds)
+        Milestone("Windows", TESTING, "Builds for 64-bit Windows; tested under Wine so far, not yet on a Windows PC."),
         Milestone("Multiplayer", LATER, "Not started."),
     ),
     FH: (   # [acct2-decomp] 2026-11-21 from fh/README.md and fh/config/discs.tsv (the port is acct2-fh's)
@@ -269,11 +277,12 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
     # [waw-decomp] 2026-11-09, from the second account's notes (dev/agents/acct2-waw, acct2-cod2, acct2-cod4)
     WAW: (
         Milestone("Recompile", READY, "Your Xbox 360 default.xex on Call of Duty 3's SDK, Linux and Windows."),
+        # [setup-layout] 2026-11-24 the ready rows first, as on the other tabs (it was last, after "Later")
+        Milestone("Content ripper", READY, "Fastfiles to open formats, for Call of Duty 3 (Content page)."),
         Milestone("Campaign", TESTING, "All 15 levels load and play; level-start saves; Nacht der Untoten loads."),
         Milestone("Frame rate", TESTING, "A frame limit up to 1000; films keep their speed; jump height next."),
         Milestone("Native renderer", NEXT, "Counting what it draws; skinning done natively."),
         Milestone("Multiplayer", LATER, "Not started."),
-        Milestone("Content ripper", READY, "Fastfiles to open formats, for Call of Duty 3 (Content page)."),
     ),
     COD2: (
         Milestone("Recompile", READY, "Your Xbox 360 programs on Call of Duty 3's SDK, Linux and Windows."),
@@ -289,15 +298,4 @@ PORT_STATUS: Dict[str, Tuple[Milestone, ...]] = {
         Milestone("Native renderer", NEXT, "Design notes; counting what it draws next."),
     ),
     CODUO: _PC_PORT,
-}
-# The documents behind each status page (in the project folder).
-STATUS_DOCS: Dict[str, Tuple[Tuple[str, str], ...]] = {
-    BRO: (("bro/README.md", "About the port"),),   # [acct2-bro]
-    FH: (("fh/README.md", "About the port"),),     # [acct2-decomp] 2026-11-21
-    WAW: (("docs/WAW_DECOMP.md", "Decompile notes"),),
-    COD2: (("docs/NEW_COPY.md", "New copy"), ("docs/PC_SERVER.md", "LAN server"),
-           ("docs/PC_MULTIPLAYER.md", "Cross-play")),
-    COD4: (),   # [waw-decomp]
-    CODUO: (("docs/NEW_COPY.md", "New copy"), ("docs/PC_SERVER.md", "LAN server"),
-            ("docs/PC_MULTIPLAYER.md", "Cross-play")),
 }

@@ -90,6 +90,12 @@
 #define NGL_CUR_SCENE        0x0090259Cu    /* ngl_curScene */
 #define SCENE_TIME           0x3CCu         /* a scene's time, set by nglSetSceneTime (0x0005E550) */
 #define GAME_LEVEL_TIME      0x0098540Cu    /* the game's level time (ms; the CoD2-BRO-Native-Loader's name) */
+/* [waw-decomp/coord2] 2026-11-23: the front end's fade-out step (float seconds, 1/30 on the disc). Only FE_FadeOut
+ * 0x0032D890 reads it (one reference, 0x0032D8CA): a loop that adds it to its time and draws two frames per step
+ * until 0x008D2090 (0.3 s) has gone by. At the Xbox's 30 frames a second a step takes 2/30 s and adds 1/30. */
+#define FE_FADE_STEP         0x008D208Cu
+#define FADE_STEP_MIN        (1.0 / 480.0)  /* the step's bounds: a frame rate from 480 down to 10 a second */
+#define FADE_STEP_MAX        0.1
 
 #define NS_PER_SECOND        1000000000ull
 #define VBLANKS_PER_SECOND   60ull          /* NTSC, the rate NGL's own arithmetic assumes (16.667 ms) */
@@ -105,6 +111,8 @@ static uint64_t flip_vblank;    /* the vblank the last frame ended at */
 static int pacing = 1;          /* wait for the game's own frame interval */
 static int64_t limit_ns;        /* the port's frame limit: the shortest frame (0: none) */
 static int64_t next_start;      /* the soonest the next frame may start under the limit */
+static int fade_realtime = -1;  /* [waw-decomp/coord2] fade step from real time: on unless BRO_FADE_REALTIME=0 */
+static int64_t frame_ends[2];   /* [waw-decomp/coord2] host times the last two frames ended, older first */
 
 /* The frame's parts (see the top of the file), added up until they are shown. */
 static struct {
@@ -355,6 +363,33 @@ void ngl_frame_clock_begin_frame(void)
     MEM32(NGL_FRAME_START_TSC + 4) = (uint32_t)(tsc >> 32);
 }
 
+/* [waw-decomp/coord2] 2026-11-23: FE_FadeOut's step follows real time. The loop draws two frames per step and adds
+ * the step, so the step that keeps the fade as long as on the Xbox (0.6 s at 30 frames a second) is half of what the
+ * last two frames took: 1/30 at 30 frames a second, as on the disc, and 1/60 at 60, where the disc's 1/30 made the
+ * fade twice as fast (the CoD2-BRO-Native-Loader's notes; re-read here from FE_FadeOut's own code). */
+static void update_fade_step(int64_t frame_end)
+{
+    union { float f; uint32_t bits; } step;
+    double seconds;
+
+    if (fade_realtime < 0) {
+        const char *value = getenv("BRO_FADE_REALTIME");
+
+        fade_realtime = !(value && value[0] == '0');  /* [waw-decomp/coord2] on: owner 2026-11-24 12:38, any fps */
+    }
+    if (fade_realtime && frame_ends[0]) {
+        seconds = (double)(frame_end - frame_ends[0]) / 2.0 / (double)NS_PER_SECOND;
+        if (seconds < FADE_STEP_MIN)
+            seconds = FADE_STEP_MIN;
+        if (seconds > FADE_STEP_MAX)
+            seconds = FADE_STEP_MAX;
+        step.f = (float)seconds;
+        MEM32(FE_FADE_STEP) = step.bits;
+    }
+    frame_ends[0] = frame_ends[1];
+    frame_ends[1] = frame_end;
+}
+
 void ngl_frame_clock_end_frame(void)
 {
     int64_t now = now_ns(), drawn, waited, show_at, held = 0;
@@ -424,6 +459,7 @@ void ngl_frame_clock_end_frame(void)
     flip_vblank = vblank;
     bro_view_apply();
     bro_game_cvars_frame();     /* [f2-menus] the F2 window's changes to the game's cvars go in at the frame's end */
+    update_fade_step(waited);   /* [waw-decomp/coord2] */
     count_frame(now, drawn, waited, now_ns(), held);
 }
 

@@ -459,6 +459,8 @@ class X86Oracle:
         self._return(handler(self, self._stack_args(nargs)), nargs)
 
     def _on_exit(self, uc, address, size, user):
+        if address in self._stand_ins:
+            return   # a stand-in of the spec's (its own hook answers; e.g. Com_Printf logged as a call)
         name, kind = self._exits[address]
         args = self._stack_args(2)
         if kind == "error":

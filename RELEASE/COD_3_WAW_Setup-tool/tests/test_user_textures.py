@@ -69,7 +69,7 @@ class InsigniaListTests(unittest.TestCase):
         self.rows = user_textures.read_list(TOOL_ROOT)
 
     def test_the_list_is_shipped_and_complete(self):
-        self.assertEqual(len(self.rows), 76)
+        self.assertEqual(len(self.rows), 78)  # [rexglue-native-settings] 2026-11-11: +2 multiplayer flag copies
         keys = [r.key for r in self.rows]
         self.assertEqual(len(set(keys)), len(keys))
         files = {r.file for r in self.rows}

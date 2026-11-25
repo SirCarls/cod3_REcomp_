@@ -5,6 +5,8 @@
 
 #include "game/native_window.h"
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
@@ -26,6 +28,7 @@ extern "C" {
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/kernel_state.h>
 #include <rex/ui/presenter.h>
+#include <rex/ui/window.h>  // [cod2-native] g10: the window's size (FollowWindowSize)
 #include <rex/ui/vulkan/presenter.h>
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
@@ -42,6 +45,7 @@ namespace cod2::native {
 namespace {
 
 bool g_native = false;  // set once, before the game starts (StartNativeVulkan)
+std::atomic<rex::ui::Window*> g_window{nullptr};  // [cod2-native] g10: the window the picture follows (SetWindow)
 
 #if defined(COD2_NGL_VK)
 // The window's presenter, and its Vulkan device in device when the window is drawn by Vulkan (else nullptr)
@@ -164,22 +168,10 @@ struct Feed {
 };
 Feed g_feed;
 
-// The upload buffer and the rest, made once for the window's device (false: they couldn't be)
-bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
-  if (f.device) return f.device == device && f.bytes >= bytes;
+// [cod2-native] g10: the upload buffer for bytes, mapped (false: it couldn't be made)
+bool MakeFeedBuffer(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
   const auto& dfn = device->functions();
   const VkDevice vk_device = device->device();
-  VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-  pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;  // begun again each frame
-  pool_info.queueFamilyIndex = device->queue_family_graphics_compute();
-  if (dfn.vkCreateCommandPool(vk_device, &pool_info, nullptr, &f.pool) != VK_SUCCESS) return false;
-  VkCommandBufferAllocateInfo allocate_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-  allocate_info.commandPool = f.pool;
-  allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-  allocate_info.commandBufferCount = 1;
-  if (dfn.vkAllocateCommandBuffers(vk_device, &allocate_info, &f.commands) != VK_SUCCESS) return false;
-  VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-  if (dfn.vkCreateFence(vk_device, &fence_info, nullptr, &f.fence) != VK_SUCCESS) return false;
   VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   buffer_info.size = bytes;
   buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -198,8 +190,47 @@ bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSiz
   void* mapped = nullptr;
   if (dfn.vkMapMemory(vk_device, f.memory, 0, VK_WHOLE_SIZE, 0, &mapped) != VK_SUCCESS) return false;
   f.mapped = static_cast<uint32_t*>(mapped);
-  f.device = device;
   f.bytes = bytes;
+  return true;
+}
+
+// The upload buffer and the rest, made once for the window's device (false: they couldn't be). [cod2-native] g10:
+// a larger picture (the window grew: FollowWindowSize) gets a larger buffer, after the last copy from the old one.
+bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
+  if (f.device) {
+    if (f.device != device) return false;
+    if (f.bytes >= bytes) return true;
+    const auto& dfn = device->functions();
+    const VkDevice vk_device = device->device();
+    if (f.pending) {
+      dfn.vkWaitForFences(vk_device, 1, &f.fence, VK_TRUE, UINT64_MAX);
+      dfn.vkResetFences(vk_device, 1, &f.fence);
+      f.pending = false;
+    }
+    dfn.vkUnmapMemory(vk_device, f.memory);
+    dfn.vkDestroyBuffer(vk_device, f.buffer, nullptr);
+    dfn.vkFreeMemory(vk_device, f.memory, nullptr);
+    f.buffer = VK_NULL_HANDLE;
+    f.memory = VK_NULL_HANDLE;
+    f.mapped = nullptr;
+    f.bytes = 0;
+    return MakeFeedBuffer(f, device, bytes);
+  }
+  const auto& dfn = device->functions();
+  const VkDevice vk_device = device->device();
+  VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
+  pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;  // begun again each frame
+  pool_info.queueFamilyIndex = device->queue_family_graphics_compute();
+  if (dfn.vkCreateCommandPool(vk_device, &pool_info, nullptr, &f.pool) != VK_SUCCESS) return false;
+  VkCommandBufferAllocateInfo allocate_info{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
+  allocate_info.commandPool = f.pool;
+  allocate_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  allocate_info.commandBufferCount = 1;
+  if (dfn.vkAllocateCommandBuffers(vk_device, &allocate_info, &f.commands) != VK_SUCCESS) return false;
+  VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+  if (dfn.vkCreateFence(vk_device, &fence_info, nullptr, &f.fence) != VK_SUCCESS) return false;
+  if (!MakeFeedBuffer(f, device, bytes)) return false;
+  f.device = device;
   return true;
 }
 #endif  // COD2_NGL_VK
@@ -290,7 +321,8 @@ void ShowOnGpu(const uint8_t table[3][256]) {
   }
   bool called = false, drawn = false;
   const bool refreshed = presenter->RefreshGuestOutput(
-      g_width, g_height, 16, 9, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+      // [cod2-native] g10: the picture's own shape (was 16:9), so a picture the window's size is shown pixel for pixel
+      g_width, g_height, g_width, g_height, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {
         auto& vulkan_context = static_cast<VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
         called = true;
         context.SetIs8bpc(true);
@@ -355,7 +387,7 @@ void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint
   rex::ui::vulkan::util::FlushMappedMemoryRange(device, g_feed.memory, g_feed.memory_type);
   using VulkanPresenter = rex::ui::vulkan::VulkanPresenter;
   const bool refreshed = presenter->RefreshGuestOutput(
-      width, height, 16, 9, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {
+      width, height, width, height, [&](rex::ui::Presenter::GuestOutputRefreshContext& context) -> bool {  // g10
         auto& vulkan_context = static_cast<VulkanPresenter::VulkanGuestOutputRefreshContext&>(context);
         context.SetIs8bpc(true);
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -399,11 +431,45 @@ void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint
       [](rex::ui::Presenter::GuestOutputRefreshTail tail) { g_painter->Run(std::move(tail)); });
   CountHandOver(refreshed, "copied up through the CPU");
 }
+
+void FollowWindowSize() {
+#if defined(NGL_VK_SET_TARGET_SIZE)
+  rex::ui::Window* window = g_window.load();
+  if (!window) return;
+  uint32_t width = window->GetActualPhysicalWidth(), height = window->GetActualPhysicalHeight();
+  if (!width || !height) return;  // minimized, or not shown yet: the size in use stays
+  // The largest 16:9 that fits (a wider window: bars at the sides; a taller one: above and below)
+  if (uint64_t{width} * 9 > uint64_t{height} * 16) {
+    width = height * 16 / 9;
+  } else {
+    height = width * 9 / 16;
+  }
+  width = std::clamp<uint32_t>(width, 320, 7680);
+  height = std::clamp<uint32_t>(height, 180, 4320);
+  if (width == g_width && height == g_height) return;
+  static uint32_t refused_width = 0, refused_height = 0;  // a size ngl_vk refused isn't asked for again each frame
+  if (width == refused_width && height == refused_height) return;
+  if (ngl_vk_set_target_size(width, height) != 0) {
+    refused_width = width;
+    refused_height = height;
+    REXLOG_WARN("cod2: native Vulkan: ngl_vk couldn't draw at {}x{} (see its reason on stderr); it stays at {}x{}",
+                width, height, g_width, g_height);
+    return;
+  }
+  REXLOG_INFO("cod2: native Vulkan: the picture is drawn at {}x{} (was {}x{}), the window being {}x{}", width, height,
+              g_width, g_height, window->GetActualPhysicalWidth(), window->GetActualPhysicalHeight());
+  g_width = width;
+  g_height = height;
+#endif
+}
 #else
 int StartNglVkForWindow(uint32_t, uint32_t) { return -1; }
 bool PictureOnGpu() { return false; }
 void ShowOnGpu(const uint8_t[3][256]) {}
 void ShowPixels(const uint8_t*, uint32_t, uint32_t, const uint8_t[3][256]) {}
+void FollowWindowSize() {}
 #endif  // COD2_NGL_VK
+
+void SetWindow(rex::ui::Window* window) { g_window.store(window); }  // [cod2-native] g10
 
 }  // namespace cod2::native

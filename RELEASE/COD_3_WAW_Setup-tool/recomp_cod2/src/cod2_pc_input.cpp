@@ -27,6 +27,9 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#include "inputkit/mouse.h"  // [input-port] the motion queue (cod2_mouse_resample)
+#include "game/rumble.h"  // [input-port] 2026-11-24 which device is in use: the first controller's vibration
+
 REXCVAR_DEFINE_BOOL(cod2_mouse_look, true, "cod2/Controls",
                     "Aim with the mouse through the game's own PC mouse look (its sensitivity, m_yaw, m_pitch and "
                     "m_filter), the pointer held while a level plays; off: the SDK's mouse-to-right-stick");
@@ -67,6 +70,18 @@ REXCVAR_DEFINE_STRING(cod2_debug_keys, "", "cod2/Debug",
                       "Debug: keys pressed and let go without a keyboard, \"<seconds>:<KEY>+|<seconds>:<KEY>-|...\", "
                       "the seconds counted from the first moment a level plays; once a second the log shows the "
                       "usercmd the game made of them");
+
+// [input-port] 2026-11-24 (owner: "make the controller module from our cod3 project work in the others ... Same goes
+// with how the mouse works"): Call of Duty 3's cod3_mouse_resample (on there since 2026-11-02, the owner confirmed the
+// smoother turning). The window hands the mouse's motion over in batches, as often as it runs its event loop; above
+// that rate some usercmds got no counts and the next a whole batch, an uneven turn. With this on, each batch is
+// spread over the time since the one before (at most 8 ms) and each read gets its share (inputkit::mouse::
+// MotionQueue): every count still reaches the game, at most one batch interval (8 ms) later.
+REXCVAR_DEFINE_BOOL(cod2_mouse_resample, true, "cod2/Controls",
+                    "Even mouse turning at high frame rates: the mouse's motion is spread over the time it arrived in, "
+                    "so every frame turns by its share (up to a few milliseconds later); off: each read takes what "
+                    "arrived since the last one")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(bool, mnk_mode);
 
@@ -153,9 +168,9 @@ bool KeysOn() {
 }
 
 // ------------------------------------------------------------------------------------------------- mouse motion
-std::mutex g_motion_mutex;
-float g_dx = 0.0f;  // motion not yet handed to the game; the fractions of a count stay for the next usercmd
-float g_dy = 0.0f;
+// Motion not yet handed to the game (window thread -> the usercmds); MouseMove carries the fractions of a count.
+// [input-port] 2026-11-24
+inputkit::mouse::MotionQueue g_motion;
 
 void AddMotion(float dx, float dy) {
   // [f2-menus] 2026-11-11 03:10 mouse acceleration and the sensitivity randomizer inside the game (f2_accel,
@@ -172,15 +187,10 @@ void AddMotion(float dx, float dy) {
     (void)ms;
 #endif
   }
-  std::lock_guard lock(g_motion_mutex);
-  g_dx += dx;
-  g_dy += dy;
+  g_motion.Add(dx, dy, NowNs(), REXCVAR_GET(cod2_mouse_resample));
 }
 
-void ClearMotion() {
-  std::lock_guard lock(g_motion_mutex);
-  g_dx = g_dy = 0.0f;
-}
+void ClearMotion() { g_motion.Clear(); }
 
 // [f2-menus] 2026-11-11 03:30 cod2_debug_mouse_events: started once, at the first usercmd that finds the setting.
 std::atomic<bool> g_test_mouse_on{false};
@@ -487,6 +497,7 @@ void RunKeyScript(int64_t now, bool playing) {
 
 // ------------------------------------------------------------------------------------------------- the window
 void Listener::OnKeyDown(rex::ui::KeyEvent& e) {
+  cod2::rumble::NoteKeyboardMousePress();  // [input-port] every key, taken or not: the keyboard is in use
   if (!KeysOn()) return;
   if (Press(Normalize(static_cast<uint32_t>(e.virtual_key())))) e.set_handled(true);
 }
@@ -495,6 +506,7 @@ void Listener::OnKeyDown(rex::ui::KeyEvent& e) {
 void Listener::OnKeyUp(rex::ui::KeyEvent& e) { Release(Normalize(static_cast<uint32_t>(e.virtual_key()))); }
 
 void Listener::OnMouseDown(rex::ui::MouseEvent& e) {
+  cod2::rumble::NoteKeyboardMousePress();  // [input-port]
   UpdateCapture();
   if (!KeysOn()) return;
   if (Press(kMouseButton + static_cast<uint32_t>(e.button()))) e.set_handled(true);
@@ -503,6 +515,7 @@ void Listener::OnMouseDown(rex::ui::MouseEvent& e) {
 void Listener::OnMouseUp(rex::ui::MouseEvent& e) { Release(kMouseButton + static_cast<uint32_t>(e.button())); }
 
 void Listener::OnMouseWheel(rex::ui::MouseEvent& e) {
+  if (e.scroll_y() != 0) cod2::rumble::NoteKeyboardMousePress();  // [input-port]
   if (!KeysOn() || e.scroll_y() == 0) return;
   const uint32_t key = e.scroll_y() > 0 ? kWheelUp : kWheelDown;
   if (Press(key)) {  // a notch is a press and a release at once
@@ -513,45 +526,29 @@ void Listener::OnMouseWheel(rex::ui::MouseEvent& e) {
 
 void Listener::OnMouseMove(rex::ui::MouseEvent& e) {
   UpdateCapture();
-  if (!captured_) return;
   // The motion is the game's alone while it holds the pointer: the SDK's driver doesn't turn the right stick too.
-  e.set_handled(true);
-  if (relative_) {
-    AddMotion(float(e.dx()), float(e.dy()));
-    return;
-  }
-  // No pointer lock: measure from the window's center and put the cursor back there.
-  AddMotion(float(e.x() - prev_x_), float(e.y() - prev_y_));
-  int32_t cx = 0, cy = 0;
-  if (window && window->WarpMouseToCenter(cx, cy)) {
-    prev_x_ = cx;
-    prev_y_ = cy;
+  float dx = 0.0f, dy = 0.0f;
+  // [input-port] 2026-11-24 the motion also tells which device is in use (game/rumble.h). Without the pointer held
+  // (a menu), it is the pointer's own movement since the last event (window thread only, so plain statics).
+  static int32_t last_x = 0, last_y = 0;
+  static bool have_last = false;
+  if (capture_.Motion(window, e, &dx, &dy)) {
+    AddMotion(dx, dy);
+    cod2::rumble::NoteMouseMotion(dx, dy);
+    have_last = false;
   } else {
-    prev_x_ = e.x();
-    prev_y_ = e.y();
+    if (have_last) cod2::rumble::NoteMouseMotion(float(e.x() - last_x), float(e.y() - last_y));
+    last_x = e.x();
+    last_y = e.y();
+    have_last = true;
   }
 }
 
 void Listener::UpdateCapture() {
   if (!window) return;
   const bool want = MouseLookOn() && g_playing.load(std::memory_order_relaxed) && window->HasFocus();
-  if (want == captured_) return;
-  ClearMotion();  // motion from before the switch belongs to the menu, not to the view
-  if (want) {
-    prev_cursor_ = window->GetCursorVisibility();
-    window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-    window->CaptureMouse();
-    relative_ = window->SetRelativeMouseMode(true);
-    if (!relative_) window->WarpMouseToCenter(prev_x_, prev_y_);
-    captured_ = true;
-    REXLOG_INFO("cod2: mouse look holds the pointer ({})", relative_ ? "relative mode" : "re-centering");
-  } else {
-    if (relative_) window->SetRelativeMouseMode(false);
-    window->ReleaseMouse();
-    window->SetCursorVisibility(prev_cursor_);
-    captured_ = false;
-    relative_ = false;
-  }
+  // Motion from before the switch belongs to the menu, not to the view.
+  if (capture_.Update(window, want, "cod2")) ClearMotion();
 }
 
 // ------------------------------------------------------------------------------------------------- the game's thread
@@ -602,10 +599,7 @@ void MouseMove(Ctx& ctx, uint8_t* base, Game game) {
   StartTestMouseOnce();  // [f2-menus] 03:30 cod2_debug_mouse_events
   const bool test_mouse = g_test_mouse_on.load(std::memory_order_relaxed);
   if ((MouseLookOn() && g_playing.load(std::memory_order_relaxed)) || test_mouse) {
-    std::lock_guard lock(g_motion_mutex);
-    fx = g_dx;
-    fy = g_dy;
-    g_dx = g_dy = 0.0f;
+    g_motion.Take(now, &fx, &fy);  // the motion due now (cod2_mouse_resample)
   }
   const DebugCounts debug = ReadDebugCounts();
   if (debug.on) {

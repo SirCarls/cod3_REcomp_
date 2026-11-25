@@ -52,6 +52,48 @@ int ngl_vk_output(uint64_t image, uint64_t view, uint32_t format, uint32_t width
 #define NGL_VK_OUTPUT_BOX 1
 void ngl_vk_set_shown_scale(uint32_t scale);
 
+/* [rexglue-native thread2] 2026-11-24 (owner 07:48: draw the required resolution, with no upscaling or
+ * downscaling): the target becomes width x height (the init's size until then).
+ *  - Returns 0 on success. Returns 0 at once, remaking nothing, when the target already is that size.
+ *  - Returns nonzero on failure (no device yet, a size of 0 or larger than the device allows, out of memory), and the
+ *    old target stays, whole and in use: the new set is built first and dropped if any of it can't be made.
+ *  - Called on the drawing thread between frames: after the last frame's ngl_vk_output or window copy, before the
+ *    next frame's first draw. Called inside a frame (a draw being recorded, or ngl_vk_begin_frame not yet ended by
+ *    ngl_vk_end_frame) it says so on stderr and returns nonzero.
+ *  - It waits only for the frame in flight that uses the old target (its fence, and ngl_vk_output's), never for the
+ *    whole device.
+ *  - Remade: the target and its depth, the MSAA twins and their resolve framebuffers, the opaque depth's copy (soft
+ *    depth), the host's read-back buffer, the effect buffers sized from the target (the depth of field's half and
+ *    quarters, the tint's copy and the last frame's picture, the afterimage's kept picture and its quarter, the
+ *    effect layer and the heat mask at half size), every framebuffer and descriptor set that points at them, and
+ *    the window's color-table image. Kept: the sky glow (256 x 256), the shadow map (2048), textures, meshes,
+ *    pipelines and passes (their viewports are dynamic).
+ *  - What came before is dropped: the next frame has no last picture (motion blur, afterimage), and pending depth
+ *    probe results are dropped (the probe's NDC points stay). ngl_vk_target_pixels and ngl_vk_output give nothing
+ *    until the next draw.
+ *  - MSAA (ngl_vk_set_msaa) keeps its samples when they fit the new size, else steps down by halves (8, 4, 2) to the
+ *    most that fit, and is let go only when not even 2 fit; the count it settles on is said on stderr once per
+ *    resize. "Fit" is what make_msaa_target checks at init: the device's framebufferColorSampleCounts,
+ *    framebufferDepthSampleCounts and sampledImageDepthSampleCounts all have that count, and width x height x
+ *    samples is at most ngl_vk's own budget MSAA_MOST_SAMPLES = 3840 x 2160 x 4 = 33,177,600 samples (ngl_vk.c; a
+ *    limit ngl_vk sets on the multisampled color and depth's memory, about 127 MiB each, not a device limit). So 4
+ *    samples do fit 3840 x 2160 exactly; 4 is stepped down to 2 only above that many pixels (e.g. 3840 x 2400 or
+ *    5120 x 2160), and 8 samples step down to 4 above 1920 x 2160's worth (4,147,200 pixels), so 8 at 4K becomes 4.
+ *  - The grass scissor (ngl_vk_set_grass_scissor) is in target pixels and lasts one frame: draw_grass uses it once
+ *    and clears it, and Call of Duty 3 (its one caller) sets it each frame with its grass, from that frame's split
+ *    screen part. So it needs nothing here; a caller that sets it must set it in the new size's pixels.
+ *  - A lower layer on ngl_vk_backend must take the backend again: the target's image and views have changed.
+ *  - Presenting. With a window, the placement is worked out in whole pixels; whenever the fitted size equals the
+ *    target's (for any port, called or not) the copy is the same-size path, each pixel as it is, at a whole-pixel
+ *    offset. Once this has been called, a target that fits in the window is copied one to one in the same way,
+ *    centered on black, rather than scaled up; only a target larger than the window is scaled down to fit, said once
+ *    on stderr. The placement and path are said on stderr once, and again after each resize or new swapchain. With ngl_vk_init_on_device, give ngl_vk_output an image of the same size (the caller resizes it, for
+ *    example with RefreshGuestOutput): then each pixel is copied as it is (another size is stretched to fill it).
+ *  - ngl_vk_set_shown_scale still applies (width x height is the drawn size).
+ * A port that never calls this draws and presents exactly as before. */
+#define NGL_VK_SET_TARGET_SIZE 1
+int ngl_vk_set_target_size(uint32_t width, uint32_t height);
+
 /* [acct2-bro] 2026-11-22 rn113c: MSAA for the 3D scene. ngl_vk_set_msaa(N), before ngl_vk_init or
  * ngl_vk_init_on_device: the main pass's first half (the opaque meshes and every cut-out, whose edges then take
  * their share of a pixel's samples) drawn with N samples a pixel (2, 4 or 8; fewer where the device can't, or the
@@ -73,6 +115,26 @@ uint32_t ngl_vk_msaa(void);
 #define NGL_VK_EFFECT_COUNT 1
 void ngl_vk_set_effect_count(int on, int precise_on_borrowed_device);
 int ngl_vk_effect_count(uint64_t *samples, uint64_t *screen);
+
+/* [acct2-bro] 2026-11-23 c3camo v2: textures made of compressed blocks as stored (Call of Duty 3's BC7 camos), so they
+ * take a quarter of an RGBA8 texture's memory and need no decoding on the CPU. ngl_vk_set_block_textures(1, has_it),
+ * before ngl_vk_init or ngl_vk_init_on_device: ngl_vk's own device turns textureCompressionBC on when the GPU has it
+ * and can sample BC7; on a borrowed device borrowed_device_has_it says whether its owner turned textureCompressionBC on
+ * at vkCreateDevice (0: no block textures there). Never called (the default): the device is made exactly as before
+ * and there are no block textures. A setting: it stays across ngl_vk_shutdown. ngl_vk_block_textures: 1 once ngl_vk
+ * has started with them. ngl_vk_texture_blocks: a texture like ngl_vk_texture_levels' (sampled the same way: UNORM,
+ * linear, its levels, the anisotropic sampler when it has more than one), its levels[i] being level i's blocks, max(1,
+ * width >> i) x max(1, height >> i) texels as ceil(w / 4) x ceil(h / 4) blocks of 16 bytes, rows of blocks packed
+ * (exactly that many bytes are read from each); level_count of them, stopping early at a NULL one, at most a full
+ * chain. Returns its number (1 and up; ngl_vk_forget frees it like any other), or 0 when it can't be made (no block
+ * textures, an unknown format): the caller then makes it from decoded pixels. Only NGL_VK_BLOCKS_BC7 (BC7 UNORM).
+ * NGL_VK_BLOCK_TEXTURES tells a caller that this header has it. */
+#define NGL_VK_BLOCK_TEXTURES 1
+#define NGL_VK_BLOCKS_BC7 7u
+void ngl_vk_set_block_textures(int on, int borrowed_device_has_it);
+int ngl_vk_block_textures(void);
+uint32_t ngl_vk_texture_blocks(uint32_t format, const void *const *levels, uint32_t level_count, uint32_t width,
+                               uint32_t height);
 
 /* A window to show the target in (Big Red One's own window). Called before ngl_vk_init: instance_extensions are the
  * instance extensions the window system needs (SDL_Vulkan_GetInstanceExtensions' list; the strings must outlive
@@ -186,6 +248,12 @@ uint32_t ngl_vk_texture_cube(const void *const *faces, uint32_t level_count, uin
  * last frame first. Call it between frames, on the thread that draws. [acct2-bro 2026-11-08] */
 void ngl_vk_forget(void);
 
+/* Forgets every mesh made so far, as ngl_vk_forget does, but keeps every texture: mesh numbers are given out again from
+ * 1, and every mesh number kept from before is no longer valid; texture numbers stay valid. For a caller whose mesh
+ * corners run out long before its textures do. It waits for the last frame first. Call it between frames, on the
+ * thread that draws. [cod2-native 2026-11-24] */
+void ngl_vk_forget_meshes(void);
+
 /* How many textures and mesh corners are in use, and how many there's room for. Any pointer may be NULL. */
 void ngl_vk_room(uint32_t *textures, uint32_t *texture_room, uint32_t *corners, uint32_t *corner_room);
 
@@ -273,6 +341,11 @@ struct ngl_vk_mesh_draw {
     float fog[3];               /* start and end (distances from the eye) and the fog's amount at the end; end <= start:
                                  * no fog. [waw-decomp] 2026-11-10: a start below 0 asks for exponential fog instead
                                  * (Call of Duty 2's): the amount at the end x (1 - 2^(start x the distance)). */
+    /* [waw-decomp] 2026-11-23: with a start below 0, the end is where the exponential fog begins: the amount at the
+     * end x (1 - 2^(start x max(the distance - end, 0))). An end of 0 is the curve above (Call of Duty 2 passes 0);
+     * an end below 0 is fog already at the eye (World at War's fog, kept = min(2^(c21.w - c21.y x c21.z x F x d), 1):
+     * start -(c21.y x c21.z x F), end c21.w / (c21.y x c21.z x F)). NGL_VK_FOG_START says this header has it. */
+#define NGL_VK_FOG_START 1
     uint32_t fog_color;         /* the fog's color, red, green, blue bytes, then the amount before the start (a byte) */
     /* NGL_VK_SHADE_LIGHT: when lit is 1, the scene's light for this mesh: the ambient color, plus one directional
      * light (light_direction is the way it travels, in world space; its color 0 for none, 0 to 4) and up to three
@@ -356,8 +429,11 @@ struct ngl_vk_mesh_draw {
     float irradiance[9][3];
     /* 1: its alpha is its corners' alpha alone, not its base texture's (Call of Duty 3's lightmapped world's second
      * layer, DiffuseMapB: drawn again over the first, blended by the weight each corner carries, lit the same way, so
-     * the two come out as the game's shader mixes them). 0: as before. */
+     * the two come out as the game's shader mixes them). 0: as before.
+     * [waw-decomp] 2026-11-24 (proposal): 2 (NGL_VK_CORNER_TIMES_MAP): the corners' alpha times the base texture's
+     * (World at War's second layers whose map has its own alpha; Call of Duty 2's grime). */
     uint32_t corner_alpha;
+#define NGL_VK_CORNER_TIMES_MAP 2
     /* [rexglue-native] 2026-11-09: split screen (Call of Duty 3's 2 to 4 local players). When scissor_width is above
      * 0, the draw only touches the target's pixels from scissor_x, scissor_y (its top-left corner, as the picture is
      * shown) to scissor_x + scissor_width, scissor_y + scissor_height: each player's view (its view_projection already
@@ -987,6 +1063,20 @@ void ngl_vk_set_film(const float first[4], const float gray[3], float scale, con
  * strength 0 or less: none. Only in a frame with meshes. */
 void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, float lean, const float toward[2]);
 
+/* [cod2-native] 2026-11-24: the IW engine's bloom (Call of Duty 2's r_glow; World at War and Call of Duty 4 have the
+ * same passes) for the next ngl_vk_draw_quads (one frame), drawn where ngl_vk_set_glow's sky glow is and in its place
+ * (it uses the sky glow's two small targets and its adding; a frame has one or the other). As the game draws it:
+ * glow_setup (the picture shrunk into a small target, each tap kept where its brightness reaches setup[0], as
+ * 1 + (rgb - 1) x setup[1], where something is drawn, the four averaged, then drawn toward their grey by setup[3]),
+ * then `blurs` passes of filter_symmetric (at most 4; pass k: taps[32k .. 32k + 31], eight tap pairs as the game's
+ * pixel constants c8-c15 hold them: x, y their place in the small target's 0..1, z unused, w the weight, each pair
+ * at plus and minus its place; weight 0: none), then glow_apply_bloom: the last blur added over the game's screen
+ * times intensity. intensity 0 or less: none. Only in a frame with meshes.
+ * sky_bleed (g4): glow_apply_sky_bleed's strength: the screen drawn toward the sky's color where the blurred sky share
+ * reaches it, by saturate(2 x share) x sky_bleed (the sky color here is the picture's own sky, blurred by the same
+ * passes, not the game's sky cube); 0: none. Either may be 0. */
+void ngl_vk_set_bloom(const float setup[4], const float *taps, uint32_t blurs, float intensity, float sky_bleed);
+
 /* [rexglue-native-fx] 2026-11-11 fx1: Call of Duty 3's heat haze (its "cdheathaze": the picture shimmers over fires,
  * engines and gun barrels). A blended mesh draw (NGL_VK_ALPHA_BLEND, effect_layer 1) whose `blend` is
  * NGL_VK_BLEND_HEAT_MASK is drawn into the effect layer's heat mask instead of the picture (built up as "over" builds
@@ -1104,6 +1194,28 @@ void ngl_vk_set_anisotropy(float most, int borrowed_device_has_it);
 
 /* [acct2-bro] 2026-11-12: the samples in use (see ngl_vk_set_anisotropy) once ngl_vk has started; 1: none. */
 float ngl_vk_anisotropy(void);
+
+/* [rexglue-native thread2] 2026-11-24: depth probes, for a game that tells whether a point is hidden by one texel of
+ * the scene's depth (Call of Duty 3's light coronas: the Xbox 360 read its resolved depth at each corona's screen
+ * point; natively there is no resolve, and the ray that stood in can't see static models or vehicles, so a lamp
+ * glowed through The Mace's tank). ngl_vk_probe_depth(points, count), before the next ngl_vk_draw_quads: up to
+ * NGL_VK_DEPTH_PROBES points of that draw's 3D in Direct3D's normalized device coordinates (x right, y up, -1 to 1:
+ * a corner's clip position through the draw's view_projection, over its w), which ngl_vk places on the target
+ * through the same viewport its meshes are drawn through (the game's screen scaled to fit and centered), so a point
+ * and the meshes around it land on the same pixel. After the opaque half (the depth the soft effects read: the
+ * opaque meshes, cut-outs and grass; with MSAA each pixel's first sample, as the depth resolve leaves it) the texel
+ * under each point is copied into a small buffer the host reads, two slots in turn; nothing waits for it. Only that
+ * draw takes the points (a draw without meshes takes none, and they are dropped). Returns the frame number its
+ * results will carry (0: no points taken).
+ * ngl_vk_probe_results: the depths of the newest frame whose GPU work is done (the fence finish_frame waits for has
+ * signalled), in the order given: 0 near to 1 far as the meshes' depth (D32_SFLOAT, not reversed; the cleared 1
+ * where nothing was drawn), -1 for a point off the target. Up to max of them; returns how many (0: none yet) and
+ * that frame's number in *frame (unless NULL). Never waits for the GPU. Both on the thread that draws. Nothing is
+ * made or recorded until points are given. NGL_VK_DEPTH_PROBE tells a caller that this header has them. */
+#define NGL_VK_DEPTH_PROBE 1
+#define NGL_VK_DEPTH_PROBES 64u
+uint64_t ngl_vk_probe_depth(const float (*points)[2], uint32_t count);
+uint32_t ngl_vk_probe_results(float *depths, uint32_t max, uint64_t *frame);
 
 /* Frees everything ngl_vk_init (or ngl_vk_init_on_device) made. */
 void ngl_vk_shutdown(void);

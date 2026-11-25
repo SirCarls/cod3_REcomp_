@@ -51,6 +51,10 @@
 
 #include "game/keybinds/keys.h"
 
+namespace inputkit::binds {
+struct Table;
+}
+
 namespace cod3::binds {
 
 enum class Action : uint8_t {
@@ -147,6 +151,9 @@ struct ActionDef {
 };
 
 const ActionDef& Def(Action action);
+// [input-port] 2026-11-24 The actions as the shared inputkit library sees them (id, label, kind, default keys;
+// game/keybinds/pad_model.cpp passes it on).
+const inputkit::binds::Table& ActionTable();
 // The Vehicle group: keys of their own, apart from the on-foot actions' keys.
 bool IsVehicleAction(Action action);
 // By id or by the game's command (case-insensitive); Action::kCount when none.

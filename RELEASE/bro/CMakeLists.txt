@@ -80,6 +80,7 @@ add_executable(bro
     src/main.c
     src/recomp_manual.c
     src/runtime/bro_fast_sincos.c       # [acct2-bro] the game's fast sine and cosine (0x000110F0), natively
+    src/runtime/bro_physics_step.c      # [waw-decomp/bro1] the game's physics in fixed steps (0x00233BD0)
     src/ngl/ngl_log.c
     src/ngl/ngl_frame_clock.c
     src/ngl/ngl_movie.c
@@ -149,6 +150,20 @@ endif()
 if(UNIX)
     target_link_libraries(bro PRIVATE m)
 endif()
+# [input-port] 2026-11-24: inputkit (the project's inputkit/ folder, the input code every game shares: the key names
+# and bind rules of src/input/bro_binds.c, the sticks' dead zone in bro_pad.c), next to bro/ unless INPUTKIT_DIR names
+# it. It is C++ inside with a C interface, so the program links as C++.
+enable_language(CXX)
+if(NOT INPUTKIT_DIR)
+    get_filename_component(INPUTKIT_DIR "${BRO_REPO_DIR}/inputkit" ABSOLUTE)
+endif()
+if(NOT EXISTS "${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+    message(FATAL_ERROR "bro: the project's inputkit/ folder wasn't found (INPUTKIT_DIR, or next to bro/). "
+        "Configure with -DINPUTKIT_DIR=<project>/inputkit.")
+endif()
+include("${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+inputkit_add_library()
+inputkit_link_c(bro)
 find_package(Threads REQUIRED)
 # dladdr and a timer thread, for src/debug/bro_debug.c's crash and where-is-it reports
 target_link_libraries(bro PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)

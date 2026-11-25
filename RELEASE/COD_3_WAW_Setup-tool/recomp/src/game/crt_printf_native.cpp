@@ -76,6 +76,7 @@
 #include "game/text_copy_check.h"  // [acct2-main] 2026-11-21
 
 #include "game/program.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 REXCVAR_DEFINE_BOOL(cod3_native_printf, true, "cod3/Performance",
                     "The C runtime's formatted output (sprintf, _vsnprintf and the like) runs as "
@@ -177,10 +178,12 @@ inline bool Overlap(uint64_t a, uint64_t na, uint64_t b, uint64_t nb) {
 
 // __lookuptable: byte ch - 32 (for ' ' to 'x') has the character's class in
 // its low nibble; byte class * 8 + state has the next state in its high one.
-constexpr uint32_t kLookup = COD3_ADDR(0x8205BCB8, 0x8205A740);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kLookup = COD3_ADDR(0x8205BCB8, A(0x8205A740));
 constexpr uint32_t kLookupSize = 128;
 // The address of "(null)", printed for a null %s.
-constexpr uint32_t kNullStringPtr = COD3_ADDR(0x8205BCB0, 0x8205A738);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kNullStringPtr = COD3_ADDR(0x8205BCB0, A(0x8205A738));
 // The locale data's address; +200 holds the ctype table _isleadbyte reads.
 constexpr uint32_t kLocalePtr = COD3_ADDR(0x825C7048, 0x825CC558);
 // _iob: stdout is +32, stderr +64 (the game's code prints those to the debug

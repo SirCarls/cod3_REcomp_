@@ -1,6 +1,6 @@
 """The Finest Hour tab's pages ([acct2-decomp] 2026-11-21, owner 11:18 "add finest hour to the tabs"; he chose a full
-tab like Big Red One's): Set up (your Xbox disc, then Build: c3w/fh.py), Play and Port status (gui_games.py's
-_page_status). Big Red One's pages (gui_games.py) are the pattern; the port's own settings are in fh.toml, which the
+tab like Big Red One's): Set up (your Xbox disc, then Build: c3w/fh.py), Play and Port status (now a section of
+the About page: gui_games._status_section, [setup-layout] 2026-11-24). Big Red One's pages (gui_games.py) are the pattern; the port's own settings are in fh.toml, which the
 game's F2 window changes too, so the Play page only has what a start needs.
 
 A mixin for gui.App, like gui_games.Games: it uses the App's variables and helpers (v_out, v_work, v_install,
@@ -16,7 +16,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Optional
 
-from . import common, fh, widgets
+from . import common, disc_hd, fh, upscale, widgets
 from .common import IS_WINDOWS
 from .pipeline import TOOL_VERSION
 from .widgets import hint, px, section, tip
@@ -34,6 +34,10 @@ class FhPages:
         self.v_fh_fullscreen = tk.BooleanVar()
         self.v_fh_vsync = tk.BooleanVar()
         self.v_fh_skip_films = tk.BooleanVar()
+        # [setup-layout] 2026-11-24 the HD texture pack (c3w/disc_hd.py): made by a build, used by a start.
+        self.v_fh_hd = tk.BooleanVar()
+        self.v_fh_hd_build = tk.BooleanVar(value=s.get("fh_hd_build") is True)
+        self.v_fh_hd_status = tk.StringVar(value="")
         self._fh_set_play(fh.PlayOptions.from_settings(s))
         self.v_fh_status = tk.StringVar(value="")
         self.v_fh_play_reason = tk.StringVar(value="")
@@ -48,20 +52,24 @@ class FhPages:
         self.v_fh_fullscreen.set(play.fullscreen)
         self.v_fh_vsync.set(play.vsync)
         self.v_fh_skip_films.set(play.skip_films)
+        self.v_fh_hd.set(play.hd_textures)
 
     def _fh_play_options(self) -> "fh.PlayOptions":
         size = self.v_fh_size.get().strip()
         language = next((key for key, label in fh.LANGUAGES if label == self.v_fh_language.get()), "")
         return fh.PlayOptions(fullscreen=bool(self.v_fh_fullscreen.get()), vsync=bool(self.v_fh_vsync.get()),
                               size="" if size == DEFAULT_SIZE else size, language=language,
-                              skip_films=bool(self.v_fh_skip_films.get()))
+                              skip_films=bool(self.v_fh_skip_films.get()), hd_textures=bool(self.v_fh_hd.get()))
 
     def _fh_settings(self) -> dict:
-        return {"fh_source": self.v_fh_source.get(), **self._fh_play_options().to_settings()}
+        return {"fh_source": self.v_fh_source.get(), "fh_hd_build": bool(self.v_fh_hd_build.get()),
+                **self._fh_play_options().to_settings()}
 
     def _fh_apply_settings(self, s: dict) -> None:
         if isinstance(s.get("fh_source"), str):
             self.v_fh_source.set(s["fh_source"])
+        if isinstance(s.get("fh_hd_build"), bool):
+            self.v_fh_hd_build.set(s["fh_hd_build"])
         merged = {**self._fh_play_options().to_settings(), **{k: v for k, v in s.items() if k.startswith("fh_")}}
         self._fh_set_play(fh.PlayOptions.from_settings(merged))
 
@@ -112,6 +120,19 @@ class FhPages:
         tip(ttk.Checkbutton(opts, text="Delete the build files when done", variable=self.v_cleanup),
             "The same setting as Call of Duty 3's. The recompiled C is the game's code; it stays in the work "
             "folder only while it is needed.").pack(anchor="w")
+        tip(ttk.Checkbutton(opts, text="Make HD textures (waifu2x)", variable=self.v_fh_hd_build),
+            "After the build, the disc's textures are read and upscaled with waifu2x, with the style, noise "
+            "reduction and scale chosen for Call of Duty 3's upscaling, into fh/hd in the output folder. Takes a "
+            "while the first time; a later build only does new ones. Play's \"HD textures\" uses them.").pack(
+            anchor="w")
+        # [waw-decomp/speed1] 2026-11-23 (owner 21:00): the kept recompiler output (bro.LiftCache), emptied on purpose
+        if not hasattr(self, "v_clear_lift_cache"):
+            self.v_clear_lift_cache = tk.BooleanVar(value=False)   # shared by Big Red One's and Finest Hour's tabs
+        tip(ttk.Checkbutton(opts, text="Clear the lift cache (recompile from scratch)",
+                            variable=self.v_clear_lift_cache),
+            "Each disc's recompiled C is kept, compressed, in the work folder's tools/lift-cache (cleanup or not), "
+            "so the next build of the same disc skips the long recompile. Tick this to delete it first: the next "
+            "build recompiles. It unticks itself when that build starts.").pack(anchor="w")
         ok, why = fh.supported()
         if not ok:
             hint(b, why, style="Warn.TLabel").pack(anchor="w", pady=(px(8), 0))
@@ -172,7 +193,11 @@ class FhPages:
         opts = fh.BuildOptions(source=self.v_fh_source.get(), output_dir=str(self._out_path()),
                                work_dir=self.v_work.get().strip() or str(common.default_work_dir()),
                                jobs=self._jobs(), install_deps=bool(self.v_install.get()),
-                               cleanup=bool(self.v_cleanup.get()), tool_version=TOOL_VERSION)
+                               cleanup=bool(self.v_cleanup.get()), tool_version=TOOL_VERSION,
+                               clear_lift_cache=self._take_clear_lift_cache(),   # [waw-decomp/speed1] 2026-11-23
+                               hd_build=bool(self.v_fh_hd_build.get()),   # [setup-layout] 2026-11-24
+                               upscale_settings=upscale.Settings(self._upscale_model_key(),
+                                                                 self._upscale_noise_level(), self._upscale_scale()))
         self._save_quietly()
         common.APPROVAL.reset()
 
@@ -219,11 +244,15 @@ class FhPages:
         boxes.grid(row=len(rows), column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         for text, var, help_text in (("Fullscreen", self.v_fh_fullscreen, "Fill the screen instead of a window."),
                                      ("VSync", self.v_fh_vsync, "Wait for the screen's refresh (no tearing)."),
-                                     ("Skip films", self.v_fh_skip_films, "Every film stops as soon as it starts.")):
+                                     ("Skip films", self.v_fh_skip_films, "Every film stops as soon as it starts."),
+                                     ("HD textures", self.v_fh_hd,
+                                      "The upscaled textures a build made with \"Make HD textures\" on (Set up).")):
             tip(ttk.Checkbutton(boxes, text=text, variable=var), help_text).pack(side="left", padx=(0, px(14)))
         hint(s, "Saved for the next start; each wins over fh.toml for this start only. The game keeps its own "
                 "options and saves in saves/.").grid(row=len(rows) + 1, column=0, columnspan=3, sticky="w",
                                                      pady=(px(6), 0))
+        hint(s, var=self.v_fh_hd_status).grid(row=len(rows) + 2, column=0, columnspan=3, sticky="w",
+                                              pady=(px(4), 0))
 
         f = section(t, "Folders", 5, columns=1)
         bf = ttk.Frame(f)
@@ -277,7 +306,7 @@ class FhPages:
             with open(log_path, "wb") as f:
                 kwargs = {} if IS_WINDOWS else {"start_new_session": True}
                 self._fh_proc = common.start_and_collect(cmd, on_exit=ended, cwd=str(lay.out),
-                                                         env=fh.play_env(opts), stdout=f,
+                                                         env=fh.play_env(opts, game_out=lay.out), stdout=f,
                                                          stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                                                          **kwargs)
         except OSError as e:
@@ -301,6 +330,7 @@ class FhPages:
             self.btn_fh_play_page.configure(state="disabled" if play_why else "normal")
             self.v_fh_play_reason.set(play_why or "Ready: built from your disc.")
             self.lbl_fh_play_reason.configure(style="Warn.TLabel" if play_why else "Good.TLabel")
+            self.v_fh_hd_status.set(disc_hd.status(self._fh_out()))
         return why
 
     def _fh_make_actions(self, f, labels: dict) -> None:

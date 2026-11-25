@@ -22,6 +22,7 @@
 #include "waw_f2.h"
 #include "f2/f2_common.h"  // [f2-menus] 2026-11-11 f2::accel: mouse acceleration and the sensitivity randomizer inside the game
 #include "waw_keys.h"
+#include "inputkit/mouse.h"  // [input-port] the motion queue (waw_mouse_resample)
 
 REXCVAR_DEFINE_BOOL(waw_mouse_look, true, "waw",
                     "Aim with the mouse through the game's own mouse look (its sensitivity, m_yaw, m_pitch, m_filter "
@@ -36,6 +37,18 @@ REXCVAR_DEFINE_STRING(waw_debug_mouse_events, "", "waw",
                       "Debug: a test mouse \"dx,dy,hz\": dx,dy counts hz times a second from a thread of its own, as "
                       "a mouse sends them whatever the game draws; once a second the log shows the counts handed to "
                       "the game");
+
+// [input-port] 2026-11-24 (owner: "make the controller module from our cod3 project work in the others ... Same goes
+// with how the mouse works"): Call of Duty 3's cod3_mouse_resample (on there since 2026-11-02, the owner confirmed the
+// smoother turning). The window hands the mouse's motion over in batches, as often as it runs its event loop; above
+// that rate some usercmds got no counts and the next a whole batch, an uneven turn. With this on, each batch is
+// spread over the time since the one before (at most 8 ms) and each read gets its share (inputkit::mouse::
+// MotionQueue): every count still reaches the game, at most one batch interval (8 ms) later.
+REXCVAR_DEFINE_BOOL(waw_mouse_resample, true, "waw",
+                    "Even mouse turning at high frame rates: the mouse's motion is spread over the time it arrived in, "
+                    "so every frame turns by its share (up to a few milliseconds later); off: each read takes what "
+                    "arrived since the last one")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REXCVAR_DECLARE(bool, mnk_mode);
 
@@ -54,9 +67,8 @@ using Clock = std::chrono::steady_clock;
 constexpr int64_t kInGameWindowNs = 1'500'000'000;
 
 std::atomic<int64_t> g_last_read_ns{0};
-std::mutex g_mutex;
-float g_dx = 0.0f;  // motion not yet handed to the game; the fractions of a count stay for the next read
-float g_dy = 0.0f;
+// Motion not yet handed to the game (window thread -> the game's reads). [input-port] 2026-11-24
+inputkit::mouse::MotionQueue g_motion;
 
 int64_t NowNs() { return Clock::now().time_since_epoch().count(); }
 
@@ -71,9 +83,7 @@ void AddMotion(float dx, float dy) {
     last_ns = now;
     f2::accel::Apply(&dx, &dy, ms);
   }
-  std::lock_guard lock(g_mutex);
-  g_dx += dx;
-  g_dy += dy;
+  g_motion.Add(dx, dy, NowNs(), REXCVAR_GET(waw_mouse_resample));
 }
 
 // [f2-menus] 2026-11-11 04:00 waw_debug_mouse_events: started once, at the first read that finds the setting.
@@ -97,10 +107,7 @@ void StartTestMouseOnce() {
   }).detach();
 }
 
-void ClearMotion() {
-  std::lock_guard lock(g_mutex);
-  g_dx = g_dy = 0.0f;
-}
+void ClearMotion() { g_motion.Clear(); }
 
 bool InGame() { return NowNs() - g_last_read_ns.load(std::memory_order_relaxed) < kInGameWindowNs; }
 
@@ -190,23 +197,9 @@ void ApplyInputDefaults() {
 
 void Listener::OnMouseMove(rex::ui::MouseEvent& e) {
   UpdateCapture();
-  if (!captured_) return;
   // The motion is the game's alone while it holds the pointer: the SDK's driver doesn't turn the right stick too.
-  e.set_handled(true);
-  if (relative_) {
-    AddMotion(float(e.dx()), float(e.dy()));
-    return;
-  }
-  // No pointer lock: measure from the window's center and put the cursor back there.
-  AddMotion(float(e.x() - prev_x_), float(e.y() - prev_y_));
-  int32_t cx = 0, cy = 0;
-  if (window && window->WarpMouseToCenter(cx, cy)) {
-    prev_x_ = cx;
-    prev_y_ = cy;
-  } else {
-    prev_x_ = e.x();
-    prev_y_ = e.y();
-  }
+  float dx = 0.0f, dy = 0.0f;
+  if (capture_.Motion(window, e, &dx, &dy)) AddMotion(dx, dy);
 }
 
 void Listener::OnMouseDown(rex::ui::MouseEvent& e) {
@@ -218,23 +211,8 @@ void Listener::UpdateCapture() {
   if (!window) return;
   const bool want = Enabled() && InGame() && !waw::keys::MenuTakesKeys() && window->HasFocus() &&
                     waw::f2ui::GameGetsInput();
-  if (want == captured_) return;
-  ClearMotion();  // motion from before the switch belongs to the menu, not to the view
-  if (want) {
-    prev_cursor_ = window->GetCursorVisibility();
-    window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-    window->CaptureMouse();
-    relative_ = window->SetRelativeMouseMode(true);
-    if (!relative_) window->WarpMouseToCenter(prev_x_, prev_y_);
-    captured_ = true;
-    REXLOG_INFO("waw: mouse look holds the pointer ({})", relative_ ? "relative mode" : "re-centering");
-  } else {
-    if (relative_) window->SetRelativeMouseMode(false);
-    window->ReleaseMouse();
-    window->SetCursorVisibility(prev_cursor_);
-    captured_ = false;
-    relative_ = false;
-  }
+  // Motion from before the switch belongs to the menu, not to the view.
+  if (capture_.Update(window, want, "waw")) ClearMotion();
 }
 
 }  // namespace waw::mouse
@@ -253,11 +231,16 @@ REX_HOOK_RAW(sub_822C9068) {
   StartTestMouseOnce();  // [f2-menus] 04:00 waw_debug_mouse_events
   const bool test_mouse = g_test_mouse_on.load(std::memory_order_relaxed);
   if (waw::mouse::Enabled() || test_mouse) {
-    std::lock_guard lock(g_mutex);
-    dx = static_cast<int32_t>(std::trunc(g_dx));
-    dy = static_cast<int32_t>(std::trunc(g_dy));
-    g_dx -= float(dx);
-    g_dy -= float(dy);
+    // The motion due now (waw_mouse_resample), as whole counts; the fractions of a count stay for the next read.
+    static float carry_x = 0.0f, carry_y = 0.0f;  // the game's thread only
+    float fx = 0.0f, fy = 0.0f;
+    g_motion.Take(NowNs(), &fx, &fy);
+    fx += carry_x;
+    fy += carry_y;
+    dx = static_cast<int32_t>(std::trunc(fx));
+    dy = static_cast<int32_t>(std::trunc(fy));
+    carry_x = fx - float(dx);
+    carry_y = fy - float(dy);
   }
   const DebugCounts debug = ReadDebugCounts();
   if (debug.on) {

@@ -68,7 +68,11 @@ MP_OWN = re.compile(r"^(main_mp\.cpp|cod3mp_app\.(h|cpp)|game/mp_hooks\.cpp|game
 HOOK_RE = re.compile(r"\bREX_(HOOK_RAW|HOOK|EXTERN)\(\s*([A-Za-z_][A-Za-z0-9_]*)")
 SUB_RE = re.compile(r"^sub_([0-9A-F]{8})$")
 LIT_RE = re.compile(r"\b0x8[23][0-9A-Fa-f]{6}\b")
-COD3_ADDR_RE = re.compile(r"COD3_ADDR\(\s*(0x[0-9A-Fa-f]+)\s*,\s*(0x[0-9A-Fa-f]+|0)\s*\)")
+# [waw-decomp/coord2] 2026-11-24: the MP address may be A(0x...), build_address.h's "this build's address of a USA
+# address" (tools/discmap, 11-23): its literal is the USA one, checked as a bare one is.
+COD3_ADDR_RE = re.compile(r"COD3_ADDR\(\s*(0x[0-9A-Fa-f]+)\s*,\s*"
+                          r"(?:A\(\s*(0x[0-9A-Fa-f]+)\s*\)|(0x[0-9A-Fa-f]+|0))\s*\)")
+cod3_addr_mp = lambda m: int(m.group(2) or m.group(3), 16)  # noqa: E731  the MP address, bare or in A()
 COD3_TEXT_RE = re.compile(r'COD3_TEXT\(\s*"[^"]*?(8[23][0-9A-Fa-f]{6})[^"]*"\s*,\s*"[^"]*?(8[23][0-9A-Fa-f]{6})[^"]*"\s*\)')
 CONST_RE = re.compile(r"^\s*inline constexpr\s+([A-Za-z_][A-Za-z0-9_:]*)\s+(.+?);\s*(//.*)?$")
 NS_OPEN_RE = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_:]*)\s*\{")
@@ -501,7 +505,7 @@ def generate(recomp: Path, problems: Problems, report: list | None = None):
             continue
         body = drop_mp_conditionals(code)
         for m in COD3_ADDR_RE.finditer(body):
-            sp, mp = int(m.group(1), 16), int(m.group(2), 16)
+            sp, mp = int(m.group(1), 16), cod3_addr_mp(m)
             sym = f"lit:{rel}:{sp:08X}"
             rs = by_symbol.get(sym)
             if not rs:

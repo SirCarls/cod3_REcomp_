@@ -184,6 +184,8 @@ const uint SOFT = 64u;                      // PUSH_SOFT: faded near the opaque 
                                             // negative: its own depth in the lightmap v, rn42j)
 const uint CORNER_ALPHA = 128u;             // PUSH_CORNER_ALPHA: the alpha is the corners' alone (the world's layer B)
 const uint MODE_SHIFT = 8u;                 // PUSH_MODE_SHIFT
+const uint CORNER_TIMES_MAP = 0x20000000u;  // [waw-decomp] 2026-11-24 (proposal): PUSH_CORNER_TIMES_MAP
+const uint SLOT_MASK = 0x1FFFu;             // [waw-decomp] 2026-11-24 (proposal): the slot's 13 bits after >> 16
 
 // How much of the sun reaches this pixel, 0 to 1: four comparisons half a texel around it, averaged (each filtered
 // where the GPU filters depth). Outside the map, or for a draw not shadowed, all of it. The map's v runs down where
@@ -470,7 +472,7 @@ void main()
     float cut_edge = own_cut ? uintBitsToFloat(light_colors[3]) - 0.5 / 255.0 : 128.0 / 255.0;
     // [rexglue-native] 2026-11-09: the uniforms' fabric (ngl_vk.h fabric_mask): its numbers ride in the draw's slot
 #ifndef NGL_VK_FOUR_SETS
-    uint fabric_slot = (mode & MODE_BUMPED) != 0u && (mode & MODE_SPECULAR) != 0u ? flags >> 16 : 0u;
+    uint fabric_slot = (mode & MODE_BUMPED) != 0u && (mode & MODE_SPECULAR) != 0u ? ((flags >> 16) & SLOT_MASK) : 0u;
     bool fabric = fabric_slot != 0u && draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT].w > 0.0;
     vec4 fabric_numbers = fabric ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT] : vec4(0.0);
     vec3 fabric_sheen = fabric ? draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT + 1u].rgb : vec3(1.0);
@@ -502,12 +504,12 @@ void main()
                   draw_lights[DRAW_LIGHT_VEC4S * (fabric_slot - 1u) + FABRIC_AT + 2u].y > 0.0;
     // rn40: the glass (FC767C09DBD34C2A with a cube): not bumped, mixed or shiny, its slot's third vec4's z 1 (only the
     // fabric's kinds write there otherwise, and they are bumped)
-    uint lens_slot = (mode & (MODE_BUMPED | MODE_MIX | MODE_SHINY)) == 0u ? flags >> 16 : 0u;
+    uint lens_slot = (mode & (MODE_BUMPED | MODE_MIX | MODE_SHINY)) == 0u ? ((flags >> 16) & SLOT_MASK) : 0u;
     // [acct2-bro] 2026-11-22 rn111: a shiny draw's own strength and tint (ngl_vk.h env_strength): shiny with the
     // mix's by-alpha bit (ngl_vk.c sets the pair on these draws alone; shiny is never mixed), its slot's last vec4
     // the tint in rgb and the strength in w (0: as before)
     uint shiny_slot = (mode & (MODE_SHINY | MODE_BY_ALPHA | MODE_BUMPED | MODE_MIX)) == (MODE_SHINY | MODE_BY_ALPHA)
-                          ? flags >> 16 : 0u;
+                          ? ((flags >> 16) & SLOT_MASK) : 0u;
     vec4 shiny_numbers = shiny_slot != 0u ? draw_lights[DRAW_LIGHT_VEC4S * (shiny_slot - 1u) + METAL_AT + 3u]
                                           : vec4(0.0);
     bool lens = lens_slot != 0u && draw_lights[DRAW_LIGHT_VEC4S * (lens_slot - 1u) + FABRIC_AT + 2u].z > 0.0;
@@ -526,7 +528,7 @@ void main()
         normal = cod3_bent;
     // [waw-decomp] 2026-11-10: Call of Duty 2's detail map (ngl_vk.h detail_add_map; its "_dtl" pixel shaders): any
     // slot that is not the fabric's, the metal's, the glass's or the water's, its third fabric vec4's w 2
-    uint detail_slot = flags >> 16;
+    uint detail_slot = ((flags >> 16) & SLOT_MASK);
     bool detail_add = detail_slot != 0u && !fabric && !metal && !lens && !water &&
                       draw_lights[DRAW_LIGHT_VEC4S * (detail_slot - 1u) + FABRIC_AT + 2u].w > 1.5;
     // [waw-decomp] 2026-11-10: Call of Duty 2's world surfaces with a highlights' lookup (ngl_vk.h specular_lookup,
@@ -658,7 +660,7 @@ void main()
         // way): T along dP/du (the slopes' determinant's sign keeps it along rising u), square to the normal, and
         // B = T x N. The cotangent pair above has B along rising v: the other way round where the coordinates
         // aren't mirrored (the Garand's stamped letters and the hands' streaks came out raised)
-        uint frame_slot = flags >> 16;
+        uint frame_slot = ((flags >> 16) & SLOT_MASK);
         uint frame_at = DRAW_LIGHT_VEC4S * (max(frame_slot, 1u) - 1u) + IRRADIANCE_AT;
         if (!lookup && frame_slot != 0u && draw_lights[frame_at].w > 0.0 && draw_lights[frame_at + 8u].w > 0.0) {
             float slopes = uv_x.x * uv_y.y - uv_y.x * uv_x.y;
@@ -847,7 +849,7 @@ void main()
             float facing_up = dot(up, up) > 0.0 ? dot(normal, normalize(up)) : 1.0;
             float facing_sun = dot(toward, toward) > 0.0 ? max(dot(normal, normalize(toward)), 0.0) : 0.0;
 
-            vec3 nearby = nearby_light(flags >> 16, normal, normal, vec2(0.0));
+            vec3 nearby = nearby_light(((flags >> 16) & SLOT_MASK), normal, normal, vec2(0.0));
 
             light = ambient.r * (second.rgb * (1.0 + ambient.g * facing_up) +
                                  unpacked_color(light_colors[0]) * second.a * facing_sun * sun_reaching() + nearby);
@@ -855,7 +857,7 @@ void main()
             if (world_lookup) {     // [waw-decomp] 6C7F0E21C61DF68F's instructions 14, 17, 29 to 31 and 39: the
                                     // specular map's color x the highlights' color x the lookup at (the map's alpha,
                                     // N.H) x mix(the shadowed share, 1, the sun's share x the sun's reach)
-                uint at = DRAW_LIGHT_VEC4S * ((flags >> 16) - 1u);
+                uint at = DRAW_LIGHT_VEC4S * ((((flags >> 16) & SLOT_MASK)) - 1u);
                 vec3 to_eye = vec3(eye_x.w, eye_y.w, eye_w.w) - object_position;
 
                 if (dot(toward, toward) > 0.0 && dot(to_eye, to_eye) > 0.0) {
@@ -892,7 +894,7 @@ void main()
         bool self_shadowed = (tint & TEXTURED) != 0u && (tint & TINT_LIGHT_MAPPED) != 0u;
         vec3 self_shadow = self_shadowed ? texture(lightmap_texture, lightmap_texture_uv).rgb : vec3(1.0);
         float sun = dimmed || self_shadowed ? 1.0 : sun_reaching();  // the first light is the sun
-        uint slot = flags >> 16;
+        uint slot = ((flags >> 16) & SLOT_MASK);
         vec3 first_light = unpacked_color(light_colors[0]) * sun;
 
         // rn30: the third-person uniforms (21168F53BCF9D156, its instructions 152-157): the shadowed sun eased toward 1
@@ -1071,6 +1073,8 @@ void main()
         light *= third;
     if ((flags & CORNER_ALPHA) != 0u)       // the world's second layer: mixed in by its corners' weight
         alpha = vertex_color.a;
+    if ((flags & CORNER_TIMES_MAP) != 0u)   // [waw-decomp] 2026-11-24 (proposal): and by its own map's alpha
+        alpha *= base.a;
     if ((flags & SOFT) != 0u) {     // the game's soft particles: by how far the opaque meshes behind are, in depth
         float behind = texelFetch(scene_depth, ivec2(gl_FragCoord.xy), 0).r;
         // [rexglue-native] 2026-11-10 rn42j: a negative scale says the lightmap v holds the draw's own depth, blended
@@ -1085,7 +1089,7 @@ void main()
 #ifndef NGL_VK_FOUR_SETS
     if (detail_add) {   // [waw-decomp] 6C7F0E21C61DF68F's instructions 19, 27 and 33: the color map + the detail map
                         // at the coordinates x its repeat + its offset (-0.5), before the light multiplies it
-        vec4 numbers = draw_lights[DRAW_LIGHT_VEC4S * ((flags >> 16) - 1u) + FABRIC_AT + 1u];
+        vec4 numbers = draw_lights[DRAW_LIGHT_VEC4S * ((((flags >> 16) & SLOT_MASK)) - 1u) + FABRIC_AT + 1u];
 
         base.rgb = max(base.rgb + wrapped(normal_swatch, texture_uv * numbers.yz).rgb + numbers.w, vec3(0.0));
     }

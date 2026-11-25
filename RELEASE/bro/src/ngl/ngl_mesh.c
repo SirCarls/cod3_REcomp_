@@ -85,6 +85,7 @@ uint32_t ngl_mesh_world_lists(void)
 }
 #define TEXTURE_FRAME_PARAM 0x00902918u /* the texture-frame param's number among a draw's params */
 #define LIGHT_SET_PARAM     0x00902914u /* the light-set param's number (nglSelectMeshLightSet 0x0006FE00) */
+#define DECAL_BIAS_PARAM    0x0090291Cu /* [waw-decomp/bro1] the decal depth bias param's number (ShaderPCUV_Draw) */
 #define DEFAULT_PARAMS      0x009028F8u /* the param block nglListAddMesh keeps for a draw given none */
 #define PARAMS_SCALE        0x02u       /* nglMeshParams flag: scale the matrix's rows by +0x10/+0x14/+0x18 */
 #define PARAMS_SCALE_XYZ    0x10u       /* (nglScaleMeshMatrix 0x00068680) */
@@ -679,6 +680,21 @@ static uint32_t texture_frame(uint32_t block, uint32_t scene)
     return scene_texture_frame(scene);
 }
 
+/* [waw-decomp/bro1] 2026-11-23 A draw's decal depth bias, as ShaderPCUV_Draw (0x000472E0) reads it: the float param
+ * whose number is at 0x0090291C, when its bit is set, cut to a whole number (the game's _ftol) and handed to
+ * nglSetDecalZBias; 0 when the bit isn't set (the game's draw then leaves the offset at 0). A value nglSetDecalZBias
+ * couldn't mean (not a number, below 1 or very large) counts as none. */
+static float decal_bias_param(uint32_t block)
+{
+    uint32_t bits;
+    float b;
+
+    if (!block_param(block, word(DECAL_BIAS_PARAM), &bits))
+        return 0.0f;
+    memcpy(&b, &bits, sizeof b);
+    return isfinite(b) && b >= 1.0f && b < 4096.0f ? (float)(int)b : 0.0f;
+}
+
 /* nglScaleMeshMatrix (0x00068680), for a draw whose params have the scale flag (cdSimpleInstance_AddListToScene's
  * props): the matrix's first three rows times the params' x, y and z scale; the translation as it was. */
 static void scale_matrix(uint32_t params, float world[16])
@@ -767,6 +783,7 @@ void ngl_mesh_list_add(uint32_t mesh, uint32_t matrix, uint32_t params, uint32_t
     d->skin_flags = params ? word(params) : 0;
     d->bones = params ? word(params + 8) : 0;
     d->texture_frame = texture_frame(param_block(out), scene);
+    d->decal_bias = decal_bias_param(param_block(out));     /* [waw-decomp/bro1] 2026-11-23 */
     read_matrix(matrix, 1, d->world);
     scale_matrix(params, d->world);
     read_matrix(scene + SCENE_VIEW, 1, view);
@@ -1101,6 +1118,73 @@ int ngl_mesh_section_frame(uint32_t section, const struct ngl_mesh_draw *d, uint
         return 1;
     }
     return 0;
+}
+
+/* ---- decals ------------------------------------------------------------------------------------------------- */
+
+/* [waw-decomp/bro1] 2026-11-23 The surfaces that lie on others (bullet marks, scorches, posters: cdDecal) are pulled
+ * toward the eye by their draw, so that they win against the surface under them. Without it the two meet at the same
+ * depth and take turns from frame to frame (acct2-ocr's flicker audit, 11-12: small patches on kasserine_pass,
+ * piano_lupo, omaha_beach and troina switching between two brightnesses). Read from the game's own code:
+ *   - nglSetDecalZBias (0x00047590, on the NV2A state cache 0x00902F08) takes b and sets the NV2A's polygon offset:
+ *     bias -b (method 0x0388) and scale factor b x the float at 0x007B4150 (-0.25), so -b / 4 (method 0x0384);
+ *     b = 0 turns it off.
+ *   - cdDecal_Draw (0x0004B560) calls it with b = 10, and also takes material +0x20 x the float at 0x0083F010
+ *     (10000) / max(the node's view depth, the float at 0x0083EC9C, 3) off element [11] of the matrix it hands the
+ *     vertex program (copied from the node's record +0x40; that program's z row: z before the divide by w, in the
+ *     0..2^24 units of the 24-bit depth buffer, ngl_mesh.c's header). The view depth is nglNode_ViewDepth's
+ *     (0x00046DF0): the node's +0x10 (the section, +0x10 its center in the mesh's space) through the record's world
+ *     matrix and the scene's view (+0x150), its z.
+ *   - ShaderPCUV_Draw (0x000472E0) calls it with the draw's own param (decal_bias_param), and with 0 when done.
+ * ngl_present.c turns these into the draw's depth (the constant part and the pull through its view-projection, the
+ * slope part through ngl_vk's decal pipeline). */
+#define CDDECAL_REGISTER    0x0004B4A0u /* cdDecal_Register */
+#define CDDECAL_BIAS        10.0f       /* cdDecal_Draw: nglSetDecalZBias(10) */
+#define DECAL_MATERIAL_PULL 0x20u       /* a cdDecal material's pull toward the eye (a float) */
+#define DECAL_PULL_SCALE    0x0083F010u /* 10000.0: what that is multiplied by */
+#define DECAL_NEAREST       0x0083EC9Cu /* 3.0: the least view depth it is divided by */
+#define SECTION_CENTER      0x10u       /* a section's center, in the mesh's space (nglNode_ViewDepth) */
+
+/* A float of the game's image, or fallback when it doesn't read as one near what the game's code expects. */
+static float image_float(uint32_t address, float fallback)
+{
+    float f = real(address);
+
+    return isfinite(f) && f > 0.5f * fallback && f < 2.0f * fallback ? f : fallback;
+}
+
+int ngl_mesh_section_decal(uint32_t section, const struct ngl_mesh_draw *d, float *steps, float *pull)
+{
+    uint32_t type = section_class(section), material = word(section + 0x04);
+    static int shown;
+
+    *steps = *pull = 0.0f;
+    if (type == SHADER_PCUV_REGISTER && d->decal_bias > 0.0f) {
+        *steps = d->decal_bias;
+    } else if (type == CDDECAL_REGISTER && material) {
+        const float *m = d->world, *vp = d->view_projection;
+        float c[3] = { real(section + SECTION_CENTER), real(section + SECTION_CENTER + 4),
+                       real(section + SECTION_CENTER + 8) };
+        float world_at[3], depth, amount = real(material + DECAL_MATERIAL_PULL);
+
+        for (int k = 0; k < 3; k++)
+            world_at[k] = c[0] * m[k] + c[1] * m[4 + k] + c[2] * m[8 + k] + m[12 + k];
+        /* the view depth: the scene's projection puts it in w (ngl_mesh.c's header), which screen_to_clip keeps */
+        depth = world_at[0] * vp[3] + world_at[1] * vp[7] + world_at[2] * vp[11] + vp[15];
+        if (!isfinite(depth) || depth < image_float(DECAL_NEAREST, 3.0f))
+            depth = image_float(DECAL_NEAREST, 3.0f);
+        *steps = CDDECAL_BIAS;
+        if (isfinite(amount) && fabsf(amount) < 1.0e4f)
+            *pull = amount * image_float(DECAL_PULL_SCALE, 10000.0f) / depth;
+        if (shown < 4) {
+            shown++;
+            fprintf(stderr, "[mesh] decal: section 0x%08X material 0x%08X: pull %g / view depth %g x 10000 = %g "
+                    "(center %.1f %.1f %.1f, the mesh's %.1f %.1f %.1f)\n", section, material, amount, depth, *pull,
+                    c[0], c[1], c[2], real(d->mesh + MESH_CENTER), real(d->mesh + MESH_CENTER + 4),
+                    real(d->mesh + MESH_CENTER + 8));
+        }
+    }
+    return *steps > 0.0f || *pull != 0.0f;
 }
 
 uint32_t ngl_mesh_ocean_foam_texture(uint32_t section)

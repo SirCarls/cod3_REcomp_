@@ -14,7 +14,7 @@ from pathlib import Path
 from tkinter import ttk
 from typing import Dict, List, Optional, Tuple
 
-from . import common, widgets, x360_ports
+from . import common, port_hd, widgets, x360_ports
 from .common import IS_WINDOWS
 from .pipeline import BuildOptions
 from .widgets import hint, px, section, tip
@@ -41,7 +41,11 @@ class Ports:
                  "status": tk.StringVar(value=""), "play_reason": tk.StringVar(value=""),
                  "program": tk.StringVar(), "fullscreen": tk.BooleanVar(), "mute": tk.BooleanVar(),
                  "skip_films": tk.BooleanVar(), "fov": tk.StringVar(), "max_fps": tk.StringVar(),
-                 "graphics_api": tk.StringVar(), "gs_reason": tk.StringVar(value="")}
+                 "graphics_api": tk.StringVar(), "gs_reason": tk.StringVar(value=""),
+                 # [setup-layout] 2026-11-24 HD textures (c3w/port_hd.py)
+                 "hd_textures": tk.BooleanVar(value=True), "capture_textures": tk.BooleanVar(value=False),
+                 "hd_build": tk.BooleanVar(value=True),
+                 "hd_status": tk.StringVar(value="")}
             self.port_vars[pid] = v
             self._port_set_play(pid, x360_ports.PlayOptions.from_settings(p, s))
             self.port_disc_why[pid] = "Checking your disc..."
@@ -59,13 +63,22 @@ class Ports:
         v["fov"].set(f"{o.fov:g}" if o.fov else NO_FOV)
         v["max_fps"].set("" if o.max_fps < 0 else str(o.max_fps))
         v["graphics_api"].set(o.graphics_api)
+        v["hd_textures"].set(o.hd_textures)
+        v["capture_textures"].set(o.capture_textures)
+        v["hd_build"].set(o.hd_build)
 
     def _port_play_options(self, pid: str) -> "x360_ports.PlayOptions":
         """[f2-menus] What a start from here passes: the program only. The Settings rows are the game's own
         settings and go into its file (_port_gs_save), not onto the command line."""
         p = x360_ports.PORTS[pid]
         program = self._port_program(pid)
-        return x360_ports.PlayOptions(program="" if program == p.programs[0].name else program)
+        v = self.port_vars[pid]
+        # [setup-layout] 2026-11-24 the HD texture boxes are SDK settings, not the game's own: they go on the
+        # command line (c3w/port_hd.py arguments)
+        return x360_ports.PlayOptions(program="" if program == p.programs[0].name else program,
+                                      hd_textures=bool(v["hd_textures"].get()),
+                                      capture_textures=bool(v["capture_textures"].get()),
+                                      hd_build=bool(v["hd_build"].get()))
 
     def _port_program(self, pid: str) -> str:
         p, v = x360_ports.PORTS[pid], self.port_vars[pid]
@@ -88,7 +101,10 @@ class Ports:
         return x360_ports.PlayOptions(program="" if program == p.programs[0].name else program,
                                       fullscreen=bool(v["fullscreen"].get()), mute=bool(v["mute"].get()),
                                       skip_films=bool(v["skip_films"].get()), fov=fov, max_fps=max_fps,
-                                      graphics_api=api if api in x360_ports.GRAPHICS_APIS else "auto")
+                                      graphics_api=api if api in x360_ports.GRAPHICS_APIS else "auto",
+                                      hd_textures=bool(v["hd_textures"].get()),
+                                      capture_textures=bool(v["capture_textures"].get()),
+                                      hd_build=bool(v["hd_build"].get()))
 
     def _port_settings(self) -> dict:
         out: dict = {}
@@ -346,7 +362,12 @@ class Ports:
                             work_dir=self.v_work.get().strip() or str(common.default_work_dir()), jobs=self._jobs(),
                             install_deps=bool(self.v_install.get()), cleanup=bool(self.v_cleanup.get()),
                             keep_sdk=bool(self.v_keep_sdk.get()), build_linux=bool(self.v_linux.get()),
-                            build_windows=bool(self.v_windows.get()))
+                            build_windows=bool(self.v_windows.get()),
+                            # [setup-layout] 2026-11-24 the HD pack from the saved textures (c3w/port_hd.py), with
+                            # Call of Duty 3's waifu2x settings (its Textures page): one place to choose them
+                            upscale_textures=bool(self.port_vars[pid]["hd_build"].get()),
+                            upscale_model=self._upscale_model_key(), upscale_noise=self._upscale_noise_level(),
+                            upscale_scale=self._upscale_scale())
         source = self._port_source(pid)
         self._save_quietly()
         common.APPROVAL.reset()
@@ -433,6 +454,11 @@ class Ports:
                                  f"{p.subdir}/ in the output folder."),
                                 ("Open logs", lambda: self._open(str((self._port_out(pid) or Path()) / "userdata" /
                                                                     "logs")), "The game's own log.")])
+
+    def _port_hd_status(self, pid: str) -> None:
+        out = self._port_out(pid)
+        # World at War's pack is made from its disc files, so its line never asks for saved textures.
+        self.port_vars[pid]["hd_status"].set(port_hd.status(out, pid) if out else "")
 
     def _port_play_reason(self, pid: str) -> str:
         out = self._out_path()

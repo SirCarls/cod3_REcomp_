@@ -16,6 +16,7 @@
 
 #include <algorithm>  // [acct2-main] the camera check
 #include <array>
+#include <atomic>  // [rexglue-native thread2] the fixed steps
 #include <chrono>
 #include <cmath>  // [acct2-main] the camera check
 #include <cstdint>
@@ -53,11 +54,27 @@ REXCVAR_DEFINE_BOOL(cod3mp_debug_movement, false, "cod3",
                     "calls, time, pmove_fixed / pmove_msec, pm_flags 0x100000)")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 // [claude-9b-think] 2026-11-02 UNTESTED stage 2's first part, off until the owner has tried it.
+// [rexglue-native thread2] 2026-11-24 rule 14 (FPS-RULE14.md M4): the players' moves in fixed steps.
+REXCVAR_DEFINE_INT32(cod3mp_move_hz, 60, "cod3/Movement",
+                     "Multiplayer: every player's movement in steps of 1/N s that end at fixed times of the usercmds' "
+                     "clock, as the campaign's cod3_move_hz, so a move is the same at any frame rate (the console's "
+                     "steps at 60 fps); 0: one step per usercmd, as the game (a usercmd is a drawn frame: 50 ms steps "
+                     "at 20 fps, 7 ms at 144)")
+    .range(0, 250)
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+REXCVAR_DEFINE_BOOL(cod3mp_debug_move_steps, false, "cod3",
+                    "Log every 2 s each player's movement steps (cod3mp_move_hz; with 0 the game's one a usercmd): "
+                    "usercmds, steps, usercmds without a step, boxes kept, unsticks left out, the speed across the "
+                    "ground and the lowest and highest height");
 REXCVAR_DEFINE_BOOL(cod3mp_movement_stage2, false, "cod3/Movement",
                     "Multiplayer, tests: stage 2's hooks: which local player each Pmove call moves (from the game's "
                     "ClientThink) and the four rule points (sprint, stamina, jump, air move), counted per player in "
                     "cod3mp_debug_movement's log. Moves nobody differently yet")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
+#if defined(COD3_MP)  // cod3mp's own name (tools/mp_aliases.py), as the hooks' block below
+REX_EXTERN(__imp__sub_824B4270);  // Pmove (hooked below; the fixed steps call the game's own)
+#endif
 
 namespace {
 
@@ -361,7 +378,221 @@ void NoteFrame(uint8_t* base) {
 }
 }  // namespace view
 
+// --- [rexglue-native thread2] 2026-11-24 the fixed movement steps (cod3mp_move_hz; rule 14, FPS-RULE14.md M4) ----
+// The game's Pmove (0x824B4270, the campaign's 0x82496978 instruction for instruction) moves a player through one
+// usercmd in one PmoveSingle (0x824B39B8) of the whole usercmd's time (at most 666 ms a step without pmove_fixed), and
+// a usercmd is one drawn frame of the console that sent it: 50 ms steps at 20 fps, 7 ms at 144. The step's length
+// changes the move: gravity and friction are applied once a step, the jump, the ground and the step-up tests once, and
+// pml.msec scales the rest. The campaign moves in steps of 1/cod3_move_hz s that end at fixed times of the usercmds'
+// clock (hooks_sp.cpp RunHzSteps; the ends from rules.h MoveStepEndAfter: 16, 17, 17 ms at 60, the console's own
+// milliseconds at 60 fps). This is that, for every player whose ClientThink runs on this console:
+//  - each step end within the usercmd is one Pmove call with that step's time (ps command_time = the step's start,
+//    the usercmd's server time = its end); the call's arguments are given again to each (a call changes them);
+//  - a usercmd with no step end in it (above 60 fps) calls Pmove with no time (its loop runs no PmoveSingle), then
+//    turns the view by the usercmd (PM_UpdateViewAngles 0x824AC818, as PmoveSingle calls it), so the view follows
+//    every usercmd;
+//  - such a usercmd leaves the pmove_t's box (pm + 272 mins, + 288 maxs; ClientThink_real 0x82592CD0 zeroes the pm,
+//    336 bytes, and copies the box into the entity at 0x82593334: + 240 / + 256, read from r1 + 448 / + 464 with the
+//    pm at r1 + 176, the campaign's 0x8256C7EC at r1 + 416 / + 432 with its pm at r1 + 144) empty: it gets this
+//    player's box from the last step back (the campaign's KeepBox), or nobody could hit him in that frame;
+//  - and ClientThink_real's unstick (0x8249F070 from 0x825930E0, for a player who pressed to move and whose origin
+//    didn't change, the campaign's 0x82483C20) is left out after it (stuck_fix_mp.cpp asks MoveStepUnstickLeftOut).
+// Left to the game: a call with pm_flags 0x100000 (Pmove gives it to 0x824AA438) and an older usercmd. The touches
+// after the move already follow the 1/60 s marks of the usercmd clock (touch_pace_mp.cpp). cod3mp's client game has no
+// movement prediction (program_mp.h), so nothing on the wire changes: a console moves its own players' usercmds as before,
+// only in these steps.
+namespace steps {
+constexpr uint32_t kPmMins = 272, kPmMaxs = 288;  // the pmove_t's box (see above)
+#if defined(COD3_MP)  // cod3mp's own address (tools/mp_aliases.py), as the hooks' block below
+constexpr uint32_t kUnstickReturn = 0x825930E4;    // ClientThink_real, after its call of 0x8249F070
+#endif
+constexpr int kMostSlots = 64;
+
+struct Player {
+  uint32_t ps = 0;
+  bool box_valid = false;
+  uint32_t box[8] = {};
+  int box_time = 0;
+  // the debug log, since its last line
+  int cmds = 0, steps = 0, no_step = 0, boxes_kept = 0, most_steps = 0;
+  float path = 0.0f, z_low = 0.0f, z_high = 0.0f, last[3] = {};  // across the ground since the last line; heights
+  bool have_last = false;
+  int first_time = 0, last_time = 0;
+};
+std::array<Player, kMostSlots> g_players;
+thread_local bool t_no_step = false;  // the last Pmove ran no step: ClientThink's unstick is left out after it
+std::atomic<uint64_t> g_unsticks_left_out{0};
+
+Player* Find(uint32_t ps) {
+  for (Player& p : g_players)
+    if (p.ps == ps) return &p;
+  for (Player& p : g_players)
+    if (p.ps == 0) {
+      p.ps = ps;
+      return &p;
+    }
+  return nullptr;
+}
+
+uint32_t Cmd(uint32_t pm) { return pm + P.pmove.cmd; }
+
+void TurnView(PPCContext& ctx, uint8_t* base, uint32_t pm, uint32_t ps, int msec) {
+  const uint32_t saved_pm = g::ReadU32(base, P.pm);
+  g::WriteU32(base, P.pm, pm);  // PM_UpdateViewAngles reads the pm global, as inside Pmove
+  {
+    g::Call c(ctx, base);
+    c.Invoke(P.update_view_angles, {ps, Cmd(pm), pm + P.pmove.view_arg, static_cast<uint64_t>(std::max(msec, 1)),
+                                    g::ReadU32(base, pm + P.pmove.view_flag)});
+  }
+  g::WriteU32(base, P.pm, saved_pm);
+}
+
+void KeepBox(uint8_t* base, uint32_t pm, Player& p, bool stepped, int final_time) {
+  if (stepped) {
+    for (uint32_t i = 0; i < 4; ++i) {
+      p.box[i] = g::ReadU32(base, pm + kPmMins + 4 * i);
+      p.box[4 + i] = g::ReadU32(base, pm + kPmMaxs + 4 * i);
+    }
+    p.box_valid = g::ReadF32(base, pm + kPmMaxs + 8) > g::ReadF32(base, pm + kPmMins + 8);  // no height: none
+    p.box_time = final_time;
+    return;
+  }
+  if (!p.box_valid || final_time < p.box_time || final_time - p.box_time > 1000) {  // a new level, a restart
+    p.box_valid = false;
+    return;
+  }
+  for (uint32_t i = 0; i < 4; ++i) {
+    g::WriteU32(base, pm + kPmMins + 4 * i, p.box[i]);
+    g::WriteU32(base, pm + kPmMaxs + 4 * i, p.box[4 + i]);
+  }
+  ++p.boxes_kept;
+}
+
+// The debug log's measures (cod3mp_debug_move_steps), after each usercmd: the same at every frame rate if the moves are.
+void Measure(uint8_t* base, Player& p, int final_time) {
+  if (!REXCVAR_GET(cod3mp_debug_move_steps)) return;
+  float o[3];
+  for (uint32_t i = 0; i < 3; ++i) o[i] = g::ReadF32(base, p.ps + P.ps.origin + 4 * i);
+  if (!p.have_last || final_time < p.last_time || final_time - p.last_time > 1000) {  // the start, a level, a spawn
+    p.have_last = true;
+    p.path = 0.0f;
+    p.z_low = p.z_high = o[2];
+    p.first_time = final_time;
+  } else {
+    const float dx = o[0] - p.last[0], dy = o[1] - p.last[1];
+    const float d = std::sqrt(dx * dx + dy * dy);
+    if (d < 64.0f) p.path += d;  // more: a spawn
+    p.z_low = std::min(p.z_low, o[2]);
+    p.z_high = std::max(p.z_high, o[2]);
+  }
+  for (int i = 0; i < 3; ++i) p.last[i] = o[i];
+  p.last_time = final_time;
+}
+
+void MaybeLog(uint8_t* base) {
+  if (!REXCVAR_GET(cod3mp_debug_move_steps)) return;
+  static Clock::time_point next{};
+  const auto now = Clock::now();
+  if (next == Clock::time_point{}) next = now + std::chrono::seconds(2);
+  if (now < next) return;
+  next = now + std::chrono::seconds(2);
+  for (Player& p : g_players) {
+    if (p.ps == 0 || p.cmds == 0) continue;
+    REXLOG_INFO("cod3mp: move steps: playerState {:#x}: {} usercmds, {} steps of 1/{} s (at most {} in one), {} "
+                "without a step ({} got the last step's box), at {:.1f} {:.1f} {:.1f}; unsticks left out {} "
+                "(cod3mp_move_hz)",
+                p.ps, p.cmds, p.steps, REXCVAR_GET(cod3mp_move_hz), p.most_steps, p.no_step, p.boxes_kept,
+                g::ReadF32(base, p.ps + P.ps.origin), g::ReadF32(base, p.ps + P.ps.origin + 4),
+                g::ReadF32(base, p.ps + P.ps.origin + 8), g_unsticks_left_out.load());
+    if (p.last_time > p.first_time)
+      REXLOG_INFO("cod3mp: move steps: playerState {:#x}: {:.1f} units across the ground in {} ms of usercmds "
+                  "({:.1f} a second), height {:.1f} to {:.1f} ({:.1f})",
+                  p.ps, p.path, p.last_time - p.first_time, p.path * 1000.0f / float(p.last_time - p.first_time),
+                  p.z_low, p.z_high, p.z_high - p.z_low);
+    p.cmds = p.steps = p.no_step = p.boxes_kept = p.most_steps = 0;
+    p.path = 0.0f;
+    p.z_low = p.z_high = p.last[2];
+    p.first_time = p.last_time;
+  }
+}
+
+// Returns false when the call is left to the game.
+bool Run(PPCContext& ctx, uint8_t* base, int hz) {
+  const uint32_t pm = ctx.r3.u32;
+  if (!ValidGuest(pm)) return false;
+  const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
+  if (!ValidGuest(ps) || (g::ReadU32(base, ps + P.ps.pm_flags) & kSpecialMoveFlag)) return false;
+  const uint32_t cmd = Cmd(pm);
+  const int final_time = g::ReadS32(base, cmd + P.cmd.server_time);
+  const int command_time = g::ReadS32(base, ps + P.ps.command_time);
+  if (final_time <= command_time || command_time < 0) return false;  // nothing to move: the game's own call
+  Player* p = Find(ps);
+  if (!p) return false;
+  // Pmove keeps at most 1000 ms of a usercmd (cod3mp has no 50 ms limit for pm_flags 0x80000, program_mp.h)
+  int start = mv::MoveStepEndAtOrBefore(command_time, hz);
+  if (final_time - start > 1000) start = final_time - 1000;
+  // Pmove(pm, r4): each step gets the caller's argument registers again
+  const PPCRegister args[8] = {ctx.r3, ctx.r4, ctx.r5, ctx.r6, ctx.r7, ctx.r8, ctx.r9, ctx.r10};
+  auto restore_args = [&] {
+    ctx.r3 = args[0]; ctx.r4 = args[1]; ctx.r5 = args[2]; ctx.r6 = args[3];
+    ctx.r7 = args[4]; ctx.r8 = args[5]; ctx.r9 = args[6]; ctx.r10 = args[7];
+  };
+  int steps = 0, t = start;
+  for (int end = mv::MoveStepEndAfter(t, hz); end <= final_time; end = mv::MoveStepEndAfter(end, hz)) {
+    g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(t));
+    g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(end));
+    restore_args();
+    __imp__sub_824B4270(ctx, base);
+    t = end;
+    ++steps;
+  }
+  if (steps == 0) {
+    g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(start));
+    g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(start));
+    restore_args();
+    __imp__sub_824B4270(ctx, base);  // no time: its loop runs no step
+    TurnView(ctx, base, pm, ps, final_time - command_time);
+    t_no_step = true;
+    ++p->no_step;
+  }
+  KeepBox(base, pm, *p, steps > 0, final_time);
+  g::WriteU32(base, ps + P.ps.command_time, static_cast<uint32_t>(final_time));
+  g::WriteU32(base, cmd + P.cmd.server_time, static_cast<uint32_t>(final_time));
+  ++p->cmds;
+  p->steps += steps;
+  p->most_steps = std::max(p->most_steps, steps);
+  return true;
+}
+
+// After every Pmove call (stepped or the game's own): the debug log's measures.
+void AfterMove(uint8_t* base, uint32_t pm, bool stepped) {
+  if (!REXCVAR_GET(cod3mp_debug_move_steps) || !ValidGuest(pm)) return;
+  const uint32_t ps = g::ReadU32(base, pm + P.pmove.ps);
+  if (!ValidGuest(ps)) return;
+  Player* p = Find(ps);
+  if (!p) return;
+  if (!stepped) {  // the game's own call: one step of the usercmd's time
+    ++p->cmds;
+    ++p->steps;
+    p->most_steps = std::max(p->most_steps, 1);
+  }
+  Measure(base, *p, g::ReadS32(base, ps + P.ps.command_time));
+  MaybeLog(base);
+}
+}  // namespace steps
+
 }  // namespace
+
+namespace cod3::movement::mp {
+// stuck_fix_mp.cpp: whether this call of 0x8249F070 is ClientThink_real's unstick right after a usercmd that ran no
+// movement step (its origin didn't change because no step ran, not because the player is stuck): then it is left out.
+bool MoveStepUnstickLeftOut(uint32_t lr) {
+  if (!steps::t_no_step || lr != steps::kUnstickReturn) return false;
+  steps::t_no_step = false;
+  steps::g_unsticks_left_out.fetch_add(1, std::memory_order_relaxed);
+  return true;
+}
+}  // namespace cod3::movement::mp
 
 // [acct2-main] 2026-11-05 This file is built into cod3mp only, so COD3_MP is always set and nothing changes here.
 // The block tells tools/mp_aliases.py and test_multiplayer_build that these names are cod3mp's own functions
@@ -370,7 +601,7 @@ void NoteFrame(uint8_t* base) {
 
 // Pmove(pm) 0x824B4270 (program_mp.h): the game's own call, always; before it, the settings' log and (with
 // cod3mp_debug_movement) what it moves.
-REX_EXTERN(__imp__sub_824B4270);
+// (declared at the top: the fixed steps call it)
 REX_HOOK_RAW(sub_824B4270) {
   LogSettings();
   const uint32_t pm = ctx.r3.u32;
@@ -378,7 +609,12 @@ REX_HOOK_RAW(sub_824B4270) {
     Note(base, pm);
     MaybeLogSeen();
   }
-  __imp__sub_824B4270(ctx, base);
+  steps::t_no_step = false;  // [rexglue-native thread2] set again by a usercmd that runs no step
+  const int hz = REXCVAR_GET(cod3mp_move_hz);
+  const uint32_t pm_arg = ctx.r3.u32;
+  const bool stepped = hz > 0 && P.update_view_angles != 0 && steps::Run(ctx, base, hz);
+  if (!stepped) __imp__sub_824B4270(ctx, base);
+  steps::AfterMove(base, pm_arg, stepped);
 }
 
 // [claude-9b-think] 2026-11-02 UNTESTED stage 2 (cod3mp_movement_stage2, off by default). Each hook calls the game's

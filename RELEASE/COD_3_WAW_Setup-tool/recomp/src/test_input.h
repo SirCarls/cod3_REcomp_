@@ -45,6 +45,9 @@ class ScriptedInputDriver final : public rex::input::InputDriver {
   size_t event_count() const { return events_.size(); }
 
   static constexpr int kMaxPads = 4;  // [claude-9b]
+  // [input-port] How long an ended tap stays shown after the first state read that showed it: longer than the
+  // spread of one frame's reads at 20 fps, shorter than any real gap between two taps.
+  static constexpr double kTapHoldS = 0.025;
 
  private:
   struct Event {
@@ -54,8 +57,17 @@ class ScriptedInputDriver final : public rex::input::InputDriver {
     uint8_t lt = 0, rt = 0;
     bool has_axis[4] = {};
     int16_t axis[4] = {};  // LX LY RX RY
+    // [input-port] 2026-11-24 Time of the first state read that showed this entry after it ended (below zero:
+    // none yet). An entry that starts and ends between two reads (a 20 ms tap at 30 fps) is still shown, as the SDL
+    // and XInput drivers do for a real pad (SDK patch 0073's press latch), and to every state read within kTapHoldS
+    // of that first one: the game, the port's own pad reads and the SDK may each read the pad in one frame, and the
+    // first of them must not use the tap up (rexglue-native i4e: 1 of 7 LT taps seen at 20 fps).
+    double shown_at = -1.0;
+    bool seen_held = false;  // [input-port] a state read saw it while held: its release needs no latch
   };
-  void Update(int pad);
+  // state_read: the call is a state read (GetDeviceState), which marks the entries it shows; keystroke reads don't,
+  // so a tap is never used up before the game's state read sees it.
+  void Update(int pad, bool state_read);
   int PadOf(rex::input::DeviceId id) const;  // [claude-9b] -1: not one of ours
 
   std::vector<Event> events_;
@@ -65,6 +77,9 @@ class ScriptedInputDriver final : public rex::input::InputDriver {
   int pads_ = 1;
   uint32_t packet_[kMaxPads] = {};
   uint16_t last_buttons_[kMaxPads] = {};
+  // [input-port] time of the last state read, per pad; below zero until the first one, so entries that ended
+  // before the game ever read the pad aren't replayed late.
+  double last_read_[kMaxPads] = {-1.0, -1.0, -1.0, -1.0};
   rex::input::X_INPUT_GAMEPAD pad_[kMaxPads] = {};
   std::queue<rex::input::X_INPUT_KEYSTROKE> keys_[kMaxPads];
   rex::input::ControllerFamily family_ = rex::input::ControllerFamily::kUnknown;  // [mp-menus]

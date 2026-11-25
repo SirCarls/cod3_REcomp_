@@ -25,6 +25,7 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/cod3mp_app.cpp
     ${COD3_SRC}/game/button_prompts.cpp  # [mp-menus] keys and controller buttons in the game's prompts, per player; its pad state hook calls the keybinds' too
     ${COD3_SRC}/game/use_hold.cpp  # [acct2-decomp] how long Use is held, and the hints' words (cod3_use_hold_ms)
+    ${COD3_SRC}/game/binoc_timing.cpp  # [rexglue-native thread2] 2026-11-24 the player's per-step timers at any frame rate
     ${COD3_SRC}/game/cheat_guard.cpp
     ${COD3_SRC}/game/cheat_watch.cpp
     ${COD3_SRC}/game/color_output.cpp
@@ -53,7 +54,6 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/job_wait.cpp
     ${COD3_SRC}/game/job_wake.cpp
     ${COD3_SRC}/game/keybinds/binds.cpp  # [keybinds] keys that call the game's own actions
-    ${COD3_SRC}/game/keybinds/keys.cpp  # [keybinds]
     ${COD3_SRC}/game/keybinds/model.cpp  # [keybinds]
     ${COD3_SRC}/game/keybinds/pad_model.cpp  # [acct2-main] the controller's own binds per player (split screen)
     ${COD3_SRC}/game/keybinds/pad_binds.cpp  # [acct2-main]
@@ -78,6 +78,9 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame (logging only)
     ${COD3_SRC}/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame drawn by ngl_vk beside the GPU emulation (a check)
     ${COD3_SRC}/game/ngl_camo.cpp  # [acct2-bro] 2026-11-22 Camo lane: camos on the first-person guns (native)
+    ${COD3_SRC}/game/ngl_arms.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
+    ${COD3_SRC}/game/ngl_arms_rig.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
+    ${COD3_SRC}/game/ngl_gloves.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
     ${COD3_SRC}/game/screenshot.cpp
     ${COD3_SRC}/game/script_fiber.cpp
     ${COD3_SRC}/game/script_threads.cpp
@@ -142,6 +145,10 @@ set(COD3MP_SOURCES
     ${COD3_SRC}/ui/camo_tab.cpp  # [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos, per player and per gun
     ${COD3_SRC}/ui/theme.cpp
     ${COD3_SRC}/ui/waw_dvars.cpp
+    ${COD3_SRC}/menukit/menukit_data.cpp  # [waw-decomp/menus2] 2026-11-23 menukit, the native menus' core
+    ${COD3_SRC}/menukit/menukit_nav.cpp  # [waw-decomp/menus2]
+    ${COD3_SRC}/ui/menus/cod3_menukit.cpp  # [waw-decomp/menus2] native menus: Pause > OPTIONS
+    ${COD3_SRC}/ui/menus/cod3_menukit_draw.cpp  # [waw-decomp/menus2] native menus: both looks
 )
 
 if(WIN32)
@@ -160,6 +167,20 @@ set_target_properties(cod3mp PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_
 # where it would rename this program's functions.
 target_compile_definitions(cod3mp PRIVATE COD3_MP=1)
 target_include_directories(cod3mp PRIVATE ${COD3_SRC})
+target_link_libraries(cod3mp PRIVATE inputkit::inputkit)  # [input-port] 2026-11-24 (the top folder adds it)
+# [waw-decomp/menus2] 2026-11-23 the native menus' file, built in and copied as the campaign's CMakeLists.txt does
+# [rexglue-native] 2026-11-23 22:10 normalised, so ninja sees one spelling of the path (fresh configures failed with
+# "multiple rules generate .../pause_options.toml"); board 21:52.
+cmake_path(SET COD3MP_MENUS_TOML NORMALIZE "${COD3_SRC}/../assets/menus/cod3/pause_options.toml")
+file(READ "${COD3MP_MENUS_TOML}" COD3_MENU_PAUSE_OPTIONS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${COD3MP_MENUS_TOML}")
+configure_file("${COD3_SRC}/ui/menus/cod3_menus_data.inc.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/menus_data/cod3_menus_data.inc" @ONLY)
+add_custom_command(TARGET cod3mp POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:cod3mp>/menus/cod3"
+                   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${COD3MP_MENUS_TOML}"
+                           "$<TARGET_FILE_DIR:cod3mp>/menus/cod3/pause_options.toml")
+target_include_directories(cod3mp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/menus_data")
 if(MSVC OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     target_compile_options(cod3mp PRIVATE "/FI${COD3_SRC}/game/mp/mp_aliases.h")
 else()
@@ -179,14 +200,9 @@ if(TARGET ngl_vk)
     endif()
 endif()
 
-if(MINGW)
-    target_link_options(cod3mp PRIVATE -municode)
-endif()
 # [rexglue-native-io] 2026-11-16: the campaign's application manifest (UTF-8 code page, long paths; src/win/).
-if(WIN32)
-    enable_language(RC)  # llvm-mingw's windres (the toolchain file's CMAKE_RC_COMPILER)
-    target_sources(cod3mp PRIVATE ${COD3_SRC}/win/app.rc)
-endif()
+# [rexglue-native-platform-fix] 2026-11-23: through xplat_windows_app, as for cod3 (the top folder includes xplat).
+xplat_windows_app(cod3mp WMAIN MANIFEST ${COD3_SRC}/win/app.manifest RC ${COD3_SRC}/win/app.rc)
 
 if(WIN32)
     # winmm: timeBeginPeriod; shell32: CommandLineToArgvW (game/relaunch.cpp).

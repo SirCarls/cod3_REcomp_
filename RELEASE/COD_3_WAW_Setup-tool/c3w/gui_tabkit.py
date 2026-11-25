@@ -5,8 +5,8 @@ for them; but this will come way later"):
 - Set up as Call of Duty 3's: Your disc, What to build, then More options behind "Show more options";
 - Play as Call of Duty 3's: the game's box with its Play button, then Game settings in sub-tabs (Display, Sound,
   Language, Controls, ...) with Save, Undo changes and Game defaults;
-- a Tools page (This PC, Folders, Profiles, Appearance) and an About page (Documents, Keyboard shortcuts, Licenses
-  and credits) on every tab, each about its own game.
+- a Tools page (This PC, Folders, Profiles, Appearance) and an About page (Port status, Documents, Keyboard shortcuts,
+  Licenses and credits) on every tab, each about its own game.
 
 A mixin for gui.App, first among its bases: the Set up and Play builders here take the place of the older ones of
 the same names in gui_games.py (Big Red One), gui_fh.py (Finest Hour) and gui_ports.py (World at War, Call of Duty 2
@@ -300,7 +300,7 @@ class TabKit:
         if not ok:
             hint(w, why, style="Warn.TLabel").grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
         self._kit_more_options(t, 7, [
-            ("Delete the build files when done", self.v_cleanup,
+            ("Delete temporary files when done", self.v_cleanup,   # [setup-layout] the other tabs' words
              "The same setting as Call of Duty 3's. The recompiled C is the game's code; it stays in the work "
              "folder only while it is needed.")], "bro_setup")
         self._kit_footer(t, 10)
@@ -341,7 +341,7 @@ class TabKit:
                               [BRO_DEFAULT_SIZE] + [x for x in bro.WINDOW_SIZES if x],
                               "The size the game draws at (Default: 1280 x 960 in a window)."),
                              ("check", "Fullscreen", self.v_bro_fullscreen, "Fill the screen instead of a window."),
-                             ("check", "VSync", self.v_bro_vsync, "Wait for the screen's refresh (no tearing).")]),
+                             ("check", "V-Sync (no tearing)", self.v_bro_vsync, "Wait for the screen's refresh (no tearing).")]),
                 ("Sound", [("check", "Mute", self.v_bro_mute, "No sound.")]),
                 ("Controls", [("check", "Mouse look", self.v_bro_mouse_look,
                                "The mouse turns the view while the window has the focus."),
@@ -399,7 +399,7 @@ class TabKit:
         if not ok:
             hint(w, why, style="Warn.TLabel").grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
         self._kit_more_options(t, 7, [
-            ("Delete the build files when done", self.v_cleanup,
+            ("Delete temporary files when done", self.v_cleanup,   # [setup-layout] the other tabs' words
              "The same setting as Call of Duty 3's. The recompiled C is the game's code; it stays in the work "
              "folder only while it is needed.")], "fh_setup")
         self._kit_footer(t, 10)
@@ -442,10 +442,11 @@ class TabKit:
                               [FH_DEFAULT_SIZE] + [x for x in fh.WINDOW_SIZES if x],
                               "The window's size (fh.toml's display.window_size with As in fh.toml)."),
                              ("check", "Fullscreen", self.v_fh_fullscreen, "Fill the screen instead of a window."),
-                             ("check", "VSync", self.v_fh_vsync, "Wait for the screen's refresh (no tearing).")]),
+                             ("check", "V-Sync (no tearing)", self.v_fh_vsync, "Wait for the screen's refresh (no tearing).")]),
                 ("Language", [("choice", "Language", self.v_fh_language, [label for _, label in fh.LANGUAGES],
                                "The game's language, as the console's would choose it (fh.toml's game.language).")]),
-                ("Cutscenes", [("check", "Skip films", self.v_fh_skip_films,
+                # [setup-layout] 2026-11-24 Call of Duty 3's name for the same thing (it was "Skip films")
+                ("Cutscenes", [("check", "Skip cutscenes", self.v_fh_skip_films,
                                 "Every film stops as soon as it starts.")]),
             ],
             intro="Given to the game when it starts, each one winning over fh.toml for that start (Play saves them "
@@ -485,15 +486,19 @@ class TabKit:
         vf = ttk.Frame(w)
         vf.grid(row=1, column=0, columnspan=3, sticky="w", padx=(px(26), 0), pady=(px(2), 0))
         ttk.Label(vf, text="Versions:").pack(side="left", padx=(0, px(8)))
+        # [setup-layout] 2026-11-24 on Windows these ports make only the Windows version (x360_ports refuses Linux
+        # alone there); Call of Duty 3 makes its Linux version in WSL, so the shared box stays
         tip(ttk.Checkbutton(vf, text="Linux", variable=self.v_linux),
-            "The same setting as Call of Duty 3's.").pack(side="left")
+            "The same setting as Call of Duty 3's." + (" On Windows this game's Linux version isn't made: build it "
+                                                       "on Linux." if IS_WINDOWS else "")).pack(side="left")
         tip(ttk.Checkbutton(vf, text="Windows (.exe)", variable=self.v_windows),
             "The same setting as Call of Duty 3's." + ("" if IS_WINDOWS else " Made here with llvm-mingw.")).pack(
             side="left", padx=(px(14), 0))
         hint(w, f"The same steps as Call of Duty 3: your disc is checked and its files copied; the ReXGlue SDK is "
                 f"built (or reused) with the project's patches; the game's programs, {progs}, are translated to C++ "
                 "and compiled. Graphics: Vulkan (and Direct3D 12 on Windows) through the SDK's GPU emulation for "
-                "now; the game's native renderer comes later.").grid(
+                "now; the game's native renderer comes later." +
+                (" On Windows only the Windows version is made here." if IS_WINDOWS else "")).grid(
             row=2, column=0, columnspan=3, sticky="w", padx=(px(26), 0), pady=(px(2), px(4)))
         self._kit_output_row(w, 3, lambda g=pid: self._port_out(g), f"{p.subdir}/")
         hint(w, f"The game goes into {p.subdir}/ there: the disc's files (about {p.disc_size / 1e9:.0f} GB), the "
@@ -515,7 +520,7 @@ class TabKit:
         widgets.page_header(t, "Play", f"Start {p.name}, and change its settings before it starts.", columns=1)
         panel: dict = {}
         self.pages[key]["on_show"] = lambda g=pid: (self._port_gs_load(g, keep_edits=True), self._update_actions(),
-                                                    panel.get("refresh", int)())
+                                                    panel.get("refresh", int)(), self._port_hd_status(g))
         v["program"].trace_add("write", lambda *a, g=pid: self._port_gs_load(g))   # [f2-menus] each program its file
         name = p.name.split(":")[0] if pid != "waw" else "World at War"
         btn, reason_lbl = self._kit_game_box(
@@ -533,7 +538,7 @@ class TabKit:
             display.append(("choice", "Field of view", v["fov"], [NO_FOV, "65", "80", "90", "100", "110", "120"],
                             "Degrees, 40-140; Game's own leaves it to the game.", True))
         if p.max_fps:
-            display.append(("number", "Frame limit", v["max_fps"], (0, p.max_fps_top, 30),
+            display.append(("number", "Frame rate limit", v["max_fps"], (0, p.max_fps_top, 30),   # [setup-layout]
                             f"Frames a second, up to {p.max_fps_top}; 0 = {p.max_fps_zero}."))
         if IS_WINDOWS:
             display.append(("choice", "Graphics API", v["graphics_api"], list(x360_ports.GRAPHICS_APIS),
@@ -567,6 +572,28 @@ class TabKit:
         self._kit_ports = getattr(self, "_kit_ports", {})
         self._kit_ports[pid] = panel
 
+        # [setup-layout] 2026-11-24 (owner 09:15: "add this option to the other games"): HD textures, made from the
+        # textures the game saves while played (c3w/port_hd.py says why and how). SDK settings, not the game's own
+        # file's, so they're passed on the command line at Play and kept with this tool's settings.
+        h = section(t, "HD textures", 5, columns=1)
+        self._grid_cols(h)
+        boxes = ttk.Frame(h)
+        boxes.grid(row=0, column=0, columnspan=3, sticky="w")
+        tip(ttk.Checkbutton(boxes, text="HD textures", variable=v["hd_textures"]),
+            "Draw with the HD pack when there is one. A build makes it from the saved textures.").pack(
+            side="left", padx=(0, px(14)))
+        tip(ttk.Checkbutton(boxes, text="Save the textures the game uses", variable=v["capture_textures"]),
+            "While you play, each texture is saved the first time it's drawn, into hd/capture in the game's folder. "
+            "Turn it off once you've played the levels you want in HD.").pack(side="left", padx=(0, px(14)))
+        tip(ttk.Checkbutton(boxes, text="Make the HD pack at Build", variable=v["hd_build"]),
+            "Build upscales the saved textures with waifu2x (the style and scale of Call of Duty 3's Textures page) "
+            "and packs them. Needs a graphics card with Vulkan.").pack(side="left")
+        ttk.Label(h, textvariable=v["hd_status"], style="Hint.TLabel").grid(
+            row=1, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        hint(h, "No ripper reads this game's textures yet, so the HD pack is made from what you play: save the "
+                "textures while you play, then build again. Levels you haven't played keep their own "
+                "textures.").grid(row=2, column=0, columnspan=3, sticky="w", pady=(px(4), px(18)))
+
     # ------------------------------------------------------------------ Tools, on every tab
     def _kit_after_pages(self) -> None:
         """After every page is made: Call of Duty 3's profile list becomes one of several (each tab's Tools page has
@@ -589,13 +616,15 @@ class TabKit:
         g = games.game(gid)
         key = kit_pages(gid)[0]
         t.columnconfigure(0, weight=1)
-        widgets.page_header(t, "Tools", f"Check this PC for {g.name}'s build, find its files, keep your settings as "
-                                        "profiles, and change this tab's look.", columns=1)
-        self.pages[key]["on_show"] = lambda: self._kit_use_profiles(gid)
-        row = 1
         check = {games.BRO: self._kit_check_xbox, games.FH: self._kit_check_xbox}.get(gid)
         if check is None and gid in games.X360_PORTS:
             check = self._check_tools
+        # [setup-layout] 2026-11-24 a tab that builds nothing (United Offensive) has no This PC: its header said
+        # "Check this PC for ... build" all the same
+        widgets.page_header(t, "Tools", (f"Check this PC for {g.name}'s build, find" if check else "Find") +
+                            " its files, keep your settings as profiles, and change this tab's look.", columns=1)
+        self.pages[key]["on_show"] = lambda: self._kit_use_profiles(gid)
+        row = 1
         if check is not None:
             pc = section(t, "This PC", row, columns=1)
             hint(pc, "What the build needs (compilers, tools, libraries) and whether this PC has it. Build installs "
@@ -722,7 +751,9 @@ class TabKit:
         g = games.game(gid)
         t.columnconfigure(0, weight=1)
         widgets.page_header(t, g.name, f"{g.tagline}. The {common.APP_NAME}, version {TOOL_VERSION}.", columns=1)
-        d = section(t, "Documents", 1, columns=1)
+        # [setup-layout] 2026-11-24 how far the port is, first (it was a Port status page of its own)
+        row = self._status_section(t, gid, 1)
+        d = section(t, "Documents", row, columns=1)
         d.columnconfigure(1, weight=1)
         for r, (rel, label, what) in enumerate(GAME_DOCS.get(gid, []) + COMMON_DOCS):
             path = self._doc_path(rel)
@@ -734,12 +765,12 @@ class TabKit:
             else:
                 tip(b, str(path))
             hint(d, what).grid(row=r, column=1, sticky="w", padx=(px(12), 0))
-        k = section(t, "Keyboard shortcuts", 3, columns=1)
+        k = section(t, "Keyboard shortcuts", row + 2, columns=1)
         for r, (keys, what) in enumerate(SHORTCUTS):
             keys = keys.format(n=min(9, len(self.page_lists.get(gid, ())) or 1))
             ttk.Label(k, text=keys, style="Bold.TLabel").grid(row=r, column=0, sticky="w", pady=px(1))
             ttk.Label(k, text=what).grid(row=r, column=1, sticky="w", padx=(px(16), 0))
-        lic = section(t, "Licenses and credits", 5, columns=1)
+        lic = section(t, "Licenses and credits", row + 4, columns=1)
         hint(lic, "This project's code is under the MIT license. " + CREDITS.get(gid, "") +
              " Every download is listed in docs/SOURCES.md.").pack(anchor="w")
         hint(lic, TRADEMARK).pack(anchor="w", pady=(px(8), px(18)))

@@ -197,6 +197,10 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         # [acct2-decomp] 2026-11-05 (owner): the AMD FidelityFX SDK box is gone; CAS and FSR 1 are in every build
         # (SDK patch 0064). An old "fidelityfx_sdk" setting is left out quietly (profiles.RETIRED_KEYS).
         self.v_upscale = tk.BooleanVar(value=s.get("upscale_textures", False))
+        # [setup-layout] 2026-11-24 (owner 08:27 "another toggle for compilation that allows for a complete
+        # re-upscaling"): BuildOptions.upscale_from_scratch for the next Build only. Not saved, and cleared once a
+        # build has upscaled again, so a forgotten tick can't make every later build take hours.
+        self.v_upscale_again = tk.BooleanVar(value=False)
         self.v_upscale_model = tk.StringVar()
         self.v_upscale_noise = tk.StringVar()
         self.v_upscale_scale = tk.StringVar()
@@ -263,14 +267,11 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         builders = {"setup": self._page_setup, "play": self._page_play, "textures": self._page_textures,
                     "maps": self._page_maps, "tools": self._page_tools, "log": self._page_log,
                     "about": self._page_about, "waw_content": self._page_waw_content,
-                    "waw_status": lambda t: self._page_status(t, games.WAW),
                     # [acct2-bro] Big Red One (gui_games.py, c3w/bro.py)
                     "bro_setup": self._page_bro_setup, "bro_play": self._page_bro_play,
-                    "bro_status": lambda t: self._page_status(t, games.BRO),
                     # [acct2-decomp] 2026-11-21 Finest Hour (gui_fh.py, c3w/fh.py)
-                    "fh_setup": self._page_fh_setup, "fh_play": self._page_fh_play,
-                    "fh_status": lambda t: self._page_status(t, games.FH),
-                    "cod4_status": lambda t: self._page_status(t, games.COD4)}   # [waw-decomp]
+                    "fh_setup": self._page_fh_setup, "fh_play": self._page_fh_play}
+        # [setup-layout] 2026-11-24 no Port status pages: each About page has that section (_status_section)
         for gid in games.X360_PORTS:   # [waw-decomp] (gui_ports.py, c3w/x360_ports.py)
             builders[f"{gid}_setup"] = lambda t, g=gid: self._page_port_setup(t, g)
             builders[f"{gid}_play"] = lambda t, g=gid: self._page_port_play(t, g)
@@ -280,7 +281,6 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         for gid in pc_games.PC_GAMES:
             builders[f"{gid}_copy"] = lambda t, g=gid: self._page_pc_copy(t, g)
             builders[f"{gid}_server"] = lambda t, g=gid: self._page_pc_server(t, g)
-            builders[f"{gid}_status"] = lambda t, g=gid: self._page_status(t, g)
         # Each page once (the log is in every tab's sidebar, but is one page).
         for key in dict.fromkeys(k for gid in games.GAME_ORDER for k in self.page_lists[gid]):
             self._add_page(key, builders[key])
@@ -963,9 +963,15 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
 
     def _open(self, path: str) -> None:
         if path and Path(path).exists():
-            common.open_in_file_manager(Path(path))
+            try:
+                common.open_in_file_manager(Path(path))
+            except OSError as e:   # [setup-layout] 2026-11-24 it said nothing (no xdg-open, or Windows refused)
+                self.log.warn(f"Couldn't open {path}: {e}")
+                self.v_status.set(f"Couldn't open it ({e}). The folder is {path}")
         elif path:
             self.v_status.set(f"Not there yet: {path}")
+        else:   # [setup-layout] 2026-11-24 nothing chosen: it did nothing
+            self.v_status.set("Choose an output folder first (Call of Duty 3's Set up page).")
 
     def _open_input(self) -> None:
         self.input_dir.mkdir(parents=True, exist_ok=True)
@@ -999,7 +1005,7 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
             tooltip="Your Call of Duty 3 Xbox 360 disc image: USA/Europe, Germany, or Europe "
                     "(French, Spanish, Italian). All three build the campaign; only the USA/Europe disc has the "
                     "multiplayer program the recomp knows. The Japanese disc can't be built. Other discs add "
-                    "voices and the censored campaign on the Play page.")  # [acct2-decomp] KNOWN_XEX has all three
+                    "voices (Play page) and the censored campaign (Textures & censoring).")  # [acct2-decomp] KNOWN_XEX has all three
         self.lbl_iso_status = hint(d, var=self.v_iso_status)
         self.lbl_iso_status.grid(row=1, column=1, columnspan=2, sticky="w")
         hint(d, "Tip: put your disc images and downloads in the input folder and they're found by "
@@ -1029,14 +1035,17 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         hint(w, other).grid(row=2, column=0, columnspan=3, sticky="w", padx=(px(26), 0))
         self._update_versions()
         self._row(w, 3, "Output folder", self.v_out, [
-            ("Browse...", lambda: self._pick_dir(self.v_out, "Where everything goes"), "")],
+            ("Browse...", lambda: self._pick_dir(self.v_out, "Where everything goes"), ""),
+            # [setup-layout] 2026-11-24 Open, as on every other tab's Set up
+            ("Open", lambda: self._open(self.v_out.get()), "The output folder.")],
             tooltip="Where the game, the ripped files, saves and logs go.")
         widgets.autowrap(ttk.Checkbutton(w, text="Install anything that's missing (you approve the list first; recommended)",  # [acct2-decomp]
                         variable=self.v_install)).grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(4), 0))  # [acct2-ocr] wraps
-        waw_box = ttk.Checkbutton(w, text="Also rip World at War (set it up on its tab)", variable=self.v_use_waw,
-                                  command=self._update_build_state)
+        # [setup-layout] 2026-11-24 the only place for this box (World at War's Content page had it too)
+        waw_box = ttk.Checkbutton(w, text="Also rip World at War (choose your copy on World at War's Content page)",
+                                  variable=self.v_use_waw, command=self._update_build_state)
         waw_box.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(2), 0))
-        tip(waw_box, "Not needed to play Call of Duty 3.")
+        tip(waw_box, "Not needed to play Call of Duty 3. Rip content on World at War's tab rips it on its own.")
         # [acct2-decomp] 2026-11-05: what this build needs here, kept up to date (_watch_needs).
         self.lbl_needs = hint(w, var=self.v_needs)
         self.lbl_needs.grid(row=6, column=0, columnspan=3, sticky="w", pady=(px(4), 0))
@@ -1064,8 +1073,8 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
                    "with the game's programs and libraries. Either way 'Call of Duty 3.sh' starts it, and a "
                    "build removes what an earlier build made the other way.", ""),
                   ("Delete temporary files when done", self.v_cleanup, "", ""),
-                  ("Keep the built SDK for faster rebuilds (downloaded tools are always kept)", self.v_keep_sdk,
-                   "", ""),
+                  # [setup-layout] 2026-11-24 the ports' wording (the same setting); the tools note is in its tip
+                  ("Keep the built SDK for faster rebuilds of every game", self.v_keep_sdk, "", ""),
                   # [acct2-decomp] 2026-11-05 (owner: "Make this tracy setting a toggle within the setup tool")
                   ("Build the SDK with the Tracy profiler (for developers)", self.v_tracy,
                    "Tracy is a profiler for the SDK's own non-Release builds; the game built here never loads it. "
@@ -1082,7 +1091,8 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         # [acct2-decomp] The built SDK is only ever deleted with the temporary files
         # (pipeline.cleanup returns at once when they're kept): the box means nothing then.
         keep = boxes[str(self.v_keep_sdk)]
-        tip(keep, "Only with \"Delete temporary files\": the temporary files are all kept otherwise.",
+        tip(keep, "Downloaded tools are always kept. Only with \"Delete temporary files\": the temporary files are "
+                  "all kept otherwise.",
             reason=lambda: "" if self.v_cleanup.get() else "Nothing is deleted: \"Delete temporary files\" is off.")
         def keep_state(*_a) -> None:
             keep.configure(state="normal" if self.v_cleanup.get() else "disabled")
@@ -1092,7 +1102,7 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         self._watch_needs()   # [acct2-decomp]
 
         hint(t, "Nothing is downloaded before you approve the list (what, from where, into which folder). "
-                "Everything stays in this project folder (Tools > Where things go). Cancel any time; Build "
+                "Everything stays in this project folder (Tools > Folders). Cancel any time; Build "
                 "continues where it stopped.").grid(row=10, column=0, sticky="w", padx=px(24), pady=(px(18), px(18)))
 
     def _grid_cols(self, frame) -> None:
@@ -1269,7 +1279,8 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
             appimage=self.v_appimage.get(), cleanup=self.v_cleanup.get(), keep_sdk=self.v_keep_sdk.get(),
             install_deps=self.v_install.get(), tracy=self.v_tracy.get(),  # [acct2-decomp] tracy
             upscale_textures=self.v_upscale.get(), upscale_model=self._upscale_model_key(),
-            upscale_noise=self._upscale_noise_level(), upscale_scale=self._upscale_scale())
+            upscale_noise=self._upscale_noise_level(), upscale_scale=self._upscale_scale(),
+            upscale_from_scratch=self.v_upscale.get() and self.v_upscale_again.get())
 
     def _start_build(self, overrides: Optional[dict] = None, what: str = "Build",
                      blocker: Optional[Callable[[BuildOptions, str], str]] = None,
@@ -1298,13 +1309,28 @@ class App(TabKit, Pages, LogPage, Games, FhPages, Ports, Updates, Addons):   # [
         self.show_page("log")
         self._log_show_live()
 
+        # [setup-layout] 2026-11-24 "Upscale every texture again" is spent once the upscaling step has begun (it
+        # deletes the old copies first): a build that finishes or is canceled after that clears the box, so the
+        # next Build carries on with the copies made instead of deleting them again.
+        upscaled = {"began": False}
+
+        def on_step(i, n, t):
+            if t.startswith("Upscaling textures"):
+                upscaled["began"] = True
+            self.q.put(("step", i, n, t))
+
+        def spent():
+            if opts.upscale_from_scratch and upscaled["began"]:
+                self.q.put(("call", lambda: self.v_upscale_again.set(False)))
+
         def work():
             self.log.debug(f"{what} pressed")   # [acct2-ocr] 2026-11-22
             try:
-                Pipeline(opts, self.log, self.cancel,
-                         on_step=lambda i, n, t: self.q.put(("step", i, n, t))).run()
+                Pipeline(opts, self.log, self.cancel, on_step=on_step).run()
+                spent()
                 self.q.put(("done", "good", self._where_summary(opts)))
             except common.Cancelled:
+                spent()
                 self.log.debug(f"{what}: canceled")
                 self.q.put(("done", "warn", f"Press {what} to continue later."))  # [acct2-decomp] also Repair, Rip
             except SetupError as e:

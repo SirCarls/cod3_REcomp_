@@ -27,3 +27,7 @@ uint32_t ngl_stand_in_scratch(void);
 /* [acct2-bro] 2026-11-13: not a logged stand-in but done natively: the game's fast sine and cosine (0x000110F0)
  * with the rounding the game sets for it (bro/src/runtime/bro_fast_sincos.c) */
 void bro_fast_sincos(void);
+
+/* [waw-decomp/bro1] 2026-11-23: done natively too: G_VehiclePhysicsFrame (0x00233BD0), the game's physics in fixed
+ * steps whatever the frame rate (bro/src/runtime/bro_physics_step.c) */
+void bro_physics_frame(void);

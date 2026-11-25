@@ -22,6 +22,8 @@
 
 #include <rex/cvar.h>
 
+#include "inputkit/sens_scale.h"  // [input-port] 2026-11-24 the curved scales (PUBG, Battlefield 6) and the newer ones
+
 // [f2-menus] 2026-11-11 04:46 (owner 04:40: "Please help with BRo") Big Red One builds this file too, and it is not on
 // the rexglue SDK: its own rex/cvar.h (bro/src/f2/shim) has the setting macros, and it has no rex/logging.h, so every
 // log line is made here as plain text and handed to LogLine: the SDK's log where there is one, else the port's own
@@ -135,12 +137,19 @@ REXCVAR_DEFINE_INT32(f2_sens_random_log, 0, "f2/Mouse",
 // turn here is that sensitivity x its yaw / this game's yaw. The yaws: Quake, Source, Counter-Strike 2, Apex and the
 // older Call of Duty PC games 0.022; Valorant 0.07; Overwatch 2, the modern Call of Duty games and Destiny 2 0.0066;
 // Rainbow Six Siege 0.00572957795; Fortnite 0.005555 (its percent); Battlefield V / 2042 0.0055555; Deadlock 0.044.
+// [input-port] 2026-11-24 (owner: "Please add other games' senstivity scaling. Please do the top 10 shooters that
+// differ in their equations", "please also add the modern-day call of duty sensitivity scale as an option in addition
+// to the others and our current WAW/source model"): 9 to 14 added after the old numbers (a saved choice keeps its
+// meaning), their math in the project's shared input code (inputkit/sens_scale.h, with each constant's source): modern
+// Call of Duty as a choice of its own; PUBG's exponential slider (0.004444 x 10^(s/50)); Battlefield 6's slider with
+// its fixed base turn (0.00173623 x s + 0.00231498); Halo Infinite 0.0225; Escape from Tarkov 0.125; Rust 0.1125.
 REXCVAR_DEFINE_INT32(f2_sens_scale, 0, "f2/Mouse",
                      "Type the mouse sensitivity as another game counts it: 0 this game's own, 1 Quake / Source / "
-                     "Counter-Strike 2 / Apex, 2 Valorant, 3 Overwatch 2 / modern Call of Duty / Destiny 2, 4 Rainbow "
-                     "Six Siege, 5 Fortnite, 6 Battlefield V / 2042, 7 Deadlock, 8 centimetres for a full turn (with "
-                     "f2_sens_dpi)")
-    .range(0, 8);
+                     "Counter-Strike 2 / Apex / World at War, 2 Valorant, 3 Overwatch 2 / Destiny 2, 4 Rainbow Six "
+                     "Siege, 5 Fortnite, 6 Battlefield V / 2042, 7 Deadlock, 8 centimetres for a full turn (with "
+                     "f2_sens_dpi), 9 modern Call of Duty (2019 and later), 10 PUBG, 11 Battlefield 6, 12 Halo "
+                     "Infinite, 13 Escape from Tarkov, 14 Rust")
+    .range(0, 14);
 REXCVAR_DEFINE_DOUBLE(f2_sens_value, 1.0, "f2/Mouse",
                       "The sensitivity on f2_sens_scale's scale, or the centimetres for a full turn")
     .range(0.001, 1000.0);
@@ -630,23 +639,36 @@ void RandomizerTick() {
 
 // ---- the sensitivity scales (see f2_sens_scale). The port names its own sensitivity setting once
 // (SetGameSensitivity); a scale sets that setting to the value that turns as far a count. UI thread only.
+// [input-port] 2026-11-24 `curve`: the scale's math is inputkit's (sens_scale.h), for the ones whose slider isn't a plain
+// multiple (yaw 0 then); `high`: the top of the "Sensitivity there" slider, in that game's own units.
 struct Scale {
   const char* name;
   double yaw;  // degrees a count at sensitivity 1
+  double high;
+  bool curve;
+  inputkit::sensscale::Scale ik;
 };
+using IkScale = inputkit::sensscale::Scale;
 constexpr Scale kScales[] = {
-    {"This game's own numbers", 0.0},
-    {"Quake / Source / Counter-Strike 2 / Apex", 0.022},
-    {"Valorant", 0.07},
-    {"Overwatch 2 / modern Call of Duty / Destiny 2", 0.0066},
-    {"Rainbow Six Siege", 0.00572957795},
-    {"Fortnite (its percent)", 0.005555},
-    {"Battlefield V / 2042", 0.0055555},
-    {"Deadlock", 0.044},
-    {"Centimetres for a full turn", 0.0},
+    {"This game's own numbers", 0.0, 20.0, false, IkScale::kSource},
+    {"Quake / Source / Counter-Strike 2 / Apex / World at War", 0.022, 20.0, false, IkScale::kSource},
+    {"Valorant", 0.07, 10.0, false, IkScale::kSource},
+    {"Overwatch 2 / Destiny 2", 0.0066, 100.0, false, IkScale::kSource},
+    {"Rainbow Six Siege", 0.00572957795, 100.0, false, IkScale::kSource},
+    {"Fortnite (its percent)", 0.005555, 100.0, false, IkScale::kSource},
+    {"Battlefield V / 2042", 0.0055555, 100.0, false, IkScale::kSource},
+    {"Deadlock", 0.044, 20.0, false, IkScale::kSource},
+    {"Centimetres for a full turn", 0.0, 150.0, false, IkScale::kSource},
+    // [input-port] 2026-11-24 appended (a saved number above keeps its meaning)
+    {"Modern Call of Duty (2019 and later, Warzone, Black Ops 6)", 0.0, 100.0, true, IkScale::kCodModern},
+    {"PUBG: Battlegrounds", 0.0, 100.0, true, IkScale::kPubg},
+    {"Battlefield 6", 0.0, 200.0, true, IkScale::kBattlefield6},
+    {"Halo Infinite", 0.0, 20.0, true, IkScale::kHaloInfinite},
+    {"Escape from Tarkov", 0.0, 5.0, true, IkScale::kTarkov},
+    {"Rust", 0.0, 5.0, true, IkScale::kRust},
 };
 constexpr int kScaleCount = int(sizeof(kScales) / sizeof(kScales[0]));
-constexpr int kScaleCentimetres = kScaleCount - 1;
+constexpr int kScaleCentimetres = 8;  // [input-port] 2026-11-24 no longer the last: the scales after it came later
 
 struct GameSensitivity {
   std::string setting, own_switch;
@@ -661,6 +683,7 @@ double g_scale_value_applied = -1.0;
 double WantedDegrees(int scale, double value, int dpi) {
   if (scale <= 0 || scale >= kScaleCount || value <= 0.0) return 0.0;
   if (scale == kScaleCentimetres) return dpi > 0 ? 360.0 * 2.54 / (double(dpi) * value) : 0.0;
+  if (kScales[scale].curve) return inputkit::sensscale::DegreesPerCount(kScales[scale].ik, value);
   return kScales[scale].yaw * value;
 }
 
@@ -808,7 +831,8 @@ static bool DrawScaleRows(const Widgets& w, bool* restart) {
   if (g_game_sensitivity.setting.empty() || !HasSetting(g_game_sensitivity.setting.c_str())) return dirty;
   w.section("Sensitivity as another game counts it");
   {
-    static const char* const kValues[kScaleCount] = {"0", "1", "2", "3", "4", "5", "6", "7", "8"};
+    static const char* const kValues[kScaleCount] = {"0", "1", "2",  "3",  "4",  "5",  "6", "7",
+                                                     "8", "9", "10", "11", "12", "13", "14"};
     const char* names[kScaleCount];
     for (int i = 0; i < kScaleCount; ++i) names[i] = kScales[i].name;
     dirty |= w.choice("Scale", "f2_sens_scale", kValues, names, kScaleCount, restart);
@@ -818,13 +842,14 @@ static bool DrawScaleRows(const Widgets& w, bool* restart) {
     dirty |= w.slider_double("Centimetres for a full turn", "f2_sens_value", 5.0, 150.0, "%.1f", restart);
     dirty |= w.slider_int("Mouse DPI", "f2_sens_dpi", 100, 6400, "%d", restart);
   } else if (scale > 0) {
-    dirty |= w.slider_double("Sensitivity there", "f2_sens_value", 0.01, 20.0, "%.3f", restart);
+    // [input-port] 2026-11-24 to that game's own top (Siege's and Fortnite's sliders reach 100, Battlefield 6's 200)
+    dirty |= w.slider_double("Sensitivity there", "f2_sens_value", 0.01, kScales[scale].high, "%.3f", restart);
     dirty |= w.slider_int("Mouse DPI (for the centimetres shown)", "f2_sens_dpi", 100, 6400, "%d", restart);
   }
   if (!g_scale_note.empty()) ImGui::TextDisabled("%s", g_scale_note.c_str());
   w.help("Type your sensitivity from another game, or how far the mouse travels for a full turn, and this game turns "
        "exactly as far for the same hand motion (from the hip). It sets this game's own mouse sensitivity; moving "
-       "that row afterwards keeps your new value.");
+       "that row afterwards keeps your new value. Aiming down the sights keeps this game's own zoom scaling.");
   return dirty;
 }
 

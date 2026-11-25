@@ -1,4 +1,4 @@
-// cod3 - where the player's files go when the game's folder can't take them.
+// cod3 - the player's files stay in the game's folder (portable), and what happens when it can't take them.
 // [rexglue-native-io] 2026-11-16 (owner 2026-11-16 14:16: "Start looking for more I/O related errors, and account
 // for various linux distros and windows").
 //
@@ -11,13 +11,12 @@
 //  - Windows: a message box ("can't write its log file", ui/start_problem.h) and the end of the program. Program
 //    Files without administrator rights (no file virtualization for a 64-bit program), Controlled folder access on
 //    Documents/Desktop, a read-only share.
-// Here such a game keeps running and its files go to a folder of the player's own instead:
-//    Linux    $XDG_DATA_HOME/cod3-recomp   (~/.local/share/cod3-recomp), else $XDG_RUNTIME_DIR, else /tmp
-//    Windows  %LOCALAPPDATA%\CoD3-recomp   (never synced by OneDrive, not under Controlled folder access)
-// with the same layout (userdata/, cod3.toml, cod3mp.toml). On its first use it takes the game folder's settings
-// files and userdata (saves, configs; not logs or caches), so nothing the player had is lost. Both programs pick the
-// same folder, so the campaign and multiplayer still share their settings. A game folder that can be written is used
-// as before (nothing changes for it), and a user_data_root setting still wins over both.
+// [setup-layout] 2026-11-24 (owner 11:31 "it should be portable."; chose "Both": the setup tool checks first and the game
+// never leaves its folder): the game keeps everything in its own folder, always. A folder it can't write ends the
+// game with a message that says to move it (Linux here, Windows through ui/start_problem.h LogFileOrStop), instead
+// of the 2026-11-16 move to a folder of the player's own (~/.local/share/cod3-recomp, %LOCALAPPDATA%\CoD3-recomp).
+// A player whose files went there under that version is told where they are, to copy them back. A user_data_root
+// given on the command line still wins (that is the player's own choice).
 
 #pragma once
 
@@ -76,7 +75,8 @@ inline bool Writable(const std::filesystem::path& dir) {
   return ok;
 }
 
-// The player's own folders to fall back to, best first.
+// The folders the 2026-11-16 version moved the player's files to, best first: only looked at now, to say where
+// files from that version are.
 inline std::vector<std::filesystem::path> FallbackCandidates() {
   std::vector<std::filesystem::path> out;
 #ifdef _WIN32
@@ -98,60 +98,34 @@ inline std::vector<std::filesystem::path> FallbackCandidates() {
   return out;
 }
 
-// Copies what the player had in the game folder into a new fallback folder: the settings files and userdata
-// without logs/ and cache/. Errors are skipped (the game then starts from defaults for that file).
-inline void Seed(const std::filesystem::path& root, const std::filesystem::path& to) {
-  std::error_code ec;
-  for (const char* name : {"cod3.toml", "cod3mp.toml"})
-    if (std::filesystem::is_regular_file(root / name, ec) && !std::filesystem::exists(to / name, ec))
-      std::filesystem::copy_file(root / name, to / name, ec);
-  const auto from = root / "userdata";
-  if (!std::filesystem::is_directory(from, ec)) return;
-  for (std::filesystem::directory_iterator it(from, ec), end; !ec && it != end; it.increment(ec)) {
-    const auto name = it->path().filename();
-    if (name == "logs" || name == "cache") continue;
-    std::error_code one;
-    std::filesystem::copy(it->path(), to / "userdata" / name,
-                          std::filesystem::copy_options::recursive | std::filesystem::copy_options::skip_existing, one);
-  }
-  // The copies keep the originals' modes (a read-only folder's files are read-only too, and Windows copies the
-  // read-only attribute): the player's own copies must take the game's saves.
-  const auto writable = [](const std::filesystem::path& p) {
-    std::error_code one;
-    std::filesystem::permissions(p, std::filesystem::perms::owner_write, std::filesystem::perm_options::add, one);
-  };
-  for (const char* name : {"cod3.toml", "cod3mp.toml"}) writable(to / name);
-  for (std::filesystem::recursive_directory_iterator it(to / "userdata", ec), end; !ec && it != end; it.increment(ec))
-    writable(it->path());
-}
-
-// The folder for userdata/, cod3.toml and cod3mp.toml: `root` when it can be written, else the player's own (made
-// and seeded on first use). Call once in OnConfigurePaths, before the log file is chosen.
+// The folder for userdata/, cod3.toml and cod3mp.toml: always `root` (the game stays portable). When it can't be
+// written the game ends here with a message (Linux), or at its log file's check with a box (Windows,
+// ui/start_problem.h LogFileOrStop). Call once in OnConfigurePaths, before the log file is chosen.
 inline std::filesystem::path Pick(const std::filesystem::path& root) {
   DataRoot() = root;
   if (Writable(root / "userdata" / "logs")) return root;
+  // Files the 2026-11-16 version moved out of a read-only game folder: say where, so they can be copied back.
+  std::string earlier;
   for (const auto& candidate : FallbackCandidates()) {
     std::error_code ec;
-    const bool fresh = !std::filesystem::exists(candidate / "userdata", ec);
-    if (!Writable(candidate / "userdata" / "logs")) continue;
-    if (fresh) Seed(root, candidate);
-    DataRoot() = candidate;
-    Note() = "the game's folder " + PathToUtf8(root) +
-             " can't be written (read-only, or a folder such as Program Files or one Windows Security protects), so "
-             "settings, saves and logs are kept in " + PathToUtf8(candidate) +
-             (fresh ? " (its settings and saves were copied there)" : "") +
-             ". Move the game to a folder of your own to keep them next to it.";
-    return candidate;
+    if (std::filesystem::exists(candidate / "userdata", ec) || std::filesystem::exists(candidate / "cod3.toml", ec)) {
+      earlier = PathToUtf8(candidate);
+      break;
+    }
   }
-  Note() = "neither the game's folder " + PathToUtf8(root) + " nor a folder of the player's own can be written";
+  Note() = "the game's folder " + PathToUtf8(root) + " can't be written; the game keeps its settings, saves and log "
+           "in its own folder, so move it to a folder of your own" +
+           (earlier.empty() ? std::string() : " (settings and saves from an earlier version are in " + earlier + ")");
 #ifndef _WIN32  // platform-ok(os-only-block): Windows' stop is LogFileOrStop's box (ui/start_problem.h), see below
-  // Linux: say why and end, instead of spdlog's uncaught error (SIGABRT, words on stderr only). Windows: the log's
-  // check (ui/start_problem.h LogFileOrStop) shows its own box for this.
+  // Linux: say why and end, instead of spdlog's uncaught error (SIGABRT, words on stderr only).
   rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error,
-                            "Call of Duty 3 can't write its settings, saves and log: neither its folder\n" +
+                            "Call of Duty 3 keeps its settings, saves and log in its own folder, and this folder\n" +
                                 PathToUtf8(root) +
-                                "\nnor a folder of your own (~/.local/share, $XDG_RUNTIME_DIR, /tmp) can be written. "
-                                "Move the game to a folder of your own, or check the disk (full, or mounted read-only).");
+                                "\ncan't be written. Move the game to a folder of your own (in your home folder), or "
+                                "check the disk (full, or mounted read-only)." +
+                                (earlier.empty() ? std::string()
+                                                 : "\n\nSettings and saves from an earlier version are in\n" + earlier +
+                                                       "\nCopy its userdata folder and .toml files into the game's folder."));
   std::fprintf(stderr, "cod3: %s\n", Note().c_str());
   std::exit(1);
 #endif

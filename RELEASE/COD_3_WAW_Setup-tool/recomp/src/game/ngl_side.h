@@ -43,4 +43,26 @@ void OnPass(uint8_t* base, uint32_t object, uint32_t state = 0);
 // With cod3_native_forget_level, the next native frame forgets every native texture and mesh of the level before.
 void OnLevelLoaded();
 
+// [rexglue-native thread2] 2026-11-24: the light coronas' depth probes (game/coronas.cpp, cod3_corona_depth_probe;
+// ngl_side.cpp depthprobe::). In native mode the corona pass asks, on the game's main thread, whether the corona
+// `key` (its view << 32 | its record) at world place `pos`, seen from `eye`, is hidden by the native scene's depth:
+// AskCoronaDepth files the ask for the native frame that draws this list (false: no native renderer with depth
+// probes in this run, nothing filed). The answer comes 1 or 2 frames later: CoronaDepthAnswer gives the latest one
+// for `key` in *visible when it is no older than max_age_s seconds (false: none; the caller's ray answers).
+bool AskCoronaDepth(uint64_t key, const float pos[3], const float eye[3]);
+bool CoronaDepthAnswer(uint64_t key, double max_age_s, bool* visible);
+
+// [rexglue-native thread2] 2026-11-24 (debug, cod3_debug_corona_trace): what decided the latest answer for `key`:
+// the probed depth (0 near .. 1 far) and the depth the corona had to beat (its place moved 8 units toward the eye),
+// where it was probed (Direct3D's normalized device coordinates), and the world point that depth came from (the
+// probed (ndc x, ndc y, depth) through the inverse of the same view-projection; occluder_ok false when singular).
+// False when there is no answer for `key`.
+struct CoronaDepthDetail {
+  float depth = 0.0f, near_depth = 0.0f;
+  float ndc[2] = {};
+  float occluder[3] = {};
+  bool occluder_ok = false;
+};
+bool CoronaDepthDetails(uint64_t key, CoronaDepthDetail* out);
+
 }  // namespace cod3::ngl_side

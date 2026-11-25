@@ -280,20 +280,28 @@ SETTINGS: List[Setting] = [
             "The language the soldiers speak in the campaign, its films and multiplayer. German, French, "
             "Spanish and Italian need that disc's voices: Add voices from another disc (multiplayer has "
             "German and French only). "
+            # [setup-layout] 2026-11-24 (coord2/kb1/KLOADBANK-EU-MP.md): eu_mp's bank loader (0x824AE320) never reads
+            # the game's language and always loads slot 2, so Voices can't choose there.
+            "Multiplayer built from the French/Spanish/Italian disc always plays that disc's own multiplayer "
+            "voices: Voices doesn't change them. "
             # [acct2-ocr] 2026-11-07 (owner 10:32 "the audio switching still seems broken"): when a change is heard
             "Changed during a mission, the soldiers follow within seconds; a level whose sound memory can't "
             "hold the new voice beside its own sounds (German, most often) changes when a mission is next started "
             "or loaded. Films follow from the next film, multiplayer from the next map. "
             # [acct2-ocr] 2026-11-07 the text has its own setting now (it said "The text stays as it is.")
-            "The text and subtitles have their own setting: Text, below.",
+            "The text and subtitles have their own setting: Text, below. "
+            # [setup-layout] 2026-11-24 Console language folded into Voices (console_language_for)
+            "The films and, on the French/Spanish/Italian disc, the game's own text follow it too. On that disc "
+            "pick French, Spanish or Italian here: the game's own voices are silent there until one is picked.",
             "choice", (("disc", "The game's own"), ("en", "English"), ("de", "German"), ("fr", "French"),
                        ("es", "Spanish"), ("it", "Italian")), default="disc"),
-    # The SDK's own setting (XGetLanguage): Xbox 360 language numbers.
+    # The SDK's own setting (XGetLanguage): Xbox 360 language numbers. [setup-layout] 2026-11-24 (owner 11:12 "having
+    # three different selections is supr confusing", 11:12:58 "Allow for two selections. One for voices and the
+    # other for text."): no row of its own in the setup tool any more; saving Voices sets it (console_language_for,
+    # below), so the films and the Fr/Es/It disc follow Voices. F2 > LANGUAGE still has it.
     Setting("user_language", "Console language",
-            "The language the game is told the console uses. It picks the films' sound and, on the "
-            "French/Spanish/Italian disc, the soldiers' language and the text. Leave English for the "
-            "USA/Europe disc. "
-            "Voices and Text, when set to a language, come before it.",  # [acct2-ocr] 2026-11-07
+            "The language the game is told the console uses. The setup tool sets it from Voices: it picks the "
+            "films' sound and, on the French/Spanish/Italian disc, the soldiers' language and the text.",
             "choice", ((1, "English"), (3, "German"), (4, "French"), (5, "Spanish"), (6, "Italian")),
             default=1),
     # [acct2-ocr] 2026-11-07 (owner 09:49: "the setup tool audio and subtle options need to reflect our changes"): the
@@ -302,8 +310,8 @@ SETTINGS: List[Setting] = [
     Setting("cod3_text_language", "Text",
             "The language of the game's text: menus, button prompts, objectives, subtitles, loading screens and "
             "credits, in both the campaign and multiplayer. The game's own is the disc's text. It can be changed "
-            "while playing too (F2 > LANGUAGE > Text); the texts on screen change as the game asks for them "
-            "again.",  # [acct2-decomp] 2026-11-21 was F2 > Sound > Text
+            "while playing too (F2 > LANGUAGE > Text, which also picks the kinds of text that follow it); the texts "
+            "on screen change as the game asks for them again.",  # [acct2-decomp] 2026-11-21 was F2 > Sound > Text
             "choice", (("disc", "The game's own"), ("en-US", "English (United States)"),
                        ("en-GB", "English (United Kingdom)"), ("fr-FR", "Français (France)"),
                        ("fr-CA", "Français (Canada)"), ("fr-BE", "Français (Belgique)"), ("de-DE", "Deutsch"),
@@ -384,7 +392,9 @@ SETTINGS: List[Setting] = [
             "controller Use is also Reload, so at 0 a press near a weapon picks it up instead of reloading. "
             "Planting a charge or opening a gate keeps its own time. In multiplayer each player's own setting "
             "counts, on their own console (split-screen players 2 to 4: the game's F2 > Prompts).",  # [acct2-main]
-            "int", ((-1, "The game's (250 ms)"), (0, "0 (a press)"), (100, "100"), (250, "250")),
+            # [rexglue-native] 2026-11-24 (owner 06:15: "our options for hold to press needs to be revisited and
+            # corrected"): in order on one scale, as the game's OPTIONS row and F2; 250 ms listed once (the game's).
+            "int", ((0, "0 ms (a press)"), (100, "100 ms"), (-1, "250 ms (the game's)"), (500, "500 ms")),
             min=-1, max=1000, default=-1),
 ]
 BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
@@ -394,6 +404,63 @@ BY_KEY: Dict[str, Setting] = {s.key: s for s in SETTINGS}
 # Call of Duty 2 and Call of Duty 4 keep theirs in <program>.toml the same way): `settings` a list of Setting,
 # `file_name` the file in out_dir, `exes` / `names` the game's program names. Left out, everything is Call of Duty
 # 3's, as before.
+# [setup-layout] 2026-11-24 (owner 11:31 "it should be portable."; chose "Both"): Call of Duty 3 keeps its settings,
+# saves and log in its own folder, always (recomp/src/user_root.h Pick); a folder it can't write ends the game with a
+# message. The 2026-11-16 version moved them to a folder of the player's own instead; fallback_roots names those
+# folders, only to say where such files are. The setup tool checks the folder before Build and Play
+# (portable_problem), so the player hears it before anything starts.
+def _writable(folder: Path) -> bool:
+    """As user_root.h Writable: a probe file written and removed. Unlike the game it makes no folder: a folder that
+    isn't there yet is probed at its nearest folder that is."""
+    folder = Path(folder)
+    while not folder.is_dir() and folder.parent != folder:
+        folder = folder.parent
+    probe = folder / f".write-test-{os.getpid()}"
+    try:
+        probe.write_bytes(b"x")
+        probe.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def fallback_roots() -> List[Path]:
+    """The folders the 2026-11-16 game moved the player's files to (user_root.h FallbackCandidates), best first."""
+    out: List[Path] = []
+    if common.IS_WINDOWS:
+        for name in ("LOCALAPPDATA", "TEMP"):
+            if os.environ.get(name):
+                out.append(Path(os.environ[name]) / "CoD3-recomp")
+        return out
+    for name, sub in (("XDG_DATA_HOME", ("cod3-recomp",)), ("HOME", (".local", "share", "cod3-recomp")),
+                      ("XDG_RUNTIME_DIR", ("cod3-recomp",))):
+        value = os.environ.get(name, "")
+        if value.startswith("/"):   # XDG: absolute paths only, as the game
+            out.append(Path(value).joinpath(*sub))
+    if hasattr(os, "getuid"):
+        out.append(Path("/tmp") / f"cod3-recomp-{os.getuid()}")
+    return out
+
+
+def earlier_files() -> Optional[Path]:
+    """The folder holding settings and saves an earlier version moved out of the game folder, if there is one."""
+    return next((c for c in fallback_roots() if (c / "userdata").exists() or (c / FILE_NAME).exists()), None)
+
+
+def portable_problem(out_dir: Path) -> Optional[str]:
+    """Why Call of Duty 3 can't keep its files in `out_dir` (it can't be written), or None when it can."""
+    if _writable(Path(out_dir) / "userdata" / "logs"):
+        return None
+    why = (f"Call of Duty 3 keeps its settings, saves and log in its own folder, and {out_dir} can't be written "
+           "(read-only, or a folder such as Program Files or one Windows Security protects). Pick an output folder "
+           "of your own, for example in your home folder.")
+    earlier = earlier_files()
+    if earlier is not None:
+        why += (f" Settings and saves from an earlier version are in {earlier}: copy its userdata folder and .toml "
+                "files into the new game folder.")
+    return why
+
+
 def settings_file(out_dir: Path, file_name: str = FILE_NAME) -> Path:
     return Path(out_dir) / file_name
 
@@ -634,6 +701,27 @@ def check(values: dict, settings: Optional[Iterable[Setting]] = None) -> None:
             raise common.SetupError(f"{s.label}: that value isn't one the game takes.")
 
 
+# [setup-layout] 2026-11-24 (owner: "Allow for two selections. One for voices and the other for text."): the
+# console language (user_language, what XGetLanguage answers) has no row in the setup tool; it follows Voices.
+# The numbers are the game's own (recomp/src/game/voice_paths.h ConsoleLanguageFor): 1 English, 3 German,
+# 4 French, 5 Spanish, 6 Italian. "The game's own" leaves the console language as the file has it, so a
+# value set in F2 stays.
+CONSOLE_LANGUAGE_FOR_VOICE = {"en": 1, "de": 3, "fr": 4, "es": 5, "it": 6}
+
+
+def console_language_for(voice) -> Optional[int]:
+    """The console language that goes with a Voices choice, or None to leave it."""
+    return CONSOLE_LANGUAGE_FOR_VOICE.get(voice) if isinstance(voice, str) else None
+
+
+def with_console_language(values: dict) -> dict:
+    """`values` plus the console language its Voices choice gives (unless it sets one itself)."""
+    number = console_language_for(values.get("cod3_voice_language"))
+    if number is None or "user_language" in values:
+        return values
+    return {**values, "user_language": number}
+
+
 def save(out_dir: Path, values: dict, settings: Optional[Iterable[Setting]] = None, file_name: str = FILE_NAME,
          exes: Optional[Iterable[str]] = None) -> None:
     """Change only the given settings in cod3.toml and keep everything else
@@ -641,6 +729,8 @@ def save(out_dir: Path, values: dict, settings: Optional[Iterable[Setting]] = No
     file itself)."""
     settings = None if settings is None else list(settings)
     by_key = BY_KEY if settings is None else {s.key: s for s in settings}
+    if settings is None:
+        values = with_console_language(values)
     check(values, settings)
     if not values:
         return

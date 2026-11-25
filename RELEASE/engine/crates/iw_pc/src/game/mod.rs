@@ -2,8 +2,16 @@
 //! game both run, so that a client predicts what the server will do.
 //! Ports of the original layer (see the crate's conventions).
 
+pub mod anim;
+pub mod duck;
+pub mod ground;
+pub mod jump;
+pub mod mantle;
 pub mod moves;
 pub mod pmove;
 pub mod prone;
 pub mod slide;
 pub mod trace;
+pub mod view;
+pub mod weapon;
+pub mod weapon_state;

@@ -29,8 +29,17 @@ from .common import (APPROVAL, IS_WINDOWS, Install, Log, Runner, SetupError, exe
 # 4: hd_keys.tsv names each key's own picture. 5: the cod3-user-pack,
 # cod3-check-pack and cod3-locate commands (c3w/user_textures.py). 6:
 # hd_keys.tsv's kind column (only color pictures are upscaled), small
-# textures read from the right place, 8_8_8_8 channels in the right order.
-RIP_OUTPUT_VERSION = 6
+# textures read from the right place, 8_8_8_8 channels in the right order. 7:
+# the captured-textures command (HD packs for World at War, CoD2 and CoD4 from
+# the textures the game saved while played). 8: waw-hd-textures. 9: the
+# fh-hd-textures and bro-hd-textures commands (Finest Hour's and Big Red One's
+# HD textures from their disc files).
+RIP_OUTPUT_VERSION = 9
+# The oldest layout whose Call of Duty 3 files still fit the current ripper.
+# 7, 8 and 9 only added commands (captured-textures; waw-hd-textures, World at
+# War's HD textures from its disc files; fh-hd-textures and bro-hd-textures),
+# so CoD3 files ripped at 6 are not ripped again.
+COD3_DATA_LAYOUT = 6
 # Written next to the ripped files (data/cod3) after a rip: the output layout
 # they have, so a check (c3w/repair.py) can tell an older rip.
 LAYOUT_FILE = "rip_layout.json"

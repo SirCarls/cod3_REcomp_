@@ -22,6 +22,9 @@ from c3w import pipeline  # noqa: E402
 from c3w.common import SetupError  # noqa: E402
 
 GLSLANG_BAT = Path("C:/w/tools/bro-windows/glslc.bat")
+# [rexglue-native-platform-fix] 2026-11-23: recomp/CMakeLists.txt hands ngl_vk's search, glslc and the stop to the
+# project's platform layer (xplat_find_ngl_vk, next to the setup tool like ngl_vk/)
+XPLAT_NGL_VK = TOOL.parent / "xplat" / "cmake" / "XplatNglVk.cmake"
 
 
 class GlslcArgsTests(unittest.TestCase):
@@ -33,7 +36,10 @@ class GlslcArgsTests(unittest.TestCase):
 
     def test_the_names_are_the_cmake_files_own(self):
         recomp = (TOOL / "recomp" / "CMakeLists.txt").read_text(encoding="utf-8")
-        self.assertIn("find_program(COD3_NGL_VK_GLSLC ", recomp)
+        self.assertIn("xplat_find_ngl_vk(COD3 ", recomp)   # [rexglue-native-platform-fix] (was find_program here)
+        module = XPLAT_NGL_VK.read_text(encoding="utf-8")
+        self.assertIn("set(names NGL_VK_GLSLC)", module)          # taken as given, as before:
+        self.assertIn("${ARG_PREFIX}_NGL_VK_GLSLC", module)       # NGL_VK_GLSLC and COD3_NGL_VK_GLSLC
         ngl = TOOL.parent / "ngl_vk" / "CMakeLists.txt"   # the project's, next to the setup tool
         if ngl.is_file():
             self.assertIn("find_program(NGL_VK_GLSLC ", ngl.read_text(encoding="utf-8"))
@@ -129,9 +135,14 @@ class CMakeTests(unittest.TestCase):
         m = re.search(r'option\(COD3_REQUIRE_NGL_VK "[^"]*" (ON|OFF)\)', text)
         self.assertIsNotNone(m)
         self.assertEqual(m.group(1), "ON")
-        self.assertIn('message(FATAL_ERROR "cod3: the native renderer (ngl_vk) can\'t be built', text)
-        self.assertIn("set(COD3_NGL_VK_BUILT ON CACHE INTERNAL", text)
+        # [rexglue-native-platform-fix] 2026-11-23: the stop and COD3_NGL_VK_BUILT are xplat_find_ngl_vk's
+        # (${name} is "cod3", ${prefix} "COD3"); OFF here too for COD3_NGL_VK_WINDOWS=OFF
+        self.assertIn("xplat_find_ngl_vk(COD3 TARGET cod3 DEFINE COD3_NGL_VK REQUIRE", text)
         self.assertIn("set(COD3_NGL_VK_BUILT OFF CACHE INTERNAL", text)
+        module = XPLAT_NGL_VK.read_text(encoding="utf-8")
+        self.assertIn('message(FATAL_ERROR "${name}: the native renderer (ngl_vk) can\'t be built', module)
+        self.assertIn("set(${prefix}_NGL_VK_BUILT ON CACHE INTERNAL", module)
+        self.assertIn("set(${prefix}_NGL_VK_BUILT OFF CACHE INTERNAL", module)
 
 
 if __name__ == "__main__":

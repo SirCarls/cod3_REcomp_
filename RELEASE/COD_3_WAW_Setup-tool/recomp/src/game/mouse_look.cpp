@@ -110,29 +110,10 @@ void MouseLook::AddDelta(float dx, float dy) {
     accel_last = accel_now;
     f2::accel::Apply(&dx, &dy, ms);
   }
-  std::lock_guard lock(mutex_);
-  if (!REXCVAR_GET(cod3_mouse_resample)) {
-    dx_ += dx;
-    dy_ += dy;
-    return;
-  }
-  // [claude-9b-think] cod3_mouse_resample: this batch covers the time since the one before (at most 8 ms).
-  constexpr int64_t kMaxSpanNs = 8'000'000;
-  const int64_t now = Clock::now().time_since_epoch().count();
-  const int64_t since = last_batch_ns_ ? now - last_batch_ns_ : kMaxSpanNs;
-  if (last_batch_ns_ && since > 0 && since < 4 * kMaxSpanNs)
-    batch_interval_ns_ += (double(since) - batch_interval_ns_) * 0.1;
-  last_batch_ns_ = now;
-  const int64_t span = std::clamp<int64_t>(since, 1, kMaxSpanNs);
-  if (batches_.size() > 256) batches_.pop_front();  // never read for a while: keep the newest
-  batches_.push_back(Batch{now - span, now, dx, dy, 0.0f});
+  motion_.Add(dx, dy, Clock::now().time_since_epoch().count(), REXCVAR_GET(cod3_mouse_resample));
 }
 
-void MouseLook::ClearPending() {
-  std::lock_guard lock(mutex_);
-  dx_ = dy_ = 0.0f;
-  batches_.clear();  // [claude-9b-think]
-}
+void MouseLook::ClearPending() { motion_.Clear(); }
 
 bool MouseLook::WantsCapture() const {
   if (!Enabled()) return false;
@@ -144,39 +125,25 @@ bool MouseLook::WantsCapture() const {
 }
 
 void MouseLook::SetViewFov(float fov, float base_fov) {
-  float ratio = (base_fov > 1.0f && fov > 0.0f) ? fov / base_fov : 1.0f;
-  zoom_ratio_.store(std::clamp(ratio, 0.05f, 1.0f), std::memory_order_relaxed);
+  zoom_ratio_.store(static_cast<float>(inputkit::mouse::ZoomRatio(fov, base_fov)), std::memory_order_relaxed);
 }
 
 void MouseLook::ApplyToGuest(uint8_t* base) {
   const int64_t now = Clock::now().time_since_epoch().count();
   const int64_t prev = last_guest_tick_ns_.exchange(now, std::memory_order_relaxed);
 
-  float dx, dy;
-  {
-    std::lock_guard lock(mutex_);
-    dx = dx_;
-    dy = dy_;
-    dx_ = dy_ = 0.0f;
-    // [claude-9b-think] cod3_mouse_resample: the motion of the batches up to now less one batch interval, each batch
-    // spread evenly over its own time.
-    const int64_t lag = int64_t(std::clamp(batch_interval_ns_, 0.0, 8'000'000.0));
-    const int64_t until = now - lag;
-    while (!batches_.empty()) {
-      Batch& b = batches_.front();
-      const float upto = b.end_ns <= until ? 1.0f
-                         : b.start_ns >= until
-                             ? 0.0f
-                             : float(double(until - b.start_ns) / double(std::max<int64_t>(b.end_ns - b.start_ns, 1)));
-      if (upto > b.taken) {
-        dx += b.dx * (upto - b.taken);
-        dy += b.dy * (upto - b.taken);
-        b.taken = upto;
-      }
-      if (b.taken < 1.0f) break;
-      batches_.pop_front();
-    }
-  }
+  // Keyboard/mouse drives local player 1 only; pads drive the others.
+  // [input-port] 2026-11-24 BUG FIX: asked before the motion is taken. In cod3mp's split screen the game builds a
+  // usercmd (and calls CL_AdjustAngles) for each local player in turn; before, the calls for players 2-4 took the
+  // waiting motion and then dropped it here, so player 1 turned by only a share of the mouse's motion (about a half
+  // with two players, a quarter with four), and unevenly.
+  const uint32_t local = guest::ReadU32(base, addr::kActiveLocalClient);
+  if (local != 0) return;
+
+  // [claude-9b-think] cod3_mouse_resample: the motion of the batches up to now less one batch interval, each batch
+  // spread evenly over its own time (inputkit::mouse::MotionQueue).
+  float dx = 0.0f, dy = 0.0f;
+  motion_.Take(now, &dx, &dy);
   // Every count that arrived since the last usercmd is applied, however long
   // that frame took, so the turn doesn't depend on the frame rate. Only
   // motion from before gameplay resumed (menus, loading: no usercmds for
@@ -188,15 +155,14 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
   // stick meanwhile (game/qte_actions.h): the view stays still.
   if (qte::MouseOwnsView()) return;
 
-  // Keyboard/mouse drives local player 1 only; pads drive the others.
-  const uint32_t local = guest::ReadU32(base, addr::kActiveLocalClient);
-  if (local != 0) return;
-
-  float ratio = zoom_ratio_.load(std::memory_order_relaxed);
-  double sens = REXCVAR_GET(cod3_sensitivity);
-  if (ratio < 0.999f) sens *= ratio * REXCVAR_GET(cod3_zoom_sensitivity);
+  inputkit::mouse::Turn turn;
+  turn.sensitivity = REXCVAR_GET(cod3_sensitivity);
+  turn.m_yaw = REXCVAR_GET(cod3_m_yaw);
+  turn.m_pitch = REXCVAR_GET(cod3_m_pitch);
+  turn.zoom_ratio = zoom_ratio_.load(std::memory_order_relaxed);
+  turn.zoom_sensitivity = REXCVAR_GET(cod3_zoom_sensitivity);
   // [claude-9b] The weapon in hand's percentage, hip blending into aiming (game/aim_sensitivity.h).
-  sens *= aimsens::Multiplier(base, local);
+  turn.multiplier = aimsens::Multiplier(base, local);
 
   // The game's own Options > Controls rows: Invert aim flips the mouse too;
   // horizontal / vertical sensitivity are the controller's only, unless
@@ -208,17 +174,17 @@ void MouseLook::ApplyToGuest(uint8_t* base) {
     return v == 0 ? double(c::kSensZero) : v * double(c::kSensScale);
   };
   const bool rows_too = REXCVAR_GET(cod3_mouse_game_sensitivity);  // [claude-9b] off: controller only
-  const double scale_x = rows_too ? game_scale(c::kHorizontalSens) : 1.0;
-  const double scale_y = rows_too ? game_scale(c::kVerticalSens) : 1.0;
+  turn.scale_x = rows_too ? game_scale(c::kHorizontalSens) : 1.0;
+  turn.scale_y = rows_too ? game_scale(c::kVerticalSens) : 1.0;
   const bool game_invert = guest::ReadU8(base, c::kSettings + c::kInvertAim) != 0;
   game_invert_.store(game_invert, std::memory_order_relaxed);
+  turn.invert = REXCVAR_GET(cod3_invert_mouse) != game_invert;
 
+  float yaw_delta = 0.0f, pitch_delta = 0.0f;
+  inputkit::mouse::TurnFromCounts(turn, dx, dy, &yaw_delta, &pitch_delta);
   const uint32_t angles = addr::kClientActive + local * addr::kClientActiveStride + addr::kViewAnglesOffset;
-  float pitch = guest::ReadF32(base, angles + 0);
-  float yaw = guest::ReadF32(base, angles + 4);
-  const double invert = (REXCVAR_GET(cod3_invert_mouse) != game_invert) ? -1.0 : 1.0;
-  yaw -= static_cast<float>(dx * sens * scale_x * REXCVAR_GET(cod3_m_yaw));
-  pitch += static_cast<float>(dy * sens * scale_y * REXCVAR_GET(cod3_m_pitch) * invert);
+  const float pitch = guest::ReadF32(base, angles + 0) + pitch_delta;
+  const float yaw = guest::ReadF32(base, angles + 4) + yaw_delta;
   if (std::isfinite(yaw) && std::isfinite(pitch)) {
     guest::WriteF32(base, angles + 0, pitch);
     guest::WriteF32(base, angles + 4, yaw);

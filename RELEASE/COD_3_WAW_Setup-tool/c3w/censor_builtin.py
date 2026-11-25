@@ -1176,9 +1176,9 @@ def status(data_dir: Path) -> str:
     s = load_settings(data_dir)
     mine = read_manifest(user_textures.png_dir(Path(data_dir)))
     if not s.on:
-        return "Built-in censor: off" + (f" ({len(mine)} picture(s) still to remove: build the texture pack)"
-                                         if mine else "") + "."
-    return (f"Built-in censor: flags {LABELS[s.flags]}{' ' + s.flags_color if s.flags == 'custom' else ''}; "
+        return "Censor: off" + (f" ({len(mine)} picture(s) left; build the texture pack to remove them)"
+                                if mine else "") + "."
+    return (f"Censor: flags {LABELS[s.flags]}{' ' + s.flags_color if s.flags == 'custom' else ''}; "
             f"insignia {LABELS[s.insignia]}{' ' + s.insignia_color if s.insignia == 'custom' else ''}; "
             f"{len(mine)} picture(s) made.")
 

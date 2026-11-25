@@ -28,7 +28,10 @@ The Big Red One tab (games.py) builds it in the same steps as Call of Duty 3's S
    name redoes nothing and a new stand-in redoes only the last step. With cleanup off the tables and the C stay in
    the work folder between builds (<work>/bro/lift-cache: one entry per disc, by its default.xbe's MD5), so a second
    build of a disc skips the recompile, and the C keeps its file dates where it didn't change, so only changed files
-   are compiled again. With cleanup on, everything is made again and deleted at the end, as before.
+   are compiled again.
+   [waw-decomp/speed1] 2026-11-23 (owner 21:00: "keep the BRO and FH lift cache even with cleanup
+   on"): the cache is kept with cleanup on too, compressed, in <work>/tools/lift-cache/bro (LiftCache);
+   --clear-lift-cache empties it on purpose.
 5. Build bro/ with CMake against that C: graphics on ../ngl_vk; the window, sound and pads through SDL3, the static
    SDL3 Call of Duty 3's SDK builds when that SDK is in the same work folder (both games then use one SDL), else the
    system's own SDL3 (owner 2026-11-07 10:04: "Ok just use what cod3 has").
@@ -51,16 +54,19 @@ import re
 import shutil
 import struct
 import sys
+import tarfile   # [waw-decomp/speed1] the lift cache's archives
 import tempfile
 import threading
 import time
+import zlib   # [waw-decomp/speed1] (zlib.error: a damaged archive)
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import bro_windows, common, deps
+from . import bro_windows, common, controller_db, deps
 from .common import IS_LINUX, IS_WINDOWS, APPROVAL, Cancelled, Install, Log, Runner, SetupError, human, is_within
 from .xiso import XisoImage
+from . import build_speed   # [waw-decomp/speed1] 2026-11-23 jobs, linker, compiler cache and link pool for this PC
 
 GAME_NAME = "Call of Duty 2: Big Red One"
 OUTPUT_SUBDIR = "bro"          # <output>/bro: the game, its saves and its launcher
@@ -136,9 +142,9 @@ LINUX_PACKAGES: Dict[str, List[str]] = {
 WORK_ROOM = 1_500_000_000
 # [acct2-ocr] the Windows version besides: its build (about 0.4 GB), SDL3's, and llvm-mingw (about 1 GB unpacked)
 WINDOWS_ROOM = 1_600_000_000
-# [waw-decomp] 2026-11-16 with cleanup off, a disc's entry in the lift cache besides (LiftCache: tables about 0.1 GB,
-# the C about 0.2 GB)
-LIFT_CACHE_ROOM = 400_000_000
+# [waw-decomp/speed1] 2026-11-23 a disc's entry in the lift cache besides (LiftCache: the tables and
+# the C, about 0.3 GB, compressed; 400 MB uncompressed before)
+LIFT_CACHE_ROOM = 100_000_000
 
 # The recompiler's steps: (key, what the log says, share of the build's time).
 STEPS: Tuple[Tuple[str, str, float], ...] = (
@@ -369,8 +375,9 @@ class Layout:
 
     @property
     def lift_cache(self) -> Path:
-        """The recompiler's output kept between builds when cleanup is off (LiftCache)."""
-        return self.work / "lift-cache"
+        """The recompiler's output kept between builds (LiftCache; [waw-decomp/speed1] 2026-11-23: in tools/, which a
+        cleanup keeps, one folder per game: bro, fh)."""
+        return self.tools / "lift-cache" / self.work.name
 
     # In the project folder
     @property
@@ -851,7 +858,7 @@ def _copy_folder(src: Path, dest: Path, log: Log, cancel: threading.Event) -> No
 def check_room(disc: Disc, lay: Layout, windows: bool = False, cache: bool = False) -> None:
     """Enough free space for the game's files (output) and the build (work); `windows`: and the Windows version's
     ([acct2-ocr] its build, and llvm-mingw unpacked in tools/ the first time); `cache` ([waw-decomp] 2026-11-16):
-    and the disc's entry in the lift cache (cleanup off)."""
+    and the disc's entry in the lift cache (since [waw-decomp/speed1] 2026-11-23 always)."""
     have_game = sum(f.stat().st_size for f in _folder_files(lay.game)) if lay.game.is_dir() else 0
     work_need = WORK_ROOM + (WINDOWS_ROOM if windows else 0) + (LIFT_CACHE_ROOM if cache else 0)
     needs = [(lay.out, max(0, disc.size - have_game)), (lay.work, work_need)]
@@ -891,7 +898,10 @@ def recompile_key(lay: Layout, xbe_md5: str) -> dict:
 # stand-in table: a stand-in's new name made the 6-minute recompile run again from the disassembly.
 # ---------------------------------------------------------------------------
 STAMP_FORMAT = 2        # recompile.stamp.json: {"format": 2, "steps": {step: key}}; another shape: nothing done
-CACHE_FORMAT = 1        # a lift cache entry's manifest.json
+CACHE_FORMAT = 2        # a lift cache entry's manifest ([waw-decomp/speed1] 2026-11-23: 2, the compressed entries)
+CACHE_SUFFIX = ".tar.gz"   # [waw-decomp/speed1] an entry's archive (gzip: Python's own zlib)
+CACHE_LEVEL = 6         # [waw-decomp/speed1] gzip's level: its default, quick and about 9 to 1 on the C
+CACHE_DISCS = 4         # [waw-decomp/speed1] at most this many discs' entries per game
 RUNTIME_HEADER = "recomp_types.h"   # templates/runtime/'s header, which the lift copies beside the C
 
 
@@ -1052,133 +1062,239 @@ def _copy_new(src: Path, dest: Path) -> None:
     tmp.replace(dest)
 
 
-def _copy_hashed(src: Path, dest: Path) -> dict:
-    """src to dest, read once: its size and SHA-256."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    h, size = hashlib.sha256(), 0
-    with open(src, "rb") as fi, open(dest, "wb") as fo:
-        for chunk in iter(lambda: fi.read(1 << 20), b""):
-            h.update(chunk)
-            fo.write(chunk)
-            size += len(chunk)
-    return {"size": size, "sha256": h.hexdigest()}
-
-
 class LiftCache:
-    """The recompiler's output kept between builds when cleanup is off: <work>/bro/lift-cache/<xbe MD5>-<key>/. One
-    entry per disc (by its default.xbe's MD5, as the disc check reads it: nothing here names a disc), the newest; a
-    cleanup at the end of a build deletes it with the rest of <work>/bro. An entry holds every step's tables
-    (<step>/), the C (gen/) and manifest.json: the five steps' keys and each file's size and SHA-256. It is written
-    into a folder of its own and renamed into place only when whole, so a build that stops leaves no half entry
-    (at most a *.partial-* folder, which the next build removes), and its files are checked against the manifest
-    before they are used."""
+    """[waw-decomp/speed1] 2026-11-23 The recompiler's output kept between builds, with cleanup on or off (owner 21:00:
+    "keep the BRO and FH lift cache even with cleanup on"): <work>/tools/lift-cache/<bro or fh>/, in the work
+    folder's tools/, which a cleanup keeps. One entry per disc, the newest, and at most CACHE_DISCS discs:
+    - <xbe MD5>-<key>.tar.gz: every step's tables and the C, compressed with gzip (Python's own zlib, so nothing to
+      install on any system; Big Red One's C, about 180 MB, takes about 20 MB);
+    - <xbe MD5>-<key>.json beside it: the five steps' keys and each file's size and SHA-256.
+    Each step's key holds the disc's default.xbe MD5, xboxrecomp's patched tools/ tree (its commit with every patch),
+    Python's and Capstone's versions and the step's options (LiftInputs, step_keys), so a changed disc, xboxrecomp or
+    patch lifts again from the first step that changed; the new entry then replaces the disc's older one. Nothing here
+    names a disc but its MD5. An entry is written under a .partial- name and renamed into place only when whole; its
+    files are checked against the manifest when they are taken, and one that doesn't match is removed and that part
+    lifted again. clear() (the build's --clear-lift-cache) removes every entry of the game.
+    [waw-decomp] 2026-11-16: the first version kept a folder per entry in <work>/bro, only with cleanup off."""
 
-    def __init__(self, root: Path, log: Log):
+    def __init__(self, root: Path, log: Log, game: str = GAME_NAME):
         self.root = Path(root)
         self.log = log
+        self.game = game
 
-    def _entries(self, xbe_md5: str) -> List[Path]:
+    @staticmethod
+    def _archive(base: Path) -> Path:
+        return base.with_name(base.name + CACHE_SUFFIX)
+
+    @staticmethod
+    def _manifest_path(base: Path) -> Path:
+        return base.with_name(base.name + ".json")
+
+    def _read(self, base: Path) -> dict:
+        """An entry's manifest ({} when it is missing or of another format)."""
+        m = common.read_json(self._manifest_path(base))
+        return m if isinstance(m, dict) and m.get("format") == CACHE_FORMAT else {}
+
+    def _bases(self, pattern: str = "*") -> List[Path]:
+        """The whole entries (their names without the endings) whose names match `pattern`."""
         if not self.root.is_dir():
             return []
-        return sorted(p for p in self.root.glob(f"{xbe_md5}-*") if p.is_dir() and ".partial-" not in p.name)
+        bases = [p.with_name(p.name[:-len(".json")]) for p in self.root.glob(f"{pattern}.json")]
+        return sorted(b for b in bases if self._archive(b).is_file())
 
     def name(self, xbe_md5: str, keys: Dict[str, str]) -> Path:
         return self.root / f"{xbe_md5}-{keys['recomp'][:16]}"
+
+    def remove(self, base: Path) -> None:
+        """One entry: its manifest first, so a half-removed entry is never read."""
+        for p in (self._manifest_path(base), self._archive(base)):
+            try:
+                p.unlink()
+            except FileNotFoundError:
+                pass
 
     def remove_partial(self) -> None:
         """What a build that stopped while writing an entry left."""
         if self.root.is_dir():
             for p in self.root.glob("*.partial-*"):
-                common.safe_rmtree(p, self.root, [], self.log)
+                p.unlink()
+
+    def clear(self) -> None:
+        """Every entry of this game (the build's --clear-lift-cache)."""
+        if self.root.is_dir():
+            common.safe_rmtree(self.root, self.root.parent, [], self.log)
+            self.log.info(f"Removed the kept recompiler output in {self.root}, as asked: every step is done again.")
 
     def has(self, xbe_md5: str, keys: Dict[str, str]) -> bool:
-        m = common.read_json(self.name(xbe_md5, keys) / "manifest.json")
-        return isinstance(m, dict) and m.get("format") == CACHE_FORMAT and m.get("keys") == keys
-
-    @staticmethod
-    def check(entry: Path, manifest: dict) -> bool:
-        """Every file the manifest lists is there with its size and SHA-256."""
-        files = manifest.get("files")
-        if not isinstance(files, dict) or not files:
-            return False
-        for rel, info in files.items():
-            p = entry / rel
-            if ".." in Path(rel).parts or not isinstance(info, dict) or not p.is_file():
-                return False
-            if p.stat().st_size != info.get("size") or _sha256(p) != info.get("sha256"):
-                return False
-        return True
+        base = self.name(xbe_md5, keys)
+        return self._read(base).get("keys") == keys and self._archive(base).is_file()
 
     def best(self, xbe_md5: str, keys: Dict[str, str]) -> Tuple[Optional[Path], dict, int]:
-        """This disc's entry that holds the most steps (from the first) done with today's keys, checked: (entry,
-        manifest, how many steps), or (None, {}, 0). An entry whose files don't match its manifest is removed."""
+        """This disc's entry that holds the most steps (from the first) done with today's keys: (entry, manifest,
+        how many steps), or (None, {}, 0). Its files are checked when they are taken (restore)."""
         found: Tuple[Optional[Path], dict, int] = (None, {}, 0)
-        for entry in self._entries(xbe_md5):
-            m = common.read_json(entry / "manifest.json")
-            theirs = m.get("keys") if isinstance(m, dict) and m.get("format") == CACHE_FORMAT else None
-            if not isinstance(theirs, dict):
+        for base in self._bases(f"{xbe_md5}-*"):
+            m = self._read(base)
+            theirs = m.get("keys")
+            if not isinstance(theirs, dict) or not isinstance(m.get("files"), dict) or not m["files"]:
                 continue
             n = 0
             for step, _, _ in STEPS:
                 if theirs.get(step) != keys[step]:
                     break
                 n += 1
-            if n <= found[2]:
-                continue
-            if self.check(entry, m):
-                found = (entry, m, n)
-            else:
-                self.log.warn(f"The kept recompiler output in {entry} isn't what it was when it was written (a file "
-                              "is missing or changed): it is removed, and that part is made again.")
-                common.safe_rmtree(entry, self.root, [], self.log)
+            if n > found[2]:
+                found = (base, m, n)
         return found
 
-    def restore(self, entry: Path, manifest: dict, lay: Layout, steps: Sequence[str]) -> None:
-        """The outputs of `steps` from an entry into the work folder. A file that is the same already is left as it
-        is, dated as it was, so the build doesn't compile it again; one the entry doesn't have goes (in folders
-        that hold only that step's output)."""
+    def unpack(self, base: Path, manifest: dict, into: Path) -> bool:
+        """The entry's files into `into` (made new), each checked against the manifest as it is written. False, and
+        the entry removed, when the archive is damaged or a file is missing or doesn't match."""
         files = manifest["files"]
-        for step in steps:
-            for name, folder, names in step_outputs(lay)[step]:
-                ours = {rel.split("/", 1)[1]: info for rel, info in files.items() if rel.split("/", 1)[0] == name}
-                folder.mkdir(parents=True, exist_ok=True)
-                if names is None:
-                    for p in folder.iterdir():
-                        if p.name not in ours:
-                            if p.is_dir():
-                                common.safe_rmtree(p, lay.work, [lay.out], self.log)
-                            else:
-                                p.unlink()
-                for fname, info in ours.items():
-                    dest = folder / fname
-                    if dest.is_file() and dest.stat().st_size == info["size"] and _sha256(dest) == info["sha256"]:
+        if into.exists():
+            common.safe_rmtree(into, into.parent, [], self.log)
+        into.mkdir(parents=True)
+        seen = set()
+        try:
+            with tarfile.open(self._archive(base), "r:gz") as tar:
+                for member in tar:
+                    info = files.get(member.name)
+                    rel = PurePosixPath(member.name)
+                    if (not isinstance(info, dict) or not member.isfile() or rel.is_absolute() or ".." in rel.parts
+                            or ":" in member.name or "\\" in member.name):
+                        continue   # only the files the manifest lists, as plain files inside `into`
+                    source = tar.extractfile(member)
+                    if source is None:
                         continue
-                    _copy_new(entry / name / fname, dest)
+                    if _write_hashed(source, into.joinpath(*rel.parts)) != info:
+                        raise ValueError(f"{member.name} isn't what was kept")
+                    seen.add(member.name)
+        except (OSError, EOFError, ValueError, tarfile.TarError, zlib.error) as e:
+            self.log.warn(f"The kept recompiler output {self._archive(base).name} can't be used ({e}): it is removed, "
+                          "and that part is made again.")
+            self.remove(base)
+            return False
+        if seen != set(files):
+            self.log.warn(f"The kept recompiler output {self._archive(base).name} is missing files: it is removed, "
+                          "and that part is made again.")
+            self.remove(base)
+            return False
+        return True
+
+    def restore(self, entry: Path, manifest: dict, lay: Layout, steps: Sequence[str]) -> bool:
+        """The outputs of `steps` from an entry into the work folder (unpacked and checked first; False when the
+        entry doesn't check out, see unpack). A file that is the same already is left as it is, dated as it was, so
+        the build doesn't compile it again; one the entry doesn't have goes (in folders that hold only that step's
+        output)."""
+        unpacked = lay.work / "lift-cache-unpacked"
+        if not self.unpack(entry, manifest, unpacked):
+            return False
+        files = manifest["files"]
+        try:
+            for step in steps:
+                for name, folder, names in step_outputs(lay)[step]:
+                    ours = {rel.split("/", 1)[1]: info for rel, info in files.items() if rel.split("/", 1)[0] == name}
+                    folder.mkdir(parents=True, exist_ok=True)
+                    if names is None:
+                        for p in folder.iterdir():
+                            if p.name not in ours:
+                                if p.is_dir():
+                                    common.safe_rmtree(p, lay.work, [lay.out], self.log)
+                                else:
+                                    p.unlink()
+                    for fname, info in ours.items():
+                        dest = folder / fname
+                        if dest.is_file() and dest.stat().st_size == info["size"] and _sha256(dest) == info["sha256"]:
+                            continue
+                        _copy_new(unpacked / name / fname, dest)
+        finally:
+            common.safe_rmtree(unpacked, lay.work, [lay.out], self.log)
+        return True
 
     def store(self, lay: Layout, xbe_md5: str, keys: Dict[str, str], made_from: dict,
               cancel: Optional[threading.Event] = None) -> Path:
-        """The work folder's tables and C as this disc's entry (replacing its older ones)."""
+        """The work folder's tables and C as this disc's entry, compressed (replacing its older ones and, past
+        CACHE_DISCS discs, the oldest disc's); returns the archive."""
         self.root.mkdir(parents=True, exist_ok=True)
         self.remove_partial()
-        final = self.name(xbe_md5, keys)
-        tmp = self.root / f"{final.name}.partial-{os.getpid()}"
+        base = self.name(xbe_md5, keys)
+        tmp = self.root / f"{base.name}.partial-{os.getpid()}"
         files = {}
-        for step, _, _ in STEPS:
-            for name, folder, names in step_outputs(lay)[step]:
-                for src in _files(folder, names):
-                    if cancel is not None and cancel.is_set():
-                        raise Cancelled()
-                    files[f"{name}/{src.name}"] = _copy_hashed(src, tmp / name / src.name)
-        common.write_json(tmp / "manifest.json", {
-            "format": CACHE_FORMAT, "game": GAME_NAME, "xbe_md5": xbe_md5, "keys": keys, "made_from": made_from,
+        try:
+            with tarfile.open(tmp, "w:gz", compresslevel=CACHE_LEVEL) as tar:
+                for step, _, _ in STEPS:
+                    for name, folder, names in step_outputs(lay)[step]:
+                        for src in _files(folder, names):
+                            if cancel is not None and cancel.is_set():
+                                raise Cancelled()
+                            rel = f"{name}/{src.name}"
+                            files[rel] = _add_hashed(tar, src, rel)
+            self.remove(base)
+            tmp.replace(self._archive(base))
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
+        common.write_json(self._manifest_path(base), {
+            "format": CACHE_FORMAT, "game": self.game, "xbe_md5": xbe_md5, "keys": keys, "made_from": made_from,
             "written": time.strftime("%Y-%m-%d %H:%M"), "files": files})
-        if final.exists():
-            common.safe_rmtree(final, self.root, [], self.log)
-        tmp.replace(final)
-        for older in self._entries(xbe_md5):
-            if older != final:
-                common.safe_rmtree(older, self.root, [], self.log)
-        return final
+        for older in self._bases(f"{xbe_md5}-*"):
+            if older != base:
+                self.remove(older)
+        newest_first = sorted(self._bases(), key=lambda b: self._archive(b).stat().st_mtime, reverse=True)
+        for oldest in newest_first[CACHE_DISCS:]:
+            self.remove(oldest)
+        return self._archive(base)
+
+
+def _add_hashed(tar: tarfile.TarFile, src: Path, rel: str) -> dict:
+    """[waw-decomp/speed1] src into the archive as rel, with no owner, date or permissions of this PC: its size and
+    SHA-256."""
+    info = tarfile.TarInfo(rel)
+    info.size = src.stat().st_size
+    info.mode = 0o644
+    h = hashlib.sha256()
+    with open(src, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+        f.seek(0)
+        tar.addfile(info, f)
+    return {"size": info.size, "sha256": h.hexdigest()}
+
+
+def _write_hashed(source, dest: Path) -> dict:
+    """[waw-decomp/speed1] A readable file object into dest: what was written, as {"size", "sha256"}."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    h, size = hashlib.sha256(), 0
+    with open(dest, "wb") as out:
+        for chunk in iter(lambda: source.read(1 << 20), b""):
+            h.update(chunk)
+            out.write(chunk)
+            size += len(chunk)
+    return {"size": size, "sha256": h.hexdigest()}
+
+
+def drop_old_lift_cache(lay: Layout, log: Log) -> None:
+    """[waw-decomp/speed1] The first version's lift cache (<work>/bro/lift-cache, folders) once the build runs with
+    the compressed one: removed, so its 0.3 GB per disc doesn't stay behind."""
+    old = lay.work / "lift-cache"
+    if old.is_dir():
+        common.safe_rmtree(old, lay.work, [lay.out], log)
+
+
+def keep_lift(cache: LiftCache, lay: Layout, xbe_md5: str, keys: Dict[str, str], ran: Sequence[str],
+              made_from: dict, cancel: Optional[threading.Event], log: Log) -> None:
+    """[waw-decomp/speed1] After the recompile: its output as this disc's entry, when a step ran or the entry isn't
+    there yet. A failure (a full disk, say) is only noted: the next build of this disc recompiles, that's all."""
+    if not ran and cache.has(xbe_md5, keys):
+        return
+    t0 = time.monotonic()
+    try:
+        archive = cache.store(lay, xbe_md5, keys, made_from, cancel)
+        log.info(f"Kept the recompiler's output for the next build of this disc in {archive} "
+                 f"({human(archive.stat().st_size)}, {format_minutes(time.monotonic() - t0)}).")
+    except OSError as e:
+        log.warn(f"The recompiler's output couldn't be kept for the next build: {e}")
+        cache.remove_partial()
 
 
 def restore_lift(lay: Layout, keys: Dict[str, str], xbe_md5: str, cache: Optional[LiftCache], log: Log) -> int:
@@ -1193,9 +1309,10 @@ def restore_lift(lay: Layout, keys: Dict[str, str], xbe_md5: str, cache: Optiona
         return have
     names = [s for s, _, _ in STEPS][:n]
     log.info("Taking " + ("the whole recompile" if n == len(STEPS) else f"the recompiler's first {n} steps") +
-             f" from an earlier build of this disc ({entry.name}, checked).")
+             f" from an earlier build of this disc ({entry.name}).")
     t0 = time.monotonic()
-    cache.restore(entry, manifest, lay, names)
+    if not cache.restore(entry, manifest, lay, names):   # [waw-decomp/speed1] 2026-11-23 checked as it is unpacked
+        return have
     write_stamp(lay, {s: keys[s] for s in names})   # the steps after these follow from them: none are kept
     log.info(f"Taken in {format_minutes(time.monotonic() - t0)}.")
     return n
@@ -1370,13 +1487,22 @@ def build_command(lay: Layout, t: Tools, jobs: int) -> List[str]:
     return [str(t.cmake), "--build", str(lay.build), "-j", str(max(1, jobs))]
 
 
+def host_compilers() -> List[str]:
+    """[waw-decomp/speed1] 2026-11-23: the C and C++ compilers CMake takes for a build that names none
+    (CC and CXX, else cc and c++): the ones build_speed tries the linker with."""
+    return [os.environ.get("CC") or "cc", os.environ.get("CXX") or "c++"]
+
+
 def build(lay: Layout, t: Tools, jobs: int, runner: Runner, log: Log, keep: bool = False,
           target: Optional[str] = None) -> Optional[Path]:
     """bro/ with CMake against the recompiled C; returns the program. [waw-decomp] 2026-11-16: keep: the build
     folder of the last build is used again when it was configured the same way, so only what changed is compiled
     (cleanup off; else a new one, as before: bro_windows.configure_folder). target: only that CMake target (the
     libraries, while the recompiler still writes the C): returns None."""
-    bro_windows.configure_folder(configure_command(lay, t), lay.build, keep, lay, runner, log)
+    # [waw-decomp/speed1] 2026-11-23: this PC's speed arguments (c3w/build_speed.py); a folder not kept starts new
+    speed = build_speed.cmake_args(lay.build, host_compilers(), ninja=bool(t.ninja), fresh=True if not keep
+                                   else None, log=log)
+    bro_windows.configure_folder(configure_command(lay, t) + speed, lay.build, keep, lay, runner, log)
     runner.run(build_command(lay, t, jobs) + (["--target", target] if target else []),
                line_filter=_progress_lines(log, "Compiling" + (f" ({target})" if target else ""), 0.0))
     if target:
@@ -1419,13 +1545,16 @@ def _place(exe: Path, dest: Path, executable: bool) -> None:
 
 
 def install(lay: Layout, exe: Optional[Path], disc: Disc, tool_version: str,
-            exe_windows: Optional[Path] = None) -> None:
+            exe_windows: Optional[Path] = None, log: Optional[Log] = None) -> None:
     """The programs into <output>/bro/bin (Linux: bro, Windows: bro.exe; [acct2-ocr] both when both were built),
-    their launchers (play.sh, play.bat), saves/ and bro.json."""
+    their launchers (play.sh, play.bat), saves/ and bro.json; [input-port] the controller database beside them."""
     if exe is not None:
         _place(exe, lay.exe, True)
     if exe_windows is not None:
         _place(exe_windows, lay.exe_windows, False)
+    if exe is not None or exe_windows is not None:
+        # [input-port] 2026-11-24: bro_pad.c reads gamecontrollerdb.txt next to the program (SDL_GameControllerDB)
+        controller_db.copy_next_to(lay.exe.parent, log.warn if log is not None else None)
     lay.saves.mkdir(parents=True, exist_ok=True)
     lay.logs.mkdir(parents=True, exist_ok=True)
     if exe is not None and not IS_WINDOWS:
@@ -1551,6 +1680,7 @@ class BuildOptions:
     install_deps: bool = True
     cleanup: bool = True
     tool_version: str = ""
+    clear_lift_cache: bool = False   # [waw-decomp/speed1] 2026-11-23 empty the lift cache first (--clear-lift-cache)
     # [acct2-ocr] 2026-11-12: on Linux, also the Windows version (bin/bro.exe and play.bat, for a Windows PC), made
     # with llvm-mingw. On Windows the build is the Windows version anyway.
     windows: bool = False
@@ -1595,7 +1725,8 @@ def run_build(o: BuildOptions, runner: Runner, log: Log, cancel: threading.Event
     if lay.tools.parent != work:
         log.info(f"The work folder {work} and the project folder are reached through the links {lay.tools.parent} "
                  f"and {lay.repo} (their paths have characters some build tools can't take).")
-    check_room(disc, lay, windows=IS_WINDOWS or o.windows, cache=not o.cleanup)   # [waw-decomp] 2026-11-16 cache
+    check_room(disc, lay, windows=IS_WINDOWS or o.windows, cache=True)   # [waw-decomp/speed1] always kept
+    o.jobs = build_speed.jobs(o.jobs, log)   # [waw-decomp/speed1] 2026-11-23 no more jobs than the free memory holds
     # The build's log is also kept in <output>/bro/logs/build.log (the one before as build.previous.log).
     try:
         lay.logs.mkdir(parents=True, exist_ok=True)
@@ -1641,22 +1772,18 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
             prepare_xboxrecomp(lay, tools.git, runner, log)
         keys = step_keys(lift_inputs(lay, py, disc.xbe_md5, runner), lay)
         step(4)
-        cache = None if o.cleanup else LiftCache(lay.lift_cache, log)
+        # [waw-decomp/speed1] 2026-11-23 kept with cleanup on too (owner 21:00), in tools/ (LiftCache)
+        cache = LiftCache(lay.lift_cache, log)
+        if o.clear_lift_cache:
+            cache.clear()
+        drop_old_lift_cache(lay, log)
         done = restore_lift(lay, keys, disc.xbe_md5, cache, log)
         lay.gen.mkdir(parents=True, exist_ok=True)     # (bro/CMakeLists.txt wants it there to configure)
         early = _EarlyBuilds(o, lay, tools, log, cancel).start() if done < len(STEPS) else None
         try:
             ran = recompile(lay, py, disc.xbe_md5, runner, log, on_step=lambda what, frac: log.progress(frac, what),
                             keys=keys, keep_gen=not o.cleanup)
-            if cache is not None and (ran or not cache.has(disc.xbe_md5, keys)):
-                t0 = time.monotonic()
-                try:
-                    entry = cache.store(lay, disc.xbe_md5, keys, recompile_key(lay, disc.xbe_md5), cancel)
-                    log.info(f"Kept the recompiler's output for the next build of this disc in {entry} "
-                             f"({format_minutes(time.monotonic() - t0)}).")
-                except OSError as e:   # (a full disk, say: the next build of this disc recompiles, that's all)
-                    log.warn(f"The recompiler's output couldn't be kept for the next build: {e}")
-                    cache.remove_partial()
+            keep_lift(cache, lay, disc.xbe_md5, keys, ran, recompile_key(lay, disc.xbe_md5), cancel, log)
             step(5)
             exe, exe_windows = _build_all(o, lay, tools, runner, log, cancel, early)
         finally:
@@ -1667,7 +1794,7 @@ def _build_steps(o: BuildOptions, lay: Layout, work: Path, disc: Disc, runner: R
         copier.stop()
         raise
     step(6)
-    install(lay, exe, disc, o.tool_version, exe_windows)
+    install(lay, exe, disc, o.tool_version, exe_windows, log)
     if o.cleanup:
         common.safe_rmtree(lay.work, work, [lay.out, disc.path], log)
         log.info(f"Removed the build files in {lay.work}. xboxrecomp and Capstone stay in {lay.tools}.")

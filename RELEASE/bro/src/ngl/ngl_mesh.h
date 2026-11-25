@@ -29,6 +29,9 @@ struct ngl_mesh_draw {
     /* 1: added to R_RenderTestShadow's scene (0x00241290), whose render target is the 512 x 512 shadow texture
      * (0x0095F6C8): the soldiers drawn again from above for the world's shadow projector, never on screen (run 133) */
     uint32_t shadow_scene;
+    /* [waw-decomp/bro1] 2026-11-23 the draw's decal depth bias param (ShaderPCUV_Draw 0x000472E0 hands it to
+     * nglSetDecalZBias 0x00047590): steps of the 24-bit depth buffer it is pulled toward the eye; 0 for none */
+    float decal_bias;
 };
 
 /* This frame's shadow projector (the light set's first, +0x30, as cdWorld_Draw 0x00053440 reads it), when there is
@@ -152,6 +155,12 @@ int ngl_mesh_ocean_corners(uint32_t section, const float world[16], float *out, 
 /* Whether a section's draw picks an animated texture list's frame, and which (1 and *frame set): ShaderPCUV's the
  * draw's (struct ngl_mesh_draw texture_frame), cdOcean's and cdWater's the scene's. The others show the first frame. */
 int ngl_mesh_section_frame(uint32_t section, const struct ngl_mesh_draw *d, uint32_t *frame);
+
+/* [waw-decomp/bro1] 2026-11-23 How far a section's class draw pulls it toward the eye, as the game's draw does on the
+ * Xbox (see ngl_mesh.c, "decals"): *steps, the polygon offset's constant part in steps of the 24-bit depth buffer
+ * (nglSetDecalZBias's b; its slope part is -b / 4), and *pull, what the draw takes off its screen depth (z before the
+ * divide by w, in the same 0..2^24 units). Returns 0 (both 0) when its draw pulls nothing. */
+int ngl_mesh_section_decal(uint32_t section, const struct ngl_mesh_draw *d, float *steps, float *pull);
 
 /* A cdOcean section's foam texture (its material's stage 2), or 0 (none, or not cdOcean's). */
 uint32_t ngl_mesh_ocean_foam_texture(uint32_t section);

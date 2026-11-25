@@ -321,7 +321,7 @@ def _check_rip(report: Report) -> None:
         return
     recorded = rippers.recorded_layout(data)
     layout = recorded if recorded is not None else guess_layout(textures)
-    if layout is not None and layout < rippers.RIP_OUTPUT_VERSION:
+    if layout is not None and layout < rippers.COD3_DATA_LAYOUT:
         report.add("warning", "The ripped files are from an older ripper",
                    "Rip them again so the HD textures and your own textures fit them.", "rerip", "data")
     elif (textures / upscale.KEYS_FILE).is_file() and _size(textures / upscale.KEYS_FILE) == 0:

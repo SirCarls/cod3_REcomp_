@@ -64,6 +64,7 @@
 #include <rex/system/xmemory.h>
 
 #include "game/guest.h"
+#include "game/keybinds/binds.h"  // [input-port] 2026-11-24 NoteGameUpdate
 #include "game/movement/step_view.h"  // [claude-9b] the aim and lean drawn between steps
 #include "game/ride_bones.h"  // [claude-9b-think] cod3_blend_ride_bones: the ridden vehicle's turret and gun
 
@@ -2199,6 +2200,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
     ctx.r3.s64 = tick_msec;
     g_game_armed = false;
     __imp__SV_Frame(ctx, base);
+    cod3::binds::NoteGameUpdate();  // [input-port] 2026-11-24 a key tap waits for an update (FPS-RULE14 I4)
     g_skip_send = false;
     g_time_advancing = g::ReadU32(base, kLevelTime) != level_time;
     ++g_counts.updates;
@@ -2293,6 +2295,7 @@ REX_HOOK_RAW(SV_Frame) {
   if (hz <= 0 || msec <= 0) {
     PutBackDrawn(base);
     __imp__SV_Frame(ctx, base);
+    cod3::binds::NoteGameUpdate();  // [input-port] 2026-11-24 a key tap waits for an update (FPS-RULE14 I4)
     ++g_clock.updates;
     if (msec > 0) g_clock.time += msec;  // only for the debug log's second (hz 0)
     g_kind = 1;

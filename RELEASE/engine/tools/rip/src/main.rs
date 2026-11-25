@@ -11,6 +11,21 @@
 //! rip waw-zone <file.ff | folder> --layout <file>
 //!                                         read every asset of World at War PC fastfiles the way
 //!                                         the game's loader does, and check each zone
+//! rip waw-images <file.ff | folder> <out_dir> [--highmip <dir>]
+//!                                         the textures of World at War Xbox 360 fastfiles
+//!                                         as DDS + PNG, at the disc's highmip resolution
+//!                                         where there is one (see `waw_images`)
+//! rip waw-hd-textures <file.ff | folder> <out_dir> [--highmip <dir>]
+//!                                         the same textures as <out_dir>/textures/ PNGs +
+//!                                         hd_keys.tsv, for the upscaler and cod3-hd-pack
+//! rip fh-hd-textures <COD.PAK | folder> <out_dir>
+//!                                         Finest Hour's textures (original Xbox disc) as
+//!                                         <out_dir>/textures/<w>x<h>_<key>.png + hd_keys.tsv,
+//!                                         named as the port looks them up (see `fh_textures`)
+//! rip bro-hd-textures <folder> <out_dir>  Big Red One's DDS textures (the disc's textures tree or
+//!                                         the port's texture dump) as <out_dir>/textures/ PNGs
+//!                                         + hd_keys.tsv, named as the port looks them up
+//!                                         (see `bro_textures`)
 //! rip cod3-split <file.cod> <out_dir>     split a CoD3 archive into its resources
 //! rip cod3-chunks <file.cod> <out_dir>    write each unpacked chunk whole (research)
 //! rip cod3-tex <file.cod> <out_dir>       textures as DDS + PNG
@@ -28,6 +43,11 @@
 //!                                         PNGs (named like the ripped ones) as DDS,
 //!                                         with index.tsv, checked (see `user`)
 //! rip cod3-check-pack <pack dir>          check a texture pack with the game's rules
+//! rip captured-textures <capture dir> <out_dir>
+//!                                         textures a game saved while played (the
+//!                                         SDK's texture_capture_path) as PNGs with
+//!                                         textures/hd_keys.tsv, for cod3-hd-pack
+//!                                         (see `capture`)
 //! rip cod3-locate <file.cod|folder> <name|key>...
 //!                                         where textures are in the archives
 //! rip version                             version and output layout number
@@ -47,7 +67,10 @@
 
 #![forbid(unsafe_code)]
 
+mod bro_textures;
+mod capture;
 mod cod3;
+mod fh_textures;
 mod hd;
 mod identify;
 mod jobs;
@@ -56,6 +79,7 @@ mod pack_check;
 mod paths;
 mod user;
 mod waw;
+mod waw_images;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -66,6 +90,10 @@ const USAGE: &str = "usage:
   rip identify <file.ff | file.cod | folder> [--open] [--layout <file>] [--jobs N]
   rip waw-ff <file.ff> <out_dir> [--layout <file>]
   rip waw-zone <file.ff | folder> --layout <file> [--jobs N]
+  rip waw-images <file.ff | folder> <out_dir> [--highmip <dir>] [--jobs N]
+  rip waw-hd-textures <file.ff | folder> <out_dir> [--highmip <dir>] [--jobs N]
+  rip fh-hd-textures <COD.PAK | folder> <out_dir> [--jobs N]
+  rip bro-hd-textures <folder> <out_dir> [--jobs N]
   rip cod3-split <file.cod> <out_dir>
   rip cod3-chunks <file.cod> <out_dir>
   rip cod3-tex <file.cod> <out_dir>
@@ -75,6 +103,7 @@ const USAGE: &str = "usage:
   rip cod3-hd-pack <textures dir> <upscaled dir> <out_dir> [--kinds diffuse,normal,...|all] [--jobs N]
   rip cod3-user-pack <textures dir> <png dir> <out_dir> [--list <insignia list>] [--jobs N]
   rip cod3-check-pack <pack dir>
+  rip captured-textures <capture dir> <out_dir>
   rip cod3-locate <file.cod | folder> <name | key>... [--jobs N]
   rip version";
 
@@ -92,7 +121,13 @@ const USAGE: &str = "usage:
 ///    textures with a side of 16 texels or less are read from the right
 ///    place (the packed mip tile) and 8_8_8_8 pictures get their channels
 ///    in the right order.
-const OUTPUT_LAYOUT: u32 = 6;
+/// 7: the captured-textures command (HD packs for the games without a
+///    texture ripper, from the textures the game saved while played).
+/// 8: the waw-hd-textures command (World at War's HD textures from its
+///    disc files, no texture capture needed).
+/// 9: the fh-hd-textures and bro-hd-textures commands (Finest Hour's HD
+///    textures from COD.PAK, Big Red One's from its DDS files).
+const OUTPUT_LAYOUT: u32 = 9;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -222,6 +257,7 @@ fn cod3_all(input: &Path, out_dir: &Path, workers: usize) -> Result<bool> {
 fn run(mut args: Vec<String>) -> Result<bool> {
     let jobs = take_jobs(&mut args)?;
     let list = take_option(&mut args, "--list")?;
+    let highmip = take_option(&mut args, "--highmip")?;
     let open = take_flag(&mut args, "--open");
     let layout = waw_layout(take_option(&mut args, "--layout")?)?;
     let layout = layout.as_ref();
@@ -235,6 +271,14 @@ fn run(mut args: Vec<String>) -> Result<bool> {
         (Some("identify"), 3) => identify::identify(path(2), open, layout, workers),
         (Some("waw-ff"), 4) => waw::fastfile(path(2), path(3), layout).map(|_| true),
         (Some("waw-zone"), 3) => waw::zones(path(2), layout, workers),
+        (Some("waw-images"), 4) => {
+            waw_images::images(path(2), path(3), highmip.as_deref().map(Path::new), workers)
+        }
+        (Some("waw-hd-textures"), 4) => {
+            waw_images::hd_textures(path(2), path(3), highmip.as_deref().map(Path::new), workers)
+        }
+        (Some("fh-hd-textures"), 4) => fh_textures::hd_textures(path(2), path(3), workers),
+        (Some("bro-hd-textures"), 4) => bro_textures::hd_textures(path(2), path(3), workers),
         (Some("cod3-split"), 4) => cod3::split(path(2), path(3)).map(|_| true),
         (Some("cod3-chunks"), 4) => cod3::chunks(path(2), path(3)).map(|_| true),
         (Some("cod3-tex"), 4) => {
@@ -254,6 +298,7 @@ fn run(mut args: Vec<String>) -> Result<bool> {
         }
         (Some("cod3-check"), 3) => cod3_check(path(2), workers),
         (Some("cod3-all"), 4) => cod3_all(path(2), path(3), workers),
+        (Some("captured-textures"), 4) => capture::convert(path(2), path(3)),
         (Some("cod3-hd-pack"), 5) => {
             hd::pack(path(2), path(3), path(4), &kinds, workers).map(|summary| summary.failed == 0)
         }

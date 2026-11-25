@@ -1,7 +1,8 @@
 /*
  * xexlzx.c - LZX decompression for Xbox 360 XEX images, built on libmspack's
  * LZX decoder (lzxd.c, LGPL-2.1, https://github.com/kyz/libmspack), with a
- * memory-backed mspack_system. Used by tools/waw_decomp/xex2pe.py through ctypes.
+ * memory-backed mspack_system. Used by tools/waw_decomp/xex2pe.py and
+ * tools/waw_decomp/xexp_apply.py through ctypes.
  *
  * Build (Linux):  cc -O2 -shared -fPIC -I<libmspack>/libmspack/mspack \
  *                    xexlzx.c <libmspack>/libmspack/mspack/lzxd.c -o libxexlzx.so
@@ -40,9 +41,15 @@ static void mem_free(void *p) { free(p); }
 static void mem_copy(void *src, void *dst, size_t n) { memcpy(dst, src, n); }
 static void mem_message(struct mspack_file *f, const char *fmt, ...) { (void)f; (void)fmt; }
 
-/* Returns 0 on success, otherwise the libmspack error code (or -1). */
-int xex_lzx_decompress(const unsigned char *src, size_t src_len, unsigned char *dst, size_t dst_len,
-                       int window_bits) {
+/* Decompresses src into dst. When ref is given, the decoder's window starts
+ * out holding those bytes at its end, so the stream can copy from them: that
+ * is how XEX delta patches (title updates) describe new code relative to old
+ * code. The input keeps the plain LZX framing XEX images use, so this is not
+ * libmspack's LZX DELTA mode. Returns 0 on success, otherwise the libmspack
+ * error code, -1 when the decoder can't start, or -2 when ref is bigger than
+ * the window. */
+static int decompress(const unsigned char *src, size_t src_len, unsigned char *dst, size_t dst_len,
+                      int window_bits, const unsigned char *ref, size_t ref_len) {
   struct mspack_system sys;
   memset(&sys, 0, sizeof(sys));
   sys.read = mem_read;
@@ -56,7 +63,30 @@ int xex_lzx_decompress(const unsigned char *src, size_t src_len, unsigned char *
   struct lzxd_stream *lzx = lzxd_init(&sys, (struct mspack_file *)&in, (struct mspack_file *)&out, window_bits, 0,
                                       0x8000, (off_t)dst_len, 0);
   if (!lzx) return -1;
+  if (ref) {
+    if (ref_len > lzx->window_size) {
+      lzxd_free(lzx);
+      return -2;
+    }
+    size_t padding = lzx->window_size - ref_len;
+    memset(lzx->window, 0, padding);
+    memcpy(lzx->window + padding, ref, ref_len);
+    /* Matches may reach back into the whole window before the first output byte. */
+    lzx->ref_data_size = lzx->window_size;
+  }
   int err = lzxd_decompress(lzx, (off_t)dst_len);
   lzxd_free(lzx);
   return err;
+}
+
+/* Returns 0 on success, otherwise the libmspack error code (or -1). */
+int xex_lzx_decompress(const unsigned char *src, size_t src_len, unsigned char *dst, size_t dst_len,
+                       int window_bits) {
+  return decompress(src, src_len, dst, dst_len, window_bits, NULL, 0);
+}
+
+/* The same, with reference bytes (see decompress above). */
+int xex_lzx_decompress_ref(const unsigned char *src, size_t src_len, unsigned char *dst, size_t dst_len,
+                           int window_bits, const unsigned char *ref, size_t ref_len) {
+  return decompress(src, src_len, dst, dst_len, window_bits, ref, ref_len);
 }

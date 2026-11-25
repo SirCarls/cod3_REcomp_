@@ -71,7 +71,12 @@ constexpr const char* kMultiplayerCheatDvars[] = {
     // dropped weapons, the live grenade warning's reach, enemies on the compass
     "pmove_fixed",         "pmove_msec",             "g_knockback",             "health_recharge_rate",
     "conical_spread",      "g_weaponAmmoPools",      "g_weaponrespawn",         "livegrenadeangle",
-    "enemy_radar"};
+    "enemy_radar",
+    // [mp-exploits] 2026-11-24 (dev/agents/memory-360/MP-SAFETY-INFRA.md 3.8 GAP A; owner 11-17 22:42: "loading a
+    // profile with custom binds mid-match resulting in dev-mode"): a key bind, config or split-screen profile could
+    // turn the game's developer mode on mid-match with no word from the host and no CHEATS USED mark. Developer mode
+    // grants no cheat by itself (the cheat commands check sv_cheats), but it is a mode the host never allowed.
+    "developer",           "developer_script"};
 
 // [acct2-ocr] Owner 2026-11-05 18:17: "add g_speed and g_gravity to the
 // cheats list". The game registers them without its cheat flag; the Cvar_Get

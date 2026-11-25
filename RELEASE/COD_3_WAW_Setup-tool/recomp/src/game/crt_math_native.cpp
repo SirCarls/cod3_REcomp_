@@ -125,6 +125,7 @@
 #include <rex/system/kernel_state.h>
 
 #include "game/program.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 // No contraction of a * b + c into an fma anywhere here: the separate roundings
 // are part of what the game's code computes.
@@ -276,16 +277,19 @@ constexpr uint32_t kAtanTableSize = 180;
 // polynomial.
 constexpr uint32_t kAsinTable = COD3_ADDR(0x825C6880, 0x825CBDA0);
 constexpr uint32_t kAsinTableSize = 128;
-constexpr uint32_t kRoundLimitAddr = COD3_ADDR(0x8205B148, 0x82059BD0);  // floor's and ceil's 1e18
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kRoundLimitAddr = COD3_ADDR(0x8205B148, A(0x82059BD0));  // floor's and ceil's 1e18
 constexpr uint32_t kZeroAddr = COD3_ADDR(0x8207C8D8, 0x82085410);        // 0.0 (_fpclass)
 // exp's constants: +0 the overflow limit, +8 the underflow limit, +24 1/ln 2,
 // +48..+88 the polynomial (+72 is also the 0.5 added last), +96 ln 2.
-constexpr uint32_t kExpTable = COD3_ADDR(0x8205B3B8, 0x82059E58);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kExpTable = COD3_ADDR(0x8205B3B8, A(0x82059E58));
 constexpr uint32_t kExpTableSize = 104;
 // log's constants: +0 sqrt(0.5), +8 ln 2's second part, +40 and +64 the
 // polynomial's first terms, +0x50..+0x70 the rest, +0x78 the denormal scale,
 // +0x80 the smallest normal, +0x88 the largest finite.
-constexpr uint32_t kLogTable = COD3_ADDR(0x8205B328, 0x82059DB8);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kLogTable = COD3_ADDR(0x8205B328, A(0x82059DB8));
 constexpr uint32_t kLogTableSize = 0x90;
 constexpr uint32_t kInfAddr = COD3_ADDR(0x825C6E50, 0x825CC360);   // +inf (next to the NaN)
 constexpr uint32_t kHalfAddr = COD3_ADDR(0x8207C838, 0x82085560);  // 0.5
@@ -293,11 +297,13 @@ constexpr uint32_t kHalfAddr = COD3_ADDR(0x8207C838, 0x82085560);  // 0.5
 // 2^(-j/16), +144..+208 their low parts, +216 1/ln 2 (log2 e), +224 its
 // fraction, +232..+256 the log polynomial, +264..+312 the exp polynomial,
 // +320 / +328 the overflow and underflow limits (times 16), +336 1/16.
-constexpr uint32_t kPowTable = COD3_ADDR(0x8205B1D0, 0x82059BD8);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kPowTable = COD3_ADDR(0x8205B1D0, A(0x82059BD8));
 constexpr uint32_t kPowTableSize = 344;
 constexpr uint32_t kMinusOneAddr = COD3_ADDR(0x8207CC58, 0x82085AA8);  // -1.0, the result's sign
 constexpr uint32_t kPowHugeYAddr = COD3_ADDR(0x825C6900, 0x825CBD80);  // 1e20
-constexpr uint32_t kPowIntYAddr = COD3_ADDR(0x82040098, 0x82059D30);   // 128.0
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kPowIntYAddr = COD3_ADDR(0x82040098, A(0x82059D30));   // 128.0
 constexpr uint32_t kTwoAddr = COD3_ADDR(0x8207CD80, 0x820859F8);       // 2.0
 constexpr uint32_t kSixteenAddr = COD3_ADDR(0x8204CEB0, 0x8204B870);   // 16.0
 constexpr uint32_t kMinusZeroAddr = COD3_ADDR(0x825C6E70, 0x825CC380); // -0.0 (after the NaN)
@@ -307,10 +313,12 @@ constexpr uint32_t kMinusZeroAddr = COD3_ADDR(0x825C6E70, 0x825CC380); // -0.0 (
 // pi/2 in two parts; its rounding helper's two constants (0.0 and 2^52).
 // They are read where the game's code reads them (and their values logged
 // once, by the check).
-constexpr uint32_t kTanTable = COD3_ADDR(0x8205B150, 0x82059D38);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kTanTable = COD3_ADDR(0x8205B150, A(0x82059D38));
 constexpr uint32_t kTanTableSize = 120;
 constexpr uint32_t kTanHalfPiAddr = COD3_ADDR(0x825C6860, 0x825CBD88);  // 16 bytes
-constexpr uint32_t kTanRoundAddr = COD3_ADDR(0x8205BF50, 0x8205A9E0);   // 16 bytes
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kTanRoundAddr = COD3_ADDR(0x8205BF50, A(0x8205A9E0));   // 16 bytes
 
 // ---------------------------------------------------------------------------
 // The functions, instruction by instruction

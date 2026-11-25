@@ -2,7 +2,13 @@
 //! to another), answered by the game's own trace functions. Call of Duty 2
 //! keeps two (the server's and the client game's); a move's `handler` byte
 //! ([`super::pmove::pm::HANDLER`]) picks one. They are the host's
-//! ([`MoveHost`]): the collision model isn't ported yet.
+//! ([`MoveHost`]): the collision model isn't ported yet. So are the
+//! weapons' definitions and the animation scripts a move reads and plays,
+//! and the console it warns on.
+
+use super::anim::ClientAnimInfo;
+use super::pmove::PlayerState;
+use super::weapon::WeaponDef;
 
 /// Bytes of Call of Duty 2's trace result (`trace_t`; it has no end point:
 /// callers compute it from the fraction).
@@ -98,4 +104,55 @@ pub trait MoveHost {
         pass_entity: i32,
         content_mask: i32,
     ) -> Trace;
+
+    /// The move-speed scale of weapon `weapon` (its definition's
+    /// `moveSpeedScale`, the `float` at 0x264 of Call of Duty 2's
+    /// `WeaponDef`; the definitions' table is at 0x01728200).
+    fn weapon_move_speed_scale(&self, weapon: i32) -> f32;
+
+    /// Plays the player's animation script for `event` ([`ANIM_ET_JUMP`]
+    /// ...), as Call of Duty 2's `BG_AnimScriptEvent` (0x004F92C0; `ps` in
+    /// edi, the event in eax, then (`isContinue`, `force`) on the stack)
+    /// does: the result is the animation's duration, or -1 for none.
+    fn anim_script_event(
+        &mut self,
+        ps: &mut PlayerState,
+        event: i32,
+        is_continue: bool,
+        force: bool,
+    ) -> i32;
+
+    /// A message for the console (`Com_Printf`): a warning the movement
+    /// prints and goes on.
+    fn print(&mut self, message: &[u8]);
+
+    /// How long animation `anim` lasts (milliseconds; Call of Duty 2's
+    /// `animation_t` (0x68 bytes each from the script data's start) keeps
+    /// it at 0x48).
+    fn anim_duration(&self, anim: i32) -> i32;
+
+    /// Weapon `weapon`'s definition (`bg_weaponDefs[weapon]`, the table at
+    /// 0x01728200; the game doesn't check the number).
+    fn weapon_def(&self, weapon: i32) -> &WeaponDef;
+
+    /// The highest weapon number defined (the word at 0x019A1C74).
+    fn weapon_count(&self) -> i32;
+
+    /// Client `client`'s animation state (in the animation state the game
+    /// points at from 0x019A1C78: 0x4B8 bytes each from 0xB4BFC).
+    fn client_anim_info(&mut self, client: i32) -> &mut ClientAnimInfo;
 }
+
+/// The animation scripts' events a move plays (`scriptAnimEventTypes_t`;
+/// Return to Castle Wolfenstein's names and order, which Call of Duty 2's
+/// script table follows).
+pub const ANIM_ET_DEATH: i32 = 1;
+pub const ANIM_ET_JUMP: i32 = 3;
+pub const ANIM_ET_JUMPBK: i32 = 4;
+pub const ANIM_ET_LAND: i32 = 5;
+/// The stance changes' (our names, from where [`super::duck::check_duck`]
+/// plays them).
+pub const ANIM_ET_PRONE_TO_CROUCH: i32 = 12;
+pub const ANIM_ET_STAND_TO_CROUCH: i32 = 13;
+pub const ANIM_ET_CROUCH_TO_STAND: i32 = 14;
+pub const ANIM_ET_PRONE_TO_STAND: i32 = 16;

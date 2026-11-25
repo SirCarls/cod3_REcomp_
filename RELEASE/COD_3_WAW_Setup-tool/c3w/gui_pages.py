@@ -56,11 +56,11 @@ GS_GROUPS = [
     # asked how, he chose the groups as tabs, with one for every language row): "Sound and controls" had the voices
     # and the console language beside the volume and the prompts, and the text was a group of its own.
     ("Sound", ["cod3_volume"]),
-    # [voice] the voices; [acct2-ocr] 2026-11-07 the text's language and its kinds (F2 > LANGUAGE > Text); the
-    # console language last (what the game is told; Voices and Text come before it). Headings: GS_HEADINGS.
-    ("Language", ["cod3_voice_language", "cod3_text_language", "cod3_text_subtitles", "cod3_text_menus",
-                  "cod3_text_prompts", "cod3_text_objectives", "cod3_text_loading", "cod3_text_credits",
-                  "cod3_text_film_cards", "cod3_font_fill", "user_language"]),
+    # [voice] the voices; [acct2-ocr] 2026-11-07 the text's language. [setup-layout] 2026-11-24 (owner 11:12
+    # "having three different selections is supr confusing", 11:12:58 "Allow for two selections. One for voices
+    # and the other for text."): only these two; the console language follows Voices (game_settings.
+    # console_language_for) and the text-by-kind rows stay in F2 (GS_F2_ONLY).
+    ("Language", ["cod3_voice_language", "cod3_text_language"]),
     ("Controls", ["cod3_glyph_style",
                   "cod3_glyph_color_mode",  # [claude-9b-think]; [claude-setup] was cod3_glyph_colors
                   "cod3_use_hold_ms"]),  # [acct2-decomp] 2026-11-05 the Use hold (game/use_hold.h)
@@ -69,9 +69,14 @@ GS_GROUPS = [
                    "cod3_skip_hold_ms"]),  # [claude-9b-think]
     ("Player", ["user_name", "user_name_2", "user_name_3", "user_name_4"]),  # [claude-9b] SDK patches 0070, 0074
 ]
-# [acct2-decomp] 2026-11-21 Headings inside a tab: the setting a heading comes before.
-GS_HEADINGS = {"cod3_voice_language": "Voices", "cod3_text_language": "Text", "cod3_text_subtitles": "Text by kind",
-               "user_language": "Console language"}
+# [setup-layout] 2026-11-24 Settings the Play page leaves to F2 (otherwise they'd land under "More"): the console
+# language, which saving Voices sets, and the Text language's fine print (which kinds of text, the fonts' letters).
+# The file keeps whatever F2 set for them; the setup tool doesn't write them.
+GS_F2_ONLY = ("user_language", "cod3_text_subtitles", "cod3_text_menus", "cod3_text_prompts", "cod3_text_objectives",
+              "cod3_text_loading", "cod3_text_credits", "cod3_text_film_cards", "cod3_font_fill")
+# [acct2-decomp] 2026-11-21 Headings inside a tab: the setting a heading comes before. [setup-layout] 2026-11-24
+# none now: Language's two rows are named Voices and Text themselves.
+GS_HEADINGS = {}  # type: Dict[str, str]
 
 
 def clean_path_text(text: str) -> str:
@@ -104,8 +109,7 @@ class Pages:
         if hasattr(self, "btn_user_pack"):
             rip = self._installed_rip()
             self.btn_user_pack.configure(state="normal" if rip else "disabled")
-            self.v_user_pack_reason.set("" if rip else "Build first: the pack is made with the ripper the build "
-                                                       "puts in the output folder's tools/.")
+            self.v_user_pack_reason.set("" if rip else "Build the game first (Set up): the texture pack needs it.")
         self._update_repair_state()
         self._update_game_settings_state()
         self._update_profile_buttons()
@@ -218,12 +222,8 @@ class Pages:
         self._grid_cols(s)
         self._game_settings_section(s)
 
-        d = section(t, "Ripped game files", 5, columns=1)
-        hint(d, "Textures (DDS + PNG), meshes (glTF) and materials (JSON), in open formats.").pack(anchor="w")  # [f2-menus]
-        b = ttk.Button(d, text="Open ripped files",  # [acct2-decomp] nothing chosen: not the current folder
-                       command=lambda: self._open(str(self._out_path() / "data") if self._out_path() else ""))
-        b.pack(anchor="w", pady=(px(8), px(18)))
-        tip(b, "The data folder in the output folder.")
+        # [setup-layout] 2026-11-24 "Ripped game files" (Open ripped files) moved to Tools > Folders, where every
+        # tab keeps its folder buttons.
 
     def _add_voices(self) -> None:  # [voice]
         """Copies another Call of Duty 3 disc's voice files into the built
@@ -277,9 +277,9 @@ class Pages:
         if hasattr(self, "v_censored"):   # [rexglue-native-settings] 2026-11-11 the box is on the Textures page now
             self.v_censored.set(on)
         if hasattr(self, "cb_censored"):   # [acct2-decomp] say which disc it needs, for this game
-            self.cb_censored.configure(text="Censored campaign (the German release's textures; " + (
-                "your game's own: off needs the USA/Europe or Fr/Es/It disc once)" if own == censored.GERMAN else
-                "needs the German disc once)"))
+            self.cb_censored.configure(text="Use the German release's censored textures (" + (
+                "your game's own; turning them off needs the USA/Europe or Fr/Es/It disc once)"
+                if own == censored.GERMAN else "needs the German disc once)"))
         self._censor_builtin_load()
         self._refresh_disc_needs()
 
@@ -303,20 +303,20 @@ class Pages:
         if out is None or self._game_setting(out, "cod3_user_textures", True):
             return ""
         if not turn_on:
-            return '"Your own textures" is off (Play page, Graphics): the game won\'t show the censor until it\'s on.'
+            return 'The censor won\'t show: "Your own textures" is off (Play page, Graphics).'
         try:
             if game_settings.game_running(out):
                 # [acct2-main] 2026-11-14 17:55 the setting applies after a restart (cod3_user_textures)
-                return ('"Your own textures" is off in the running game: turn it on in F2 (Video) and restart the '
-                        "game, or the censor won't show.")
+                return ('The censor won\'t show until you turn on "Your own textures" in F2 > Video and restart '
+                        "the game.")
             game_settings.save(out, {"cod3_user_textures": True})
         except (SetupError, OSError, ValueError, NotImplementedError) as e:
-            return f'"Your own textures" is off and couldn\'t be turned on ({e}): the censor won\'t show.'
+            return f'The censor won\'t show: "Your own textures" is off and couldn\'t be turned on ({e}).'
         self.log.info('"Your own textures" (Play page, Graphics) was off: turned on, because the insignia censor\'s '
                       "pictures are in that texture pack.")
         if getattr(self, "_gs_vars", None):
             self._load_game_settings(keep_edits=True)   # the Play page's box follows
-        return '"Your own textures" was off: turned on (Play page, Graphics), since the censor needs it.'
+        return 'Also turned on "Your own textures" (Play page, Graphics): the censor needs it.'
 
     # [acct2-decomp] The built-in censor (c3w/censor_builtin.py), joined with your own pictures in the
     # Textures page's section (owner 2026-11-05 07:24): the choice is saved as it is made, and every
@@ -336,9 +336,8 @@ class Pages:
                              command=self._censor_builtin_toggle)
         cb.pack(anchor="w")
         # [acct2-decomp] 2026-11-14 what a match's texture setting leaves (acct2-main's review, 18:05)
-        tip(cb, "No disc needed. Campaign and multiplayer. In a multiplayer match it follows your texture setting "
-                "for matches (F2 > Video > Textures): All, the default, covers everything; Insignia only covers the "
-                "flags and banners but not what soldiers and vehicles wear; Off covers nothing.")
+        tip(cb, "Campaign and multiplayer; no disc needed. In multiplayer, F2 > Video > Textures decides: All "
+                "covers everything, Insignia only the flags and banners, Off nothing.")
         self.cb_designs = ttk.Frame(box)
         for col, (key, title, var) in enumerate((("flags", "Flags", self.v_cb_flags),
                                                   ("insignia", "Insignia", self.v_cb_insignia))):
@@ -410,7 +409,7 @@ class Pages:
                 self._cb_dirty = True
                 # [rexglue-native-settings] 2026-11-11 Play builds the pack first now (_play_builds_pack_first)
                 note = self._user_textures_note(out, turn_on=True) if s.on else ""  # [acct2-main] 2026-11-14
-                self.v_cb_state.set("Saved. Play builds the texture pack first (or press Build texture pack now)." +
+                self.v_cb_state.set("Saved. Used from the next Play (or press Build texture pack)." +
                                     (" " + note if note else ""))
             except (OSError, SetupError) as e:
                 self.v_cb_state.set(f"Not saved: {e}")
@@ -478,9 +477,9 @@ class Pages:
             r = censored.set_censored(out, on, runner.log, runner.cancel)
             if r["lacking"] or r["changed"]:
                 raise SetupError(censored.status(out).summary())
-            first = ("The campaign now has the German release's textures (insignia taken off)." if on else
-                     "The campaign now has the uncut textures.")
-            return f"{first} Text, voices and multiplayer are as before. From the next level you load."
+            first = ("The campaign now uses the German release's censored textures." if on else
+                     "The campaign now uses the uncut textures.")
+            return f"{first} From the next level you load."
         self._start_task("Censored campaign", work, actions=[])
 
     # [acct2-decomp] Which options need which disc (c3w/disc_needs.py), on the Play page.
@@ -632,6 +631,11 @@ class Pages:
         # [rexglue-native-settings] 2026-11-11 (owner 07:33 "insignia censoring doesn't work"): the insignia censor's
         # choice and the player's own pictures reach the game only through the user texture pack; build it first
         # when it is out of date, then this starts the game.
+        # [setup-layout] 2026-11-24 (owner: "it should be portable."): the game won't start in a folder it can't write
+        problem = game_settings.portable_problem(out)
+        if problem:
+            self._info("Not started", problem, kind="warning")
+            return
         if not pack_ready and self._play_builds_pack_first(out):
             return
         # [acct2-main] 2026-11-14 the censor on but its pack switched off: said as the game starts (not changed: it
@@ -639,8 +643,8 @@ class Pages:
         try:
             if censor_builtin.load_settings(out / "data" / "cod3").on and \
                     not self._game_setting(out, "cod3_user_textures", True):
-                self.log.warn('The insignia censor is on, but "Your own textures" is off (Play page, Graphics, or '
-                              "F2 > Video in the game), so the flags and insignia look as the game has them.")
+                self.log.warn('The censor is on but "Your own textures" is off (Play page, Graphics, or F2 > '
+                              "Video), so the insignia aren't covered.")
         except Exception:  # noqa: BLE001 - a note must never keep the game from starting
             pass
         self._migrate_windowed(out)
@@ -690,7 +694,8 @@ class Pages:
         self._gs_loaded: Dict[str, object] = {}
         self._gs_loaded_for: Optional[str] = None
         system = "windows" if IS_WINDOWS else "linux"
-        shown = {st.key: st for st in game_settings.SETTINGS if not st.platforms or system in st.platforms}
+        shown = {st.key: st for st in game_settings.SETTINGS
+                 if (not st.platforms or system in st.platforms) and st.key not in GS_F2_ONLY}
         hint(s, "Saved in the game's settings file; the game reads them when it starts. F2 in the game has them "
                 "all, and more.").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, px(2)))
         r = 1
@@ -1050,8 +1055,8 @@ class Pages:
         t.columnconfigure(0, weight=1)
         # [rexglue-native-settings] 2026-11-11 (owner 08:28: "a texture and censoring tab"): the page's name, and the
         # censored campaign's box from the Play page below the insignia section.
-        widgets.page_header(t, "Textures & censoring", "Sharper copies of the game's textures, your own pictures in "
-                                                       "place of any texture, and the insignia covered.", columns=1)
+        widgets.page_header(t, "Textures & censoring", "HD textures, your own textures, and covering the Nazi "
+                                                       "insignia.", columns=1)
         self.pages["textures"]["on_show"] = self._update_texture_state
 
         u = section(t, "HD textures (waifu2x)", 1, columns=1)
@@ -1068,6 +1073,14 @@ class Pages:
                         command=self._update_upscale).pack(anchor="w")
         hint(top, f"Uses your graphics card; about {sizes} GB more at {scales}.").pack(anchor="w",
                                                                                        padx=(px(26), 0))
+        # [setup-layout] 2026-11-24 (owner 08:27): every texture upscaled again, at the next Build only (gui.py)
+        self.cb_upscale_again = ttk.Checkbutton(top, text="Upscale every texture again at the next Build",
+                                                variable=self.v_upscale_again)
+        self.cb_upscale_again.pack(anchor="w", padx=(px(26), 0), pady=(px(4), 0))
+        tip(self.cb_upscale_again, "Deletes the upscaled copies (not the ripped originals) and makes them all "
+                                   "again. Without it, only textures with no up-to-date copy are upscaled. Turns "
+                                   "itself off once that build has started upscaling.",
+            reason=lambda: "" if self.v_upscale.get() else "Tick \"Upscale the extracted textures\" first.")
         ttk.Label(u, text="Style").grid(row=1, column=0, sticky="w", pady=px(3))
         self.cb_upscale_model = ttk.Combobox(u, textvariable=self.v_upscale_model, state="readonly", width=36,
                                              values=[label for _, label in upscale.MODELS.values()])
@@ -1080,11 +1093,9 @@ class Pages:
         self.cb_upscale_scale = ttk.Combobox(u, textvariable=self.v_upscale_scale, state="readonly", width=36,
                                              values=list(upscale.SCALES.values()))
         self.cb_upscale_scale.grid(row=3, column=1, sticky="w", pady=px(3))
-        hint(u, "The copies go to data/cod3/textures_upscaled; the originals stay as they are. They are then "
-                "packed for the playable game into data/cod3/hd_textures: at the copies' size, in the same "
-                "compressed formats as the game's own, so at 2x they take about 4 times the texture memory (16 "
-                "times at 4x). 1x only reduces noise (with the best-quality style). Turn them off in the game with "
-                "F2 > Video > HD textures.").grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
+        hint(u, "The copies go to data/cod3/textures_upscaled and are packed into data/cod3/hd_textures; the "
+                "originals stay. 2x uses about 4 times the texture memory, 4x 16 times; 1x only removes noise. "
+                "Turn them off in the game with F2 > Video > HD textures.").grid(row=4, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
         self.v_hd_state = tk.StringVar()
         self.lbl_hd_state = hint(u, var=self.v_hd_state, style="Accent.TLabel")
         self.lbl_hd_state.grid(row=5, column=0, columnspan=3, sticky="w", pady=(px(6), 0))
@@ -1098,10 +1109,10 @@ class Pages:
 
         # The user texture pack (c3w/user_textures.py): local work only.
         # [acct2-decomp] Joined with the built-in censor (owner 2026-11-05 07:24); short texts (07:25).
-        m = section(t, "Insignia and your own textures", 6, columns=1)
+        m = section(t, "Censor and your own textures", 6, columns=1)
         self._censor_builtin_box(m)   # [acct2-decomp]
-        hint(m, "Your own pictures: PNGs named like the ripped textures, in data/cod3/user_textures_png. "
-                "They win over the designs.").pack(anchor="w", pady=(px(8), 0))
+        hint(m, "Your own textures: PNGs named like the ripped ones, in data/cod3/user_textures_png. They replace "
+                "the censor's designs.").pack(anchor="w", pady=(px(8), 0))
         bf = ttk.Frame(m)
         bf.pack(anchor="w", pady=(px(8), 0))
         b = ttk.Button(bf, text="Open picture folder", command=self._open_user_textures)
@@ -1118,30 +1129,31 @@ class Pages:
         hint(m, var=self.v_user_pack_reason, style="Warn.TLabel").pack(anchor="w", pady=(px(4), 0))
         # [rexglue-native-settings] 2026-11-11 where the pack stands (filled by _update_texture_state)
         self.v_user_pack_state = tk.StringVar()
-        hint(m, var=self.v_user_pack_state, style="Accent.TLabel").pack(anchor="w", pady=(px(2), px(18)))
+        hint(m, var=self.v_user_pack_state, style="Accent.TLabel").pack(anchor="w", pady=(px(2), 0))
 
         # [acct2-decomp] The censored campaign (c3w/censored.py): the German release's textures, on or off.
         # [rexglue-native-settings] 2026-11-11 moved here from the Play page as it was (owner 08:28).
-        cs = section(t, "Censored campaign (German disc)", 7, columns=1)
+        # [setup-layout] 2026-11-24 row 8: on row 7 its heading lay over the section above (row 6 + its body on 7),
+        # hiding that section's buttons.
+        cs = section(t, "German censored campaign", 8, columns=1)
         cf = ttk.Frame(cs)
         cf.pack(anchor="w", pady=(0, px(18)))
         self.v_censored = tk.BooleanVar(value=False)
         cz = widgets.autowrap(ttk.Checkbutton(   # [acct2-ocr] 2026-11-22 it wraps on a narrow page
-            cf, text="Censored campaign (the German release's textures; needs the German disc once)",
+            cf, text="Use the German release's censored textures (needs the German disc once)",
             variable=self.v_censored, command=self._toggle_censored))
         cz.grid(row=0, column=0, columnspan=6, sticky="w")
         self.cb_censored = cz
-        tip(cz, "The campaign with the German release's textures (insignia taken off). Needs the German disc once: "
-                "the first time it asks for its .iso and copies about 1.2 GB from it; after that it switches at "
-                "once. A game built from the German disc is censored already: switching it off needs the "
-                "USA/Europe or Europe (Fr, Es, It) disc once. Text, voices and multiplayer don't change. Close the "
-                "game first.")
+        tip(cz, "The campaign only; text, voices and multiplayer stay the same. The first time it copies about "
+                "1.2 GB from the disc, then it switches at once. Close the game first.")
         self._refresh_censored()   # [rexglue-native-settings] the box as the game's files are, now that it exists
 
     def _update_upscale(self) -> None:
         state = "readonly" if self.v_upscale.get() else "disabled"
         for cb in (self.cb_upscale_model, self.cb_upscale_noise, self.cb_upscale_scale):
             cb.configure(state=state)
+        if hasattr(self, "cb_upscale_again"):   # [setup-layout] 2026-11-24
+            self.cb_upscale_again.configure(state="normal" if self.v_upscale.get() else "disabled")
         self._update_texture_state()
 
     def _update_texture_state(self) -> None:
@@ -1417,10 +1429,14 @@ class Pages:
         bf = ttk.Frame(f)
         bf.pack(anchor="w", pady=(px(8), 0))
         widgets.button_row(bf, [
+            # [setup-layout] 2026-11-24 from the Play page; the game's own folder first, as on the other tabs
+            ("Ripped files",   # [acct2-decomp] nothing chosen: not the current folder
+             lambda: self._open(str(self._out_path() / "data") if self._out_path() else ""),
+             "data/ in the output folder: textures (DDS + PNG), meshes (glTF) and materials (JSON), in open formats."),
             ("Where things go", self._show_locations, "Every folder the tool uses, and what is in it."),
             ("Output folder", lambda: self._open(self.v_out.get()), "The game, the ripped files, saves and logs."),
             ("Input folder", self._open_input, "Your discs and downloads (only ever read)."),
-            ("Log folder", self._open_logs, "The build logs.")])
+            ("Log folder", self._open_logs, "The setup tool's logs.")])
         widgets.reflow(bf)   # [acct2-ocr] 2026-11-22 the buttons wrap on a narrow page
 
         r = section(t, "Repair", 5, columns=1)
@@ -1448,8 +1464,9 @@ class Pages:
         self._repair_report = None
 
         p = section(t, "Profiles", 7, columns=1)
-        hint(p, "Keep your settings (discs, folders, options) under a name and switch between them. Exported "
-                "profiles leave out paths outside this project folder, so they can be shared.").pack(anchor="w")
+        hint(p, "Keep your settings (discs, folders, options of every tab) under a name and switch between them. "
+                "Exported profiles leave out paths outside this project folder, so they can be shared.").pack(
+            anchor="w")
         pf = ttk.Frame(p)
         pf.pack(anchor="w", pady=(px(8), 0))
         self.lb_profiles = tk.Listbox(pf, height=6, borderwidth=0, highlightthickness=1, activestyle="none",
@@ -1477,8 +1494,9 @@ class Pages:
         hint(p, var=self.v_profiles_empty).pack(anchor="w", pady=(px(4), 0))
 
         a = section(t, "Appearance", 9, columns=1)
-        hint(a, "The game's F2 themes, and a highlight color of your own. The other tabs pick theirs in the "
-                "sidebar (widen the window if it's hidden).").grid(
+        # [setup-layout] 2026-11-24 every tab has its own Appearance now (it said the others pick theirs in the sidebar)
+        hint(a, "Call of Duty 3's own colors, the game's F2 themes, and a highlight color of your own, for this tab "
+                "(each tab keeps its own).").grid(
             row=0, column=0, columnspan=3, sticky="w", pady=(0, px(6)))
         for i, tid in enumerate(theme.THEME_ORDER):
             th = theme.THEMES[tid]
@@ -2032,10 +2050,11 @@ class Pages:
     def _page_about(self, t) -> None:
         t.columnconfigure(0, weight=1)
         # [f2-menus] 2026-11-10 the three Xbox 360 ports named; "the Rust tools" said what they are instead
-        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3, Big Red One, World at "
-                                                "War, Call of Duty 2 and Call of Duty 4 for PC from your own discs, "
-                                                "World at War's content for Call of Duty 3, and the copy and LAN "
-                                                "server tools for the PC Call of Duty 2 and United Offensive.",
+        # [setup-layout] 2026-11-24 every tab named (Finest Hour was missing; Call of Duty 2's tab is the Xbox 360 port)
+        widgets.page_header(t, common.APP_NAME, f"Version {TOOL_VERSION}. Call of Duty 3, Big Red One, Finest Hour, "
+                                                "World at War, Call of Duty 2 and Call of Duty 4 for PC from your own "
+                                                "discs, World at War's content for Call of Duty 3, and the copy and "
+                                                "LAN server tools for the PC United Offensive.",
                             columns=1)   # [acct2-bro]
         d = section(t, "Documents", 1, columns=1)
         d.columnconfigure(1, weight=1)
@@ -2061,7 +2080,8 @@ class Pages:
 
         k = section(t, "Keyboard shortcuts", 5, columns=1)
         for r, (keys, what) in enumerate(SHORTCUTS):
-            keys = keys.format(n=min(9, max(len(pages) for pages in self.page_lists.values())))
+            # [setup-layout] 2026-11-24 this tab's own pages (it counted the tab with the most)
+            keys = keys.format(n=min(9, len(self.page_lists.get(games.COD3, ())) or 1))
             ttk.Label(k, text=keys, style="Bold.TLabel").grid(row=r, column=0, sticky="w", pady=px(1))
             ttk.Label(k, text=what).grid(row=r, column=1, sticky="w", padx=(px(16), 0))
 

@@ -4,6 +4,10 @@
 // bytes, map count, flags, scroll u, scroll v, scale, reserved, data bytes, data crc32, 3 reserved, header crc32 of
 // bytes 0-59 and the table), a table of 32 bytes a map (kind, format, width, height, levels, offset, bytes, reserved)
 // and the maps' levels, largest first, packed. ParseCamo keeps the tool's read_camo rules exactly.
+// [acct2-bro] 2026-11-23 c3camo v2: the same file with version 2 allows format 5, BC7 blocks as stored (a file is
+// version 2 only when a map is BC7; a newer version is refused by name). A BC7 map goes to the GPU as its blocks
+// (ngl_vk_texture_blocks, when ngl_vk has it and the device has BC textures on, sampled as UNORM like the RGBA8
+// path), else it is decoded here (DecodeBc7Block, a total function on 16-byte blocks) and made as RGBA8 as before.
 //
 // A map is used as RGBA8 at most kSide (1024) on a side with a full mip chain: the reading thread decodes BC1-BC3,
 // halves the picture until it fits (a box filter: the gun's pattern doesn't need more, and many pack maps are 4096 with
@@ -38,6 +42,10 @@
 #if defined(NGL_CAMO_TEST)
 // The test program (x503/camo503_test.cpp) builds this file alone: no cvars, logging or ngl_vk.
 #include "camo503_stubs.h"
+#if defined(NGL_CAMO_TEST_BLOCKS)
+// [acct2-bro] 2026-11-23 c3camo v2: the BC7 test program's stand-ins (the older test programs build without them)
+#include "camo_v2_stubs.h"
+#endif
 #else
 #include <rex/cvar.h>
 #include <rex/logging.h>
@@ -71,6 +79,10 @@ REXCVAR_DEFINE_INT32(cod3_camo_strength, 100, "cod3/Display",
 REXCVAR_DEFINE_INT32(cod3_camo_crawl, 100, "cod3/Display",
                      "How fast moving camos crawl, in percent of their own speed (0 = still, 100 = as imported)")
     .range(0, 400);
+// [acct2-bro] 2026-11-23 c3camo v2: a debug switch (not in F2): BC7 camos decoded on the CPU even where the GPU
+// takes their blocks, to compare the two (the pictures must match)
+REXCVAR_DEFINE_BOOL(cod3_camo_cpu_blocks, false, "cod3/Debug",
+                    "Debug: BC7 camos decoded on the CPU and made as RGBA8 even when the GPU could take their blocks");
 #endif
 
 namespace cod3::ngl_camo {
@@ -87,7 +99,8 @@ constexpr uint32_t kMostTextures = 48;     // textures made between two Forget()
 constexpr float kScrollLimit = 16.0f, kScaleMin = 1.0f / 16.0f, kScaleMax = 64.0f;
 constexpr uint32_t kHeader = 64, kEntry = 32;
 enum : uint32_t { kColor = 1, kSpecular = 2, kEnv = 3 };
-enum : uint32_t { kRgba8 = 1, kBc1 = 2, kBc2 = 3, kBc3 = 4 };
+enum : uint32_t { kRgba8 = 1, kBc1 = 2, kBc2 = 3, kBc3 = 4, kBc7 = 5 };  // kBc7: c3camo v2 (version 2 only)
+constexpr uint32_t kVersion = 1, kVersionBc7 = 2;                       // [acct2-bro] 2026-11-23 c3camo v2
 
 uint32_t Crc32(const uint8_t* p, size_t n, uint32_t crc = 0) {
   static const std::array<uint32_t, 256> table = [] {
@@ -120,7 +133,8 @@ uint64_t LevelBytes(uint32_t fmt, uint32_t w, uint32_t h) {
     case kRgba8: return uint64_t(w) * h * 4;
     case kBc1: return bw * bh * 8;
     case kBc2:
-    case kBc3: return bw * bh * 16;
+    case kBc3:
+    case kBc7: return bw * bh * 16;
     default: return 0;
   }
 }
@@ -134,6 +148,7 @@ struct MapView {        // one map of a checked file: its largest level's bytes 
   uint32_t kind = 0, fmt = 0, width = 0, height = 0;
   const uint8_t* base = nullptr;  // the largest level
   uint64_t base_bytes = 0;
+  uint32_t levels = 1;            // [acct2-bro] 2026-11-23 c3camo v2: the levels stored, packed after base
 };
 struct CamoView {
   std::vector<MapView> maps;
@@ -149,7 +164,9 @@ bool ParseCamo(const uint8_t* d, size_t size, CamoView* out, std::string* why) {
   const uint32_t version = U32(d + 8), head = U32(d + 12), count = U32(d + 16), flags = U32(d + 20);
   const float su = F32(d + 24), sv = F32(d + 28), scale = F32(d + 32);
   const uint32_t data_bytes = U32(d + 40), data_crc = U32(d + 44), head_crc = U32(d + 60);
-  if (version != 1 || head != kHeader || flags != 0 || U32(d + 48) || U32(d + 52) || U32(d + 56))
+  if (version > kVersionBc7 && head == kHeader) return fail("a newer camo format");  // c3camo v2
+  if ((version != kVersion && version != kVersionBc7) || head != kHeader || flags != 0 || U32(d + 48) ||
+      U32(d + 52) || U32(d + 56))
     return fail("a camo file of another version");
   if (count < 1 || count > 3) return fail("a wrong map count");
   const uint64_t table_end = kHeader + uint64_t(kEntry) * count;
@@ -169,7 +186,8 @@ bool ParseCamo(const uint8_t* d, size_t size, CamoView* out, std::string* why) {
     const uint8_t* e = d + kHeader + kEntry * i;
     const uint32_t kind = U32(e), fmt = U32(e + 4), w = U32(e + 8), h = U32(e + 12), levels = U32(e + 16);
     const uint32_t offset = U32(e + 20), bytes = U32(e + 24);
-    if (kind < kColor || kind > kEnv || (kinds & (1u << kind)) || fmt < kRgba8 || fmt > kBc3 || U32(e + 28))
+    if (kind < kColor || kind > kEnv || (kinds & (1u << kind)) || fmt < kRgba8 || fmt > kBc7 || U32(e + 28) ||
+        (fmt == kBc7 && version != kVersionBc7))  // c3camo v2: BC7 only in a version 2 file
       return fail("a map of an unknown kind or format");
     kinds |= 1u << kind;
     if (w < 1 || w > kMaxSide || h < 1 || h > kMaxSide || LevelBytes(fmt, w, h) > kMaxMapBytes)
@@ -184,12 +202,163 @@ bool ParseCamo(const uint8_t* d, size_t size, CamoView* out, std::string* why) {
     m.kind = kind, m.fmt = fmt, m.width = w, m.height = h;
     m.base = d + table_end + offset;
     m.base_bytes = LevelBytes(fmt, w, h);
+    m.levels = levels;
     v.maps.push_back(m);
   }
   if (expect != data_bytes) return fail("bytes after the last map");
   if (Crc32(d + table_end, data_bytes) != data_crc) return fail("its data checksum is wrong");
   *out = std::move(v);
   return true;
+}
+
+// ---- [acct2-bro] 2026-11-23 c3camo v2: one BC7 block (16 bytes) to RGBA8, for the CPU fallback -------------------
+// A total function on any 16 bytes, as BC1-BC3 are: every field is read with its own bit width from the block's
+// own 128 bits (a read past bit 128 gives 0), every table index is masked to the table's size, nothing is
+// allocated, and the reserved mode (a first byte of 0) gives transparent black, as the format's specification asks.
+// The tables and bit layout are the public BC7 format's (Direct3D 11 "BC7 Format Mode Reference"); c3w/bc7.py
+// has the same, checked against Pillow's decoder, and the test program checks this one against bc7.py's values.
+namespace bc7 {
+constexpr uint8_t kWeights2[4] = {0, 21, 43, 64};
+constexpr uint8_t kWeights3[8] = {0, 9, 18, 27, 37, 46, 55, 64};
+constexpr uint8_t kWeights4[16] = {0, 4, 9, 13, 17, 21, 26, 30, 34, 38, 43, 47, 51, 55, 60, 64};
+// mode: subsets, partition bits, rotation bits, index selection bits, colour bits, alpha bits, endpoint P-bits,
+// shared P-bits, index bits, second index bits
+struct Mode { uint8_t ns, pb, rb, isb, cb, ab, epb, spb, ib, ib2; };
+constexpr Mode kModes[8] = {
+    {3, 4, 0, 0, 4, 0, 1, 0, 3, 0}, {2, 6, 0, 0, 6, 0, 0, 1, 3, 0}, {3, 6, 0, 0, 5, 0, 0, 0, 2, 0},
+    {2, 6, 0, 0, 7, 0, 1, 0, 2, 0}, {1, 0, 2, 1, 5, 6, 0, 0, 2, 3}, {1, 0, 2, 0, 7, 8, 0, 0, 2, 2},
+    {1, 0, 0, 0, 7, 7, 1, 0, 4, 0}, {2, 6, 0, 0, 5, 5, 1, 0, 2, 0}};
+constexpr uint16_t kPart2[64] = {
+    0xCCCC, 0x8888, 0xEEEE, 0xECC8, 0xC880, 0xFEEC, 0xFEC8, 0xEC80, 0xC800, 0xFFEC, 0xFE80, 0xE800, 0xFFE8,
+    0xFF00, 0xFFF0, 0xF000, 0xF710, 0x008E, 0x7100, 0x08CE, 0x008C, 0x7310, 0x3100, 0x8CCE, 0x088C, 0x3110,
+    0x6666, 0x366C, 0x17E8, 0x0FF0, 0x718E, 0x399C, 0xAAAA, 0xF0F0, 0x5A5A, 0x33CC, 0x3C3C, 0x55AA, 0x9696,
+    0xA55A, 0x73CE, 0x13C8, 0x324C, 0x3BDC, 0x6996, 0xC33C, 0x9966, 0x0660, 0x0272, 0x04E4, 0x4E40, 0x2720,
+    0xC936, 0x936C, 0x39C6, 0x639C, 0x9336, 0x9CC6, 0x817E, 0xE718, 0xCCF0, 0x0FCC, 0x7744, 0xEE22};
+constexpr const char* kPart3[64] = {
+    "0011001102212222", "0001001122112221", "0000200122112211", "0222002200110111", "0000000011221122",
+    "0011001100220022", "0022002211111111", "0011001122112211", "0000000011112222", "0000111111112222",
+    "0000111122222222", "0012001200120012", "0112011201120112", "0122012201220122", "0011011211221222",
+    "0011200122002220", "0001001101121122", "0111001120012200", "0000112211221122", "0022002200221111",
+    "0111011102220222", "0001000122212221", "0000001101220122", "0000110022102210", "0122012200110000",
+    "0012001211222222", "0110122112210110", "0000011012211221", "0022110211020022", "0110011020022222",
+    "0011012201220011", "0000200022112221", "0000000211221222", "0222002200120011", "0011001200220222",
+    "0120012001200120", "0000111122220000", "0120120120120120", "0120201212010120", "0011220011220011",
+    "0011112222000011", "0101010122222222", "0000000021212121", "0022112200221122", "0022001100220011",
+    "0220122102201221", "0101222222220101", "0000212121212121", "0101010101012222", "0222011102220111",
+    "0002111200021112", "0000211221122112", "0222011101110222", "0002111211120002", "0110011001102222",
+    "0000000021122112", "0110011022222222", "0022001100110022", "0022112211220022", "0000000000002112",
+    "0002000100020001", "0222122202221222", "0101222222222222", "0111201122012220"};
+constexpr uint8_t kAnchor2[64] = {15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 15,
+                                  15, 2,  8,  2,  2,  8,  8,  15, 2,  8,  2,  2,  8,  8,  2,  2,
+                                  15, 15, 6,  8,  2,  8,  15, 15, 2,  8,  2,  2,  2,  15, 15, 6,
+                                  6,  2,  6,  8,  15, 15, 2,  2,  15, 15, 15, 15, 15, 2,  2,  15};
+constexpr uint8_t kAnchor3a[64] = {3, 3,  15, 15, 8, 3,  15, 15, 8,  8,  6,  6,  6,  5,  3, 3,
+                                   3, 3,  8,  15, 3, 3,  6,  10, 5,  8,  8,  6,  8,  5,  15, 15,
+                                   8, 15, 3,  5,  6, 10, 8,  15, 15, 3,  15, 5,  15, 15, 15, 15,
+                                   3, 15, 5,  5,  5, 8,  5,  10, 5,  10, 8,  13, 15, 12, 3, 3};
+constexpr uint8_t kAnchor3b[64] = {15, 8,  8,  3,  15, 15, 3,  8,  15, 15, 15, 15, 15, 15, 15, 8,
+                                   15, 8,  15, 3,  15, 8,  15, 8,  3,  15, 6,  10, 15, 15, 10, 8,
+                                   15, 3,  15, 10, 10, 8,  9,  10, 6,  15, 8,  15, 3,  6,  6,  8,
+                                   15, 3,  15, 15, 15, 15, 15, 15, 15, 15, 15, 15, 3,  15, 15, 8};
+
+struct Bits {  // the block's 128 bits, read low to high
+  uint64_t lo = 0, hi = 0;
+  uint32_t pos = 0;
+  uint32_t Take(uint32_t n) {  // n <= 8
+    uint32_t v = 0;
+    if (n && pos < 128) {
+      const uint64_t mask = (uint64_t(1) << n) - 1;
+      if (pos >= 64) v = uint32_t((hi >> (pos - 64)) & mask);
+      else if (pos + n <= 64) v = uint32_t((lo >> pos) & mask);
+      else v = uint32_t(((lo >> pos) | (hi << (64 - pos))) & mask);
+    }
+    pos += n;
+    return v;
+  }
+};
+inline uint32_t Expand(uint32_t v, uint32_t n) {  // n bits (1..8) to 8
+  v = (v << (8 - n)) & 0xFF;
+  return v | (v >> n);
+}
+inline const uint8_t* Weights(uint32_t bits) { return bits == 2 ? kWeights2 : bits == 3 ? kWeights3 : kWeights4; }
+}  // namespace bc7
+
+// One block to 16 pixels, R G B A, row by row; true when the block was of the reserved mode (all zero then).
+bool DecodeBc7Block(const uint8_t* blk, uint8_t px[16][4]) {
+  bc7::Bits b;
+  for (int i = 7; i >= 0; --i) b.lo = (b.lo << 8) | blk[i], b.hi = (b.hi << 8) | blk[8 + i];
+  const uint32_t first = blk[0];
+  if (first == 0) {
+    std::memset(px, 0, 16 * 4);
+    return true;
+  }
+  uint32_t mode = 0;
+  while (!((first >> mode) & 1)) ++mode;  // first != 0: mode <= 7
+  const bc7::Mode& m = bc7::kModes[mode & 7];
+  b.pos = mode + 1;
+  const uint32_t part = b.Take(m.pb) & 63, rot = b.Take(m.rb) & 3, sel = b.Take(m.isb) & 1;
+  const uint32_t ne = 2u * m.ns;  // 2, 4 or 6 endpoints
+  uint32_t ep[6][4] = {};
+  for (uint32_t c = 0; c < 3; ++c)
+    for (uint32_t e = 0; e < ne; ++e) ep[e][c] = b.Take(m.cb);
+  for (uint32_t e = 0; e < ne; ++e) ep[e][3] = m.ab ? b.Take(m.ab) : 255;
+  uint32_t cbits = m.cb, abits = m.ab;
+  if (m.epb) {
+    for (uint32_t e = 0; e < ne; ++e) {
+      const uint32_t p = b.Take(1);
+      for (uint32_t c = 0; c < (m.ab ? 4u : 3u); ++c) ep[e][c] = (ep[e][c] << 1) | p;
+    }
+    ++cbits;
+    if (m.ab) ++abits;
+  } else if (m.spb) {
+    for (uint32_t s = 0; s < m.ns; ++s) {
+      const uint32_t p = b.Take(1);
+      for (uint32_t e = 2 * s; e < 2 * s + 2; ++e)
+        for (uint32_t c = 0; c < 3; ++c) ep[e][c] = (ep[e][c] << 1) | p;
+    }
+    ++cbits;
+  }
+  for (uint32_t e = 0; e < ne; ++e) {
+    for (uint32_t c = 0; c < 3; ++c) ep[e][c] = bc7::Expand(ep[e][c], cbits);
+    ep[e][3] = m.ab ? bc7::Expand(ep[e][3], abits) : 255;
+  }
+  uint32_t subset[16] = {};
+  uint32_t anchor1 = 16, anchor2 = 16;  // 16: none
+  if (m.ns == 2) {
+    for (uint32_t i = 0; i < 16; ++i) subset[i] = (bc7::kPart2[part] >> i) & 1;
+    anchor1 = bc7::kAnchor2[part] & 15;
+  } else if (m.ns == 3) {
+    for (uint32_t i = 0; i < 16; ++i) subset[i] = uint32_t(bc7::kPart3[part][i] - '0') % 3;
+    anchor1 = bc7::kAnchor3a[part] & 15, anchor2 = bc7::kAnchor3b[part] & 15;
+  }
+  uint32_t idx[16], idx2[16] = {};
+  for (uint32_t i = 0; i < 16; ++i) {
+    const bool anchor = i == 0 || i == anchor1 || i == anchor2;
+    idx[i] = b.Take(anchor ? m.ib - 1u : m.ib) & ((1u << m.ib) - 1);
+  }
+  if (m.ib2)
+    for (uint32_t i = 0; i < 16; ++i) idx2[i] = b.Take(i == 0 ? m.ib2 - 1u : m.ib2) & ((1u << m.ib2) - 1);
+  const uint8_t* w1 = bc7::Weights(m.ib);
+  const uint8_t* w2 = bc7::Weights(m.ib2 ? m.ib2 : 2);
+  for (uint32_t i = 0; i < 16; ++i) {
+    const uint32_t s = subset[i] % m.ns;
+    const uint32_t* e0 = ep[2 * s];
+    const uint32_t* e1 = ep[2 * s + 1];
+    uint32_t wc, wa;
+    if (!m.ib2) {
+      wc = wa = w1[idx[i]];
+    } else if (sel) {  // mode 4 with the selection bit: colour by the 3-bit indices, alpha by the 2-bit ones
+      wc = w2[idx2[i]], wa = w1[idx[i]];
+    } else {
+      wc = w1[idx[i]], wa = w2[idx2[i]];
+    }
+    uint8_t out[4];
+    for (uint32_t c = 0; c < 3; ++c) out[c] = uint8_t(((64 - wc) * e0[c] + wc * e1[c] + 32) >> 6);
+    out[3] = uint8_t(((64 - wa) * e0[3] + wa * e1[3] + 32) >> 6);
+    if (rot) std::swap(out[3], out[rot - 1]);
+    std::memcpy(px[i], out, 4);
+  }
+  return false;
 }
 
 namespace {
@@ -250,7 +419,11 @@ std::vector<uint8_t> DecodeBase(const MapView& m) {
   for (uint32_t by = 0; by < bh; ++by) {
     for (uint32_t bx = 0; bx < bw; ++bx) {
       const uint8_t* blk = m.base + (size_t(by) * bw + bx) * step;
-      ColorBlock(m.fmt == kBc1 ? blk : blk + 8, m.fmt == kBc1, px);
+      if (m.fmt == kBc7) {  // c3camo v2
+        DecodeBc7Block(blk, px);
+      } else {
+        ColorBlock(m.fmt == kBc1 ? blk : blk + 8, m.fmt == kBc1, px);
+      }
       if (m.fmt == kBc2) AlphaBc2(blk, px);
       if (m.fmt == kBc3) AlphaBc3(blk, px);
       for (int i = 0; i < 16; ++i) {
@@ -280,14 +453,68 @@ std::vector<uint8_t> Half(const std::vector<uint8_t>& src, uint32_t w, uint32_t 
   return out;
 }
 
-// A map ready for ngl_vk: BGRA levels (ngl_vk's order), largest first, at most kSide.
+// A map ready for ngl_vk: BGRA levels (ngl_vk's order), largest first, at most kSide; or (c3camo v2, bc7) a BC7
+// map's stored levels as their blocks.
 struct Ready {
   uint32_t kind = 0, width = 0, height = 0;
   std::vector<std::vector<uint8_t>> levels;
   float mean[3] = {0.5f, 0.5f, 0.5f};
+  bool bc7 = false;  // [acct2-bro] 2026-11-23 c3camo v2: levels are BC7 blocks as the file has them (for the GPU)
 };
-Ready Prepare(const MapView& m) {
+
+// [acct2-bro] 2026-11-23 c3camo v2: a BC7 map uses its own stored levels, from the first one of at most kSide on a
+// side (each exactly its blocks' bytes, as ParseCamo proved), on both paths: kept as blocks for the GPU (blocks), or
+// each decoded here to BGRA. So the two paths give the GPU the same levels and the same pixels (BC7 decoding is exact),
+// and the colour's mean is taken from the first level decoded, the same way on both. False (nothing made) when no
+// stored level is that small (a hand-made one-level map over kSide: Prepare decodes and halves it as for BC1-BC3).
+bool PrepareBc7(const MapView& m, bool blocks, Ready* r) {
+  const uint8_t* at = m.base;
+  uint32_t first = m.levels;
+  for (uint32_t l = 0; l < m.levels; ++l) {
+    const uint32_t w = std::max(1u, m.width >> l), h = std::max(1u, m.height >> l);
+    if (w <= kSide && h <= kSide) {
+      first = l;
+      break;
+    }
+    at += LevelBytes(kBc7, w, h);
+  }
+  if (first >= m.levels) return false;
+  r->kind = m.kind;
+  r->bc7 = blocks;
+  r->width = std::max(1u, m.width >> first), r->height = std::max(1u, m.height >> first);
+  for (uint32_t l = first; l < m.levels; ++l) {
+    const uint32_t w = std::max(1u, m.width >> l), h = std::max(1u, m.height >> l);
+    const uint64_t n = LevelBytes(kBc7, w, h);
+    if (blocks && l != first) {
+      r->levels.emplace_back(at, at + n);
+      at += n;
+      continue;
+    }
+    MapView one = m;
+    one.width = w, one.height = h, one.base = at, one.base_bytes = n, one.levels = 1;
+    std::vector<uint8_t> px = DecodeBase(one);  // RGBA
+    if (l == first) {
+      double sum[3] = {0, 0, 0};
+      for (size_t i = 0; i < px.size(); i += 4)
+        for (int c = 0; c < 3; ++c) sum[c] += px[i + c];
+      for (int c = 0; c < 3; ++c) r->mean[c] = float(sum[c] / (255.0 * std::max<size_t>(1, px.size() / 4)));
+    }
+    if (blocks) {
+      r->levels.emplace_back(at, at + n);
+    } else {
+      for (size_t i = 0; i < px.size(); i += 4) std::swap(px[i], px[i + 2]);  // RGBA to ngl_vk's BGRA
+      r->levels.push_back(std::move(px));
+    }
+    at += n;
+  }
+  return true;
+}
+
+// blocks: a BC7 map may stay as its blocks (the reading thread asks so only when the GPU takes them).
+Ready Prepare(const MapView& m, bool blocks = false) {
   Ready r;
+  if (m.fmt == kBc7 && PrepareBc7(m, blocks, &r)) return r;  // c3camo v2
+  r = Ready{};
   r.kind = m.kind;
   std::vector<uint8_t> px = DecodeBase(m);
   uint32_t w = m.width, h = m.height;
@@ -369,6 +596,9 @@ std::set<std::string> g_failed;                    // refused this session (logg
 std::unique_ptr<std::thread> g_reader;
 std::atomic<bool> g_stop{false};
 std::atomic<uint32_t> g_refused{0};
+// [acct2-bro] 2026-11-23 c3camo v2: BC7 maps stay blocks for the GPU (ngl_vk takes them, the debug switch is off and
+// the GPU hasn't refused one); the drawing thread sets it each frame, the reading thread reads it per camo.
+std::atomic<bool> g_blocks_ok{false};
 std::mutex g_seen_mu;                              // the guns seen (LayerFor's thread writes, F2's reads)
 std::set<std::string> g_seen;
 
@@ -391,6 +621,8 @@ std::set<std::string> g_asked;                     // handed to the reader, not 
 std::set<std::string> g_seen_here;                 // the drawing thread's copy of g_seen (no lock to look up)
 uint32_t g_textures = 0, g_made_count = 0;
 bool g_full_logged = false;
+bool g_blocks_failed = false;  // c3camo v2: ngl_vk refused a BC7 texture: CPU decoding for the rest of the session
+int g_blocks_said = -1;        // c3camo v2: the way BC7 camos go, as last logged (-1: not yet)
 std::string g_choices_text;
 std::map<std::pair<int, std::string>, std::string> g_choices;  // (player, weapon or "*") -> id; drawing thread
 std::vector<Entry> g_list;
@@ -408,6 +640,20 @@ void Log(const std::string& s) {
 #else
   REXLOG_INFO("cod3: camo: {}", s);
 #endif
+}
+
+// [acct2-bro] 2026-11-23 c3camo v2: a BC7 map's levels checked again right before the GPU gets them: 1 to
+// kMaxLevels levels, none past a full chain, each exactly ceil(w/4) x ceil(h/4) x 16 bytes for its place in the chain
+// (ngl_vk reads that many from each); empty when they fit, else why.
+std::string BlocksRefusal(const Ready& r) {
+  if (r.width < 1 || r.width > kSide || r.height < 1 || r.height > kSide) return "a BC7 map of a wrong size";
+  if (r.levels.empty() || r.levels.size() > std::min(kMaxLevels, FullLevels(r.width, r.height)))
+    return "a BC7 map with a wrong number of levels";
+  for (size_t i = 0; i < r.levels.size(); ++i) {
+    const uint32_t w = std::max(1u, r.width >> i), h = std::max(1u, r.height >> i);
+    if (r.levels[i].size() != LevelBytes(kBc7, w, h)) return "a BC7 level of a wrong size";
+  }
+  return {};
 }
 
 // [acct2-bro] 2026-11-22 c519: the pass multiplies the gun by the colour map over its mean, so a set with no colour
@@ -453,7 +699,8 @@ void ReaderMain() {
       } else {
         CamoView v;
         if (ParseCamo(data.data(), data.size(), &v, &why)) {
-          for (const MapView& m : v.maps) prepared.maps.push_back(Prepare(m));
+          const bool blocks = g_blocks_ok.load();  // c3camo v2
+          for (const MapView& m : v.maps) prepared.maps.push_back(Prepare(m, blocks));
           prepared.scroll[0] = v.scroll_u, prepared.scroll[1] = v.scroll_v, prepared.scale = v.scale;
           why = ColourRefusal(prepared.maps);  // [acct2-bro] 2026-11-22 c519
           if (!why.empty()) prepared.maps.clear();
@@ -533,6 +780,37 @@ std::string ChoicesText(const ChoiceMap& all) {
 
 }  // namespace
 
+// [acct2-bro] 2026-11-23 Camo lane (the gloves): see ngl_camo.h
+std::filesystem::path Folder() { return CamoFolder(); }
+
+// [acct2-bro] 2026-11-22 Camo lane x549 (the gloves, a probe): one .c3camo file's colour map, read and checked by the
+// rules ReaderMain uses (size, plain file, ParseCamo, ColourRefusal), as BGRA levels largest first (at most kSide)
+// for ngl_vk_texture_levels; false and why. On the caller's thread (once per glove image until the next Forget).
+bool ReadColourLevels(const std::filesystem::path& path, std::vector<std::vector<uint8_t>>* levels, uint32_t* width,
+                      uint32_t* height, std::string* why) {
+  std::error_code ec, link_ec;
+  const auto size = std::filesystem::file_size(path, ec);
+  if (ec) return *why = "can't be read (" + ec.message() + ")", false;
+  if (size > kMaxFileBytes || std::filesystem::is_symlink(path, link_ec))
+    return *why = "too big or not a plain file", false;
+  std::vector<uint8_t> data(static_cast<size_t>(size));
+  std::ifstream f(path, std::ios::binary);
+  if (!f.read(reinterpret_cast<char*>(data.data()), std::streamsize(data.size()))) return *why = "can't be read", false;
+  CamoView v;
+  if (!ParseCamo(data.data(), data.size(), &v, why)) return false;
+  std::vector<Ready> maps;
+  for (const MapView& m : v.maps) maps.push_back(Prepare(m, false));  // c3camo v2: BGRA always (BC7 decoded)
+  *why = ColourRefusal(maps);
+  if (!why->empty()) return false;
+  for (Ready& r : maps)
+    if (r.kind == kColor) {
+      *levels = std::move(r.levels);
+      *width = r.width, *height = r.height;
+      return true;
+    }
+  return *why = "it has no colour map", false;
+}
+
 const std::vector<Entry>& List() {
   if (!g_listed) Rescan();
   return g_list;
@@ -569,6 +847,26 @@ void BeginFrame() {
   g_strength = std::clamp(REXCVAR_GET(cod3_camo_strength), 0, 100) / 100.0f;
   g_crawl = std::clamp(REXCVAR_GET(cod3_camo_crawl), 0, 400) / 100.0f;
 #endif
+  // [acct2-bro] 2026-11-23 c3camo v2: BC7 maps go to the GPU as blocks only when ngl_vk takes them (the device has BC
+  // textures on), the debug switch doesn't ask for CPU decoding and the GPU hasn't refused one this session
+#if defined(NGL_CAMO_TEST_BLOCKS)
+  const bool gpu_blocks = TestGpuBlocks(), cpu_blocks = TestCpuBlocks();
+#elif defined(NGL_CAMO_TEST)
+  const bool gpu_blocks = false, cpu_blocks = true;
+#elif defined(COD3_NGL_VK) && defined(NGL_VK_BLOCK_TEXTURES)
+  const bool gpu_blocks = ngl_vk_block_textures() != 0, cpu_blocks = REXCVAR_GET(cod3_camo_cpu_blocks);
+#else
+  const bool gpu_blocks = false, cpu_blocks = true;
+#endif
+  g_blocks_ok.store(gpu_blocks && !cpu_blocks && !g_blocks_failed);
+  if (g_on && int(g_blocks_ok.load()) != g_blocks_said) {  // said once, and again when it changes
+    g_blocks_said = int(g_blocks_ok.load());
+    Log(g_blocks_said ? std::string("BC7 camos go to the GPU as their blocks")
+                      : std::string("BC7 camos are decoded on the CPU (") +
+                            (cpu_blocks ? "cod3_camo_cpu_blocks is on"
+                             : g_blocks_failed ? "the GPU refused one"
+                                               : "the device has no BC textures on") + ")");
+  }
   // x509: the crawl by real time, the same at any frame rate: each frame adds speed x its own seconds to the phase
 #if defined(NGL_CAMO_TEST)
   g_seconds = TestSeconds();   // the test program's clock (camo509_crawl: 30 and 240 frames a second, a stall)
@@ -616,14 +914,49 @@ void BeginFrame() {
       return;
     }
     Ready& r = up.prepared.maps[up.next++];
+    // [acct2-bro] 2026-11-23 c3camo v2: a map read as BC7 blocks when blocks can't be used now (the switch was turned
+    // on, or the GPU refused one since): this camo is read again and decoded on the CPU
+    if (r.bc7 && !g_blocks_ok.load()) {
+      g_asked.erase(up.id);
+      g_uploading.reset();
+      return;
+    }
+    if (r.bc7) {
+      const std::string refusal = BlocksRefusal(r);
+      if (!refusal.empty()) {
+        std::lock_guard<std::mutex> lock(g_mu);
+        g_failed.insert(up.id);
+        g_refused.fetch_add(1);
+        Log(up.id + ".c3camo not used: " + refusal);
+        g_asked.erase(up.id);
+        g_uploading.reset();
+        return;
+      }
+    }
     std::vector<const void*> levels;
     for (const auto& l : r.levels) levels.push_back(l.data());
     uint32_t tex = 0;
-#if defined(NGL_CAMO_TEST)
+#if defined(NGL_CAMO_TEST_BLOCKS)
+    tex = r.bc7 ? TestBlockTexture(levels.data(), uint32_t(levels.size()), r.width, r.height)
+                : TestTexture(levels.data(), uint32_t(levels.size()), r.width, r.height);
+#elif defined(NGL_CAMO_TEST)
     tex = TestTexture(levels.data(), uint32_t(levels.size()), r.width, r.height);
 #elif defined(COD3_NGL_VK)
-    tex = ngl_vk_texture_levels(levels.data(), uint32_t(levels.size()), r.width, r.height);
+#if defined(NGL_VK_BLOCK_TEXTURES)
+    if (r.bc7)
+      tex = ngl_vk_texture_blocks(NGL_VK_BLOCKS_BC7, levels.data(), uint32_t(levels.size()), r.width, r.height);
+    else
 #endif
+      tex = ngl_vk_texture_levels(levels.data(), uint32_t(levels.size()), r.width, r.height);
+#endif
+    if (r.bc7 && !tex) {  // c3camo v2: the GPU refused BC7 blocks: decoded on the CPU from now on, this camo read again
+      Log("the GPU refused a BC7 camo texture; BC7 camos are decoded on the CPU from now on");
+      g_blocks_failed = true;
+      g_blocks_ok.store(false);
+      g_asked.erase(up.id);
+      g_uploading.reset();
+      return;
+    }
     r.levels.clear();
     r.levels.shrink_to_fit();
     if (tex) {
@@ -723,25 +1056,62 @@ void SetChoice(int player, std::string_view weapon, std::string_view camo_id) {
 
 #if defined(NGL_CAMO_TEST)
 // The test program's whole check of one file's bytes: the reader's rules, then every map decoded, halved and given its
-// levels as the reading thread does; the levels' sizes are checked against their place in the chain.
-bool TestCheck(const uint8_t* d, size_t n, std::string* why) {
+// levels as the reading thread does; the levels' sizes are checked against their place in the chain. [acct2-bro]
+// 2026-11-23 c3camo v2: blocks: BC7 maps kept as blocks, as the reading thread does when the GPU takes them (their
+// levels checked as BeginFrame checks them before the GPU); a BC7 map's levels are its stored ones (maybe fewer than a
+// full chain).
+bool TestCheck(const uint8_t* d, size_t n, std::string* why, bool blocks) {
   CamoView v;
   if (!ParseCamo(d, n, &v, why)) return false;
   std::vector<Ready> made;
   for (const MapView& m : v.maps) {
-    Ready r = Prepare(m);
+    Ready r = Prepare(m, blocks);
     if (r.width < 1 || r.width > kSide || r.height < 1 || r.height > kSide || r.levels.empty()) return false;
-    for (size_t i = 0; i < r.levels.size(); ++i) {
-      const uint32_t w = std::max(1u, r.width >> i), h = std::max(1u, r.height >> i);
-      if (r.levels[i].size() != size_t(w) * h * 4) return false;
+    if (r.bc7) {
+      if (!BlocksRefusal(r).empty()) return false;
+    } else {
+      for (size_t i = 0; i < r.levels.size(); ++i) {
+        const uint32_t w = std::max(1u, r.width >> i), h = std::max(1u, r.height >> i);
+        if (r.levels[i].size() != size_t(w) * h * 4) return false;
+      }
+      const size_t full = FullLevels(r.width, r.height);
+      if (m.fmt == kBc7 ? r.levels.size() > full : r.levels.size() != full) return false;
     }
-    if (r.levels.size() != FullLevels(r.width, r.height)) return false;
     made.push_back(std::move(r));
   }
   const std::string refusal = ColourRefusal(made);  // c519: as the reading thread refuses it
   if (!refusal.empty()) {
     if (why) *why = refusal;
     return false;
+  }
+  return true;
+}
+bool TestCheck(const uint8_t* d, size_t n, std::string* why) { return TestCheck(d, n, why, false); }
+
+// [acct2-bro] 2026-11-23 c3camo v2: the GPU path and the CPU path of one checked file give the same thing: for every
+// map, the same size, level count and mean, and each BC7 level's blocks decoded (as a GPU decodes BC7: exactly) equal
+// the CPU path's pixels. 0: the same; else the first difference, as text in why.
+bool TestPathsAgree(const uint8_t* d, size_t n, std::string* why) {
+  CamoView v;
+  if (!ParseCamo(d, n, &v, why)) return false;
+  for (const MapView& m : v.maps) {
+    const Ready g = Prepare(m, true), c = Prepare(m, false);
+    if (g.width != c.width || g.height != c.height || g.levels.size() != c.levels.size())
+      return *why = "the two paths give different sizes", false;
+    for (int k = 0; k < 3; ++k)
+      if (g.mean[k] != c.mean[k]) return *why = "the two paths give different means", false;
+    for (size_t i = 0; i < g.levels.size(); ++i) {
+      if (!g.bc7) {
+        if (g.levels[i] != c.levels[i]) return *why = "the two paths give different pixels", false;
+        continue;
+      }
+      const uint32_t w = std::max(1u, g.width >> i), h = std::max(1u, g.height >> i);
+      MapView one = m;
+      one.width = w, one.height = h, one.base = g.levels[i].data(), one.base_bytes = g.levels[i].size(), one.levels = 1;
+      std::vector<uint8_t> px = DecodeBase(one);
+      for (size_t k = 0; k < px.size(); k += 4) std::swap(px[k], px[k + 2]);
+      if (px != c.levels[i]) return *why = "a BC7 level decodes differently from the CPU path", false;
+    }
   }
   return true;
 }

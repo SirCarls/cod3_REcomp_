@@ -634,3 +634,143 @@ registers = ["ctx", "base"]
 address = 0x8235E6D8
 name = "waw_native_swap"
 registers = ["ctx", "base"]
+
+# [map-compat] begin: World at War's add-on packages (src/waw_addons.cpp)
+# [map-compat] 2026-11-11 World at War's own Xbox 360 add-on packages (src/waw_addons.cpp; waw_addons, on by default).
+# The disc program mounts each pack as mappack<N>: but only knows the Makin bonus map's mappack1.id; Map Packs 1-3
+# (dlcmappack1-3.id, title update 7's names) are closed as unknown, and zones are only ever opened from the disc's zone
+# folder. 0x82293170 is the pack's identity check: at its entry, a map pack's drive returns at once with its bits in r3.
+[[midasm_hook]]
+address = 0x82293170
+name = "waw_addons_identify_pack_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [map-compat] DB_TryLoadXFileInternal 0x821566D8, after its Com_sprintf built "<zone folder>\<zone>.ff" in r1+80 (the
+# zone's name in r31) and before the call that opens it: a zone the disc lacks is pointed at the mounted pack holding it.
+[[midasm_hook]]
+address = 0x821567FC
+name = "waw_addons_zone_path_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] 0x82156548 (the same path for its one caller, 0x82252340), after its Com_sprintf: r29 the path, r30 its
+# size, r31 the zone.
+[[midasm_hook]]
+address = 0x82156580
+name = "waw_addons_zone_path_exists_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] The other files a pack's level reads, each right after the disc built "<game folder>\..." and before it
+# opens it; a file the disc lacks is read from the mounted pack that has it. 0x8234C318 (streamed sound) at 0x8234C424:
+# path r1+352, the file r23, its extension r30.
+[[midasm_hook]]
+address = 0x8234C424
+name = "waw_addons_stream_path_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] 0x8234B498 (sound bank, at zone load) at 0x8234B548: path r1+112, the bank r26.
+[[midasm_hook]]
+address = 0x8234B548
+name = "waw_addons_sound_bank_path_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] 0x824110B0 (Bink movie) at 0x82411120, where its two __snprintf calls meet: path r1+80, the movie r30,
+# its flags r31 (0x20: "bik/" with no game folder, left alone).
+[[midasm_hook]]
+address = 0x82411120
+name = "waw_addons_bink_path_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] 0x82428C28 (highmip texture) at 0x82428D10: path r1+96 (1024 bytes), the image r30.
+[[midasm_hook]]
+address = 0x82428D10
+name = "waw_addons_highmip_path_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] SV_SpawnServer 0x822BC6C8 at 0x822BC768, after it stored the level-start save state at 0x842F35D8:
+# every "nazi_zombie_*" map (r24; r18 0) gets the prototype's 4, so a pack's zombie map writes no level-start save.
+[[midasm_hook]]
+address = 0x822BC768
+name = "waw_addons_zombie_start_save_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] The level's zone load, SV_SpawnServer at 0x822BCAD8 and a co-op client's CL_InitCGame at 0x822C6178
+# (r3 the level's zone entry, r4 1): a mounted pack's "<map>_patch" zone is added as a second entry (freeFlags 0).
+[[midasm_hook]]
+address = 0x822BCAD8
+name = "waw_addons_level_patch_zone_hook"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x822C6178
+name = "waw_addons_level_patch_zone_hook"
+registers = ["ctx", "base"]
+# [map-compat] end: World at War's add-on packages
+
+# [map-compat] begin: title update 7 redone (src/waw_tu7.cpp)
+# [map-compat] 2026-11-11 World at War's title update 7, redone (src/waw_tu7.cpp; waw_tu7_builtins, on by default):
+# the 15 script builtins the map packs' zombie maps call (dev/agents/map-compat/TU7.md). The script compiler looks a
+# builtin up in four functions, each (const char** name r3, int* type r4) -> handler r3; at each entry our names get
+# our handler (a runtime thunk) and the disc's own lookup is skipped. Server functions (EmitCall's, instance 0):
+[[midasm_hook]]
+address = 0x821E90A0
+name = "waw_tu7_server_function_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [map-compat] Server methods (EmitMethod's; it tries the actor, sentient, player, script entity, vehicle and hud
+# element tables, then its own).
+[[midasm_hook]]
+address = 0x821EAC90
+name = "waw_tu7_server_method_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [map-compat] Client-script functions, CScr_GetFunction.
+[[midasm_hook]]
+address = 0x822FC1D0
+name = "waw_tu7_client_function_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [map-compat] Client-script methods, CScr_GetMethod.
+[[midasm_hook]]
+address = 0x822FF1C8
+name = "waw_tu7_client_method_hook"
+registers = ["ctx", "base"]
+return_on_true = true
+
+# [map-compat] G_InitGame, at its entry: a new map clears the perks the builtins keep.
+[[midasm_hook]]
+address = 0x821C0220
+name = "waw_tu7_init_game_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] ClientSpawn, at its entry (r3 the player's entity): a player spawns without perks.
+[[midasm_hook]]
+address = 0x8230C240
+name = "waw_tu7_client_spawn_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] PM_Weapon_WeaponTimeAdjust 0x820ED850 at 0x820ED8AC, right after r25 = pml->msec (r31 ps): Speed Cola
+# and Double Tap divide those milliseconds while reloading or firing, as title update 7's version of the function did.
+[[midasm_hook]]
+address = 0x820ED8AC
+name = "waw_tu7_weapon_time_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] CG_DeployServerCommand 0x82124AE0 at 0x82124B58, its switch's bound test (r9 the command's first
+# character): title update 7's two client commands, '(' (electric shock) and ')' (teleporter), shown with the disc's
+# flame screen effect and the map pack's material; then r9 = 0 sends the switch to the function's own return.
+[[midasm_hook]]
+address = 0x82124B58
+name = "waw_tu7_client_command_hook"
+registers = ["ctx", "base"]
+
+# [map-compat] CG_DrawActiveFrame 0x8212C8A8 at 0x8212D058, after the flame effect's fade-out (r31 cg_t): the flame's
+# own material goes back once an electric shock or teleporter effect has faded.
+[[midasm_hook]]
+address = 0x8212D058
+name = "waw_tu7_client_frame_hook"
+registers = ["ctx", "base"]
+# [map-compat] end: title update 7 redone

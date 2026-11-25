@@ -41,4 +41,13 @@ bool check_prone(const ProneQuery& q, ProneAngles out, trace::MoveHost& host);
 bool verify_prone_position(pmove::Pmove& pm, const std::array<float, 3>& start_origin,
                            const std::array<float, 3>& start_velocity, trace::MoveHost& host);
 
+/// Whether a prone player fits turned toward new_yaw (see the Rust version); the angles go to the
+/// player state.
+/// Original: BG_CheckProneTurned at 0x00519260 (CoD2MP_s.exe 1.3; Call of Duty 4's name; ps in eax, then (newProneYaw, handler) on the stack; al)
+bool check_prone_turned(pmove::PlayerState& ps, float new_yaw, std::uint8_t handler, trace::MoveHost& host);
+
+/// A prone player's body on the ground this move (see the Rust version).
+/// Original: PM_UpdatePronePitch at 0x00519CE0 (CoD2MP_s.exe 1.3; Call of Duty 4's name; pm in eax, pml in ebx)
+void update_prone_pitch(pmove::Pmove& pm, const pmove::MoveLocal& pml, trace::MoveHost& host);
+
 }  // namespace iw_pc::game::prone

@@ -1,5 +1,8 @@
 #include "iw_pc/game/prone.h"
 
+#include <cstring>
+#include <utility>
+
 #include "iw_pc/shared/math.h"
 #include "iw_pc/x87.h"
 
@@ -175,6 +178,84 @@ bool verify_prone_position(pmove::Pmove& pm, const Vec& start_origin, const Vec&
         pm.ps.set_velocity(start_velocity);
     }
     return fits;
+}
+
+bool check_prone_turned(pmove::PlayerState& p, float new_yaw, std::uint8_t handler, trace::MoveHost& host) {
+    namespace ps = pmove::ps;
+    auto l = F24::load;
+    float delta = shared::math::angle_normalize180((l(new_yaw) - l(p.real(ps::kViewAngles + 4))).store());
+    float t = (l(l(delta).abs().store()) / l(240.0f)).store();
+    float rest = (l(1.0f) - l(t)).store();
+    ProneQuery q;
+    q.pass_entity = p.integer(ps::kClientNum);
+    q.origin = p.vec3(ps::kOrigin);
+    q.size = p.real(ps::kProneCheckSize);
+    q.height = 30.0f;
+    q.yaw = shared::math::angle_wrap360((l(new_yaw) - l(rest) * l(delta)).store());
+    q.already_prone = true;
+    q.on_ground = p.integer(ps::kGroundEntityNum) != pmove::kEntityNone;
+    q.handler = handler;
+    q.check_type = 0;
+    q.feet_distance = (l(rest) * l(66.0f) + l(t) * l(45.0f)).store();
+    float h = p.real(ps::kProneTorsoHeight), tp = p.real(ps::kProneTorsoPitch), w = p.real(ps::kProneWaistPitch);
+    bool fits = check_prone(q, ProneAngles{&h, &tp, &w}, host);
+    p.set_real(ps::kProneTorsoHeight, h);
+    p.set_real(ps::kProneTorsoPitch, tp);
+    p.set_real(ps::kProneWaistPitch, w);
+    return fits;
+}
+
+void update_prone_pitch(pmove::Pmove& pm, const pmove::MoveLocal& pml, trace::MoveHost& host) {
+    namespace ps = pmove::ps;
+    namespace ml = pmove::pml;
+    auto l = F24::load;
+    constexpr std::int32_t kEvStanceForceCrouch = 0x8D;
+    if ((pm.ps.pm_flags() & pmove::pm_flags::kProne) == 0) return;
+    bool on_plane = pml.integer(ml::kGroundPlane) != 0;
+    auto normal = pml.vec3(ml::kGroundNormal);
+    if (pm.ps.integer(ps::kGroundEntityNum) == pmove::kEntityNone) {
+        ProneQuery q;
+        q.pass_entity = pm.ps.integer(ps::kClientNum);
+        q.origin = pm.ps.vec3(ps::kOrigin);
+        q.size = pm.ps.real(ps::kProneCheckSize);
+        q.height = 30.0f;
+        q.yaw = pm.ps.real(ps::kProneDirection);
+        q.already_prone = true;
+        q.on_ground = false;
+        if (on_plane) q.ground_normal = normal;
+        q.handler = pm.bytes[pmove::pm::kHandler];
+        q.check_type = 0;
+        q.feet_distance = 66.0f;
+        float h = pm.ps.real(ps::kProneTorsoHeight), t = pm.ps.real(ps::kProneTorsoPitch), w = pm.ps.real(ps::kProneWaistPitch);
+        bool fits = check_prone(q, ProneAngles{&h, &t, &w}, host);
+        pm.ps.set_real(ps::kProneTorsoHeight, h);
+        pm.ps.set_real(ps::kProneTorsoPitch, t);
+        pm.ps.set_real(ps::kProneWaistPitch, w);
+        if (!fits) {
+            pmove::add_predictable_event(kEvStanceForceCrouch, 0, pm.ps);
+            pm.ps.set_integer(ps::kPmFlags, pm.ps.pm_flags() | pmove::pm_flags::kProneViewTurned);
+        }
+    } else if (on_plane && below(l(normal[2]), l(0.7f))) {  // (only below is too steep; NaN isn't)
+        pmove::add_predictable_event(kEvStanceForceCrouch, 0, pm.ps);
+    }
+    float frame_time = pml.frame_time();
+    const std::pair<std::size_t, std::size_t> pitches[] = {{ps::kProneDirectionPitch, ps::kProneDirection},
+                                                           {ps::kPronePitchBase, ps::kViewAngles + 4}};
+    for (auto [at, yaw_at] : pitches) {
+        float target = on_plane ? shared::math::pitch_for_yaw_on_normal(pm.ps.real(yaw_at), normal) : 0.0f;
+        float delta = shared::math::angle_normalize180((l(target) - l(pm.ps.real(at))).store());
+        if (l(delta).v == 0.0) continue;  // (only 0 stays; NaN turns)
+        float step = (l(frame_time) * l(70.0f)).store();
+        float size = l(delta).abs().store();
+        F24 change = l(delta);
+        if (above(l(size), l(step))) {  // (only above is limited; NaN isn't)
+            std::uint32_t delta_bits;
+            std::memcpy(&delta_bits, &delta, 4);
+            std::int32_t sign = static_cast<std::int32_t>(delta_bits) < 0 ? -1 : 1;
+            change = l(F24::integer(sign).store()) * l(step);
+        }
+        pm.ps.set_real(at, shared::math::angle_wrap180((change + l(pm.ps.real(at))).store()));
+    }
 }
 
 }  // namespace iw_pc::game::prone

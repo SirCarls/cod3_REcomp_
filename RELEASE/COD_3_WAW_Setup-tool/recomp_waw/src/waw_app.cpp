@@ -21,6 +21,7 @@
 #include "waw_f2.h"     // [f2-menus] the F2 settings window
 #include "waw_keys.h"   // [f2-menus] keys the PC way: the game's own binds during gameplay
 #include "waw_mouse.h"  // [f2-menus] mouse look and the keyboard pad's defaults
+#include "waw_rumble.h"  // [input-port] no vibration on controller 1 while the keyboard and mouse are in use
 #include "waw_shots.h"
 #include "waw_native_side.h"  // [waw-decomp-waw] 2026-11-11 the native renderer's check pictures
 #include "waw_native_window.h"  // [waw-decomp-waw] 2026-11-11 round 5: waw_native_vulkan
@@ -79,7 +80,9 @@ void WawApp::OnConfigurePaths(rex::PathConfig& paths) {
     const auto user_dir = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
     std::error_code ec;
     std::filesystem::create_directories(user_dir / "logs", ec);
-    rex::cvar::SetFlagByName("log_file", (user_dir / "logs" / "waw.log").generic_string());
+    // [rexglue-native-platform] 2026-11-16: UTF-8 (generic_string() is the ANSI code page on Windows and throws for a
+    // character outside it, so a user folder named outside it stopped the program at its start)
+    rex::cvar::SetFlagByName("log_file", [](const std::filesystem::path& p) { const auto u8 = p.generic_u8string(); return std::string(u8.begin(), u8.end()); }(user_dir / "logs" / "waw.log"));
   }
 }
 
@@ -124,7 +127,8 @@ void WawApp::OnPostSetup() {
   // Debug screenshots (waw_shots.h): the game's own picture, read back from the GPU emulation's output.
   const auto user_dir = rex::cvar::GetFlagByName("user_data_root").empty()
                             ? root_dir_ / "userdata"
-                            : std::filesystem::path(rex::cvar::GetFlagByName("user_data_root"));
+                            : [](const std::string& v) { return std::filesystem::path(std::u8string(v.begin(), v.end())); }(  // [rexglue-native-platform] 2026-11-16 UTF-8 text
+                                  rex::cvar::GetFlagByName("user_data_root"));
   waw::shots::Start(user_dir / "logs" / "screenshots", [this](rex::ui::RawImage& image) {
     auto* graphics = runtime() ? runtime()->graphics_system() : nullptr;
     auto* presenter = graphics ? graphics->presenter() : nullptr;
@@ -153,6 +157,10 @@ void WawApp::OnPostSetup() {
     win->AddInputListener(&g_mouse_listener, 199);
     g_keys_listener.window = win;                   // [f2-menus] below the mouse look, above the SDK's driver
     win->AddInputListener(&g_keys_listener, 198);  // [f2-menus]
+    // [input-port] 2026-11-24 above both, watching only: which device is in use, for controller 1's vibration
+    win->AddInputListener(waw::rumble::Watcher(), 250);
+    // [waw-decomp/waw2] 2026-11-24 round 9: the window's size in pixels, for the native picture's size
+    waw::native::WatchWindow(win);
   }
 
   // [f2-menus] While the F2 settings window is open the game gets no input: no keys, mouse or controller.
@@ -177,6 +185,8 @@ void WawApp::OnShutdown() {
   waw::f2ui::Detach();  // [f2-menus] saves what changed; before the ImGui drawer goes
   if (auto* win = window()) win->RemoveInputListener(&g_mouse_listener);  // [f2-menus]
   if (auto* win = window()) win->RemoveInputListener(&g_keys_listener);   // [f2-menus]
+  if (auto* win = window()) win->RemoveInputListener(waw::rumble::Watcher());  // [input-port]
+  if (auto* win = window()) waw::native::UnwatchWindow(win);  // [waw-decomp/waw2] round 9
   waw::native::SideStop();  // [waw-decomp-waw] 2026-11-11 before the presenter goes
   waw::shots::Stop();  // before the GPU emulation's presenter goes
 }

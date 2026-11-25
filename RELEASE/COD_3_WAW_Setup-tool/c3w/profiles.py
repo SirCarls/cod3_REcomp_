@@ -47,6 +47,7 @@ SETTING_TYPES: Dict[str, type] = {
     # these a saved profile left them out ("Left out an unknown setting: fh_source")
     "fh_source": str, "fh_fullscreen": bool, "fh_vsync": bool, "fh_size": str, "fh_language": str,
     "fh_skip_films": bool,
+    "fh_hd_textures": bool, "fh_hd_build": bool,   # [setup-layout] 2026-11-24 the HD pack (c3w/disc_hd.py)
 }
 # [waw-decomp] World at War, Call of Duty 2 and Call of Duty 4 on Call of Duty 3's SDK (c3w/x360_ports.py): each
 # one's disc and its Play page's choices (x360_ports.PlayOptions.to_settings).

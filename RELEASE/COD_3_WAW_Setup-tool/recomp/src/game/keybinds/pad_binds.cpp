@@ -24,6 +24,7 @@
 #include "game/keybinds/model.h"
 #include "game/keybinds/pad_model.h"
 #include "game/program.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 REXCVAR_DEFINE_STRING(cod3_binds_pad_p1, "", "cod3/Binds",
                       "Player 1's controller buttons that differ from the controller layout, up to three "
@@ -66,8 +67,9 @@ namespace kb = addr::keybinds;
 //     it copies the text and refreshes the pad poll's cached command.
 //   Cbuf_ExecuteText(r3 when, r4 text): 0 = now (Cmd_ExecuteString).
 #if defined(COD3_MP)
-constexpr uint32_t kKeySetBinding = 0x82528550;
-constexpr uint32_t kCbufExecuteText = 0x824A2900;
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kKeySetBinding = A(0x82528550);
+constexpr uint32_t kCbufExecuteText = A(0x824A2900);
 #else
 constexpr uint32_t kKeySetBinding = 0x8250CC88;
 constexpr uint32_t kCbufExecuteText = 0x8247E498;

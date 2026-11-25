@@ -1,6 +1,7 @@
 // waw - Call of Duty: World at War (Xbox 360) static recompilation: a converted PC mod's zones, loaded after a level's.
 // [acct2-mods] 2026-11-14, the PC-mod converter's port side (dev/agents/acct2-mods/PLAN.md section 6; it carries on
-// map-compat's plan 4.1.2). The owner, 2026-11-14 17:26: "start working on a conversion tool for PC mods to our copies".
+// map-compat's plan 4.1.2). The owner, 2026-11-14 17:26: "start working on a conversion tool for PC mods to our
+// copies".
 //
 // What it does, with waw_mod set (empty by default: then every hook here only calls the game's own function):
 //   - the mod's converted folder, <mods root>/<waw_mod>/360/, becomes a read-only device of its own, "mods:";
@@ -16,8 +17,8 @@
 //   0x822BC6C8  SV_SpawnServer: builds {level, 2, 2} and calls DB_LoadXAssets with that one zone.
 //   0x82158A68  DB_LoadXAssets(r3 the zones: 12 bytes each, {name, alloc flags, free flags}; r4 how many; r5 wait).
 //               Ten callers; the one in SV_SpawnServer is told apart by a mark set around SV_SpawnServer.
-//   0x821566D8  DB_TryLoadXFileInternal(r3 the zone's name, r4 its flags): opens "%s\%s.ff" (0x820133E8) with the folder
-//               0x8227F2C8 gives, and copies the name; a zone file it can't open is Com_Error.
+//   0x821566D8  DB_TryLoadXFileInternal(r3 the zone's name, r4 its flags): opens "%s\%s.ff" (0x820133E8) with the
+//               folder 0x8227F2C8 gives, and copies the name; a zone file it can't open is Com_Error.
 //   0x8227F2C8  the folder the game's files are read from (returns a constant string; twelve callers).
 //   0x82158A38  DB_SyncXAssets: the loading screen kept drawn while every queued zone finishes loading, then
 //               DB_PostLoadXZone 0x82158890 links the assets that take another zone's place ("Redundant asset - %s").
@@ -29,6 +30,12 @@
 // before it loads (0x822BC840).
 // Scripts are read from zones only (Scr_AddSourceBuffer 0x82318970, through DB_FindXAssetHeader), so a mod's scripts
 // reach the game this way.
+//
+// 2026-11-14 22:25, with map-compat's waw_addons.cpp (the map packs; taken over on the owner's word): its hook at
+// SV_SpawnServer's call (0x822BCAD8) hands DB_LoadXAssets two entries for a pack's zombie map, the level's zone and
+// its "<map>_patch" zone. That list is taken as it comes, the mod's zones go after it, and the wait is done whenever
+// the level has more than its one zone: map-compat's first run (11-11 15:17) compiled each map's scripts while its
+// patch zone was still loading ("unknown function"), the same order problem as the mod's zone had here.
 
 #include <algorithm>
 #include <atomic>
@@ -68,6 +75,7 @@ namespace {
 constexpr uint32_t kZoneInfoSize = 12;      // {name, alloc flags, free flags}
 constexpr uint32_t kLevelFlags = 2;         // SV_SpawnServer's level zone: alloc 2, free 2
 constexpr size_t kMaxZones = 8;
+constexpr uint32_t kLevelZonesMax = 2;      // the level's own zone, and its pack's "<map>_patch" zone (waw_addons.cpp)
 constexpr const char* kDevice = "\\Device\\Acct2Mods";
 constexpr const char* kLink = "mods:";
 
@@ -118,11 +126,23 @@ std::vector<std::string> SplitZones(const std::string& text) {
   return out;
 }
 
+// [waw-decomp/mods1] 2026-11-23: a setting's text is UTF-8 on every platform (the SDK converts the Windows command
+// line to UTF-8), and std::filesystem::path(std::string) reads it in the ANSI code page on Windows, so a folder with
+// any character Windows allows went wrong there. Paths are made from UTF-8 and logged as UTF-8 on both platforms.
+std::filesystem::path PathFromUtf8(const std::string& text) {
+  return std::filesystem::path(std::u8string(text.begin(), text.end()));
+}
+
+std::string PathToUtf8(const std::filesystem::path& path) {
+  const std::u8string text = path.u8string();
+  return std::string(text.begin(), text.end());
+}
+
 std::filesystem::path ModsRoot() {
   const std::string root = REXCVAR_GET(waw_mods_root);
-  if (!root.empty()) return root;
+  if (!root.empty()) return PathFromUtf8(root);
   const std::string user = rex::cvar::GetFlagByName("user_data_root");
-  if (!user.empty()) return std::filesystem::path(user) / "mods";
+  if (!user.empty()) return PathFromUtf8(user) / "mods";
   return rex::filesystem::GetExecutableFolder() / "userdata" / "mods";
 }
 
@@ -142,20 +162,20 @@ void SetUp(uint8_t* base) {
     REXLOG_WARN("waw: mod \"{}\" left out: the kernel isn't up", mod);
     return;
   }
-  const std::filesystem::path folder = ModsRoot() / mod / "360";
+  const std::filesystem::path folder = ModsRoot() / PathFromUtf8(mod) / "360";
   std::error_code ec;
   if (!std::filesystem::is_directory(folder, ec)) {
-    REXLOG_WARN("waw: mod \"{}\" left out: no folder {}", mod, folder.string());
+    REXLOG_WARN("waw: mod \"{}\" left out: no folder {}", mod, PathToUtf8(folder));
     return;
   }
   for (const std::string& zone : SplitZones(REXCVAR_GET(waw_mod_zones))) {
-    if (std::filesystem::is_regular_file(folder / (zone + ".ff"), ec))
+    if (std::filesystem::is_regular_file(folder / PathFromUtf8(zone + ".ff"), ec))
       g_state.zones.push_back(zone);
     else
       REXLOG_WARN("waw: mod \"{}\": zone {} left out, no {}.ff in its folder", mod, zone, zone);
   }
   if (g_state.zones.empty()) {
-    REXLOG_WARN("waw: mod \"{}\" left out: none of its zones is in {}", mod, folder.string());
+    REXLOG_WARN("waw: mod \"{}\" left out: none of its zones is in {}", mod, PathToUtf8(folder));
     return;
   }
   auto device = std::make_unique<rex::filesystem::HostPathDevice>(kDevice, folder, /*read_only=*/true);
@@ -172,7 +192,7 @@ void SetUp(uint8_t* base) {
   };
   g_state.folder = guest_copy(kLink);
   for (const std::string& zone : g_state.zones) g_state.names.push_back(guest_copy(zone));
-  g_state.list = memory->SystemHeapAlloc(kZoneInfoSize * static_cast<uint32_t>(1 + g_state.zones.size()));
+  g_state.list = memory->SystemHeapAlloc(kZoneInfoSize * static_cast<uint32_t>(kLevelZonesMax + g_state.zones.size()));
   const bool copied = g_state.folder && g_state.list &&
                       std::none_of(g_state.names.begin(), g_state.names.end(), [](uint32_t a) { return a == 0; });
   if (!copied) {
@@ -183,7 +203,7 @@ void SetUp(uint8_t* base) {
   g_state.active = true;
   std::string list;
   for (const std::string& zone : g_state.zones) list += (list.empty() ? "" : ", ") + zone;
-  REXLOG_INFO("waw: mod \"{}\": zones {} after each level's, from {}", mod, list, folder.string());
+  REXLOG_INFO("waw: mod \"{}\": zones {} after each level's, from {}", mod, list, PathToUtf8(folder));
 }
 
 bool Active(uint8_t* base) {
@@ -221,36 +241,46 @@ void SyncXAssets(PPCContext& ctx, uint8_t* base) {
 }  // namespace
 
 REX_EXTERN(__imp__sub_82158A68);
-REX_HOOK_RAW(sub_82158A68) {  // DB_LoadXAssets: the level's zone, then the mod's
+REX_HOOK_RAW(sub_82158A68) {  // DB_LoadXAssets: the level's zone (and its patch zone), then the mod's; then the wait
   const uint32_t zones = ctx.r3.u32;
-  const bool level = g_spawning.load() > 0 && ctx.r4.u32 == 1 && zones &&
+  const uint32_t count = ctx.r4.u32;
+  // SV_SpawnServer's level load: {level, 2, 2}, alone or with the patch zone waw_addons.cpp put after it
+  const bool level = g_spawning.load() > 0 && count >= 1 && count <= kLevelZonesMax && zones &&
                      LoadU32(base, zones + 4) == kLevelFlags && LoadU32(base, zones + 8) == kLevelFlags;
-  if (!level || !Active(base)) {
+  const bool mod = level && Active(base);
+  const bool patch = level && count > 1;
+  if (!mod && !patch) {
     __imp__sub_82158A68(ctx, base);
     return;
   }
-  const uint32_t list = g_state.list;
-  std::memcpy(base + list, base + zones, kZoneInfoSize);  // the level's own entry first, as it was
-  for (size_t i = 0; i < g_state.names.size(); ++i) {
-    const uint32_t entry = list + kZoneInfoSize * static_cast<uint32_t>(1 + i);
-    StoreU32(base, entry + 0, g_state.names[i]);
-    StoreU32(base, entry + 4, kLevelFlags);
-    StoreU32(base, entry + 8, kLevelFlags);
+  const std::string name = GuestString(base, LoadU32(base, zones));
+  if (mod) {
+    const uint32_t list = g_state.list;
+    std::memcpy(base + list, base + zones, kZoneInfoSize * count);  // the level's own entries first, as they were
+    for (size_t i = 0; i < g_state.names.size(); ++i) {
+      const uint32_t entry = list + kZoneInfoSize * static_cast<uint32_t>(count + i);
+      StoreU32(base, entry + 0, g_state.names[i]);
+      StoreU32(base, entry + 4, kLevelFlags);
+      StoreU32(base, entry + 8, kLevelFlags);
+    }
+    REXLOG_INFO("waw: level {}: {} mod zone(s) after it", name, g_state.names.size());
+    ctx.r3.u64 = list;
+    ctx.r4.u64 = count + g_state.names.size();
   }
-  REXLOG_INFO("waw: level {}: {} mod zone(s) after it", GuestString(base, LoadU32(base, zones)), g_state.names.size());
-  ctx.r3.u64 = list;
-  ctx.r4.u64 = 1 + g_state.names.size();
   __imp__sub_82158A68(ctx, base);
-  // Wait for the level's zone and the mod's before SV_SpawnServer goes on to compile the level's scripts.
+  // Wait for all of the level's zones before SV_SpawnServer goes on to compile the level's scripts.
   const auto started = std::chrono::steady_clock::now();
   SyncXAssets(ctx, base);
-  REXLOG_INFO("waw: level loaded with its mod zone(s), {} ms", std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                                  std::chrono::steady_clock::now() - started)
-                                                                  .count());
+  const auto ms =
+      std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+  const char* what = mod && patch ? "patch zone and mod zone(s)" : mod ? "mod zone(s)" : "patch zone";
+  REXLOG_INFO("waw: level loaded with its {}, {} ms", what, ms);
 }
 
 REX_EXTERN(__imp__sub_821566D8);
 REX_HOOK_RAW(sub_821566D8) {  // DB_TryLoadXFileInternal: the mod's zones are opened from "mods:"
+  // [checkins 2026-11-24] kept from the project's file: mods2's tree (from acct2-mods' T7 merge) had lost these two
+  // hooks, which left IsModZone and t_from_mods unused and a converted mod's zones unopenable
   const bool ours = g_state.active && IsModZone(base, ctx.r3.u32);
   t_from_mods = ours;
   __imp__sub_821566D8(ctx, base);

@@ -32,7 +32,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from . import binaries, cross, deps, game_settings
+from . import binaries, cross, deps, game_settings, port_hd, rippers, upscale
 from .common import (IS_LINUX, IS_WINDOWS, Log, SetupError, copy_tree, dir_size, exe_name, free_space,
                      host_triple, human, is_within, overlaps, read_json, resolved, safe_rmtree, sha1_file,
                      write_json)
@@ -232,6 +232,12 @@ class PortPipeline(Pipeline):
         self.programs: List[Program] = []
         self.exe_rels: Dict[str, Dict[str, str]] = {}   # "linux"/"windows" -> program -> path in <output>/<game>
         self.files_rel: Dict[str, List[str]] = {}
+        # [setup-layout] 2026-11-24 HD textures (c3w/port_hd.py): with "Upscale textures with waifu2x" on and
+        # something to make it from (World at War: its disc's fastfiles; the others: textures saved by the game),
+        # the build also makes the game's HD pack. The flag is taken from the options as given: the base class
+        # above was handed upscale_textures=False so none of Call of Duty 3's texture steps run here.
+        self.hd = bool(opts.upscale_textures) and port_hd.has_source(p.id, self.root)
+        self.rip: Optional[Path] = None
 
     # Call of Duty 3's pipeline asks these.
     @property
@@ -240,7 +246,20 @@ class PortPipeline(Pipeline):
 
     @property
     def _needs_rust(self) -> bool:
-        return False
+        # Only the HD textures need the ripper, and only when none that fits is at hand (one an earlier Call of
+        # Duty 3 build left in <output>/tools, or a release download's prebuilt one).
+        return getattr(self, "hd", False) and not self._output_rip() and \
+            rippers.needs_build(self.tool_root, self.runner)
+
+    def _output_rip(self) -> Optional[Path]:
+        rip = self.out / "tools" / exe_name("rip")
+        return rip if rip.is_file() and rippers.works(rip, self.runner) else None
+
+    def install_plan(self, recomp: bool) -> list:
+        items = super().install_plan(recomp)
+        if self.hd and not deps._portable_ok(self.tools_dir, upscale.portable_key()):
+            items.append(deps.tool_install(upscale.portable_key(), self.work_real / "tools"))   # waifu2x
+        return items
 
     @property
     def wsl_linux(self) -> bool:
@@ -259,6 +278,8 @@ class PortPipeline(Pipeline):
             steps.append(Step(f"Recompiling {name}", self.port_build, "recompile"))
         if self.cross_windows:
             steps.append(Step(f"{name}: the Windows version", self.port_windows, "windows"))
+        if self.hd:
+            steps.append(Step(f"{name}: HD textures", self.port_hd_textures, "hd"))
         steps += [Step("Finishing", self.port_finish, "finish"), Step("Cleaning up", self.cleanup, "cleanup")]
         return steps
 
@@ -365,13 +386,17 @@ class PortPipeline(Pipeline):
         return self.port_proj / project if project else self.port_proj
 
     def _extra_args(self) -> List[str]:
-        """Call of Duty 3's recomp/src for the ports that build its test pad from there."""
+        """inputkit/ for every port; Call of Duty 3's recomp/src for the ports that build its test pad from there."""
         # [waw-decomp] 2026-11-16 (rc2-paths): through the project folder's plain link (common.project_link) when its
         # path has characters a build tool chokes on: the port's CMakeLists.txt lists sources under it unquoted, so a
         # ";" in a folder's name split them
         tool_root = project_link() / self.tool_root.name
-        return [f"-DCOD3_RECOMP_SRC={(tool_root / 'recomp' / 'src').as_posix()}"] if self.port.uses_cod3_src \
-            else []
+        # [input-port] 2026-11-24: the project's inputkit/ (the input code every game shares), which each port's mouse
+        # code needs. The port's copy in the work folder can't find it two folders up as a build in place does.
+        args = [f"-DINPUTKIT_DIR={(project_link() / 'inputkit').as_posix()}"]
+        if self.port.uses_cod3_src:
+            args.append(f"-DCOD3_RECOMP_SRC={(tool_root / 'recomp' / 'src').as_posix()}")
+        return args
 
     def _projects(self) -> List[Tuple[str, List[Program]]]:
         """(project, its programs) for the programs this disc builds; cod2mp builds inside the port's own."""
@@ -387,7 +412,7 @@ class PortPipeline(Pipeline):
         return [self.tc.cmake, "-S", src, "-B", build, "-G", "Ninja", "-DCMAKE_BUILD_TYPE=Release",
                 f"-DCMAKE_C_COMPILER={self.tc.cc}", f"-DCMAKE_CXX_COMPILER={self.tc.cxx}",
                 f"-DCMAKE_MAKE_PROGRAM={self.tc.ninja}", f"-DCMAKE_PREFIX_PATH={self.sdk_install}",
-                *self._extra_args()]
+                *self._extra_args(), *self._speed_args(build)]   # [waw-decomp/speed1] 2026-11-23 (Pipeline._speed_args)
 
     def _translate_and_compile(self, configure: Callable[[Path, Path], list], build_name: str, label: str) -> \
             Dict[str, Path]:
@@ -453,7 +478,9 @@ class PortPipeline(Pipeline):
         def configure(src: Path, build: Path) -> list:
             return [self.tc.cmake, "-S", src, "-B", build, "-G", "Ninja", f"-DCMAKE_MAKE_PROGRAM={self.tc.ninja}",
                     *cross.game_configure_args(toolchain, sdk_win, self.sdk_install / "bin" / "rexglue"),
-                    *self._extra_args()]
+                    *self._extra_args(),
+                    *self._speed_args(build, [toolchain_bin / (cross.TOOLCHAIN_TRIPLE + "-clang")],
+                                      native_link=False)]   # [waw-decomp/speed1] 2026-11-23
         exes = self._translate_and_compile(configure, "mingw", "Windows")
         search = sorted({e.parent for e in exes.values()}) + [sdk_win / "bin", cross.runtime_dll_folder(toolchain_bin)]
         start = list(exes.values()) + sorted(d for e in exes.values() for d in e.parent.glob("*.dll"))
@@ -480,6 +507,31 @@ class PortPipeline(Pipeline):
         self.log.info(f"{self.port.name} ({system}): " + ", ".join(f.name for f in files))
 
     # ------------------------------------------------------------------ 4. finish
+    # ------------------------------------------------------------------ 4. HD textures
+    def port_hd_textures(self) -> None:
+        """Optional, as Call of Duty 3's upscaling is: a failure is reported and the build goes on; the game then
+        uses an earlier pack, if any, or its own textures. Only Cancel stops it."""
+        try:
+            rip = self._output_rip()
+            if not rip:
+                assert self.tc
+                rip = rippers.install_copy(rippers.get_rip(self.tool_root, self.work / "rust-target",
+                                                           self.tc.cargo, self.o.jobs, self.runner, self.log,
+                                                           env=self.tc.env), self.out)
+            tool = deps.fetch_portable(upscale.portable_key(), self.tools_dir, self.runner, self.log, self.cancel)
+            settings = upscale.Settings(self.o.upscale_model, self.o.upscale_noise, self.o.upscale_scale)
+            count = port_hd.build(rip, self.root, tool, self.work / "upscale", settings, self.o.jobs, self.runner,
+                                  self.log, self.cancel, port_id=self.port.id)
+        except (SetupError, OSError) as e:
+            if self.cancel.is_set():
+                raise
+            earlier = " The pack from an earlier build stays in use." if port_hd.pack_ready(self.root) else ""
+            self.log.warn(f"{self.port.name}'s HD textures weren't made: {e}.{earlier} The game is not affected.")
+            return
+        if count is not None:
+            self.log.info(f"HD texture pack ready: {count} textures in {port_hd.pack_dir(self.root)}. The game "
+                          "uses them while \"HD textures\" is on (its Play page).")
+
     def port_finish(self) -> None:
         p = self.port
         (self.root / "userdata").mkdir(exist_ok=True)
@@ -548,6 +600,10 @@ class PlayOptions:
     fov: float = 0.0             # 0 = the game's own
     max_fps: int = -1            # -1 = the port's own default
     graphics_api: str = "auto"   # Windows
+    # [setup-layout] 2026-11-24 c3w/port_hd.py: the HD pack when there is one, and saving the textures it's made from
+    hd_textures: bool = True
+    capture_textures: bool = False
+    hd_build: bool = True        # make the pack at Build when textures are saved (kept here with the other two)
     extra: List[str] = field(default_factory=list)
 
     def problems(self, p: Port) -> List[str]:
@@ -583,7 +639,8 @@ class PlayOptions:
         k = f"port_{p.id}_"
         return {k + "program": self.program, k + "fullscreen": self.fullscreen, k + "mute": self.mute,
                 k + "skip_films": self.skip_films, k + "fov": int(round(self.fov)), k + "max_fps": self.max_fps,
-                k + "graphics_api": self.graphics_api}
+                k + "graphics_api": self.graphics_api, k + "hd_textures": self.hd_textures,
+                k + "capture_textures": self.capture_textures, k + "hd_build": self.hd_build}
 
     @classmethod
     def from_settings(cls, p: Port, s: dict) -> "PlayOptions":
@@ -591,7 +648,7 @@ class PlayOptions:
         o = cls()
         if isinstance(s.get(k + "program"), str):
             o.program = s[k + "program"]
-        for name in ("fullscreen", "mute", "skip_films"):
+        for name in ("fullscreen", "mute", "skip_films", "hd_textures", "capture_textures", "hd_build"):
             if isinstance(s.get(k + name), bool):
                 setattr(o, name, s[k + name])
         if isinstance(s.get(k + "fov"), (int, float)) and not isinstance(s.get(k + "fov"), bool):
@@ -672,7 +729,9 @@ def play_command(p: Port, output: Path, opts: PlayOptions) -> Tuple[Optional[Lis
     problems = opts.problems(p)
     if problems:
         return None, "; ".join(problems) + "."
-    return [str(exe), *opts.arguments(p)], ""
+    multiplayer = p.program(prog).label == "Multiplayer" if prog in [q.name for q in p.programs] else False
+    hd = port_hd.arguments(Path(output) / p.subdir, opts.hd_textures, opts.capture_textures, multiplayer)
+    return [str(exe), *opts.arguments(p), *hd], ""
 
 
 def last_build(p: Port, output: Path) -> str:

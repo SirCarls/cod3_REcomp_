@@ -54,6 +54,7 @@ set(COD3_SOURCES
     src/game/aim_assist.cpp
     src/game/cutscene_skip.cpp
     src/game/use_hold.cpp  # [acct2-decomp] how long Use is held, and the hints' words (cod3_use_hold_ms)
+    src/game/binoc_timing.cpp  # [rexglue-native thread2] 2026-11-24 the binoculars' wait at any frame rate (debug probe)
     src/game/diagnostics.cpp
     src/game/cheat_guard.cpp
     src/game/cheat_watch.cpp
@@ -89,7 +90,6 @@ set(COD3_SOURCES
     src/game/job_wake.cpp
     src/game/machine_profile.cpp
     src/game/keybinds/binds.cpp  # [keybinds] the keyboard's own actions (campaign only)
-    src/game/keybinds/keys.cpp  # [keybinds]
     src/game/keybinds/model.cpp  # [keybinds]
     src/game/keybinds/pad_model.cpp  # [acct2-main] the controller's own binds per player
     src/game/keybinds/pad_binds.cpp  # [acct2-main]
@@ -127,6 +127,9 @@ set(COD3_SOURCES
     src/game/ngl_census.cpp  # [acct2-bro] cod3_debug_ngl_census: what NGL draws a frame, for the native renderer at NGL's level (logging only; campaign first)
     src/game/ngl_side.cpp  # [acct2-bro] cod3_debug_ngl_side: the frame's 2D drawn by ngl_vk beside the GPU emulation and saved next to the game's screenshot (a check; campaign first)
     src/game/ngl_camo.cpp  # [acct2-bro] 2026-11-22 Camo lane: camos on the first-person guns (native)
+    src/game/ngl_arms.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
+    src/game/ngl_arms_rig.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
+    src/game/ngl_gloves.cpp  # [acct2-bro] 2026-11-23 Camo lane: the gloves
     src/game/post_effects.cpp  # [post-effects] depth of field and motion blur on or off, in both programs
     src/game/relaunch.cpp
     src/game/print_hooks.cpp
@@ -177,6 +180,10 @@ set(COD3_SOURCES
     src/ui/camo_tab.cpp  # [acct2-bro] 2026-11-22 Camo lane: F2 > Game > Camos, per player and per gun
     src/ui/theme.cpp
     src/ui/waw_dvars.cpp
+    src/menukit/menukit_data.cpp  # [waw-decomp/menus2] 2026-11-23 menukit, the native menus' core every port shares
+    src/menukit/menukit_nav.cpp  # [waw-decomp/menus2]
+    src/ui/menus/cod3_menukit.cpp  # [waw-decomp/menus2] native menus: CoD3's adapter, Pause > Options
+    src/ui/menus/cod3_menukit_draw.cpp  # [waw-decomp/menus2] native menus: both looks
     src/test_input.cpp
 )
 
@@ -197,6 +204,21 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/game/prompt_text_kbm.inc.in"
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/config/prompt_text_kbm.tsv")
 target_include_directories(cod3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/prompt_text")
 
+# [waw-decomp/menus2] 2026-11-23 The native menus' file (assets/menus/cod3/pause_options.toml, beside the code that
+# reads it), built into the game as cod3_menus_data.inc (ui/menus/cod3_menukit.cpp) and copied beside the
+# program as menus/cod3/pause_options.toml (read first, so it can be changed without a build). An edit
+# of it runs the configure step again.
+set(COD3_MENUS_TOML "${CMAKE_CURRENT_SOURCE_DIR}/assets/menus/cod3/pause_options.toml")
+file(READ "${COD3_MENUS_TOML}" COD3_MENU_PAUSE_OPTIONS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${COD3_MENUS_TOML}")
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/src/ui/menus/cod3_menus_data.inc.in"
+               "${CMAKE_CURRENT_BINARY_DIR}/menus_data/cod3_menus_data.inc" @ONLY)
+add_custom_command(TARGET cod3 POST_BUILD
+                   COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:cod3>/menus/cod3"
+                   COMMAND ${CMAKE_COMMAND} -E copy_if_different "${COD3_MENUS_TOML}"
+                           "$<TARGET_FILE_DIR:cod3>/menus/cod3/pause_options.toml")
+target_include_directories(cod3 PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/menus_data")
+
 # GPU_PLUGINS stages librexgpu-xenos next to the executable (Vulkan / D3D12
 # Xenos emulation). It is loaded at startup; see Cod3App::OnPreSetup.
 rexglue_setup_target(cod3 GPU_PLUGINS xenos)
@@ -206,101 +228,74 @@ rexglue_setup_target(cod3 GPU_PLUGINS xenos)
 include(cmake/cod3_render.cmake)
 cod3_render_link(cod3)
 
-# [acct2-bro] ngl_vk (the project's ngl_vk/ folder, the Vulkan renderer Big Red One's port draws with), for the
-# native renderer at NGL's level (dev/agents/acct2-bro/COD3-NGL-PLAN.md). Only the cod3_debug_ngl_side check uses it,
-# off by default; Linux builds with the Vulkan headers and glslc only, the others build without it (the check then
-# only counts). COD3_NGL_VK_DIR defaults to engine/'s neighbor, or the folder two up from this one.
-# [rexglue-native] 2026-11-09: Windows builds have it too (below); the setup tool gives both builds COD3_ENGINE_DIR.
-set(COD3_NGL_VK_DIR "" CACHE PATH "The project's ngl_vk/ folder (the native renderer's Vulkan library)")
-set(_cod3_ngl_vk "${COD3_NGL_VK_DIR}")
-if(NOT _cod3_ngl_vk AND COD3_ENGINE_DIR AND EXISTS "${COD3_ENGINE_DIR}/../ngl_vk/CMakeLists.txt")
-    get_filename_component(_cod3_ngl_vk "${COD3_ENGINE_DIR}/../ngl_vk" ABSOLUTE)
-endif()
-if(NOT _cod3_ngl_vk AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk/CMakeLists.txt")
-    get_filename_component(_cod3_ngl_vk "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk" ABSOLUTE)
-endif()
-# [rexglue-native] 2026-11-09: Windows too. ngl_vk opens the Vulkan loader when it starts, so it needs only the Vulkan
-# headers and glslc (which runs on the build PC). The Windows build made on Linux takes the headers from its
-# CMAKE_PREFIX_PATH, the SDK's install (rexglue-sdk/out/install/mingw/include/vulkan), never the build PC's own.
-# [rexglue-native] 2026-11-10 (2.40.0): Windows builds were without ngl_vk: the release candidate's Windows game drew
-# the forest's world white under Wine (owner 13:20: "forest within wine looks bad now"; the guest's 0xE0000000 view
-# is 4 KB further on in the host on Windows, WIN-PORT.md). [rexglue-native] 2026-11-11 (2.41.0): found and fixed, so
-# Windows builds take ngl_vk again (the Windows probes w13/w14 drew the native picture under Wine on four levels).
-# cod3_native_vulkan stays off by default; COD3_NGL_VK_WINDOWS=OFF builds the Windows game without ngl_vk.
-option(COD3_NGL_VK_WINDOWS "Build the native renderer (ngl_vk) into the Windows game too" ON)  # [rexglue-native]
-if(_cod3_ngl_vk AND EXISTS "${_cod3_ngl_vk}/CMakeLists.txt" AND (NOT WIN32 OR COD3_NGL_VK_WINDOWS))  # [rexglue-native]
-    if(CMAKE_CROSSCOMPILING)  # [rexglue-native]
-        find_path(NGL_VK_VULKAN_INCLUDE_DIR vulkan/vulkan.h NO_CMAKE_SYSTEM_PATH NO_SYSTEM_ENVIRONMENT_PATH  # [rexglue-native]
-            NO_CMAKE_ENVIRONMENT_PATH)  # [rexglue-native]
-    else()  # [rexglue-native]
-        find_package(Vulkan QUIET)
-        set(NGL_VK_VULKAN_INCLUDE_DIR "${Vulkan_INCLUDE_DIR}")  # [rexglue-native] the headers only (as before: the system's)
-        # [acct2-bro] 2026-11-22 (owner 11-21 23:49): a PC without the Vulkan SDK (the user reports of 11-18 and
-        # 11-21): the SDK's own install (CMAKE_PREFIX_PATH) has the headers, as the cross build above takes them
-        if(NOT NGL_VK_VULKAN_INCLUDE_DIR)  # [acct2-bro] 2026-11-22
-            find_path(COD3_NGL_VK_SDK_HEADERS vulkan/vulkan.h NO_SYSTEM_ENVIRONMENT_PATH)  # [acct2-bro] 2026-11-22
-            set(NGL_VK_VULKAN_INCLUDE_DIR "${COD3_NGL_VK_SDK_HEADERS}")  # [acct2-bro] 2026-11-22
-        endif()  # [acct2-bro] 2026-11-22
-    endif()  # [rexglue-native]
-    find_program(COD3_NGL_VK_GLSLC NAMES glslc HINTS "${Vulkan_GLSLC_EXECUTABLE}")
-    if(NGL_VK_VULKAN_INCLUDE_DIR AND COD3_NGL_VK_GLSLC)  # [rexglue-native] (was Vulkan_FOUND: the loader too)
-        add_subdirectory("${_cod3_ngl_vk}" "${CMAKE_CURRENT_BINARY_DIR}/ngl_vk")
-        target_link_libraries(cod3 PRIVATE ngl_vk)
-        target_compile_definitions(cod3 PRIVATE COD3_NGL_VK=1)
-        message(STATUS "cod3: ngl_vk from ${_cod3_ngl_vk} (cod3_debug_ngl_side)")
-        # ngl_side.cpp shows its picture through the SDK's Vulkan presenter (cod3_ngl_side_show). Those headers
-        # include renderdoc_app.h by its bare name; the SDK keeps it in include/renderdoc (installed) or
-        # thirdparty/renderdoc (source tree), neither on the SDK targets' include path.
-        get_target_property(_cod3_rex_includes rex::runtime INTERFACE_INCLUDE_DIRECTORIES)
-        find_path(COD3_RENDERDOC_INCLUDE_DIR renderdoc_app.h
-            HINTS ${_cod3_rex_includes} "${rexglue_DIR}/../../../include" "${REXSDK_DIR}/thirdparty"
-            PATH_SUFFIXES renderdoc NO_DEFAULT_PATH)
-        if(COD3_RENDERDOC_INCLUDE_DIR)
-            target_include_directories(cod3 PRIVATE "${COD3_RENDERDOC_INCLUDE_DIR}")
-        else()
-            message(WARNING "cod3: the SDK's renderdoc_app.h wasn't found; ngl_side.cpp won't build")
+# [rexglue-native-platform-fix] 2026-11-23: xplat (the project's xplat/ folder, the platform layer every game shares):
+# its CMake modules find ngl_vk below and embed the manifest. The setup tool passes XPLAT_DIR (c3w/native_args.py);
+# building by hand, it is found as ngl_vk/ is: next to engine/, or two up from this folder.
+if(NOT XPLAT_DIR)
+    set(_cod3_xplat_hints "${CMAKE_CURRENT_SOURCE_DIR}/../../xplat")
+    if(COD3_ENGINE_DIR)
+        list(PREPEND _cod3_xplat_hints "${COD3_ENGINE_DIR}/../xplat")
+    endif()
+    foreach(_cod3_xplat IN LISTS _cod3_xplat_hints)
+        if(NOT XPLAT_DIR AND EXISTS "${_cod3_xplat}/cmake/Xplat.cmake")
+            get_filename_component(XPLAT_DIR "${_cod3_xplat}" ABSOLUTE)
         endif()
-    else()
-        message(STATUS "cod3: no ngl_vk (Vulkan headers or glslc missing); cod3_debug_ngl_side only counts")
-        set(_cod3_ngl_vk_off ON)  # [acct2-bro] 2026-11-22
-        set(_cod3_ngl_vk_why "vulkan/vulkan.h (${NGL_VK_VULKAN_INCLUDE_DIR}) or glslc (${COD3_NGL_VK_GLSLC})")
+    endforeach()
+endif()
+if(NOT EXISTS "${XPLAT_DIR}/cmake/Xplat.cmake")
+    message(FATAL_ERROR "cod3: the project's xplat/ folder wasn't found (XPLAT_DIR, or next to engine/). The setup "
+        "tool passes it; building by hand, configure with -DXPLAT_DIR=<project>/xplat.")
+endif()
+include("${XPLAT_DIR}/cmake/Xplat.cmake")
+
+# [input-port] 2026-11-24: inputkit (the project's inputkit/ folder, next to xplat/): the keyboard, controller and
+# mouse code every game shares (key names, the bind models, mouse resampling; game/keybinds and game/mouse_look call
+# it). Found next to xplat/ unless INPUTKIT_DIR is given; cod3mp links the same library (mp/CMakeLists.txt).
+if(NOT INPUTKIT_DIR)
+    get_filename_component(INPUTKIT_DIR "${XPLAT_DIR}/../inputkit" ABSOLUTE)
+endif()
+if(NOT EXISTS "${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+    message(FATAL_ERROR "cod3: the project's inputkit/ folder wasn't found (INPUTKIT_DIR, or next to xplat/). "
+        "Building by hand, configure with -DINPUTKIT_DIR=<project>/inputkit.")
+endif()
+include("${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+inputkit_add_library()
+target_link_libraries(cod3 PRIVATE inputkit::inputkit)
+
+# [acct2-bro] ngl_vk (the project's ngl_vk/ folder, the Vulkan renderer Big Red One's port draws with), for the
+# native renderer at NGL's level (dev/agents/acct2-bro/COD3-NGL-PLAN.md). [rexglue-native] 2026-11-09/11: Windows
+# builds have it too. [acct2-bro] 2026-11-22 (owner 11-21 23:49 "It shouldn't be able to ship without the native
+# renderer."): a game without it is not built; COD3_REQUIRE_NGL_VK=OFF builds without it on purpose (a test build),
+# COD3_NGL_VK_WINDOWS=OFF builds the Windows game without it, and COD3_NGL_VK_BUILT (read by the setup tool) says
+# which it was. [rexglue-native-platform-fix] 2026-11-23: the search (COD3_NGL_VK_DIR, next to engine/, two up),
+# the Vulkan headers (a cross build: CMAKE_PREFIX_PATH only; else FindVulkan, else CMAKE_PREFIX_PATH), glslc (the
+# setup tool's, or glslang through xplat's wrapper) and the stop are xplat_find_ngl_vk's (xplat/cmake/XplatNglVk.cmake,
+# lifted from this file's 11-22 version); the options and COD3_NGL_VK_BUILT keep their names and meaning.
+option(COD3_NGL_VK_WINDOWS "Build the native renderer (ngl_vk) into the Windows game too" ON)  # [rexglue-native]
+option(COD3_REQUIRE_NGL_VK "Stop when the native renderer (ngl_vk) can't be built into the game" ON)  # [acct2-bro]
+if(NOT WIN32 OR COD3_NGL_VK_WINDOWS)
+    set(_cod3_ngl_vk_hints "${CMAKE_CURRENT_SOURCE_DIR}/../../ngl_vk")
+    if(COD3_ENGINE_DIR)
+        list(PREPEND _cod3_ngl_vk_hints "${COD3_ENGINE_DIR}/../ngl_vk")
+    endif()
+    xplat_find_ngl_vk(COD3 TARGET cod3 DEFINE COD3_NGL_VK REQUIRE HINTS ${_cod3_ngl_vk_hints})
+    if(COD3_NGL_VK_BUILT)
+        # ngl_side.cpp shows its picture through the SDK's Vulkan presenter (cod3_ngl_side_show), whose headers
+        # include renderdoc_app.h by its bare name
+        xplat_rex_renderdoc_include(cod3 COD3)
     endif()
 else()
-    message(STATUS "cod3: no ngl_vk (no ngl_vk/ folder found, or Windows); cod3_debug_ngl_side only counts")
-    if(NOT (WIN32 AND NOT COD3_NGL_VK_WINDOWS))  # [acct2-bro] 2026-11-22 (=OFF: asked for, no stop)
-        set(_cod3_ngl_vk_off ON)  # [acct2-bro] 2026-11-22
-        set(_cod3_ngl_vk_why "the project's ngl_vk/ folder (COD3_NGL_VK_DIR)")  # [acct2-bro] 2026-11-22
-    endif()  # [acct2-bro] 2026-11-22
+    message(STATUS "cod3: no ngl_vk (COD3_NGL_VK_WINDOWS=OFF); cod3_debug_ngl_side only counts")
+    set(COD3_NGL_VK_BUILT OFF CACHE INTERNAL "The native renderer (ngl_vk) is in this build")
 endif()
-# [acct2-bro] 2026-11-22 (owner 11-21 23:49 "Please fix the vulkan issue. It shouldn't be able to ship without
-# the native renderer."): a game without the native renderer is not built. Before, a PC without glslc (every Windows PC
-# without the Vulkan SDK) quietly got one. The setup tool gives this build glslc everywhere (Linux: the build
-# packages; Windows: glslc on PATH, else Khronos' glslang through Big Red One's glslc.bat, c3w/pipeline.py
-# _ngl_vk_args) and the headers come from the SDK's install, so a stop here means something is really missing.
-# COD3_REQUIRE_NGL_VK=OFF builds without it on purpose (a test build); COD3_NGL_VK_BUILT says which it was.
-# [acct2-bro] 2026-11-22
-option(COD3_REQUIRE_NGL_VK "Stop when the native renderer (ngl_vk) can't be built into the game" ON)
-if(_cod3_ngl_vk_off AND COD3_REQUIRE_NGL_VK)  # [acct2-bro] 2026-11-22
-    message(FATAL_ERROR "cod3: the native renderer (ngl_vk) can't be built: ${_cod3_ngl_vk_why} wasn't found. "
-        "The setup tool brings both; building by hand, install glslc (Linux: the glslc or shaderc package; "
-        "Windows: the Vulkan SDK) or configure with -DCOD3_REQUIRE_NGL_VK=OFF to build without it.")
-endif()  # [acct2-bro] 2026-11-22
-if(_cod3_ngl_vk_off OR (WIN32 AND NOT COD3_NGL_VK_WINDOWS))  # [acct2-bro] 2026-11-22 (read by the setup tool)
-    set(COD3_NGL_VK_BUILT OFF CACHE INTERNAL "The native renderer (ngl_vk) is in this build")  # [acct2-bro] 2026-11-22
-else()  # [acct2-bro] 2026-11-22
-    set(COD3_NGL_VK_BUILT ON CACHE INTERNAL "The native renderer (ngl_vk) is in this build")  # [acct2-bro] 2026-11-22
-endif()  # [acct2-bro] 2026-11-22
 
-# MinGW (the Windows build made on Linux): the SDK's entry point is wWinMain,
-# which MinGW's C runtime only calls when the program links with -municode.
-if(MINGW)
-    target_link_options(cod3 PRIVATE -municode)
-endif()
-# [rexglue-native-io] 2026-11-16: the application manifest (UTF-8 code page, long paths; src/win/app.manifest).
-if(WIN32)
-    enable_language(RC)  # llvm-mingw's windres (the toolchain file's CMAKE_RC_COMPILER)
-    target_sources(cod3 PRIVATE src/win/app.rc)
-endif()
+# MinGW (the Windows build made on Linux): the SDK's entry point is wWinMain, which MinGW's C runtime only calls
+# when the program links with -municode (WMAIN). [rexglue-native-io] 2026-11-16: the application manifest (UTF-8
+# code page, long paths; src/win/app.manifest). [rexglue-native-platform-fix] 2026-11-23: embedded by
+# xplat_windows_app: MinGW through app.rc as before; the MSVC ABI (clang for x86_64-pc-windows-msvc + lld-link) as
+# the linker's /MANIFESTINPUT, merged into the manifest it makes (app.rc there was a second manifest #1, which
+# lld-link refuses: "duplicate resource", platform audit R2).
+xplat_windows_app(cod3 WMAIN MANIFEST src/win/app.manifest RC src/win/app.rc)
 
 # Windows: timeBeginPeriod (1 ms timer resolution, see Cod3App::OnPreSetup).
 if(WIN32)

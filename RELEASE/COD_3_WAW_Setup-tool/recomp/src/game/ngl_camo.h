@@ -18,6 +18,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>  // [acct2-bro] 2026-11-22 x549: ReadColourLevels
 #include <string>
 #include <string_view>
 #include <vector>
@@ -72,5 +73,14 @@ struct Counts {
   uint32_t waiting = 0;
 };
 Counts GetCounts();
+
+// [acct2-bro] 2026-11-23 Camo lane (the gloves): the folder the camos are read from (data/cod3/camos under the game's
+// folder); the gloves' arms and skins sit beside it (data/cod3/arms, data/cod3/gloves). Any thread.
+std::filesystem::path Folder();
+
+// [acct2-bro] 2026-11-22 Camo lane x549 (the gloves, a probe): one .c3camo file's colour map as BGRA levels, largest
+// first, by the camo reader's own checks (ngl_camo.cpp); false and why.
+bool ReadColourLevels(const std::filesystem::path& path, std::vector<std::vector<uint8_t>>* levels, uint32_t* width,
+                      uint32_t* height, std::string* why);
 
 }  // namespace cod3::ngl_camo

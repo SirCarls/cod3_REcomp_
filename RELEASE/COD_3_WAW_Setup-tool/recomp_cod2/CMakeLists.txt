@@ -71,6 +71,8 @@ set(COD2_SOURCES
     src/game/dvar_peek.cpp  # [f2-menus] tests: the game's own dvars in the log (cod2_debug_dvars)
     src/game/pc_movement.cpp  # [f2-menus] the PC copy's movement numbers in the campaign (cod2_pc_movement)
     src/game/motion_audit.cpp  # tests: how entities and the view move per frame (cod2_debug_entity_steps)
+    src/game/rumble.cpp  # [input-port] 2026-11-24 no vibration on controller 1 while the keyboard and mouse are in use
+    src/game/ads.cpp  # [input-port] 2026-11-24 the turn while aiming down the sights (cod2_ads_*)
 )
 
 if(WIN32)
@@ -88,6 +90,25 @@ endif()
 # GPU_PLUGINS stages librexgpu-xenos next to the program; it is loaded at
 # start (Cod2App::OnPreSetup).
 rexglue_setup_target(cod2 GPU_PLUGINS xenos)
+
+# [input-port] 2026-11-24: inputkit (the project's inputkit/ folder, the input code every game shares: the mouse
+# motion queue and the pointer capture cod2's mouse look uses). The setup tool passes INPUTKIT_DIR; otherwise it
+# is found next to COD3_RECOMP_SRC's COD_3_WAW_Setup-tool/ (the tool passes that too, for a copy in its work folder),
+# or 2 up from this folder (a build in place). The mouse code needs it, so it is required.
+if(NOT INPUTKIT_DIR)
+    foreach(_ik IN ITEMS "${COD3_RECOMP_SRC}/../../../inputkit" "${CMAKE_CURRENT_SOURCE_DIR}/../../inputkit")
+        if(NOT INPUTKIT_DIR AND EXISTS "${_ik}/cmake/Inputkit.cmake")
+            get_filename_component(INPUTKIT_DIR "${_ik}" ABSOLUTE)
+        endif()
+    endforeach()
+endif()
+if(NOT EXISTS "${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+    message(FATAL_ERROR "cod2: the project's inputkit/ folder wasn't found (INPUTKIT_DIR, next to "
+        "COD3_RECOMP_SRC's tool folder, or 2 up). Configure with -DINPUTKIT_DIR=<project>/inputkit.")
+endif()
+include("${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+inputkit_add_library()
+target_link_libraries(cod2 PRIVATE inputkit::inputkit)
 
 # MinGW: the SDK's entry point is wWinMain, which MinGW's C runtime calls
 # only when the program links with -municode.

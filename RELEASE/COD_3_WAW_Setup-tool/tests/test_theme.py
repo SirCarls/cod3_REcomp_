@@ -31,7 +31,13 @@ FILL_PAIRS = [("accent_fg", "accent"), ("accent_fg_hover", "accent_hover"), ("te
 
 class ColorMathTests(unittest.TestCase):
     def test_tk_not_imported(self):
-        self.assertNotIn("tkinter", sys.modules)
+        # [setup-layout] 2026-11-24 in a fresh Python: in the whole suite another test's window (test_tabkit,
+        # test_language_tabs) has imported Tkinter already, so this failed whenever it ran after them.
+        import subprocess
+        code = ("import sys; sys.path.insert(0, sys.argv[1]); from c3w import theme; "
+                "sys.exit(1 if 'tkinter' in sys.modules else 0)")
+        rc = subprocess.run([sys.executable, "-c", code, str(Path(__file__).resolve().parent.parent)]).returncode
+        self.assertEqual(rc, 0, "importing c3w.theme imports tkinter")
 
     def test_parse_and_hex(self):
         self.assertEqual(theme.parse("#C49854"), (196, 152, 84))

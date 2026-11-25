@@ -123,4 +123,8 @@ void FollowPanelElement(uint8_t* base, uint32_t source, uint32_t copy, bool pict
 void SetItemLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char* key);
 void DumpMenuPanel(uint8_t* base, uint32_t panel, const char* what);
 
+// [waw-decomp/menus2] 2026-11-23 The page a menu system shows now (0: none), for the native menus
+// (ui/menus/cod3_menukit.cpp). Game thread.
+uint32_t SystemPage(PPCContext& ctx, uint8_t* base, uint32_t system);
+
 }  // namespace cod3::pcmenu

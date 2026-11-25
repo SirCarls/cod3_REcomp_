@@ -624,7 +624,14 @@ def check(s: Spec, oracle: X86Oracle, rust: RustChecker, address: int, rng: rand
             break
         out.cases += 1
         try:
-            expected, result = guest_answer(oracle, s, address, values)
+            try:
+                expected, result = guest_answer(oracle, s, address, values)
+            except GuestFault as e:
+                # The time limit is the wall clock's: a run paused (or a busy machine) can pass it
+                # with nothing wrong, so a case that ran out of time gets one more go.
+                if "didn't return within" not in str(e):
+                    raise
+                expected, result = guest_answer(oracle, s, address, values)
             out.inexact |= result.inexact
         except GuestError as e:
             expected = ["err", e.exit_name, str(e.code)]

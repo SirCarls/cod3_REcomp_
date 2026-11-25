@@ -29,6 +29,7 @@ set(COD2MP_SOURCES
     ${COD2_SRC}/game/audio_fpu.cpp  # the audio worker's floating-point state (missing here until 2026-11-07 19:36)
     ${COD2_SRC}/game/front_end.cpp  # the keyboard pad (the start-up film hook is the campaign's only)
     ${COD2_SRC}/game/frame_rate.cpp  # the guest vblank at 1000 Hz and the frame limit (cod2_max_fps)
+    ${COD2_SRC}/game/movement.cpp  # [cod2-fps] 2026-11-24 the player's movement in fixed steps (cod2_move_hz), as the campaign
     ${COD2_SRC}/game/native_side.cpp  # [waw-decomp] cod2_debug_native_side (2026-11-11: this program's addresses too)
     ${COD2_SRC}/game/native_hooks_mp.cpp  # [waw-decomp] 2026-11-11 the native side's three hooks in this program
     ${COD2_SRC}/game/native_compare.cpp  # [waw-decomp] 2026-11-11 the native picture beside the game's, live
@@ -36,6 +37,8 @@ set(COD2MP_SOURCES
     ${COD2_F2_SOURCES}  # [f2-menus] the F2 settings window (the parent CMakeLists.txt's list; may be empty)
     ${COD2_SRC}/cod2_pc_input.cpp  # [f2-menus] the PC copy's keys and the game's own mouse look
     ${COD2_SRC}/game/dvar_peek.cpp  # [f2-menus] tests: the game's own dvars in the log (cod2_debug_dvars)
+    ${COD2_SRC}/game/rumble.cpp  # [input-port] 2026-11-24 no vibration on controller 1 while the keyboard and mouse are in use
+    ${COD2_SRC}/game/ads.cpp  # [input-port] 2026-11-24 the turn while aiming down the sights (cod2_ads_*)
 )
 
 if(WIN32)
@@ -61,6 +64,8 @@ if(TARGET ngl_vk)
 endif()
 
 rexglue_setup_target(cod2mp GPU_PLUGINS xenos)
+# [input-port] 2026-11-24: inputkit, the library the parent folder's CMakeLists.txt added (its mouse code).
+target_link_libraries(cod2mp PRIVATE inputkit::inputkit)
 
 if(MINGW)
     target_link_options(cod2mp PRIVATE -municode)

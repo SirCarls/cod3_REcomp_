@@ -1,13 +1,15 @@
-// cod2 - the player's movement in fixed steps (cod2_move_hz). [acct2-cod2]
+// cod2 and cod2mp - the player's movement in fixed steps (cod2_move_hz). [acct2-cod2]
+// [cod2-fps] 2026-11-24: cod2mp too (owner's rule: every game works at any frame rate, SP and MP).
 //
 // The game moves the player once per usercmd by that command's milliseconds:
-// Pmove 0x82469C18 runs PmoveSingle 0x82469290 in pieces of at most 66 ms until
-// the playerState's commandTime reaches the command's serverTime. One command
-// is made per drawn frame, so jump heights, speeds and how the player meets
-// stairs and walls change with the frame rate (the PC game's "125/250/333 fps
-// jumps"); the Xbox 360 hid it at its 60 fps. Pmove has two callers, the
-// server's client think and the client's prediction (the global pmove
-// 0x82870288), so one hook here keeps both in agreement.
+// Pmove runs PmoveSingle in pieces of at most 66 ms until the playerState's
+// commandTime reaches the command's serverTime. One command is made per drawn
+// frame, so jump heights, speeds and how the player meets stairs and walls
+// change with the frame rate (the PC game's "125/250/333 fps jumps"); the
+// Xbox 360 hid it at its 60 fps. Pmove's callers are the server's client think
+// and the client's prediction, so one hook here keeps both in agreement (and,
+// in cod2mp, every client with the server: the steps end at fixed times of the
+// game's clock, which server and clients share).
 //
 //   cod2_move_hz  0-250, default 60 (the 360's own rate; owner's choice open):
 //                 steps of 1/N s that end at fixed times of the game's clock
@@ -18,29 +20,38 @@
 //                 again, so the rest of the game sees what it always did; the
 //                 next command goes on from the last step's end. A command
 //                 with no step end in it still turns the view
-//                 (PM_UpdateViewAngles 0x82465D10). 0: the game's own steps.
+//                 (PM_UpdateViewAngles). 0: the game's own steps.
 //
 // Above the step rate the player's position would change in steps, so the view
 // is placed between the last two steps (one step behind at most; the view
-// angles are never delayed): after the client's prediction
-// (CG_PredictPlayerState_Internal 0x824460C8) the predicted origin becomes the
-// last step's start plus the share of that step the newest command's time has
-// reached, and the true origin goes back before the next prediction, so the
-// game's own movement never sees the shown one. Not after a step that moved
-// more than 64 units beyond what the player's speed covers in it (a teleport,
-// a spawn); a long fall is still smoothed.
+// angles are never delayed): after the client's prediction the predicted
+// origin becomes the last step's start plus the share of that step the newest
+// command's time has reached, and the true origin goes back before the next
+// prediction, so the game's own movement never sees the shown one. Not after a
+// step that moved more than 64 units beyond what the player's speed covers in
+// it (a teleport, a spawn); a long fall is still smoothed.
 //
 // The design is Call of Duty 3's cod3_move_hz (recomp/src/game/movement/
-// hooks_sp.cpp: RunHzSteps and its CG_CalcViewValues hook). Still to come for
-// CoD2: cod2mp's Pmove. The checks of every position and mover: motion_audit.cpp.
+// hooks_sp.cpp: RunHzSteps and its CG_CalcViewValues hook). The checks of every
+// position and mover (campaign): motion_audit.cpp.
 //
-// The pmove_t (from Pmove's code): +0 the playerState (its +0 commandTime, +12
-// pm_flags), +4 the usercmd (its +0 serverTime), +52 the previous usercmd (12
-// words, copied after each step by the game's loop), +264 the byte
-// PM_UpdateViewAngles takes last. PM_UpdateViewAngles is called as
-// (r3 playerState, f1 msec, r5 usercmd, r6 that byte). The playerState's
-// origin is at +0x14 (PmoveSingle keeps +0x14..+0x28, origin and velocity, as
-// the previous ones).
+// The two programs (from their generated code):
+//   campaign  Pmove 0x82469C18, PmoveSingle 0x82469290, PM_UpdateViewAngles
+//             0x82465D10, CG_PredictPlayerState_Internal 0x824460C8 (its pmove_t
+//             the global 0x82870288). pmove_t: +0 playerState, +4 usercmd (12
+//             words, copied to +52 after each piece), +264 the byte
+//             PM_UpdateViewAngles takes last.
+//   cod2mp    Pmove 0x8245E2A0 (the same loop: the 1000 ms clamp, 66 ms pieces),
+//             PmoveSingle 0x8245D8B8, PM_UpdateViewAngles 0x82459FB8 (called
+//             from PmoveSingle as r3 playerState, f1 msec, r5 = pm + 4, r6 =
+//             lbz 228(pm)), the client's prediction 0x82436C90 (its loop calls
+//             Pmove with a pmove_t on its stack, so a call is told apart by a
+//             flag while the prediction runs). pmove_t: +0 playerState, +4
+//             usercmd (7 words, copied to +32), +228 that byte. Pmove's other
+//             callers: 0x823E77D8 and 0x823E7E08 (the server).
+//   Both      playerState: +0 commandTime, +12 pm_flags, +0x14 origin, +0x20
+//             velocity (PmoveSingle clears +32..+40 in both).
+// PM_UpdateViewAngles is called as (r3 playerState, f1 msec, r5 usercmd, r6 that byte).
 
 #include <algorithm>
 #include <atomic>
@@ -53,7 +64,9 @@
 #include <rex/hook.h>
 #include <rex/logging.h>
 
+#if !defined(COD2_MP)
 #include "game/motion_audit.h"
+#endif
 
 REXCVAR_DEFINE_INT32(cod2_move_hz, 60, "cod2/Game",
                      "The player's movement in fixed steps of 1/N s, so jumps, speeds and collisions are "
@@ -63,13 +76,16 @@ REXCVAR_DEFINE_INT32(cod2_debug_movement, 0, "cod2/Debug",
                      "Tests: every this many seconds, log the movement steps per usercmd (0: off)")
     .range(0, 600);
 
-#if !defined(COD2_MP)
-
 namespace {
 
+#if defined(COD2_MP)
+constexpr uint32_t kPmViewByte = 228;                // pmove_t: PM_UpdateViewAngles' last argument
+bool g_in_prediction = false;                        // the client's prediction is running (game thread)
+#else
 constexpr uint32_t kPredictionPmove = 0x82870288u;  // the client's prediction's pmove_t
-constexpr uint32_t kPmCmd = 4;                       // pmove_t: the usercmd
 constexpr uint32_t kPmViewByte = 264;                // pmove_t: PM_UpdateViewAngles' last argument
+#endif
+constexpr uint32_t kPmCmd = 4;                       // pmove_t: the usercmd
 constexpr uint32_t kPsCommandTime = 0;               // playerState_t
 constexpr uint32_t kPsOrigin = 0x14;                 // playerState_t: vec3
 constexpr uint32_t kPsVelocity = 0x20;               // playerState_t: vec3 (units a second)
@@ -183,21 +199,19 @@ void MaybeLog(int hz) {
   g_log_start_ns = now;
 }
 
-}  // namespace
-
-REX_EXTERN(__imp__sub_82469C18);  // Pmove
-REX_EXTERN(__imp__sub_82465D10);  // PM_UpdateViewAngles
-
-REX_HOOK_RAW(sub_82469C18) {
+// Pmove in fixed steps (see the top of this file). pmove(): the game's own Pmove with the
+// registers as they are; view(): its PM_UpdateViewAngles. [cod2-fps] shared by both programs.
+template <typename Ctx, typename PmoveFn, typename ViewFn>
+void RunPmove(Ctx& ctx, uint8_t* base, bool prediction, PmoveFn&& pmove, ViewFn&& view) {
   const int hz = std::clamp(REXCVAR_GET(cod2_move_hz), 0, 250);
   const uint32_t pm = ctx.r3.u32;
   const uint32_t ps = Load32(base, pm);
   const uint32_t cmd = pm + kPmCmd;
   const int final_time = static_cast<int>(Load32(base, cmd));
-  const int command_time = static_cast<int>(Load32(base, ps + kPsCommandTime));
+  const int command_time = ps ? static_cast<int>(Load32(base, ps + kPsCommandTime)) : 0;
   if (hz <= 0 || ps == 0 || final_time <= command_time || command_time < 0) {
     // The game's own steps, or nothing to move (an older command).
-    __imp__sub_82469C18(ctx, base);
+    pmove();
     return;
   }
 
@@ -207,7 +221,7 @@ REX_HOOK_RAW(sub_82469C18) {
   if (final_time - start > kMaxSpan) start = final_time - kMaxSpan;
 
   // A call changes the argument registers; each step gets the caller's again.
-  const PPCRegister r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5, r6 = ctx.r6;
+  const auto r3 = ctx.r3, r4 = ctx.r4, r5 = ctx.r5, r6 = ctx.r6;
   auto restore = [&] {
     ctx.r3 = r3;
     ctx.r4 = r4;
@@ -215,7 +229,6 @@ REX_HOOK_RAW(sub_82469C18) {
     ctx.r6 = r6;
   };
 
-  const bool prediction = pm == kPredictionPmove;
   float before[3] = {};
   int steps = 0, t = start, last_len = 1;
   for (int64_t k = StepAtOrBefore(t, hz) + 1;; ++k) {
@@ -226,7 +239,7 @@ REX_HOOK_RAW(sub_82469C18) {
     Store32(base, ps + kPsCommandTime, static_cast<uint32_t>(t));
     Store32(base, cmd, static_cast<uint32_t>(end));
     restore();
-    __imp__sub_82469C18(ctx, base);  // the game's loop runs exactly this step
+    pmove();  // the game's loop runs exactly this step
     last_len = end - t;
     t = end;
     ++steps;
@@ -252,17 +265,17 @@ REX_HOOK_RAW(sub_82469C18) {
     g_last.now = final_time;
   }
   if (steps == 0) {
-    // No step ends in this command: Pmove with no time (its flag handling
-    // still runs, its loop none), then the view turns to the command's angles.
+    // No step ends in this command: Pmove with no time (its loop runs none),
+    // then the view turns to the command's angles.
     Store32(base, ps + kPsCommandTime, static_cast<uint32_t>(start));
     Store32(base, cmd, static_cast<uint32_t>(start));
     restore();
-    __imp__sub_82469C18(ctx, base);
+    pmove();
     ctx.r3.u64 = ps;
     ctx.f1.f64 = static_cast<double>(static_cast<float>(final_time - command_time));
     ctx.r5.u64 = cmd;
     ctx.r6.u64 = base[pm + kPmViewByte];
-    __imp__sub_82465D10(ctx, base);
+    view();
   }
   // The command's time again, as the game's own loop leaves it.
   Store32(base, ps + kPsCommandTime, static_cast<uint32_t>(final_time));
@@ -276,8 +289,6 @@ REX_HOOK_RAW(sub_82469C18) {
   if (steps > 1) ++c.several;
   MaybeLog(hz);
 }
-
-namespace {
 
 // After the client's prediction: the view's origin between the last two steps
 // (see the top of this file). A prediction that runs no step keeps the last
@@ -314,19 +325,55 @@ void ShowBetweenSteps(uint8_t* base) {
   g_last.shown = true;
 }
 
+// Before the client's prediction: the true origin back.
+void RestoreTrueOrigin(uint8_t* base) {
+  if (g_last.shown) {
+    WriteOrigin(base, g_last.ps, g_last.true_origin);
+    g_last.shown = false;
+  }
+}
+
 }  // namespace
+
+#if !defined(COD2_MP)
+
+REX_EXTERN(__imp__sub_82469C18);  // Pmove
+REX_EXTERN(__imp__sub_82465D10);  // PM_UpdateViewAngles
+
+REX_HOOK_RAW(sub_82469C18) {
+  RunPmove(ctx, base, ctx.r3.u32 == kPredictionPmove, [&] { __imp__sub_82469C18(ctx, base); },
+           [&] { __imp__sub_82465D10(ctx, base); });
+}
 
 // The client's prediction: the true origin back before it runs, the shown one
 // after it, and the test's count of how the view moved (motion_audit.cpp).
 REX_EXTERN(__imp__sub_824460C8);  // CG_PredictPlayerState_Internal
 REX_HOOK_RAW(sub_824460C8) {
-  if (g_last.shown) {
-    WriteOrigin(base, g_last.ps, g_last.true_origin);
-    g_last.shown = false;
-  }
+  RestoreTrueOrigin(base);
   __imp__sub_824460C8(ctx, base);
   ShowBetweenSteps(base);
   cod2::motion_audit::OnPlayerPredicted(base);
 }
 
-#endif  // !COD2_MP
+#else  // COD2_MP [cod2-fps]
+
+REX_EXTERN(__imp__sub_8245E2A0);  // Pmove
+REX_EXTERN(__imp__sub_82459FB8);  // PM_UpdateViewAngles
+
+REX_HOOK_RAW(sub_8245E2A0) {
+  RunPmove(ctx, base, g_in_prediction, [&] { __imp__sub_8245E2A0(ctx, base); },
+           [&] { __imp__sub_82459FB8(ctx, base); });
+}
+
+// The client's prediction (its loop over the unacknowledged commands calls Pmove): the true origin
+// back before it runs, the shown one after it.
+REX_EXTERN(__imp__sub_82436C90);
+REX_HOOK_RAW(sub_82436C90) {
+  RestoreTrueOrigin(base);
+  g_in_prediction = true;
+  __imp__sub_82436C90(ctx, base);
+  g_in_prediction = false;
+  ShowBetweenSteps(base);
+}
+
+#endif  // COD2_MP

@@ -1259,3 +1259,8 @@ def open_in_file_manager(path: Path) -> None:
             args = [opener, str(path)] if opener.endswith("xdg-open") else [opener, "open", str(path)]
             start_and_collect(args, start_new_session=True,
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            # [setup-layout] 2026-11-24 a minimal system or a container (distrobox, toolbox) can have neither: every
+            # Open button did nothing, without a word. The callers show this.
+            raise OSError("no program here opens folders (xdg-open or gio; your distribution's xdg-utils package "
+                          "has xdg-open)")

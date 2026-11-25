@@ -20,7 +20,7 @@
 //    systems run and the frame's own after; the server's frame msec the client reads (CL_AdjustAngles turning,
 //    0x82C2EBE8) gets the frame's own milliseconds back.
 // Only while this machine hosts: SV_Frame moves svs.time (0x82B3FE30) only then; until it has, and on a client, every
-// frame runs as the game does. Off (0) until the tester's runs pass, then 60.
+// frame runs as the game does. 60 by default since 2026-11-24 (rule 14); 0: as the game.
 
 #include <algorithm>
 #include <chrono>
@@ -31,8 +31,11 @@
 #include <rex/logging.h>
 
 #include "game/guest.h"
+#include "game/keybinds/binds.h"  // [input-port] 2026-11-24 NoteGameUpdate
 
-REXCVAR_DEFINE_INT32(cod3mp_server_hz, 0, "cod3/Game",
+// [rexglue-native thread2] 2026-11-24 60 by default (rule 14, FPS-RULE14.md M1/M2: the host's physics steps by the
+// update's msec, so only fixed updates make it the same at every frame rate); 0 stays for comparison.
+REXCVAR_DEFINE_INT32(cod3mp_server_hz, 60, "cod3/Game",
                      "Multiplayer host: the game (players' moves, physics, grenades, vehicles, scripts) in updates "
                      "of 1/N s whatever the frame rate, as the console's 60; 0: once per drawn frame with that "
                      "frame's time, as the game does. Clients draw from the host's snapshots either way")
@@ -173,6 +176,7 @@ void GameUpdates(PPCContext& ctx, uint8_t* base, int hz, int msec, bool systems)
     if (systems) RunSystems(ctx, base, tick_msec);
     ctx.r3.s64 = tick_msec;
     __imp__sub_82535810(ctx, base);
+    cod3::binds::NoteGameUpdate();  // [input-port] 2026-11-24 a key tap waits for an update (FPS-RULE14 I4)
     g_skip_send = false;
     ++g_counts.updates;
     if (long_frame) {
@@ -259,6 +263,9 @@ REX_HOOK_RAW(sub_82535810) {
   }
   const uint32_t sv_time_before = g::ReadU32(base, kSvTime);
   __imp__sub_82535810(ctx, base);
+  // [input-port] 2026-11-24 a key tap waits for an update (FPS-RULE14 I4), only while this machine hosts: svs.time
+  // moves only then (a client's SV_Frame runs no game update).
+  if (g::ReadU32(base, kSvTime) != sv_time_before) cod3::binds::NoteGameUpdate();
   if (from_frame) {
     g_hosting = g::ReadU32(base, kSvTime) != sv_time_before;
     if (hz > 0) {

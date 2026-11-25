@@ -19,6 +19,10 @@
 
 #include <rex/runtime.h>  // rex::RuntimeConfig
 
+namespace rex::ui {
+class Window;
+}
+
 namespace cod2::native {
 
 // From Cod2App::OnPreSetup, before the graphics start: when cod2_native_vulkan is on and this build and PC can draw
@@ -42,5 +46,18 @@ void ShowOnGpu(const uint8_t table[3][256]);
 // Hands a width x height picture (4 bytes a pixel: red, green, blue, unused) to the window through the CPU, through
 // table (as ShowOnGpu).
 void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint8_t table[3][256]);
+
+// [cod2-native] 2026-11-24 g10 (owner: draw the required resolution natively, with no upscaling then downscaling):
+// the window whose size the native picture follows. From Cod2App::OnPostSetup; nullptr (the default) keeps ngl_vk's
+// target at the size it started with (the game's own 1280x720).
+void SetWindow(rex::ui::Window* window);
+
+// [cod2-native] g10: once a frame, on the drawing thread, between frames (before the frame's first draw): makes
+// ngl_vk's target the largest 16:9 picture that fits in the window (the game's views and menus are 16:9), with
+// ngl_vk_set_target_size, so the picture is drawn at the size it is shown at and handed to the window pixel for
+// pixel. The game's own coordinates stay its 1280x720 screen (ngl_vk_draw_quads scales them to the target; the 3D
+// is in clip space). Does nothing when the size hasn't changed, while the window has no size (minimized), or with an
+// ngl_vk that has no ngl_vk_set_target_size.
+void FollowWindowSize();
 
 }  // namespace cod2::native

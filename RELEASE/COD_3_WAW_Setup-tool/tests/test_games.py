@@ -33,9 +33,10 @@ class GameTableTests(unittest.TestCase):
                          ["Call of Duty 3", "Big Red One", "Finest Hour", "World at War", "Call of Duty 2",
                           "Call of Duty 4", "United Offensive"])
         # [acct2-ocr] 2026-11-22 every tab ends as Call of Duty 3's: Tools, Log, About (gui_tabkit.py)
-        self.assertEqual(PAGES["fh"], ["fh_setup", "fh_play", "fh_status", "fh_tools", "log", "fh_about"])
+        # [setup-layout] 2026-11-24 Port status is a section of About now
+        self.assertEqual(PAGES["fh"], ["fh_setup", "fh_play", "fh_tools", "log", "fh_about"])
         self.assertEqual(games.game("fh").actions, ("build", "play"))
-        self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_status", "bro_tools", "log", "bro_about"])
+        self.assertEqual(PAGES["bro"], ["bro_setup", "bro_play", "bro_tools", "log", "bro_about"])
         self.assertEqual(games.game("bro").actions, ("build", "play"))
         self.assertEqual(theme.GAME_ORDER, tuple(games.GAME_ORDER))
 
@@ -48,8 +49,7 @@ class GameTableTests(unittest.TestCase):
             self.assertNotIn("Rust", games.game(gid).tagline)
         self.assertIn("rip", games.game("waw").actions)          # World at War's content rip stays
         # [f2-menus] 2026-11-10 (owner: "CoD2's New copy and LAN server pages shouldn't be there")
-        self.assertEqual(PAGES["cod2"], ["cod2_setup", "cod2_play", "cod2_status", "cod2_tools", "log",
-                                         "cod2_about"])
+        self.assertEqual(PAGES["cod2"], ["cod2_setup", "cod2_play", "cod2_tools", "log", "cod2_about"])
         self.assertIn("coduo_copy", PAGES["coduo"])            # United Offensive's tab keeps its two
 
     def test_no_rust_engine_wording(self):
@@ -85,6 +85,14 @@ class GameTableTests(unittest.TestCase):
     def test_unknown_game_is_the_default(self):
         self.assertEqual(games.game("nope").id, games.DEFAULT_GAME)
 
+    def test_port_status_ready_rows_first(self):
+        # [setup-layout] 2026-11-24 each tab's rows in the order Ready, Testing, Next, Later (World at War's ready
+        # content ripper came last)
+        order = [games.READY, games.TESTING, games.NEXT, games.LATER]
+        for gid, rows in games.PORT_STATUS.items():
+            states = [order.index(m.state) for m in rows]
+            self.assertEqual(states, sorted(states), gid)
+
     def test_port_status_rows(self):
         for gid in ("bro", "fh", "waw", "cod2", "cod4", "coduo"):
             rows = games.PORT_STATUS[gid]
@@ -110,19 +118,26 @@ class TabStateTests(unittest.TestCase):
     def test_round_trip(self):
         st = self.state({})
         st.show("coduo", "coduo_server")
-        st.show("waw", "waw_status")
+        st.show("waw", "waw_content")
         st.themes["cod2"] = "contrast"
         st.accents["waw"] = "#123456"
         again = self.state(st.to_settings())
         self.assertEqual(again.game, "waw")
-        self.assertEqual(again.page_for("waw"), "waw_status")
+        self.assertEqual(again.page_for("waw"), "waw_content")
         self.assertEqual(again.page_for("coduo"), "coduo_server")
         self.assertEqual(again.theme_for("cod2"), "contrast")
         self.assertEqual(again.accent_for("waw"), "#123456")
 
     def test_opens_on_the_last_tab_used(self):
-        st = self.state({"ui_game": "cod2", "ui_pages": {"cod2": "cod2_status"}})
-        self.assertEqual((st.game, st.page_for(st.game)), ("cod2", "cod2_status"))
+        st = self.state({"ui_game": "cod2", "ui_pages": {"cod2": "cod2_play"}})
+        self.assertEqual((st.game, st.page_for(st.game)), ("cod2", "cod2_play"))
+
+    def test_a_saved_port_status_page_opens_about(self):
+        # [setup-layout] 2026-11-24 the Port status pages are sections of About now
+        st = self.state({"ui_game": "fh", "ui_pages": {"fh": "fh_status", "cod2": "cod2_status", "cod3": "nope"}})
+        self.assertEqual((st.game, st.page_for("fh")), ("fh", "fh_about"))
+        self.assertEqual(st.page_for("cod2"), "cod2_about")
+        self.assertEqual(st.page_for("cod3"), "setup")
 
     def test_settings_from_before_the_tabs(self):
         st = self.state({"ui_page": "play", "ui_theme": "parchment", "ui_accent": "#C49854"})
@@ -162,11 +177,12 @@ class TabStateTests(unittest.TestCase):
     def test_show_and_step(self):
         st = self.state({})
         self.assertEqual(st.show("cod2"), ("cod2", "cod2_setup"))   # [waw-decomp]
-        # [f2-menus] 2026-11-10 with cod2_status: the tab's LAN server page is gone
-        self.assertEqual(st.show("cod2", "cod2_status"), ("cod2", "cod2_status"))
-        self.assertEqual(st.show("cod2", "play"), ("cod2", "cod2_status"))   # not this tab's page
-        self.assertEqual(st.show("cod2", "cod2_server"), ("cod2", "cod2_status"))   # nor a page it no longer has
-        self.assertEqual(st.show("nope"), ("cod2", "cod2_status"))
+        # [f2-menus] 2026-11-10 the tab's LAN server page is gone; [setup-layout] 2026-11-24 and its status page
+        self.assertEqual(st.show("cod2", "cod2_play"), ("cod2", "cod2_play"))
+        self.assertEqual(st.show("cod2", "play"), ("cod2", "cod2_play"))   # not this tab's page
+        self.assertEqual(st.show("cod2", "cod2_server"), ("cod2", "cod2_play"))   # nor a page it no longer has
+        self.assertEqual(st.show("cod2", "cod2_status"), ("cod2", "cod2_play"))
+        self.assertEqual(st.show("nope"), ("cod2", "cod2_play"))
         self.assertEqual(st.step(1), "cod4")   # [waw-decomp]
         st.show("coduo")
         self.assertEqual(st.step(1), "cod3")    # wraps around

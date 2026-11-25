@@ -28,6 +28,7 @@
 #include "game/program.h"
 #include "ui/dvar_domain.h"
 #include "ui/game_console.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
 
 namespace {
 
@@ -36,7 +37,8 @@ namespace {
 constexpr uint32_t kImageBase = COD3_ADDR(0x82000000, 0x82000000);
 constexpr uint32_t kImageSize = COD3_ADDR(0xC30000, 0xE20000);
 // REX_CODE_BASE + REX_CODE_SIZE: 0x820A0000 + 0x4FB1B8 (cod3mp: 0x820B0000 + 0x4F21D4).
-constexpr uint32_t kCodeEnd = COD3_ADDR(0x8259B1B8, 0x825A21D4);
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kCodeEnd = COD3_ADDR(0x8259B1B8, A(0x825A21D4));
 constexpr uint32_t kPageSize = 0x1000;
 constexpr size_t kMaxFormatChars = 2048;
 

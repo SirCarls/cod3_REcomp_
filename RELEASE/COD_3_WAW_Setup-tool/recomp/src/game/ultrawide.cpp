@@ -1044,6 +1044,20 @@ namespace {
 constexpr float kHudLayoutWidth = 540.0f, kHudLayoutHeight = 400.0f;  // x 50-590, y 40-440 of 640x480
 constexpr float kGameHudShareX = kHudLayoutWidth / 640.0f, kGameHudShareY = kHudLayoutHeight / 480.0f;
 constexpr float kSplitHudQuarterOffset = 0.65f;
+// [rexglue-native] 2026-11-24 (owner 01:04 "in 2 player splitscreen the lettering within the hud wasn't centered",
+// 01:15 "We have encountered this with 4 players and it was fixed"): a half view draws the HUD at 3/4 of its size, but
+// the game places a half's elements at their one-player x and drops each element's own offset there. The ammo box's
+// digits are centred text anchored at 541.62 and 572 (offsets -5 and +5), so in the 3/4-size box "8" sat 3.3 units
+// left of its cell and "32" 3.6 right. Halves now take the offset at their own scale, pulled in toward the widget (the
+// digits land on their cells' centres), as quarters take theirs at 0.65. Only right-anchored elements (flags bit 1:
+// the ammo box, the grenade count): the left group's (compass, stance, chevron) are placed right as they are.
+inline bool IsHalfLayout(uint32_t layout) { return layout == 3 || layout == 4; }
+constexpr float kSplitHudHalfOffset = 0.75f;
+constexpr uint32_t kHudElementRight = 0x2;  // an element's flags: anchored to the HUD's right edge
+// The offset a half view's x takes: right-anchored elements' only (see kSplitHudHalfOffset).
+float HalfOffset(uint32_t layout, uint32_t flags, float offset) {
+  return (IsHalfLayout(layout) && !(flags & kHudElementRight)) ? 0.0f : offset;
+}
 
 // The share of a view the HUD spreads over (0 when the setting isn't given: the game's own).
 constexpr int32_t kMaxHudSafePercent = 93;       // 94: a quarter's compass touches the view's edge (mv22)
@@ -1100,9 +1114,11 @@ SplitHud Hud() {
 bool IsQuarter(uint32_t layout) { return layout >= 5 && layout <= 8; }
 bool IsHalf(uint32_t layout) { return layout == 3 || layout == 4; }
 
-// Ours: quarters' x always (centered in the view), halves' x only with the setting given; y in halves and quarters.
+// Ours: quarters' x always (centered in the view); halves' x too (their element offsets at 0.75; their spread only
+// with cod3_hud_safe_area given); y in halves and quarters. [rexglue-native] 2026-11-24: halves always (were: only
+// with the setting given).
 bool OursX(const SplitHud& h, uint32_t layout) {
-  return !h.tv_insets && (IsQuarter(layout) || (IsHalf(layout) && h.safe > 0.0f));
+  return !h.tv_insets && (IsQuarter(layout) || IsHalf(layout));
 }
 bool OursY(const SplitHud& h, uint32_t layout) { return !h.tv_insets && (IsQuarter(layout) || IsHalf(layout)); }
 
@@ -1128,13 +1144,14 @@ float ForwardX(const SplitHud& h, uint32_t layout, float x, float offset, bool c
   if (IsQuarter(layout))
     return QuarterX0(layout, centered_in_half) + 160.0f + (x - 320.0f) * SlopeX(h, layout) +
            kSplitHudQuarterOffset * offset;
-  return 320.0f + (x - 320.0f) * SlopeX(h, layout);  // halves: as the game, no offset
+  // halves: the game's spread (slope 1 without cod3_hud_safe_area), the element's offset at 0.75, inward
+  return 320.0f + (x - 320.0f) * SlopeX(h, layout) - kSplitHudHalfOffset * offset;  // [rexglue-native] 2026-11-24
 }
 float InverseX(const SplitHud& h, uint32_t layout, float x, float offset, bool centered_in_half) {
   if (IsQuarter(layout))
     return 320.0f +
            (x - QuarterX0(layout, centered_in_half) - 160.0f - kSplitHudQuarterOffset * offset) / SlopeX(h, layout);
-  return 320.0f + (x - 320.0f) / SlopeX(h, layout);
+  return 320.0f + (x - 320.0f + kSplitHudHalfOffset * offset) / SlopeX(h, layout);  // [rexglue-native] 2026-11-24
 }
 float ForwardY(const SplitHud& h, uint32_t layout, float y, float offset) {
   return ViewY0(layout) + 120.0f + (y - 240.0f) * SlopeY(h, layout) + OffsetScaleY(layout) * offset;
@@ -1233,11 +1250,12 @@ REX_HOOK_RAW(sub_8244A7C8) {  // x: f1 x (640 wide), f2 offset, r4 layout, r5 el
     LogPlacement('x', layout, flags, x, offset, float(ctx.f1.f64), float(ctx.f1.f64));
     return;
   }
-  float placed = ForwardX(h, layout, x, offset, WarRowInHalf(layout, t_war_row.new_half));
+  const float own_offset = HalfOffset(layout, flags, offset);  // [rexglue-native] 2026-11-24
+  float placed = ForwardX(h, layout, x, own_offset, WarRowInHalf(layout, t_war_row.new_half));
   if (weapon_name_call == 0 && flags == 0) {
     // [claude-9b-think] The weapon name's box: from its mapped right edge, the name's width and the padding.
     const float width = std::max(0.0f, kWeaponBoxRight - kWeaponBoxPad - x);
-    placed = ForwardX(h, layout, kWeaponBoxRight, offset, false) - (width + kWeaponBoxPad * SlopeX(h, layout));
+    placed = ForwardX(h, layout, kWeaponBoxRight, own_offset, false) - (width + kWeaponBoxPad * SlopeX(h, layout));
   }
   if (DebugHudLayout())
     LogPlacement('x', layout, flags, x, offset, placed,
@@ -1268,13 +1286,13 @@ REX_HOOK_RAW(sub_8244A710) {  // y: f1 y (480 high), f2 offset, r4 layout, r5 el
 // otherwise, which reverses the game's own forward ones).
 REX_EXTERN(__imp__sub_8244A8B0);
 REX_HOOK_RAW(sub_8244A8B0) {  // x back: f1 x on the view, f2 offset, r4 layout, r5 element flags
-  const uint32_t layout = ctx.r4.u32;
+  const uint32_t layout = ctx.r4.u32, flags = ctx.r5.u32;
   const SplitHud h = Hud();
   if (!OursX(h, layout)) {
     __imp__sub_8244A8B0(ctx, base);
     return;
   }
-  ctx.f1.f64 = double(InverseX(h, layout, float(ctx.f1.f64), float(ctx.f2.f64),
+  ctx.f1.f64 = double(InverseX(h, layout, float(ctx.f1.f64), HalfOffset(layout, flags, float(ctx.f2.f64)),
                                WarRowInHalf(layout, t_war_row.old_half)));
 }
 

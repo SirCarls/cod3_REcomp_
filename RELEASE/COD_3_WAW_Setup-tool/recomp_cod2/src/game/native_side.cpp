@@ -92,7 +92,9 @@ REXCVAR_DEFINE_INT32(cod2_debug_native_light_test, 0, "cod2/Debug",
                      "8 the world without its highlights; 9 no shadows from the moving models (to compare "
                      "with the game run with sc_enable 0); 10 nothing changed, but each world lightmap's sun "
                      "share (slot 1, as read) and the light made from it saved as pictures "
-                     "(screenshots/lightmap-<slot 1's texture>-share.ppm and -light.ppm)");
+                     "(screenshots/lightmap-<slot 1's texture>-share.ppm and -light.ppm); "
+                     "13 no bloom (the native glow_setup / filter / glow_apply_bloom passes left out); "
+                     "16 no sky bleed (the native glow_apply_sky_bleed left out)");
 REXCVAR_DEFINE_INT32(cod2_debug_native_bump_frame, 0, "cod2/Debug",
                      "Tests: changes how the world's normal maps are laid against their surfaces (WorldBumpFrameOf's "
                      "bits, turned over): 1 the two bends change places; 2 the bend along u turned about; 4 the bend "
@@ -113,6 +115,7 @@ REXCVAR_DEFINE_INT32(cod2_debug_native_model_bump_frame, 0, "cod2/Debug",
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>  // [cod2-native] 2026-11-24 g1: std::atoi
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -239,15 +242,23 @@ bool IsGuestData(uint32_t a) {
          (a >= 0xA0000000u && a < 0xFFFF0000u);
 }
 
+// [cod2-native] g7: on Windows (and Apple arm64) the SDK maps the guest's 0xE0000000+ view 4 KB further on, so
+// base + addr up there reads the data 4 KB before (CoD3's ngl_side.cpp met this under Wine: white triangles on Forest,
+// dev/agents/rexglue-native/WIN-PORT.md). At() asks the SDK's own rule (rex/system/xmemory.h, the same sum as
+// rex::memory::GuestPtr), so it can't drift from the SDK.
+inline const uint8_t* At(const uint8_t* base, uint32_t addr) {  // [cod2-native] g7
+  return base + addr + rex::memory::detail::PhysicalHostOffset(addr);  // [cod2-native] g7
+}  // [cod2-native] g7
+
 uint32_t LoadU32(const uint8_t* base, uint32_t addr) {
   uint32_t v;
-  std::memcpy(&v, base + addr, 4);
+  std::memcpy(&v, At(base, addr), 4);  // [cod2-native] g7 (was base + addr)
   return __builtin_bswap32(v);
 }
 
 uint16_t LoadU16(const uint8_t* base, uint32_t addr) {
   uint16_t v;
-  std::memcpy(&v, base + addr, 2);
+  std::memcpy(&v, At(base, addr), 2);  // [cod2-native] g7 (was base + addr)
   return __builtin_bswap16(v);
 }
 
@@ -378,8 +389,22 @@ struct Frame {
     int samples = 0;
   };
   std::map<std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>, Kind> kinds;
+  // [cod2-native] 2026-11-24 g1: the game's glow passes this frame, as it draws them (KeepGlowPass): glow_setup's
+  // pixel c23 (cutoff, rescale, -, desaturation), each filter_symmetric blur's c8-c15 (its tap pairs), and
+  // glow_apply_bloom's c23.w (the bloom's intensity) with the number of blurs drawn before it
+  struct Glow {
+    bool setup = false;
+    float setup_constants[4] = {};
+    uint32_t blurs = 0;
+    float taps[4][32] = {};
+    float bloom = 0.0f;
+    uint32_t bloom_blurs = 0;
+    float sky_bleed = 0.0f;   // [cod2-native] g4: glow_apply_sky_bleed's c23.x (the sky bleed's strength)
+    uint32_t bleed_blurs = 0;
+  } glow;
 
   void Clear() {
+    glow = Glow{};  // [cod2-native] 2026-11-24 g1
     corners.clear();
     draws.clear();
     seen = indexed = other_stride = not_flat = bad_indices = dropped = 0;
@@ -1907,6 +1932,7 @@ constexpr uint32_t kInOrder = 65535;
 // room was half used every five seconds and ForgetAll threw the textures away with the meshes: the frame took 31 to 52
 // ms (9 fps at the worst) instead of 5.6. The meshes made before that point are kept and drawn as before.
 bool g_mesh_room_tight = false;
+bool g_forget_all = false;  // [cod2-native] g8: g_forget, and the textures are what ran out (ForgetAll, not ForgetMeshes)
 // For the live compare's log (DrawFrame): draws from frame corners (with a shape, or written out in order) and the
 // corners they took, those that found the frame's room used up (made a mesh of their own instead), and the meshes
 // made, with their corners.
@@ -1983,6 +2009,25 @@ void ForgetAll() {
   g_lookup_textures.clear();
   g_lookup_cubes.clear();
   g_forget = false;
+  g_forget_all = false;  // [cod2-native] g8
+}
+
+// [cod2-native] g8: the meshes forgotten, the textures kept (ngl_vk_forget_meshes): when the mesh corners run out,
+// which in a campaign level is every minute or two, while the textures are far from their room. ForgetAll there
+// decoded and uploaded every texture again, a stall of 2.4 to 2.8 seconds each time (tankhunt, run 20261124-054305).
+// Everything that holds an ngl_vk mesh number goes; whatever holds only textures, or keys made from the game's own
+// data (g_seen, g_bump_frames), stays. The sky boxes keep their faces and make their squares again (SkyBoxFor).
+uint64_t g_meshes_forgotten_at = 0;  // the frame of the last ForgetMeshes (0: none yet)
+void ForgetMeshes(uint64_t frame) {
+  ngl_vk_forget_meshes();
+  g_meshes.clear();
+  g_shapes.clear();
+  g_shapes_seen.clear();
+  g_this_frame.clear();
+  g_in_order = 0;
+  for (auto& [texture, box] : g_sky_boxes) box.meshes.fill(0);
+  g_meshes_forgotten_at = frame;
+  g_forget = false;
 }
 
 // 4z9: source and destination blend both ONE (2): the color added whatever its alpha.
@@ -1995,7 +2040,7 @@ uint32_t TextureFor(const uint8_t* base, uint32_t texture, const std::array<uint
   auto& textures = opaque ? g_opaque_textures : g_textures;
   auto found = textures.find(texture);
   if (found != textures.end() && found->second.fetch == fetch) return found->second.id;
-  if (textures.size() >= kMaxTextures) g_forget = true;  // forgotten before the next frame (meshes would go too)
+  if (textures.size() >= kMaxTextures) g_forget = g_forget_all = true;  // forgotten before the next frame (meshes would go too)  // [cod2-native] g8 (g_forget_all)
   CachedTexture& cached = textures[texture];
   cached.fetch = fetch;
   cached.id = 0;
@@ -2030,7 +2075,7 @@ uint32_t TurnedTextureFor(const uint8_t* base, uint32_t texture, const std::arra
   if (texture == 0) return 0;
   auto found = g_turned_textures.find(texture);
   if (found != g_turned_textures.end() && found->second.fetch == fetch) return found->second.id;
-  if (g_turned_textures.size() >= kMaxTextures) g_forget = true;
+  if (g_turned_textures.size() >= kMaxTextures) g_forget = g_forget_all = true;  // [cod2-native] g8 (g_forget_all)
   CachedTexture& cached = g_turned_textures[texture];
   cached.fetch = fetch;
   cached.id = 0;
@@ -3061,11 +3106,41 @@ const GridWeights* GridWeightsFor(const uint8_t* base, const MeshDraw& m) {
 // rounded up to 4 KB (Xenia's texture layout); each face is decoded as a 2D texture at its own address. Direct3D's
 // faces: on face +X a texel (u, v) is the way (1, 1 - 2v, 1 - 2u), and so on (kSkyFaces). False when the slot's texture
 // isn't a cube (fetch constant dword 5 bits 9-10, 3) or a face can't be made: then the stand-in is drawn.
+// [cod2-native] g8: a sky box face's square (SkyBoxFor), made again after ForgetMeshes; 0 when there is no room.
+uint32_t SkyFaceMesh(uint32_t face) {
+  static constexpr float kUv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
+  static constexpr uint16_t kSquare[6] = {0, 1, 2, 0, 2, 3};
+  const uint32_t white = 0xFFFFFFFFu;
+  float white_bits;
+  std::memcpy(&white_bits, &white, 4);
+  float corners[4 * NGL_VK_CORNER_FLOATS] = {};
+  for (int c = 0; c < 4; ++c) {
+    float* corner = &corners[c * NGL_VK_CORNER_FLOATS];
+    const float st[2] = {2.0f * kUv[c][0] - 1.0f, 2.0f * kUv[c][1] - 1.0f};
+    for (int k = 0; k < 3; ++k)
+      corner[k] = st[0] * kSkyFaces[face][k][0] + st[1] * kSkyFaces[face][k][1] + kSkyFaces[face][k][2];
+    corner[3] = kUv[c][0];
+    corner[4] = kUv[c][1];
+    corner[7] = white_bits;  // corners 5-6 (the lightmap's coordinates) and 8-10 (no normal) stay 0
+  }
+  return ngl_vk_mesh(corners, 4, kSquare, 6);
+}
+
 bool SkyBoxFor(const uint8_t* base, uint32_t texture, const std::array<uint32_t, 6>& fetch, SkyBox*& box) {
   box = nullptr;
   if (texture == 0 || ((fetch[5] >> 9) & 3) != 3) return false;
   if (auto found = g_sky_boxes.find(texture); found != g_sky_boxes.end()) {
     box = &found->second;
+    if (box->made && box->meshes[0] == 0) {  // [cod2-native] g8: its squares forgotten (ForgetMeshes), its faces kept
+      for (uint32_t face = 0; face < 6; ++face) {
+        box->meshes[face] = SkyFaceMesh(face);
+        if (box->meshes[face] == 0) {
+          box->meshes.fill(0);
+          g_forget = true;
+          return false;
+        }
+      }
+    }
     return box->made;
   }
   SkyBox& made = g_sky_boxes[texture];
@@ -3079,11 +3154,6 @@ bool SkyBoxFor(const uint8_t* base, uint32_t texture, const std::array<uint32_t,
   if (tiled) pitch_blocks = (pitch_blocks + 31) & ~31u;
   const uint32_t rows = tiled ? (blocks_y + 31) & ~31u : blocks_y;
   const uint32_t face_bytes = (pitch_blocks * rows * f.bytes + 4095u) & ~4095u;
-  static constexpr float kUv[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-  static constexpr uint16_t kSquare[6] = {0, 1, 2, 0, 2, 3};
-  const uint32_t white = 0xFFFFFFFFu;
-  float white_bits;
-  std::memcpy(&white_bits, &white, 4);
   const uint32_t physical = fetch[1] & 0x1FFFF000u;
   for (uint32_t face = 0; face < 6; ++face) {
     std::array<uint32_t, 6> face_fetch = fetch;
@@ -3093,17 +3163,7 @@ bool SkyBoxFor(const uint8_t* base, uint32_t texture, const std::array<uint32_t,
     std::string why;
     if (!DecodeFetch(base, face_fetch, bgra, w, h, why)) return false;
     made.faces[face] = ngl_vk_texture(bgra.data(), w, h);
-    float corners[4 * NGL_VK_CORNER_FLOATS] = {};
-    for (int c = 0; c < 4; ++c) {
-      float* corner = &corners[c * NGL_VK_CORNER_FLOATS];
-      const float st[2] = {2.0f * kUv[c][0] - 1.0f, 2.0f * kUv[c][1] - 1.0f};
-      for (int k = 0; k < 3; ++k)
-        corner[k] = st[0] * kSkyFaces[face][k][0] + st[1] * kSkyFaces[face][k][1] + kSkyFaces[face][k][2];
-      corner[3] = kUv[c][0];
-      corner[4] = kUv[c][1];
-      corner[7] = white_bits;  // corners 5-6 (the lightmap's coordinates) and 8-10 (no normal) stay 0
-    }
-    made.meshes[face] = ngl_vk_mesh(corners, 4, kSquare, 6);
+    made.meshes[face] = SkyFaceMesh(face);  // [cod2-native] g8 (SkyFaceMesh)
     if (made.faces[face] == 0 || made.meshes[face] == 0) {
       g_forget = true;
       return false;
@@ -3581,12 +3641,26 @@ bool EyeOf(const float view_projection[16], double eye[3]) {
 // wall is light all over). ngl_vk's own bias for multiplied draws (one depth step, no slope part) is too little
 // for a wall seen at a slant. Left as it is when the eye can't be found.
 constexpr double kDecalPull = 0.001;  // a thousandth of the distance: a unit at 1000 units
+// [cod2-native] g9 decal (flashing stains on walls). The pull moves clip z by share x the eye's clip z (about the near
+// plane, 4) at every distance, while w stays: 0.004 at a thousandth. The GPU makes clip z and w from the corners with
+// float sums whose terms are as large as the map's coordinates C, so each is off by some 2^-24 x C, the wall's and the
+// stain's corners each their own way: 0.001 to 0.004 at 3000 to 8000 units, 0.012 in Libya (some 50000 units out).
+// The pull's 0.004 was no more than that, so stain and wall swapped from pixel to pixel as the eye moved. Both errors
+// and the pull go as 1 / w in depth, so the share that beats the rounding is the same at every distance: at least
+// kDecalRoundingSteps x 2^-24 x C over the eye's clip z (C: the eye's place, its three coordinates' sizes added, and
+// kDecalReach for corners away from it), at most kDecalPullMost. Near the origin it stays about a thousandth.
+constexpr double kDecalRoundingSteps = 16.0;
+constexpr double kDecalReach = 2048.0;
+constexpr double kDecalPullMost = 0.02;
 
 void PullTowardEye(float view_projection[16], double share) {
   double eye[3];
   if (!EyeOf(view_projection, eye)) return;
   const double eye_z = eye[0] * view_projection[2] + eye[1] * view_projection[6] + eye[2] * view_projection[10] +
                        view_projection[14];
+  if (!(std::fabs(eye_z) > 0.0)) return;
+  const double size = std::fabs(eye[0]) + std::fabs(eye[1]) + std::fabs(eye[2]) + kDecalReach;
+  share = std::min(std::max(share, kDecalRoundingSteps * std::ldexp(size, -24) / std::fabs(eye_z)), kDecalPullMost);
   view_projection[14] += static_cast<float>(share / (1.0 - share) * eye_z);
 }
 
@@ -4344,6 +4418,10 @@ bool IsBlurredScreen(const uint8_t* base, uint32_t material) {
 // 3D (SetMeshes), the 2D and the picture's reading back and handing over took on average, logged
 struct CompareCost {
   uint64_t frames = 0, forgets = 0, meshes = 0;
+  uint64_t mesh_forgets = 0;  // [cod2-native] g8 (ForgetMeshes)
+  // [cod2-native] g6 frame dips: the worst frame, not only the average, and the wall time between frames
+  double worst_ms = 0.0, worst_gap_ms = 0.0;
+  uint64_t worst_frame = 0, over_17 = 0, over_33 = 0, gaps_over_33 = 0;
   double setup_ms = 0.0, draw_ms = 0.0, read_ms = 0.0;
 };
 CompareCost g_compare_cost;
@@ -4366,6 +4444,9 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
     g_state = 1;
     REXLOG_INFO("cod2: native side: ngl_vk started on {}, a {}x{} picture", ngl_vk_device_name(), width, height);
   }
+  // [cod2-native] 2026-11-24 g10: the picture drawn at the window's size (16:9 in it), between frames; width x height
+  // stays the game's screen, the coordinates its 2D is given in (native_window.h)
+  if (NativeVulkanOn()) FollowWindowSize();
   // between frames, on the drawing thread: forgotten when ngl_vk ran out of room, or before a frame could (the world's
   // index lists change as the view does, so its meshes are mostly new in each kept frame)
   uint32_t corners_used = 0, corner_room = 0;
@@ -4375,19 +4456,29 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   // and one that finds no room sets g_forget for the next frame (run nat4: every forget was the corners past half,
   // 370 to 400 of 2048 textures in use)
   if (g_forget || corners_used > corner_room / 4 * 3) {
+    // [cod2-native] g8: everything only when the textures ran out (or nearly), or when something still found no room
+    // right after the meshes went (a texture that couldn't be made: memory); else the meshes alone (ForgetMeshes)
+    uint32_t textures = 0, texture_room = 0;
+    ngl_vk_room(&textures, &texture_room, nullptr, nullptr);
+    const bool all = g_forget_all || textures + 64 > texture_room ||
+                     (g_forget && g_meshes_forgotten_at != 0 && frame - g_meshes_forgotten_at < 4);
     // 4z62: why, the first 12 times in a run (the textures and their room, the corners and theirs)
     static int forgets_logged = 0;
+    const auto forget_start = std::chrono::steady_clock::now();  // [cod2-native] g8
+    if (all) {
+      ForgetAll();
+      ++g_compare_cost.forgets;
+    } else {
+      ForgetMeshes(frame);
+      ++g_compare_cost.mesh_forgets;  // [cod2-native] g8
+    }
     if (forgets_logged < 12) {
       ++forgets_logged;
-      uint32_t textures = 0, texture_room = 0;
-      ngl_vk_room(&textures, &texture_room, nullptr, nullptr);
-      REXLOG_INFO("cod2: native side: frame {}: everything forgotten: {}; {} of {} textures in ngl_vk ({} kept here), "
-                  "{} of {} mesh corners", frame,
+      REXLOG_INFO("cod2: native side: frame {}: {} forgotten: {}; {} of {} textures in ngl_vk ({} kept here), "
+                  "{} of {} mesh corners; {:.1f} ms", frame, all ? "everything" : "the meshes (textures kept)",
                   g_forget ? "something found no room" : "the corners past three quarters",
-                  textures, texture_room, g_textures.size(), corners_used, corner_room);
+                  textures, texture_room, g_textures.size(), corners_used, corner_room, MillisecondsSince(forget_start));
     }
-    ForgetAll();
-    ++g_compare_cost.forgets;
     corners_used = 0;
   }
   g_mesh_room_tight = corners_used > corner_room / 3;  // 4z62
@@ -4467,6 +4558,25 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   }
   // 4z60: near and far depth above 1, so the blanket alone; keep_depth 0, so the gun is blurred too, as in the game
   if (blur_share > 0.0f && !kept.meshes.empty()) ngl_vk_set_depth_of_field(2.0f, 2.0f, 0.0f, blur_share);
+  // [cod2-native] 2026-11-24 g1: the game's bloom, made from the native picture as the game made it (KeepGlowPass);
+  // cod2_debug_native_light_test 13, tests: none
+  // [cod2-native] g4: and its sky bleed (16, tests: none); the passes are the bloom's, so one count of blurs
+  const int glow_test = REXCVAR_GET(cod2_debug_native_light_test);
+  const float glow_bloom = glow_test == 13 ? 0.0f : kept.glow.bloom;
+  const float glow_bleed = glow_test == 16 ? 0.0f : kept.glow.sky_bleed;
+  const uint32_t glow_blurs = std::max(kept.glow.bloom_blurs, kept.glow.bleed_blurs);
+  if (kept.glow.setup && (glow_bloom > 0.0f || glow_bleed > 0.0f) && glow_blurs > 0 && !kept.meshes.empty()) {
+    ngl_vk_set_bloom(kept.glow.setup_constants, &kept.glow.taps[0][0], glow_blurs, glow_bloom, glow_bleed);
+    static int logged_bloom = 0;
+    if (logged_bloom < 3 && !g_quiet) {
+      ++logged_bloom;
+      REXLOG_INFO("cod2: native side: frame {}: the bloom: cutoff {:.3f}, rescale {:.2f}, desaturation {:.3f}, {} "
+                  "blurs (first tap pair {:.4f} {:.4f} weight {:.4f}), intensity {:.3f}, sky bleed {:.3f}", frame,
+                  kept.glow.setup_constants[0], kept.glow.setup_constants[1], kept.glow.setup_constants[3],
+                  glow_blurs, kept.glow.taps[0][0], kept.glow.taps[0][1], kept.glow.taps[0][3],
+                  glow_bloom, glow_bleed);
+    }
+  }
   const ngl_vk_vertex none{};
   // 4z61: a picture that goes to the window on the GPU is read back only when it is also saved (cod2_debug_native_side)
   const bool on_gpu = NativeVulkanOn() && PictureOnGpu();
@@ -4641,7 +4751,7 @@ void SaveShaderOnce(const uint8_t* base, uint32_t shader) {
     index << text;
     if (offset > 0 && IsGuestData(word) && IsGuestData(word + 4095u)) {
       std::ofstream out(folder / (std::string(stem) + "+" + std::to_string(offset) + ".bin"), std::ios::binary);
-      out.write(reinterpret_cast<const char*>(base + word), 4096);
+      out.write(reinterpret_cast<const char*>(At(base, word)), 4096);  // [cod2-native] g7
     }
   }
   index << '\n';
@@ -4652,6 +4762,53 @@ void SaveShaderOnce(const uint8_t* base, uint32_t shader) {
 // target it draws to, the size of the picture it reads (slot 0's size word) and the pixel constants that are set
 // (the PC copy names them: glowSetup's cutoff, rescale and desaturation, filterTap[8] from c8, glowApply's sky bleed
 // and bloom intensity). Read from the constant mirror only.
+// [cod2-native] 2026-11-24 g1: the game's glow passes kept for the native bloom (Frame::Glow; drawn by ngl_vk_set_bloom
+// in DrawFrame). Read from the constant mirror at each pass's draw, as LogGlowPass does: glow_setup's c23, a blur's
+// c8-c15 (filter_symmetric_N: N tap pairs, x y their place in the glow target's 0..1, w the weight; the rest left 0),
+// glow_apply_bloom's c23.w. Moscow (4z42): setup 0.96 25 0 0.655, two blurs of seven pairs, bloom 1.
+void KeepGlowPass(const uint8_t* base, uint32_t pass, const Draw& d, Frame& f) {
+  const std::string material = IsGuestData(d.material) ? Text(base, LoadU32(base, d.material)) : std::string();
+  const uint32_t ps = IsGuestData(pass) ? LoadU32(base, pass + 0xCu) : 0;
+  const std::string ps_name = IsGuestData(ps) ? Text(base, LoadU32(base, ps)) : std::string();
+  const auto is = [&](const char* name) {
+    return material.find(name) != std::string::npos || ps_name.find(name) != std::string::npos;
+  };
+  const auto constant = [&](uint32_t c, uint32_t k) {
+    const float v = LoadF32(base, kConstantMirror + 16u * (kPixelConstants + c) + 4u * k);
+    return v == v ? v : 0.0f;  // never set: NaN in the mirror (4z42)
+  };
+  Frame::Glow& g = f.glow;
+  if (is("glow_setup")) {
+    g = Frame::Glow{};  // a second setup in one frame starts over
+    g.setup = true;
+    for (uint32_t k = 0; k < 4; ++k) g.setup_constants[k] = constant(23, k);
+  } else if (is("filter_symmetric")) {
+    if (!g.setup || g.blurs >= 4) return;
+    size_t at = material.find("filter_symmetric_");
+    const std::string& named = at != std::string::npos ? material : ps_name;
+    at = named.find("filter_symmetric_");
+    uint32_t pairs = 8;
+    if (at != std::string::npos) pairs = static_cast<uint32_t>(std::atoi(named.c_str() + at + 17));
+    pairs = std::min<uint32_t>(pairs == 0 ? 8u : pairs, 8u);
+    float* taps = g.taps[g.blurs++];
+    for (uint32_t i = 0; i < pairs; ++i) {
+      taps[4 * i + 0] = constant(8 + i, 0);
+      taps[4 * i + 1] = constant(8 + i, 1);
+      taps[4 * i + 3] = constant(8 + i, 3);
+    }
+  } else if (is("glow_apply_bloom")) {
+    if (!g.setup) return;
+    g.bloom = constant(23, 3);
+    g.bloom_blurs = g.blurs;
+  } else if (is("glow_apply_sky_bleed")) {
+    // [cod2-native] g4: the PC copy's glow_apply_sky_bleed.hlsl: alpha saturate(2 x the blurred sky share) x
+    // glowApply's sky bleed (c23.x), color the sky cube's along the view; Moscow 0.25, the tank hunt 0.5
+    if (!g.setup) return;
+    g.sky_bleed = constant(23, 0);
+    g.bleed_blurs = g.blurs;
+  }
+}
+
 void LogGlowPass(const uint8_t* base, uint32_t pass, const Draw& d) {
   static std::vector<std::string> logged;
   if (logged.size() >= 16) return;
@@ -4812,6 +4969,7 @@ void SideDraw(const uint8_t* base, uint32_t args, uint32_t pass) {
     for (uint32_t w = 0; w < 6; ++w) d.fetch[w] = LoadU32(base, texture + kTextureFetch + 4u * w);
   }
   LogGlowPass(base, pass, d);
+  KeepGlowPass(base, pass, d, f);  // [cod2-native] 2026-11-24 g1
 }
 
 void SideFrameEnd(const uint8_t* base) {

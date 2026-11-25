@@ -23,6 +23,7 @@
 #endif
 #include "cod4_f2.h"  // [f2-menus] the F2 settings window
 #include "cod4_mouse.h"
+#include "cod4_rumble.h"  // [input-port] no vibration on controller 1 while the keyboard and mouse are in use
 #include "cod4_native_side.h"  // [waw-decomp-cod4] 2026-11-11 the native renderer's side check
 #include "cod4_native_window.h"  // [waw-decomp-cod4] 2026-11-11 round 6: cod4_native_vulkan
 #include "cod4_profile.h"
@@ -131,7 +132,9 @@ void Cod4App::OnConfigurePaths(rex::PathConfig& paths) {
     const auto user_dir = paths.user_data_root.empty() ? root / "userdata" : paths.user_data_root;
     std::error_code ec;
     std::filesystem::create_directories(user_dir / "logs", ec);
-    rex::cvar::SetFlagByName("log_file", (user_dir / "logs" / (std::string(kProgram) + ".log")).generic_string());
+    // [rexglue-native-platform] 2026-11-16: UTF-8 (generic_string() is the ANSI code page on Windows and throws for a
+    // character outside it, so a user folder named outside it stopped the program at its start)
+    rex::cvar::SetFlagByName("log_file", [](const std::filesystem::path& p) { const auto u8 = p.generic_u8string(); return std::string(u8.begin(), u8.end()); }(user_dir / "logs" / (std::string(kProgram) + ".log")));
   }
 }
 
@@ -181,7 +184,8 @@ void Cod4App::OnPostSetup() {
   // Debug screenshots (cod4_shots.h): the game's own picture, read back from the GPU emulation's output.
   const auto user_dir = rex::cvar::GetFlagByName("user_data_root").empty()
                             ? root_dir_ / "userdata"
-                            : std::filesystem::path(rex::cvar::GetFlagByName("user_data_root"));
+                            : [](const std::string& v) { return std::filesystem::path(std::u8string(v.begin(), v.end())); }(  // [rexglue-native-platform] 2026-11-16 UTF-8 text
+                                  rex::cvar::GetFlagByName("user_data_root"));
   cod4::shots::Start(user_dir / "logs" / "screenshots", [this](rex::ui::RawImage& image) {
     auto* graphics = runtime() ? runtime()->graphics_system() : nullptr;
     auto* presenter = graphics ? graphics->presenter() : nullptr;
@@ -203,6 +207,8 @@ void Cod4App::OnPostSetup() {
   if (auto* win = window()) {
     g_mouse_listener.window = win;
     win->AddInputListener(&g_mouse_listener, 199);
+    // [input-port] 2026-11-24 above it, watching only: which device is in use, for controller 1's vibration
+    win->AddInputListener(cod4::rumble::Watcher(), 250);
   }
 
   // A scripted pad for tests (cod4_test_input). Its times count from here.
@@ -236,6 +242,7 @@ void Cod4App::OnShutdown() {
   cod4::f2ui::Detach();  // [f2-menus] saves what changed; before the ImGui drawer goes
   cod4::profile::Stop();
   if (auto* win = window()) win->RemoveInputListener(&g_mouse_listener);
+  if (auto* win = window()) win->RemoveInputListener(cod4::rumble::Watcher());  // [input-port]
   cod4::native::SideStop();  // [waw-decomp-cod4] 2026-11-11 before the GPU emulation's presenter goes
   cod4::shots::Stop();  // before the GPU emulation's presenter goes
 }

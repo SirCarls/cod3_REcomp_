@@ -409,7 +409,9 @@ def pending(src: Path, dst: Path, scale: Optional[int] = None, kinds: frozenset 
                 if scale is None:
                     continue
                 size, out_size = png_size(png), png_size(out)
-                if size and out_size == (size[0] * scale, size[1] * scale):
+                # [setup-layout] 2026-11-24 an original whose size can't be read is judged by time alone (scale
+                # is now checked on every run: it shouldn't make such a texture be redone every build)
+                if size is None or out_size == (size[0] * scale, size[1] * scale):
                     continue
         except OSError:
             pass
@@ -537,7 +539,11 @@ def upscale_folder(tool_dir: Path, src: Path, dst: Path, staging: Path, settings
     # at the new scale (a run at that scale was interrupted).
     old_scale = recorded_scale(dst)
     rescale = old_scale != s.scale and any(dst.glob("*.png"))
-    check_scale = s.scale if rescale else None
+    # [setup-layout] 2026-11-24 (owner 09:15 "logical problems with these HD textures"): every copy's size is
+    # checked, not only after a change of scale. The scale is recorded only when a run leaves nothing missing, so
+    # 2x -> 4x (interrupted) -> back to 2x kept the 4x copies made in between as "up to date" (they're newer than
+    # their originals), and the pack mixed scales: 16 times the memory for those. Reading 24 bytes a copy is cheap.
+    check_scale = s.scale
     if wanted_pictures(src, s.kinds) is None:
         raise SetupError(f"{src / KEYS_FILE} is missing or from an older ripper: rip the game again "
                          "(a build does that) before upscaling.")
@@ -679,6 +685,24 @@ def _tree_size(path: Path) -> int:
     return total
 
 
+def _is_link(path: Path) -> bool:
+    """A symlink, or on Windows a junction too ("mklink /J" of a folder moved to another drive): removed itself,
+    never emptied. [setup-layout] 2026-11-24 Path.is_symlink() is False for a junction before Python 3.12, so
+    delete_generated went into it: safe_rmtree refused one that leads out of data/cod3, but one that stays inside
+    would have been emptied instead of unlinked."""
+    if path.is_symlink():
+        return True
+    isjunction = getattr(os.path, "isjunction", None)   # Python 3.12+
+    if isjunction is not None:
+        return isjunction(path)
+    if os.name == "nt":
+        try:
+            return getattr(os.lstat(path), "st_reparse_tag", 0) == 0xA0000003   # IO_REPARSE_TAG_MOUNT_POINT
+        except OSError:
+            return False
+    return False
+
+
 def generated(out_dir: Path) -> List[Generated]:
     """What the upscaling and the HD pack left in the build in `out_dir`
     (folders that exist only): the upscaled copies (and a textures_2x from
@@ -687,8 +711,8 @@ def generated(out_dir: Path) -> List[Generated]:
     found = []
     for what, name in ((PICTURES, OUTPUT_NAME), (PICTURES, LEGACY_OUTPUT_NAME), (PACK, PACK_NAME)):
         path = data / name
-        if path.is_symlink() or path.is_dir():
-            found.append(Generated(what, path, 0 if path.is_symlink() else _tree_size(path)))
+        if _is_link(path) or path.is_dir():
+            found.append(Generated(what, path, 0 if _is_link(path) else _tree_size(path)))
     return found
 
 
@@ -707,17 +731,19 @@ def delete_generated(out_dir: Path, what: frozenset, log: Log) -> Tuple[int, Lis
         if g.what not in what:
             continue
         try:
-            if g.path.is_symlink():
+            if _is_link(g.path):
                 log.info(f"Removing the link {g.path}")
-                g.path.unlink()
+                # os.unlink removes a directory symlink or junction on Windows too (CPython's own
+                # RemoveDirectoryW for those), never what it points to
+                os.unlink(g.path)
             else:
                 safe_rmtree(g.path, data, [originals], log)
         except (OSError, SetupError) as e:
             log.warn(f"Couldn't delete {g.path}: {e}")
-        gone = not (g.path.exists() or g.path.is_symlink())
+        gone = not (g.path.exists() or _is_link(g.path))
         if not gone:
             left.append(g.path)
-        freed += g.size - (0 if gone or g.path.is_symlink() else _tree_size(g.path))
+        freed += g.size - (0 if gone or _is_link(g.path) else _tree_size(g.path))
     _forget_in_record(out, log)
     return freed, left
 

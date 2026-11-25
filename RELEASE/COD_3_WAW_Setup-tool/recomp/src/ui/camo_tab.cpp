@@ -19,6 +19,7 @@
 #include <rex/cvar.h>
 
 #include "game/ngl_camo.h"
+#include "game/ngl_gloves.h"  // [acct2-bro] 2026-11-23 Camo lane: the gloves
 
 namespace cod3::ui::camo_tab {
 namespace {
@@ -74,6 +75,60 @@ bool Picker(const char* label, int player, const std::string& weapon, const char
   return changed;
 }
 
+// [acct2-bro] 2026-11-23 Camo lane (the gloves): a setting picked from a list (id, name), "" = `none`.
+bool ListPicker(const char* label, const char* setting, const std::vector<cod3::ngl_gloves::Choice>& list,
+                const char* none) {
+  const std::string now = rex::cvar::GetFlagByName(setting);
+  std::string shown = now.empty() ? none : now + " (not found)";
+  for (const auto& c : list)
+    if (c.id == now) shown = c.name;
+  bool changed = false;
+  ImGui::PushID(label);
+  if (ImGui::BeginCombo(label, shown.c_str(), ImGuiComboFlags_HeightLarge)) {
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputTextWithHint("##filter", "Filter", g_filter, sizeof g_filter);
+    const std::string want = Lower(g_filter);
+    if (ImGui::Selectable(none, now.empty())) rex::cvar::SetFlagByName(setting, ""), changed = true;
+    for (const auto& c : list) {
+      if (!want.empty() && Lower(c.name).find(want) == std::string::npos) continue;
+      ImGui::PushID(c.id.c_str());
+      if (ImGui::Selectable(c.name.c_str(), c.id == now)) rex::cvar::SetFlagByName(setting, c.id), changed = true;
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::PopID();
+  return changed;
+}
+
+bool DrawGloves() {
+  namespace gloves = cod3::ngl_gloves;
+  ImGui::Separator();
+  ImGui::TextUnformatted("Black Ops arms and gloves");
+  ImGui::TextWrapped("Arms the setup tool made from your own Black Ops files, with a glove skin from your camo pack, "
+                     "in place of the game's first-person arms (native renderer). Only you see them.");
+  const auto arms = gloves::ArmsList();
+  if (arms.empty()) {
+    ImGui::TextDisabled("No arms imported yet: the setup tool makes them into data/cod3/arms.");
+    if (ImGui::SmallButton("Look again##arms")) gloves::Rescan();
+    return false;
+  }
+  bool dirty = ListPicker("Arms", "cod3_arms", arms, "The game's own");
+  if (!rex::cvar::GetFlagByName("cod3_arms").empty()) {
+    dirty |= ListPicker("Gloves", "cod3_gloves", gloves::GloveList(), "One flat colour");
+    const gloves::Counts c = gloves::GetCounts();
+    if (c.model_ready) {
+      ImGui::TextDisabled("Drawn: %d skin textures, %d surfaces flat, on %d skeletons.", c.textures, c.flat, c.rigs);
+    } else if (!c.last_refusal.empty()) {
+      ImGui::TextDisabled("Not used: %s", c.last_refusal.c_str());
+    } else {
+      ImGui::TextDisabled("Shows once a level is running.");
+    }
+  }
+  if (ImGui::SmallButton("Look again##arms")) gloves::Rescan();
+  return dirty;
+}
+
 }  // namespace
 
 bool Draw() {
@@ -91,7 +146,7 @@ bool Draw() {
   if (list.empty()) {
     ImGui::TextDisabled("No camos imported yet: the setup tool imports a pack into data/cod3/camos.");
     if (ImGui::Button("Look again")) camo::Rescan();
-    return dirty;
+    return dirty | DrawGloves();  // [acct2-bro] 2026-11-23 Camo lane: the gloves
   }
   ImGui::Text("%d camos imported.", int(list.size()));
   ImGui::SameLine();
@@ -123,6 +178,7 @@ bool Draw() {
     ImGui::TextDisabled("Each gun gets its own row here once you have held it.");
   }
   for (const std::string& gun : guns) dirty |= Picker(gun.c_str(), g_player, gun, "Same as all guns");
+  dirty |= DrawGloves();  // [acct2-bro] 2026-11-23 Camo lane: the gloves
   return dirty;
 }
 

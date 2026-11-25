@@ -10,6 +10,8 @@
 #include <cstring>
 #include <string>
 
+#include <rex/system/xmemory.h>  // [waw-decomp/waw2] round 8: PhysicalHostOffset (At)
+
 namespace waw::native {
 
 // The command buffer state (GfxCmdBufState), on the drawing thread's stack.
@@ -96,9 +98,21 @@ constexpr uint32_t kDeviceFetchConstants = 0x480;
 constexpr uint32_t kDeviceVertexConstants = 0x780;   // 16 bytes a register, c0 first
 constexpr uint32_t kDevicePixelConstants = 0x1780;
 
+// [waw-decomp/waw2] 2026-11-24 round 8: the host's pointer to a guest address. On Windows (64 KB allocation
+// granularity) and macOS arm64 (16 KB) the SDK's PhysicalHeap::Initialize maps the guest's 0xE0000000 view 0x1000
+// further on, so `base + address` read 4 KB early there: the same fault CoD3's native side had under Wine (its
+// ngl_side.cpp At(), dev/agents/rexglue-native/WIN-PORT.md). Taken from the SDK's own translator
+// (rex::memory::detail::PhysicalHostOffset, rex/system/xmemory.h), so it can't drift from it. Every read of guest
+// memory in the native side goes through At.
+inline const uint8_t* At(const uint8_t* base, uint32_t address) {
+  return base + address + rex::memory::detail::PhysicalHostOffset(address);
+}
+
+inline uint8_t Load8(const uint8_t* base, uint32_t address) { return *At(base, address); }
+
 inline uint32_t Load32(const uint8_t* base, uint32_t address) {
   uint32_t value;
-  std::memcpy(&value, base + address, sizeof(value));
+  std::memcpy(&value, At(base, address), sizeof(value));  // [waw-decomp/waw2] round 8: At (was base + address)
   return __builtin_bswap32(value);
 }
 
@@ -118,7 +132,7 @@ inline bool Readable(uint32_t address) {
 // The printable text at an address (3 to 127 characters), or "".
 inline std::string GuestText(const uint8_t* base, uint32_t address) {
   if (!Readable(address) || !Readable(address + 128)) return "";
-  const char* p = reinterpret_cast<const char*>(base + address);
+  const char* p = reinterpret_cast<const char*>(At(base, address));  // [waw-decomp/waw2] round 8: At
   const size_t n = strnlen(p, 128);
   if (n < 3 || n == 128) return "";
   for (size_t i = 0; i < n; ++i) {

@@ -13,6 +13,7 @@
 #include <rex/logging.h>
 
 #include "generated/default/waw_pch.h"
+#include "waw_native_layout.h"  // [waw-decomp/waw2] 2026-11-24 round 8: At
 
 // Owner, 2026-11-09 18:17 ("blue soldier.") and 18:27: soldiers, leaves and barbed wire come out blue or purple, with
 // a fine grid of dark dots over trunks, sandbags and log walls. Turning the game's own shadow settings off one at a
@@ -50,7 +51,10 @@ constexpr uint32_t kSunShadowRecord = 0x84E822A8u;
 constexpr uint32_t kShadowmapFormat = 0x84A84E10u;
 
 uint32_t LoadGuestWord(const uint8_t* base, uint32_t address) {
-  return __builtin_bswap32(*reinterpret_cast<const uint32_t*>(base + address));
+  // [waw-decomp/waw2] 2026-11-24 round 8: through At (waw_native_layout.h): on Windows the 0xE0000000 view is 4 KB on
+  uint32_t value;
+  std::memcpy(&value, waw::native::At(base, address), sizeof(value));
+  return __builtin_bswap32(value);
 }
 
 // Addresses in the virtual heaps and the program image (0x40000000-0x9FFEFFFF) and in the physical-memory views

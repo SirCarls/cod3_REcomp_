@@ -29,6 +29,31 @@ A PC port of Call of Duty 3 (Xbox 360), built from the player's own disc, and, l
   ships. Plan and sources: `dev/agents/acct2-bro/NATIVE-RENDERERS.md`.
 - **Every outside project is for information only, whatever its license** (owner 2026-11-07): KisakCOD, KisakBlack,
   OpenCoD1, IW4x, and IW4L although it is Apache-2.0. Read them for names, formats and behavior; never copy their code.
+- **Search the project before you brute-force** (owner 2026-11-09 19:24: "Please really search the project regarding
+  these values before bruteforcing something"; 19:35: made a project-wide rule). Before you write a probe, a logging
+  build or a test run, or guess at an address, value, constant or layout, look for what the project already knows:
+  the decompiled code and its tables (`dev/waw-decomp/*/decomp/`, `names.tsv`, `globals.tsv`, `strings.tsv`), the
+  symbol maps (`recomp/config/symbols.toml`, `names.toml`), `docs/`, other agents' notes and test logs
+  (`dev/agents/*/NOTES.md`, `TEST-RUNS.md`, the board), saved shader dumps and run results, and the claude.ai Project's
+  docs. Write in your notes what you searched and what it gave. Probe only for what is still unknown, and say so.
+- **Builds and test runs go side by side** (owner 2026-11-24 03:02: "get multiple sessions working at the same time
+  make this a project wide rule"). Every game and thread runs its own builds and untimed runs in parallel, each in its
+  own REA session, through `dev/tools/rea/runq.sh` (how: `dev/agents/PARALLEL-RUNS.md`). Only three things wait for
+  each other: timed or measuring runs (`results/game.lock` exclusive; untimed runs take it shared), system-link tests
+  whose copies must share an address, and builds into the same work tree. Each run gets its own loopback address
+  (`net_interface`), so games never fight over a port.
+- **Look at the outside projects for help** (owner 2026-11-24 03:46: "Please continue to look at the other github
+  projects for help or solutions. Please make this a rule for everychat that has a recomp or PC files."). Every chat on
+  a recomp or PC files checks the outside reference projects in `docs/SOURCES.md` for help and solutions, especially
+  while builds and tests run (ZoneTool, OpenAssetTools, KisakCOD, FinestHourRemastered, the CoD2-BRO native loader,
+  FrankHUN's CoD3Recomp, and any the owner adds). Information only, never copied: facts are re-derived in our own
+  disassembly or decomp; each one used gets a SOURCES.md row with its license, and notes say what was looked at.
+- **Every game works properly at any frame rate** (owner 2026-11-24 04:37: "Yeah so every game needs to be able to
+  function propery regardless of FPS. This is a project wide rule."). Campaign and multiplayer, every game works the
+  same at 20, 30, 60, 144 and uncapped: no timing, drops, drift, physics, animation, input, fade or other visual bug
+  that depends on the frame rate. Per-frame steps are scaled by the frame's time; nothing counts frames or vertical
+  blanks as time. Anything touching timing is tested at a low and a high cap (at least 30 and 144, plus uncapped)
+  before it lands.
 
 ## Working alongside other agents
 
@@ -37,7 +62,23 @@ Several agents often work on this folder at once and can't see each other. To av
 1. **Read the board** `dev/agents/BOARD.md` before you start and before every sync (it's private, so it exists only on the owner's machine). Add a claim: who you are, what you're doing, which files and folders you'll change. Stay out of what others claimed.
 2. **Compare before you overwrite.** If a file changed since you last read it and you didn't change it, someone else did: merge their change into yours.
 3. **Shared files get small additions**, not rewrites: `mod` lines, table rows, your own block in a list.
-4. **One build at a time** on a shared machine (hold `flock dev/agents/.build.lock` around a build on Linux).
+   **The board itself is written only through `dev/tools/board_write.py`** (it locks, checks, writes a temp file and
+   renames it) **or, from a session that can't write the project drive, a JSON drop in
+   `COD3-rea-work/board-drop/pending/`** (`dev/tools/board_drop.py` applies it). Never with device_commit_files, the
+   Edit or Write tools or any whole-file copy, mtime guard or not: on this drive such a write doubled the board and
+   lost an hour of entries on 2026-11-24. Other files keep the usual stage, compare and commit protocol.
+   **Never touch the Windows (NTFS) drive at the disk level** (owner 2026-11-24 05:18: "no DO NOT FUCK WITH MY
+   WINDOWS DRIVE I WILL KILL YOU"): on the project drive (sde2) or any NTFS volume, no ntfsfix, chkdsk, fsck,
+   mount, umount, remount, repair, partition or disk tool, never suggested to the owner, and no volume write
+   tests. Only normal file reads and writes inside the project through the approved tools.
+- **Solve it by math and logic first, compile and run last** (owner 2026-11-24 06:54: "Please make this a project
+  rule: attempt to solve issues with math or logically checking rather than compiling, is the issue can't be solve
+  this way then you can test. This should speed things up."). Settle a question first by reading the code or the
+  decompile, working the numbers, and static or syntax checks (-fsyntax-only, glslc, unit tests that don't need
+  the game). Build and run the game only when that can't settle it, or once to confirm the final change before
+  landing (rule 9's landing checks still apply). Batch what still needs running into one build.
+4. **Builds into the same work tree go one at a time**; other builds run side by side (`dev/tools/rea/runq.sh build`;
+   a build that writes into the project folder also holds `dev/agents/.build.lock`).
 5. **When you stop**, mark your claim done and write your notes to `dev/agents/<your-name>/NOTES.md`.
 
 ## The Rust decomp

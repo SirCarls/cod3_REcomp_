@@ -86,6 +86,10 @@ void Detach(rex::ui::Window* window);
 // UI thread, every frame: an overlay or a game menu opened, or the window
 // lost focus -> keys held are let go.
 void OnUiFrame();
+// [input-port] 2026-11-24 (owner: "every game needs to be able to function properly regardless of FPS";
+// FPS-RULE14 I4) The game thread, after each run of the game's SV_Frame (server_step.cpp, mp/server_step_mp.cpp):
+// counts game updates, so a key tap stays down until an update has seen it (cod3_binds_tap_until_update).
+void NoteGameUpdate();
 // The keys are the actions' now (in play, no menu over the game; any thread).
 bool InPlay();
 // The local client the keyboard and mouse play (reads guest memory; any

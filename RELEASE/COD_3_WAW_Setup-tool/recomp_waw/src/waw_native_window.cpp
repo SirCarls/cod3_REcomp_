@@ -17,9 +17,14 @@
 #include <type_traits>
 #include <utility>
 
+#include <atomic>
+
 #include <rex/cvar.h>
 #include <rex/logging.h>
 #include <rex/system/gpu_plugin.h>
+#include <rex/ui/ui_event.h>
+#include <rex/ui/window.h>
+#include <rex/ui/window_listener.h>
 
 #if defined(WAW_NGL_VK)
 extern "C" {
@@ -261,6 +266,44 @@ bool StartNativeVulkan(rex::RuntimeConfig& config) {
 
 bool NativeVulkanOn() { return g_native; }
 
+// [waw-decomp/waw2] 2026-11-24 round 9: the window's size in pixels, written on the UI thread (the window's events)
+// and read on the drawing thread; both halves in one word so a reader never pairs a new width with an old height
+namespace {
+std::atomic<uint64_t> g_window_pixels{0};
+
+void NoteWindowPixels(const rex::ui::Window* window) {
+  if (!window) return;
+  const uint64_t w = window->GetActualPhysicalWidth(), h = window->GetActualPhysicalHeight();
+  g_window_pixels.store(w << 32 | h, std::memory_order_relaxed);
+}
+
+class WindowSizeListener final : public rex::ui::WindowListener {
+ public:
+  void OnOpened(rex::ui::UISetupEvent& e) override { NoteWindowPixels(e.target()); }
+  void OnResize(rex::ui::UISetupEvent& e) override { NoteWindowPixels(e.target()); }
+  void OnDpiChanged(rex::ui::UISetupEvent& e) override { NoteWindowPixels(e.target()); }
+  void OnRestored(rex::ui::UIEvent& e) override { NoteWindowPixels(e.target()); }
+};
+WindowSizeListener g_window_size_listener;
+}  // namespace
+
+void WatchWindow(rex::ui::Window* window) {
+  if (!window) return;
+  NoteWindowPixels(window);
+  window->AddListener(&g_window_size_listener);
+}
+
+void UnwatchWindow(rex::ui::Window* window) {
+  if (window) window->RemoveListener(&g_window_size_listener);
+}
+
+bool WindowPixels(uint32_t& width, uint32_t& height) {
+  const uint64_t both = g_window_pixels.load(std::memory_order_relaxed);
+  width = static_cast<uint32_t>(both >> 32);
+  height = static_cast<uint32_t>(both);
+  return width != 0 && height != 0;
+}
+
 #if defined(WAW_NGL_VK)
 int StartNglVkForWindow(uint32_t width, uint32_t height) {
   g_width = width;
@@ -281,6 +324,11 @@ int StartNglVkForWindow(uint32_t width, uint32_t height) {
 }
 
 bool PictureOnGpu() { return g_on_gpu; }
+
+void SetPictureSize(uint32_t width, uint32_t height) {
+  g_width = width;
+  g_height = height;
+}
 
 void ShowOnGpu(const uint8_t table[3][256]) {
   if (g_shown.failed) return;
@@ -415,6 +463,7 @@ void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint
 #else
 int StartNglVkForWindow(uint32_t, uint32_t) { return -1; }
 bool PictureOnGpu() { return false; }
+void SetPictureSize(uint32_t, uint32_t) {}
 void ShowOnGpu(const uint8_t[3][256]) {}
 void ShowPixels(const uint8_t*, uint32_t, uint32_t, const uint8_t[3][256]) {}
 #endif  // WAW_NGL_VK

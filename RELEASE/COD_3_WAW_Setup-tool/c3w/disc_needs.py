@@ -12,10 +12,10 @@ The campaign program is the same on the USA/Europe, German and Europe (Fr, Es, I
   Voices (Play)                  English: the USA/Europe disc; German: the German disc; French,
                                  Spanish, Italian: the Europe (Fr, Es, It) disc. A language the game
                                  doesn't have plays the game's own voices.
-  Censored campaign (Play)       the German disc, once (a game built from the German disc: the
+  Censored campaign (Textures)   the German disc, once (a game built from the German disc: the
                                  USA/Europe or Fr/Es/It disc, to switch it off)
-  Console language (Play)        the soldiers' language and the text only on the Fr/Es/It disc; the
-                                 films' sound on every disc
+  Voices > console language      (set with Voices) the soldiers' language and the text only on the
+                                 Fr/Es/It disc; the films' sound on every disc
   everything else                no other disc: the built-in censor's designs, your own and the HD
                                  textures, the game settings
 
@@ -62,11 +62,12 @@ TABLE: Tuple[Tuple[str, str, str], ...] = (
     ("Multiplayer and map packs", "Set up", "a game built from the USA/Europe disc"),
     ("Voices: English", "Play", "the USA/Europe disc (a game built from it has them)"),
     ("Voices: German", "Play", "the German disc"),
-    ("Voices: French, Spanish, Italian", "Play", "the Europe (Fr, Es, It) disc"),
-    ("Censored campaign", "Play", "the German disc, once (switching a German game off: the USA/Europe or "
+    ("Voices: French, Spanish, Italian", "Play", "the Europe (Fr, Es, It) disc (campaign; its multiplayer "
+                                                       "always plays its own voices)"),
+    ("Censored campaign", "Textures", "the German disc, once (switching a German game off: the USA/Europe or "
                                   "Fr/Es/It disc)"),
-    ("Console language", "Play", "soldiers' language and text: only the Europe (Fr, Es, It) disc; films' "
-                                 "sound: every disc"),
+    ("Console language (set by Voices)", "Play", "soldiers' language and text: only the Europe (Fr, Es, It) disc; "
+                                                "films' sound: every disc"),
     ("Built-in censor, your own textures, HD textures, game settings", "Textures, Play", "no other disc"),
 )
 
@@ -78,7 +79,7 @@ GIVES = {
     GERMANY: "Builds the campaign only (multiplayer needs the USA/Europe disc); German text and voices, the "
              "censored textures.",
     FR_ES_IT: "Builds the campaign only (multiplayer needs the USA/Europe disc); French, Spanish or Italian text "
-              "and voices, by Console language on the Play page.",
+              "and voices, by Voices on the Play page.",
     JAPAN: "A build of its own, which can't be built: use the USA/Europe, German or Europe (Fr, Es, It) disc.",
 }
 GOOD_FOR = {
@@ -293,10 +294,10 @@ def lines(out: Optional[Path], input_dir: Optional[Path] = None,
         out_lines.append(Line("Multiplayer and map packs", f"not with {rel.short}: only a game built from the "
                               "USA/Europe disc has multiplayer (its map packs too).", None))
     if disc.key == FR_ES_IT:
-        out_lines.append(Line("Console language", "picks the soldiers' language and the text (French, Spanish or "
-                              "Italian) on this disc, and the films' sound.", True))
+        out_lines.append(Line("Console language", "set by Voices: picks the soldiers' language and the text "
+                              "(French, Spanish or Italian) on this disc, and the films' sound.", True))
     else:
-        out_lines.append(Line("Console language", "changes only the films' sound on this disc.", True))
+        out_lines.append(Line("Console language", "set by Voices: changes only the films' sound on this disc.", True))
     out_lines.append(Line("No other disc needed", "the built-in censor and your own textures (Textures), the HD "
                           "textures, the game settings.", True))
     return out_lines

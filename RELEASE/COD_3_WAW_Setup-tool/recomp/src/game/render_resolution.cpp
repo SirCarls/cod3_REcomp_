@@ -857,6 +857,25 @@ void ApplyPending(PPCContext& ctx, uint8_t* base) {
   }
 }
 
+// [rexglue-native thread2] 2026-11-24: the window's picture (cod3::GetWindowPicture), noted on the UI thread when the
+// window, the shape or the bars change, read by the native renderer's thread at each frame
+std::mutex g_picture_mutex;
+cod3::WindowPicture g_window_picture;
+
+void NoteWindowPicture(uint32_t width, uint32_t height, float aspect) {
+  const cod3::PictureRect rect = cod3::PictureInView(width, height, aspect);
+  cod3::WindowPicture picture;
+  picture.window_width = width;
+  picture.window_height = height;
+  picture.picture_x = rect.x;
+  picture.picture_y = rect.y;
+  picture.picture_width = rect.width;
+  picture.picture_height = rect.height;
+  cod3::ShapeRatio(aspect, &picture.shape_x, &picture.shape_y);
+  std::lock_guard lock(g_picture_mutex);
+  g_window_picture = picture;
+}
+
 void WatchSettings() {
   for (const char* name : {"cod3_render_resolution", "cod3_render_method", "cod3_render_percent",
                            "cod3_game_width", "cod3_game_height", "cod3_game_mode", "cod3_game_msaa",
@@ -878,6 +897,10 @@ void NoteWindowSize(uint32_t width, uint32_t height) {
   g_window_width.store(width, std::memory_order_relaxed);
   g_window_height.store(height, std::memory_order_relaxed);
   g_window_aspect = aspect;
+  // [rexglue-native thread2] 2026-11-24: the settings that move the picture (the shape, present_letterbox) are
+  // watched below; read once here so the picture is worked out again for them too
+  const bool settings = g_settings_changed.exchange(false, std::memory_order_relaxed);
+  if (!g_watching || changed || settings) NoteWindowPicture(width, height, aspect);
   if (!g_watching) {
     // The first size is the one the start planned for.
     g_watching = true;
@@ -888,8 +911,38 @@ void NoteWindowSize(uint32_t width, uint32_t height) {
     g_have_last = true;
     return;
   }
-  if (g_settings_changed.exchange(false, std::memory_order_relaxed) || changed)
+  if (settings || changed)
     RequestRenderResolution();
+}
+
+void NamedResolutionSizesWindow(rex::ui::Window* window) {
+#if defined(REX_UI_WINDOW_SET_CLIENT_PHYSICAL_SIZE)
+  static std::string applied;  // the choice last applied to the window ("" = none: auto, or not native)
+  if (!window) return;
+  std::string choice = rex::cvar::GetFlagByName("cod3_render_resolution");
+  uint32_t width = 0, height = 0;
+  const bool native = rex::cvar::GetFlagByName("cod3_native_vulkan") == "true";
+  if (!native || !ParseResolutionChoice(choice, &width, &height)) {
+    applied.clear();
+    return;
+  }
+  if (choice == applied || window->IsFullscreen()) return;  // done for this choice (or later, once windowed)
+  applied = choice;
+  if (window->GetActualPhysicalWidth() == width && window->GetActualPhysicalHeight() == height) return;
+  const bool asked = window->SetClientPhysicalSize(width, height);
+  REXLOG_INFO("cod3: render resolution {}: the window is {} {}x{} (was {}x{}); the native picture follows it",
+              choice, asked ? "asked for" : "can't be set to (maximized?)", width, height,
+              window->GetActualPhysicalWidth(), window->GetActualPhysicalHeight());
+#else
+  (void)window;
+#endif
+}
+
+bool GetWindowPicture(WindowPicture* picture) {
+  std::lock_guard lock(g_picture_mutex);
+  if (!g_window_picture.picture_width) return false;
+  *picture = g_window_picture;
+  return true;
 }
 
 void RequestRenderResolution() {

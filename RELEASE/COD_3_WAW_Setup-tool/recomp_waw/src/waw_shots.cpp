@@ -74,7 +74,12 @@ std::string Measure(const rex::ui::RawImage& image) {
 bool WritePpm(const rex::ui::RawImage& image, const std::filesystem::path& file) {
   std::filesystem::path part = file;
   part += ".part";
-  FILE* f = std::fopen(part.string().c_str(), "wb");
+  // [rexglue-native-platform] 2026-11-16: opened by the path itself (part.string() is the ANSI code page on Windows)
+#if defined(_WIN32)
+  FILE* f = _wfopen(part.c_str(), L"wb");
+#else
+  FILE* f = std::fopen(part.c_str(), "wb");
+#endif
   if (!f) return false;
   std::fprintf(f, "P6\n%u %u\n255\n", image.width, image.height);
   std::vector<uint8_t> row(size_t(image.width) * 3);

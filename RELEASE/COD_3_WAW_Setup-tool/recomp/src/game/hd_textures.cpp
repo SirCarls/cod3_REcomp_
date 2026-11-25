@@ -49,6 +49,20 @@ constexpr const char* kSdkSetting = "texture_replacement_path";
 constexpr const char* kSdkUserSetting = "texture_replacement_user_path";
 // Live: a file of the keys that may be replaced (empty = every key).
 constexpr const char* kSdkAllowList = "texture_replacement_allow_list";
+// [acct2-main] 2026-11-14 (owner 15:31, a multiplayer safety review; SDK patch 0113): live, every replaced texture's
+// image is checked against the game's own alpha, not only the user pack's (the HD pack's folder is on the player's
+// disk too, and under cod3_mp_texture_policy all nothing checked it in a match). On for the whole of cod3mp, so no
+// texture is made twice when a match starts; in cod3 only during a match (there is none in the campaign).
+constexpr const char* kSdkCheckAlpha = "texture_replacement_check_alpha";
+#if defined(COD3_MP)
+constexpr bool kCheckAlphaOutsideMatch = true;
+#else
+constexpr bool kCheckAlphaOutsideMatch = false;
+#endif
+
+// Sets the SDK's check when this build's SDK has it (0113), unless the command line or environment chose it (a
+// test), and only when it changes (each change makes the SDK look every texture up again).
+void SetCheckAlpha(bool on);
 
 std::atomic<HdTextures> g_state{HdTextures::kUndecided};
 std::atomic<HdTextures> g_user_state{HdTextures::kUndecided};
@@ -70,6 +84,12 @@ constexpr uint64_t kMultiplayerInsigniaKeys[] = {
     0x43e8a8f26b93615f,  // decal$us_german_propaganda_: propaganda poster
     0xfe2665c6dacb3f45,  // sp_bs_veh_main_icon_02: menu picture, Iron Cross
     0x2beac860929168f5,  // sp_bs_wpn_main_icon_02: menu picture, Iron Cross
+    // [rexglue-native-settings] 2026-11-11 (coordinator 09:02; owner 07:33 "insignia censoring doesn't work"):
+    // the multiplayer maps carry their own copies of the flags above, so none of the keys above was in any
+    // cod3mp map (settings/locate-mp.txt). World decor, no player information (CHEAT-GUARD-PLAN.md).
+    0xd616f2029e2f1500,  // decal$of_germanflag_dirty_c, mp/mpmaynne zn01-zn04 (cloth$... in the campaign): banner  [rexglue-native-settings]
+    0xc29b5537965c10a9,  // cloth_masked$of_flag_german 512x256 DXT3, mp/weapusge: party flag  [rexglue-native-settings]
+    0x8d1ca8959ce5b8a9,  // cloth_masked$of_flag_german 256x128 DXT3, mp/weapusge: party flag  [rexglue-native-settings]
 };
 
 // The multiplayer policy: the allow list file the SDK reads, and the mode.
@@ -90,11 +110,26 @@ std::atomic<int> g_mp_policy{kNoMatch};       // the policy applied, kNoMatch ou
 std::filesystem::path g_mp_allow_list_off;    // userdata/texture_allow_list_mp_off.txt
 
 // The local setting; anything but "insignia" or "off" is "all" (the default).
+// [acct2-main] 2026-11-14 (owner 15:31, a multiplayer safety review; F2 test: the console and cod3.toml take any text
+// here): a value that is none of the three is said once in the log, as "all" shows every texture in a match, the
+// insignia too, so a typo such as "insignias" would turn the censor off without a word. The policy itself is
+// unchanged.
 MatchPolicy LocalPolicy() {
   std::string value = REXCVAR_GET(cod3_mp_texture_policy);
   for (char& c : value) c = char(std::tolower(static_cast<unsigned char>(c)));
   if (value == "insignia") return MatchPolicy::kInsignia;
   if (value == "off") return MatchPolicy::kOff;
+  if (value != "all") {
+    static std::mutex warned_mutex;
+    static std::string warned;
+    std::lock_guard<std::mutex> lock(warned_mutex);
+    if (warned != value) {
+      warned = value;
+      REXLOG_WARN("cod3: cod3_mp_texture_policy \"{}\" is not all, insignia or off; \"all\" is used (every texture "
+                  "replaced in a match, the insignia too)",
+                  value.substr(0, 40));
+    }
+  }
   return MatchPolicy::kAll;
 }
 
@@ -152,6 +187,62 @@ bool ChosenByHand(const char* name) {
                   info->source == rex::cvar::Source::kEnvironment);
 }
 
+void SetCheckAlpha(bool on) {  // [acct2-main] 2026-11-14
+  if (!rex::cvar::GetFlagInfo(kSdkCheckAlpha) || ChosenByHand(kSdkCheckAlpha)) return;
+  const char* value = on ? "true" : "false";
+  if (rex::cvar::GetFlagByName(kSdkCheckAlpha) == value) return;
+  rex::cvar::SetFlagByName(kSdkCheckAlpha, value);
+}
+
+// [acct2-main] 2026-11-14 22:30 (run t113-mpoff: the check set off on the command line stays off, as SetCheckAlpha
+// means, but the lines below still said every texture is checked): whether the SDK's check is on now, so the log
+// says what really happens.
+bool CheckAlphaOn() {
+  return rex::cvar::GetFlagInfo(kSdkCheckAlpha) && rex::cvar::GetFlagByName(kSdkCheckAlpha) == "true";
+}
+
+// [acct2-main] 2026-11-14 22:30: said when the check is off only because the command line or environment chose it.
+void WarnCheckAlphaOffByHand(const char* when) {
+  REXLOG_WARN("cod3: {}: {} is off (set on the command line or in the environment, which the game leaves alone for "
+              "a test), so a pack can make a wall or a bush see-through on this screen",
+              when, kSdkCheckAlpha);
+}
+
+// [acct2-main] 2026-11-14 (owner 12:12 "The censorship with pre-made flags don't show in-game"): the setup tool's
+// built-in insignia censor (c3w/censor_builtin.py) saves its choice in data/cod3/censor_builtin.json and puts its
+// pictures in the user pack, so with cod3_user_textures off the choice silently did nothing. Whether that file
+// chooses a design for the flags or the insignia (a value other than "off"); the file is small JSON the tool writes
+// ("flags": "rainbow", ...), read as text.
+bool CensorChosen(const std::filesystem::path& root) {
+  std::error_code ec;
+  const std::filesystem::path file = root / "data" / "cod3" / "censor_builtin.json";
+  if (std::filesystem::file_size(file, ec) > 4096 || ec) return false;
+  std::ifstream in(file, std::ios::binary);
+  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  for (const char* name : {"\"flags\"", "\"insignia\""}) {
+    size_t at = text.find(name);
+    if (at == std::string::npos) continue;
+    at = text.find(':', at);
+    const size_t open = at == std::string::npos ? at : text.find('"', at);
+    const size_t close = open == std::string::npos ? open : text.find('"', open + 1);
+    if (close != std::string::npos && text.compare(open + 1, close - open - 1, "off") != 0) return true;
+  }
+  return false;
+}
+
+// [acct2-main] 2026-11-14 18:00 (owner 17:42 "check for issues with all the censoring settings"): the setup tool's
+// Play builds the user pack again when the censor's choice is newer than the pack's last build (c3w/user_textures.py
+// pack_out_of_date: data/cod3/censor_builtin.json against data/cod3/.user_textures_built). A game started another way
+// (its own shortcut, the command line) takes the older pack without a word; this is the same comparison, for a line
+// in the log. False when either file is missing (never built by this version of the tool, or no censor chosen).
+bool CensorNewerThanPack(const std::filesystem::path& root) {
+  std::error_code choice_ec, built_ec;
+  const std::filesystem::path dir = root / "data" / "cod3";
+  const auto choice = std::filesystem::last_write_time(dir / "censor_builtin.json", choice_ec);
+  const auto built = std::filesystem::last_write_time(dir / ".user_textures_built", built_ec);
+  return !choice_ec && !built_ec && choice > built;
+}
+
 // Decides the user pack (after the HD pack's decision).
 void ApplyUserTextures(const std::filesystem::path& root) {
   const std::filesystem::path pack = root / "data" / "cod3" / "user_textures";
@@ -174,6 +265,11 @@ void ApplyUserTextures(const std::filesystem::path& root) {
   if (!REXCVAR_GET(cod3_user_textures)) {
     g_user_state = HdTextures::kOff;
     if (have_pack) REXLOG_INFO("cod3: user textures off (cod3_user_textures); the pack is in {}", where);
+    if (CensorChosen(root)) {  // [acct2-main] 2026-11-14
+      REXLOG_WARN("cod3: the setup tool's insignia censor is on, but \"Your own textures\" is off (F2 > Video, "
+                  "cod3_user_textures; it applies after a restart), so the flags and insignia look as the game has "
+                  "them");
+    }
   } else if (!have_pack) {
     g_user_state = HdTextures::kNoPack;
     // [rexglue-native-settings] 2026-11-11 (owner 07:33 "insignia censoring doesn't work"): one line, so a log shows
@@ -188,6 +284,11 @@ void ApplyUserTextures(const std::filesystem::path& root) {
     g_user_pack = pack;
     REXLOG_INFO("cod3: user textures on: the pack in {} (read after the HD pack, so it wins)",
                 where);
+    if (CensorNewerThanPack(root)) {  // [acct2-main] 2026-11-14 18:00
+      REXLOG_WARN("cod3: the setup tool's insignia censor was changed after the user texture pack was built, so "
+                  "the game shows the pack's older pictures; the setup tool's Play (or Build texture pack) builds "
+                  "it again");
+    }
   }
   // Written in every case, like texture_replacement_path (see below).
   if (!rex::cvar::SetFlagByName(kSdkUserSetting, value) && !value.empty()) {
@@ -285,6 +386,22 @@ void ApplyHdTextures(const std::filesystem::path& root, bool gpu) {
   if (!ChosenByHand(kSdkAllowList) && rex::cvar::GetFlagInfo(kSdkAllowList)) {
     rex::cvar::SetFlagByName(kSdkAllowList, "");
   }
+  // [acct2-main] 2026-11-14: the check as this build has it outside a match (a value F2 saved in cod3.toml isn't
+  // kept). An SDK without patch 0113 has no such setting: said once, as a match then checks only the user pack.
+  if (rex::cvar::GetFlagInfo(kSdkCheckAlpha)) {
+    SetCheckAlpha(kCheckAlphaOutsideMatch);
+    if (kCheckAlphaOutsideMatch && CheckAlphaOn()) {
+      REXLOG_INFO("cod3: multiplayer: every replaced texture is checked against the game's own alpha, so no pack "
+                  "makes a wall or a bush see-through ({})",
+                  kSdkCheckAlpha);
+    } else if (kCheckAlphaOutsideMatch) {
+      WarnCheckAlphaOffByHand("multiplayer");  // [acct2-main] 2026-11-14 22:30
+    }
+  } else {
+    REXLOG_INFO("cod3: this build's GPU emulation checks only the user pack's textures against the game's alpha "
+                "(no {}, SDK patch 0113)",
+                kSdkCheckAlpha);
+  }
 }
 
 HdTextures GetHdTextures() { return g_state.load(); }
@@ -332,6 +449,7 @@ void SetMultiplayerMode(bool match_running) {
   }
   if (!match_running) {
     rex::cvar::SetFlagByName(kSdkAllowList, "");
+    SetCheckAlpha(kCheckAlphaOutsideMatch);  // [acct2-main] 0113, after the list (one look-up less)
     REXLOG_INFO("cod3: multiplayer match over: texture replacement back to normal");
     return;
   }
@@ -339,9 +457,11 @@ void SetMultiplayerMode(bool match_running) {
   if (policy == MatchPolicy::kAll) {
     // As in the campaign: every texture in the packs (the user pack's wins).
     rex::cvar::SetFlagByName(kSdkAllowList, "");
-    REXLOG_INFO("cod3: {}: every replaced texture is used, HD pack and user pack "
-                "(cod3_mp_texture_policy all)",
-                when);
+    SetCheckAlpha(true);  // [acct2-main] 0113: but none more see-through than the game's own
+    // [acct2-main] 2026-11-14 22:30: "each checked" only when the check is on now (a test can set it off by hand).
+    REXLOG_INFO("cod3: {}: every replaced texture is used, HD pack and user pack (cod3_mp_texture_policy all){}",
+                when, CheckAlphaOn() ? ", each checked against the game's own alpha" : "");
+    if (rex::cvar::GetFlagInfo(kSdkCheckAlpha) && !CheckAlphaOn()) WarnCheckAlphaOffByHand(when);
     return;
   }
   if (policy == MatchPolicy::kOff) {
@@ -353,6 +473,7 @@ void SetMultiplayerMode(bool match_running) {
                   PathToUtf8(g_mp_allow_list_off));
     }
     rex::cvar::SetFlagByName(kSdkAllowList, PathToUtf8Generic(g_mp_allow_list_off));
+    SetCheckAlpha(true);  // [acct2-main] 0113 (an allow list checks every image anyway)
     REXLOG_INFO("cod3: {}: no texture is replaced until the match ends (cod3_mp_texture_policy off)",
                 when);
     return;
@@ -378,6 +499,7 @@ void SetMultiplayerMode(bool match_running) {
                 PathToUtf8(g_mp_allow_list));
   }
   rex::cvar::SetFlagByName(kSdkAllowList, PathToUtf8Generic(g_mp_allow_list));
+  SetCheckAlpha(true);  // [acct2-main] 0113 (an allow list checks every image anyway)
   REXLOG_INFO("cod3: {}: texture replacement limited to {} insignia texture(s) from the user pack{}; "
               "HD and other replaced textures are off until the match ends "
               "(cod3_mp_texture_policy insignia)",

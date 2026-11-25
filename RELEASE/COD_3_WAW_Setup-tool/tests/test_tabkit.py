@@ -28,10 +28,26 @@ class SidebarTests(unittest.TestCase):
             self.assertLessEqual(len(PAGES[gid]), 9, gid)   # Ctrl+1 to Ctrl+9 reach every page
 
     def test_each_tab_keeps_its_own_pages_first(self):
-        self.assertEqual(PAGES["bro"][:3], ["bro_setup", "bro_play", "bro_status"])
-        self.assertEqual(PAGES["fh"][:3], ["fh_setup", "fh_play", "fh_status"])
+        # [setup-layout] 2026-11-24 no Port status pages: About has that section
+        self.assertEqual(PAGES["bro"][:3], ["bro_setup", "bro_play", "bro_tools"])
+        self.assertEqual(PAGES["fh"][:3], ["fh_setup", "fh_play", "fh_tools"])
         self.assertEqual(PAGES["waw"][:3], ["waw_setup", "waw_play", "waw_content"])
-        self.assertEqual(PAGES["coduo"][:3], ["coduo_copy", "coduo_server", "coduo_status"])
+        self.assertEqual(PAGES["coduo"][:3], ["coduo_copy", "coduo_server", "coduo_tools"])
+
+    def test_one_sidebar_order_on_every_tab(self):
+        # [setup-layout] 2026-11-24 Set up (or the tab's own first pages), Play, the game's own pages, then Tools,
+        # Log, About; with Mods & maps switched on too
+        for pages in (PAGES, games.available_pages(["maps"])):
+            for g in games.GAMES:
+                own = [p for p in pages[g.id] if p not in ("log",) and not p.endswith(("tools", "about"))]
+                self.assertEqual(pages[g.id], own + list(kit_pages_or_cod3(g.id)), g.id)
+                if g.id != games.CODUO:
+                    self.assertTrue(own[0].endswith("setup") and own[1].endswith("play"), g.id)
+                self.assertFalse([p for p in pages[g.id] if p.endswith("_status")], g.id)
+
+
+def kit_pages_or_cod3(gid):
+    return ("tools", "log", "about") if gid == games.COD3 else (f"{gid}_tools", "log", f"{gid}_about")
 
     def test_a_shared_page_stays_on_its_tab(self):
         for gid in games.KIT_TABS:

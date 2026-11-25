@@ -57,6 +57,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <imgui.h>
 #include <imgui_internal.h>  // ImGuiInputTextState: a box's text changed while it is active
@@ -94,6 +95,12 @@ REXCVAR_DEFINE_BOOL(cod3_aim_toggle_kbm_p1, false, "cod3/Binds",
 REXCVAR_DEFINE_BOOL(cod3_debug_binds, false, "cod3",
                     "Log each key bind action as it reaches the game, and the binoculars, hold breath and "
                     "sprint state (with a screenshot of the game's picture when the binoculars are up)");
+// [input-port] 2026-11-24 Headless runs of the key binds' tap and toggle paths (the I4 runs): cod3_test_input scripts
+// pads only, so keys and wheel notches get a script of their own, fed in where the window's real events come in.
+REXCVAR_DEFINE_STRING(cod3_test_keys, "", "cod3",
+                      "Test switch, from the command line only: keyboard keys and mouse wheel notches fed to the key "
+                      "binds as if typed, at seconds after start, e.g. \"30:kb:F:down;30.1:kb:F:up;40:wheel:+1\" "
+                      "(any key name the binds take: F, MOUSE2, SPACE ...); empty = none");
 REXCVAR_DEFINE_STRING(cod3_test_vehicle_hold, "", "cod3",
                       "Test switch, from the command line only: Vehicle actions (tank_gun, veh_gas ...) held as if "
                       "their keys were down while you drive; empty = none");
@@ -102,6 +109,13 @@ REXCVAR_DEFINE_BOOL(cod3_binds_scores_pad, true, "cod3/Binds",
                     "Campaign: the objectives / scores key holds the controller's BACK while it is down, so the "
                     "Mission Objectives page stays up as long as the key is held; false = it sends +scores as "
                     "text (the page closes again after a moment)");
+// [input-port] 2026-11-24 FPS-RULE14 I4 (owner: "every game needs to be able to function properly regardless of
+// FPS"). A tap (a wheel notch, or a press let go within one pad poll) used to go up at the next pad poll. The poll
+// runs once a drawn frame, but the game's updates (SV_Frame: scripts such as usebuttonpressed(), the vehicles'
+// own reads) run at cod3_server_hz, so above that rate a tap could come and go between two updates unseen.
+REXCVAR_DEFINE_BOOL(cod3_binds_tap_until_update, true, "cod3/Binds",
+                    "A key tap (a mouse wheel notch, a very short press) stays down until a game update has seen "
+                    "it, at any frame rate (250 ms at most); false = up again at the next frame, as before");
 REXCVAR_DEFINE_INT32(cod3_binds_version, 0, "cod3",
                      "Which one-time changes of the key binds have run (set by the game)");
 REXCVAR_DEFINE_INT32(cod3mp_binds_version, 0, "cod3",
@@ -272,6 +286,19 @@ std::atomic<uint32_t> g_view_press_poll{0};
 std::array<uint32_t, kVehicleContexts> g_vehicle_was{};  // game thread: ReadingMask at the last pad poll
 int64_t g_play_stopped_ms = 0;                            // game thread: when the game last stopped taking presses
 
+// [input-port] cod3_test_keys. Times count from the program's start, as cod3_test_input's do (near enough: both
+// start before the first frame), so a key and a pad press can be lined up in one run.
+const std::chrono::steady_clock::time_point g_program_start = std::chrono::steady_clock::now();
+struct TestKey {
+  double at = 0;      // seconds after start
+  KeyCode code = kNoKey;
+  int kind = 0;       // 1 down, 2 up, 3 wheel (code: kWheelUp or kWheelDown)
+};
+std::vector<TestKey> g_test_keys;  // written once before g_test_keys_on, then read by the UI thread only
+size_t g_test_key_next = 0;        // UI thread
+// A script was given: the window counts as focused (a headless run has no focus). Publishes g_test_keys.
+std::atomic<bool> g_test_keys_on{false};
+
 const char* VehicleName(int context) { return context == 1 ? "tank" : "vehicle"; }
 
 int64_t SteadyMs() {
@@ -344,6 +371,57 @@ uint32_t AliasBits(std::string_view text) {
   return bits;
 }
 
+// [input-port] cod3_test_keys, from the command line only (left in cod3.toml it would type keys in every game).
+// Entries: <seconds>:kb:<key>:down|up, or <seconds>:wheel:+1|-1; joined with ';'.
+void LoadTestKeys() {
+  const std::string text = rex::cvar::GetFlagByName("cod3_test_keys");
+  if (text.empty()) return;
+  if (rex::cvar::GetFlagSource("cod3_test_keys") != rex::cvar::Source::kCommandLine) {
+    REXLOG_WARN("cod3: cod3_test_keys is a command-line test switch; not used");
+    return;
+  }
+  size_t pos = 0;
+  while (pos <= text.size()) {
+    const size_t end = std::min(text.find(';', pos), text.size());
+    const std::string entry = text.substr(pos, end - pos);
+    pos = end + 1;
+    if (entry.empty()) continue;
+    std::vector<std::string> parts;
+    for (size_t p = 0;;) {
+      const size_t c = entry.find(':', p);
+      parts.push_back(entry.substr(p, c == std::string::npos ? std::string::npos : c - p));
+      if (c == std::string::npos) break;
+      p = c + 1;
+    }
+    TestKey k;
+    char* tail = nullptr;
+    k.at = parts.empty() ? -1 : std::strtod(parts[0].c_str(), &tail);
+    bool ok = parts.size() >= 3 && tail && *tail == '\0' && k.at >= 0;
+    if (ok && SameText(parts[1], "kb") && parts.size() == 4) {
+      k.code = ParseKey(parts[2]);
+      k.kind = SameText(parts[3], "down") ? 1 : SameText(parts[3], "up") ? 2 : 0;
+      ok = k.code != kNoKey && k.kind != 0;
+    } else if (ok && SameText(parts[1], "wheel") && parts.size() == 3) {
+      k.kind = 3;
+      k.code = parts[2] == "+1" ? kWheelUp : parts[2] == "-1" ? kWheelDown : kNoKey;
+      ok = k.code != kNoKey;
+    } else {
+      ok = false;
+    }
+    if (!ok) {
+      REXLOG_WARN("cod3: cod3_test_keys: \"{}\" not understood (<seconds>:kb:<key>:down|up or <seconds>:wheel:+1|-1)",
+                  entry);
+      continue;
+    }
+    g_test_keys.push_back(k);
+  }
+  std::stable_sort(g_test_keys.begin(), g_test_keys.end(),
+                   [](const TestKey& a, const TestKey& b) { return a.at < b.at; });
+  g_test_keys_on.store(!g_test_keys.empty(), std::memory_order_release);
+  REXLOG_WARN("cod3: cod3_test_keys: {} scripted key event(s) (a test; the window counts as focused)",
+              g_test_keys.size());
+}
+
 // cod3_test_vehicle_hold, from the command line only (left in cod3.toml it
 // would hold a vehicle's button in every game).
 uint32_t TestHoldBits() {
@@ -399,6 +477,7 @@ void EnsureStarted() {
                                       [](std::string_view, std::string_view value) { Load(value); });
     Load(rex::cvar::GetFlagByName(kSettingName));
     g_test_hold.store(TestHoldBits(), std::memory_order_relaxed);
+    LoadTestKeys();  // [input-port]
   });
 }
 
@@ -576,8 +655,11 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
     if (const KeyCode code = MouseCode(e.button())) Up(code);
   }
   void OnMouseWheel(rex::ui::MouseEvent& e) override {
-    if (e.scroll_y() == 0 || !Acting()) return;
-    const KeyCode code = e.scroll_y() > 0 ? kWheelUp : kWheelDown;
+    if (e.scroll_y() != 0 && Wheel(e.scroll_y() > 0 ? kWheelUp : kWheelDown)) e.set_handled(true);
+  }
+  // [input-port] One wheel notch (shared by the window's events and cod3_test_keys). True when it was taken.
+  bool Wheel(KeyCode code) {
+    if (!Acting()) return false;
     uint16_t vs[kMaxActionsPerKey];
     const int n = KeyActions(code, vs);  // [acct2-main] each of the wheel's actions
     bool any = false;
@@ -587,13 +669,14 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
       Push({uint8_t((vs[i] & 0xFF) - 1), uint8_t(vs[i] >> 8), Kind::kTap, code});
       any = true;
     }
-    if (any) e.set_handled(true);
+    return any;
   }
   void OnLostFocus(rex::ui::UISetupEvent&) override { ReleaseAll("the window lost focus"); }
 
   // Every UI frame.
   void Update() {
-    const bool blocked = Blocked() || (window && !window->HasFocus());
+    RunTestKeys();
+    const bool blocked = Blocked() || !Focused();
     if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened, or the keys were turned off", OnlyAGameMenu());
     blocked_ = blocked;
     // The game let every action go (a menu flickered up for a moment): keys
@@ -626,6 +709,28 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   }
 
  private:
+  // [input-port] A cod3_test_keys run has no window focus to give; the script stands in for a focused window.
+  bool Focused() const {
+    return g_test_keys_on.load(std::memory_order_acquire) || !window || window->HasFocus();
+  }
+
+  // [input-port] cod3_test_keys: the entries due now, through the same paths as the window's own events.
+  void RunTestKeys() {
+    if (!g_test_keys_on.load(std::memory_order_acquire) || g_test_key_next >= g_test_keys.size()) return;
+    const double now =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - g_program_start).count();
+    while (g_test_key_next < g_test_keys.size() && g_test_keys[g_test_key_next].at <= now) {
+      const TestKey& k = g_test_keys[g_test_key_next++];
+      bool taken = true;
+      if (k.kind == 1) taken = Down(k.code, false);
+      else if (k.kind == 2) Up(k.code);
+      else taken = Wheel(k.code);
+      REXLOG_INFO("cod3: test keys: {:.2f} s {} {} ({})", now, KeyName(k.code),
+                  k.kind == 1 ? "down" : k.kind == 2 ? "up" : "wheel",
+                  taken ? "taken" : "not taken: no action, or blocked");
+    }
+  }
+
   static KeyCode MouseCode(rex::ui::MouseEvent::Button b) {
     switch (b) {
       case rex::ui::MouseEvent::Button::kLeft: return kMouse1;
@@ -647,14 +752,14 @@ class Listener final : public rex::ui::WindowInputListener, public rex::ui::Wind
   // [claude-9b] Blocked only because the game isn't taking presses (a game menu): keys on, no overlay, focus.
   bool OnlyAGameMenu() const {
     return g_mnk_mode.load(std::memory_order_relaxed) && REXCVAR_GET(cod3_binds_actions) &&
-           !(overlay_open && overlay_open()) && !(window && !window->HasFocus()) &&
+           !(overlay_open && overlay_open()) && Focused() &&
            !g_in_play.load(std::memory_order_relaxed);
   }
 
   bool Acting() {
     const bool blocked = Blocked();
     if (blocked && !blocked_) ReleaseAll("a menu or an overlay opened", OnlyAGameMenu());
-    blocked_ = blocked || (window && !window->HasFocus());
+    blocked_ = blocked || !Focused();
     return !blocked_;
   }
 
@@ -724,8 +829,25 @@ struct Slot {
   uint8_t queued = 0;
   bool gap = false;   // kPad: up for this poll, after a press (then the next queued one, or free)
   bool held = false;  // kPad: the last queued press's key is still down (it stays down when its turn comes)
+  // [input-port] 2026-11-24 kDirect tap (cod3_binds_tap_until_update): the game-update count at the first poll after
+  // the press, and when that was. The tap goes up once the count has moved past it (or kTapMaxMs passed).
+  bool tap_marked = false;
+  uint32_t tap_updates = 0;
+  int64_t tap_ms = 0;
 };
 constexpr uint8_t kPadQueueMax = 4;  // [rexglue-native qte] 2026-11-09
+// [input-port] 2026-11-24 The longest a tap waits for a game update: none run while the game is paused or loading,
+// and a tap shouldn't stay down through that (the slowest cod3_server_hz still updates well inside it).
+constexpr int64_t kTapMaxMs = 250;
+std::atomic<uint32_t> g_game_updates{0};  // SV_Frame runs (NoteGameUpdate), any thread may read
+std::atomic<int64_t> g_last_update_ms{0};  // when the last one ran (SteadyMs)
+std::atomic<int64_t> g_update_gap_ms{0};   // the time between the last two (under 1 s; a pause or load isn't kept)
+// [input-port] 2026-11-24 Updates this far apart or more mean this PC isn't running the game's updates now: a cod3mp
+// client in someone else's match (its usercmds go to the host; no SV_Frame runs here), the pause, a load. Then a tap
+// goes up at the next poll, as before, instead of waiting (250 ms of +attack on a client would be a burst of fire).
+// kNoUpdatesMs, or twice the time between updates when the update rate is set below 20 a second (cod3_server_hz and
+// cod3mp_server_hz go down to 1), so slow rates wait too; kTapMaxMs grows with it the same way.
+constexpr int64_t kNoUpdatesMs = 100;
 Slot g_slots[kActionCount][kSlots];
 bool g_port_held[kActionCount][kSlots] = {};  // [claude-9b] a port setting's key is down (one switch per press)
 // The frag key's press made the game hold +activatereload with the
@@ -1086,6 +1208,31 @@ void PressDirect(int a, int s, bool tap) {
   if (!slot.silent) Queue(a, s, true);
 }
 
+// [input-port] 2026-11-24 FPS-RULE14 I4: may the kDirect tap in `slot` go up at this poll? The usercmd built in the
+// press's frame carries the tap, and only the game updates of the frames after it see that usercmd (and a vehicle's
+// own read sees the key at an update too). So the count is noted at the first poll after the press, and the tap goes
+// up once an update has run since. With an update every frame (60 fps at cod3_server_hz 60) that is one frame later
+// than before; above the update rate the tap waits for the update instead of being lost.
+// One-shot deliveries (kOnce, and kText without a '+' twin: "weapnext") act on the press alone, so they go up at
+// once, as before, and a fast run of wheel notches still changes weapon once a notch.
+bool TapMayGoUp(int a, Slot& slot) {
+  if (!REXCVAR_GET(cod3_binds_tap_until_update)) return true;
+  const ActionDef& def = Def(static_cast<Action>(a));
+  if (def.delivery == Delivery::kOnce || (def.delivery == Delivery::kText && (!def.command || def.command[0] != '+')))
+    return true;
+  const uint32_t updates = g_game_updates.load(std::memory_order_relaxed);
+  const int64_t now = SteadyMs();
+  const int64_t gap2 = 2 * g_update_gap_ms.load(std::memory_order_relaxed);
+  if (now - g_last_update_ms.load(std::memory_order_relaxed) >= std::max(kNoUpdatesMs, gap2)) return true;
+  if (!slot.tap_marked) {
+    slot.tap_marked = true;
+    slot.tap_updates = updates;
+    slot.tap_ms = now;
+    return false;
+  }
+  return updates != slot.tap_updates || now - slot.tap_ms >= std::max(kTapMaxMs, gap2);
+}
+
 void ReleaseDirect(int a, int s) {
   const ActionDef& def = Def(static_cast<Action>(a));
   Slot& slot = g_slots[a][s];
@@ -1270,7 +1417,8 @@ void BeforePadPoll(PPCContext& ctx, uint8_t* base) {
   for (int a = 0; a < kActionCount; ++a)
     for (int s = 0; s < kSlots; ++s) {
       Slot& slot = g_slots[a][s];
-      if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll) ReleaseDirect(a, s);
+      if (slot.mode == Mode::kDirect && slot.tap && slot.since_poll < g_poll && TapMayGoUp(a, slot))
+        ReleaseDirect(a, s);
       // [rexglue-native qte] 2026-11-09 a button let go stays up for one poll (gap) before its slot is free; a press
       // that came meanwhile (Press: queued) goes down after that poll, for at least one poll. So a press handed over
       // in the same poll as the release before it is a press of its own (before, it went down at once and the game
@@ -1545,6 +1693,14 @@ void AfterPadPoll(PPCContext& ctx, uint8_t* base) {
 // ---------------------------------------------------------------------------
 // The public side (binds.h)
 // ---------------------------------------------------------------------------
+
+// [input-port] 2026-11-24 (binds.h)
+void NoteGameUpdate() {
+  g_game_updates.fetch_add(1, std::memory_order_relaxed);
+  const int64_t now = SteadyMs();
+  const int64_t gap = now - g_last_update_ms.exchange(now, std::memory_order_relaxed);
+  if (gap >= 0 && gap < 1000) g_update_gap_ms.store(gap, std::memory_order_relaxed);
+}
 
 uint32_t KeyboardClient(uint8_t* base) { return base ? KbmClient(base) : 0; }
 

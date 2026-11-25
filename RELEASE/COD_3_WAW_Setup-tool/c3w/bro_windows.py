@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from . import common, cross, deps
+from . import build_speed   # [waw-decomp/speed1] 2026-11-23 configure_folder: compared without the speed arguments
 from .common import IS_WINDOWS, APPROVAL, Install, Log, Runner, SetupError
 
 TRIPLE = cross.TOOLCHAIN_TRIPLE      # x86_64-w64-mingw32
@@ -402,7 +403,11 @@ def configure_folder(cmd: Sequence, folder: Path, keep: bool, lay, runner: Runne
     cmd = [str(c) for c in cmd]
     stamp = folder / CONFIGURE_STAMP
     last = common.read_json(stamp)
-    if folder.exists() and not (keep and isinstance(last, dict) and last.get("command") == cmd):
+    # [waw-decomp/speed1] 2026-11-23: compared without the speed arguments (they follow the PC: the link pool
+    # is sized by today's free memory), so a kept folder stays kept; CMake applies the new ones.
+    same = isinstance(last, dict) and isinstance(last.get("command"), list) and \
+        build_speed.without_speed_args(last["command"]) == build_speed.without_speed_args(cmd)
+    if folder.exists() and not (keep and same):
         common.safe_rmtree(folder, Path(lay.work), [lay.out], log)
     runner.run(cmd)
     common.write_json(stamp, {"command": cmd})

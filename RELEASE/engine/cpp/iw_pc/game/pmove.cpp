@@ -131,6 +131,103 @@ F24 cmd_scale(const PlayerState& ps, const std::uint8_t* cmd, const MoveSettings
     return scale_for_state(ps, speed / (total * F24::load(127.0f)), settings);
 }
 
+namespace {
+std::int32_t wrap_sub(std::int32_t a, std::int32_t b) {
+    return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) - static_cast<std::uint32_t>(b));
+}
+}  // namespace
+
+std::int32_t effective_stance(const PlayerState& ps) {
+    switch (ps.integer(ps::kViewHeightTarget)) {
+    case kCrouchViewHeight: return stance::kCrouch;
+    case kProneViewHeight: return stance::kProne;
+    default: return stance::kStand;
+    }
+}
+
+F24 view_height_lerp(const Pmove& pm, std::int32_t from, std::int32_t to) {
+    const PlayerState& ps = pm.ps;
+    std::int32_t start = ps.integer(ps::kViewHeightLerpTime);
+    if (start == 0) return F24::load(0.0f);
+    std::int32_t target = ps.integer(ps::kViewHeightLerpTarget);
+    bool down = ps.integer(ps::kViewHeightLerpDown) != 0;
+    if (from != -1 && to != -1) {
+        if (to != target) return F24::load(0.0f);
+        if (to == kCrouchViewHeight) {
+            bool counts = from == kProneViewHeight ? !down : from == kStandViewHeight ? down : false;
+            if (!counts) return F24::load(0.0f);
+        }
+    }
+    std::int32_t duration = target == kProneViewHeight ? 400 : target == kCrouchViewHeight && !down ? 400 : 200;
+    F24 frac = F24::integer(wrap_sub(pm.server_time(), start)) / F24::integer(duration);
+    if (frac < F24::load(0.0f)) return F24::load(0.0f);  // (fcom 0, test ah,5: below)
+    if (frac > F24::load(1.0f)) return F24::load(1.0f);
+    return frac;
+}
+
+F24 damage_scale_walk(std::int32_t damage_timer, const MoveSettings& settings) {
+    if (damage_timer == 0) return F24::load(1.0f);
+    F24 max_time = F24::load(settings.dmg_timer_max_time);
+    if (max_time.v == 0.0) return F24::load(1.0f);  // (fucompp, jp: only equal; NaN goes on)
+    return F24::load(-1.0f) / max_time * F24::load(settings.dmg_timer_min_scale) * F24::integer(damage_timer) +
+           F24::load(1.0f);
+}
+
+namespace {
+/// cmd_scale_walk's share for the stance (see the Rust version's stance_scale).
+F24 stance_scale(const Pmove& pm, float scale) {
+    auto l = F24::load;
+    const PlayerState& ps = pm.ps;
+    std::int32_t stance = effective_stance(ps);
+    F24 lerp = view_height_lerp(pm, kCrouchViewHeight, kProneViewHeight);
+    if (lerp.v != 0.0) return ((l(1.0f) - lerp) * l(0.65f) + lerp * l(0.15f)) * l(scale);  // (NaN blends)
+    std::int32_t start = ps.integer(ps::kViewHeightLerpTime);
+    if (start != 0 && ps.integer(ps::kViewHeightLerpTarget) == kCrouchViewHeight &&
+        ps.integer(ps::kViewHeightLerpDown) == 0) {
+        F24 frac = F24::integer(wrap_sub(pm.server_time(), start)) * l(0.0025f);
+        if (frac >= l(0.0f)) {
+            bool blend = true;
+            F24 t = frac;
+            if (frac > l(1.0f)) t = l(1.0f);
+            else if (frac.v == 0.0) blend = false;
+            if (blend) return ((l(1.0f) - t) * l(0.15f) + t * l(0.65f)) * l(scale);
+        }
+    }
+    if (stance == stance::kProne) return l(scale) * l(0.15f);
+    if (stance == stance::kCrouch) return l(scale) * l(0.65f);
+    return l(scale);
+}
+}  // namespace
+
+F24 cmd_scale_walk(const Pmove& pm, const std::uint8_t* cmd, const MoveSettings& settings, const trace::MoveHost& host) {
+    auto l = F24::load;
+    const PlayerState& ps = pm.ps;
+    std::int32_t forward = static_cast<std::int8_t>(cmd[cmd::kForwardMove]);
+    std::int32_t right = static_cast<std::int8_t>(cmd[cmd::kRightMove]);
+    F24 total = F24::integer(forward * forward + right * right).sqrt();
+    F24 f = (forward < 0 ? F24::integer(forward) * l(settings.back_speed_scale) : F24::integer(forward)).abs();
+    F24 r = (F24::integer(right) * l(settings.strafe_speed_scale)).abs();
+    F24 diff = f - r;
+    F24 max = diff < l(0.0f) || diff.is_nan() ? l(r.store()) : f;  // (test ah,1: below or NaN)
+    if (max.v == 0.0) return l(0.0f);
+    F24 speed = F24::integer(ps.integer(ps::kSpeed)) * max;
+    float scale = (speed / (total * l(127.0f))).store();
+    float lean = ps.real(ps::kLeanf);
+    if ((ps.pm_flags() & pm_flags::kSlowed) != 0 || lean != 0.0f || std::isnan(lean)) scale = (l(scale) * l(0.4f)).store();
+    F24 result = ps.pm_type() == pm_type::kNoclip ? l(scale) * l(3.0f)
+                 : ps.pm_type() == pm_type::kUfo  ? l(scale) * l(6.0f)
+                                                  : stance_scale(pm, scale);
+    std::int32_t weapon = ps.integer(ps::kWeapon);
+    if (weapon != 0) {
+        float weapon_scale = host.weapon_move_speed_scale(weapon);
+        if (weapon_scale > 0.0f) result = result * l(weapon_scale);  // (only above; NaN doesn't)
+    }
+    std::int32_t buttons;
+    std::memcpy(&buttons, cmd + cmd::kButtons, 4);
+    if ((buttons & button::kSlow) != 0) result = result * l(0.4f);
+    return result;
+}
+
 void drop_timers(PlayerState& ps, const MoveLocal& pml) {
     std::int32_t msec = pml.integer(pml::kMsec);
     std::int32_t time = ps.integer(ps::kPmTime);
@@ -279,6 +376,63 @@ void add_event(PlayerState& ps, std::int32_t event) {
     ps.set_integer(ps::kEvents + 4 * slot, event & 0xFF);
     ps.set_integer(ps::kEventParms + 4 * slot, 0);
     ps.set_integer(ps::kEventSequence, static_cast<std::int32_t>(static_cast<std::uint32_t>(sequence) + 1u));
+}
+
+void add_predictable_event(std::int32_t event, std::int32_t parm, PlayerState& ps) {
+    if (event == 0) return;
+    std::int32_t sequence = ps.integer(ps::kEventSequence);
+    auto slot = static_cast<std::size_t>(sequence & (kMaxPsEvents - 1));
+    ps.set_integer(ps::kEvents + 4 * slot, event & 0xFF);
+    ps.set_integer(ps::kEventParms + 4 * slot, parm & 0xFF);
+    ps.set_integer(ps::kEventSequence, static_cast<std::int32_t>(static_cast<std::uint32_t>(sequence) + 1u));
+}
+
+void foliage_sounds(Pmove& pm, const MoveSettings& settings, trace::MoveHost& host) {
+    auto l = x87::F24::load;
+    using x87::F24;
+    F24 speed = l(pm.real(pm::kXySpeed));
+    F24 min = l(settings.foliage_min_speed);
+    std::int32_t last = pm.ps.integer(ps::kFoliageSoundTime);
+    auto add = [](std::int32_t a, std::int32_t b) {
+        return static_cast<std::int32_t>(static_cast<std::uint32_t>(a) + static_cast<std::uint32_t>(b));
+    };
+    if (speed < min) {  // (only below is too slow; NaN isn't)
+        if (add(settings.foliage_reset_interval, last) < pm.server_time()) pm.ps.set_integer(ps::kFoliageSoundTime, 0);
+        return;
+    }
+    F24 fraction = (speed - min) / (l(settings.foliage_max_speed) - min);
+    if (fraction > l(1.0f)) fraction = l(1.0f);  // (only above is capped; NaN isn't)
+    std::int32_t slow = settings.foliage_slow_interval;
+    std::int32_t diff = static_cast<std::int32_t>(static_cast<std::uint32_t>(settings.foliage_fast_interval) -
+                                                  static_cast<std::uint32_t>(slow));
+    auto interval = static_cast<std::int32_t>(
+        static_cast<std::uint64_t>(net::ftol2((F24::integer(diff) * fraction + F24::integer(slow)).v)));
+    if (add(interval, last) >= pm.server_time()) return;
+    auto box_mins = pm.vec3(pm::kMins), box_maxs = pm.vec3(pm::kMaxs);
+    std::array<float, 3> mins{(l(box_mins[0]) * l(0.75f)).store(), (l(box_mins[1]) * l(0.75f)).store(),
+                              (l(box_mins[2]) * l(0.75f)).store()};
+    std::array<float, 3> maxs{(l(box_maxs[0]) * l(0.75f)).store(), (l(box_maxs[1]) * l(0.75f)).store(),
+                              (l(box_maxs[2]) * l(0.9f)).store()};
+    auto origin = pm.ps.vec3(ps::kOrigin);
+    trace::Trace t = player_trace(pm, origin, mins, maxs, origin, pm.ps.integer(ps::kClientNum), kContentsFoliage, host);
+    if (t.start_solid()) {
+        add_predictable_event(kEvFoliageSound, 0, pm.ps);
+        pm.ps.set_integer(ps::kFoliageSoundTime, pm.server_time());
+    }
+}
+
+void update_ads_slowdown(Pmove& pm) {
+    std::int32_t flags = pm.ps.pm_flags() & ~pm_flags::kSlowed;
+    pm.ps.set_integer(ps::kPmFlags, flags);
+    std::int32_t state = pm.ps.integer(ps::kWeaponState);
+    if (pm.ps.pm_type() < pm_type::kDead && (pm.integer(pm::kCmd + cmd::kButtons) & button::kAds) != 0 &&
+        (flags & pm_flags::kProne) == 0 && (flags & pm_flags::kAds) != 0 && !(state >= 5 && state <= 9))
+        pm.ps.set_integer(ps::kPmFlags, flags | pm_flags::kSlowed);
+}
+
+void exit_aim_down_sight(PlayerState& ps) {
+    add_predictable_event(kEvAdsExit, 0, ps);
+    ps.set_integer(ps::kPmFlags, ps.pm_flags() & ~pm_flags::kAds);
 }
 
 std::int32_t footstep_type(const PlayerState& ps, const MoveLocal& pml) {

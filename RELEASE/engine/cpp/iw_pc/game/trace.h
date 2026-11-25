@@ -7,6 +7,16 @@
 #include <cstdint>
 #include <cstring>
 
+namespace iw_pc::game::pmove {
+struct PlayerState;
+}
+namespace iw_pc::game::anim {
+struct ClientAnimInfo;
+}
+namespace iw_pc::game::weapon {
+struct WeaponDef;
+}
+
 namespace iw_pc::game::trace {
 
 /// Bytes of Call of Duty 2's trace_t (no end point: callers compute it from the fraction).
@@ -49,6 +59,28 @@ public:
     virtual Trace trace(std::uint8_t handler, const std::array<float, 3>& start, const std::array<float, 3>& mins,
                         const std::array<float, 3>& maxs, const std::array<float, 3>& end, std::int32_t pass_entity,
                         std::int32_t content_mask) = 0;
+    /// The move-speed scale of weapon `weapon` (its WeaponDef's moveSpeedScale, the float at 0x264).
+    virtual float weapon_move_speed_scale(std::int32_t weapon) const = 0;
+    /// Plays the player's animation script for `event` as Call of Duty 2's BG_AnimScriptEvent
+    /// (0x004F92C0) does: the animation's duration, or -1 for none.
+    virtual std::int32_t anim_script_event(pmove::PlayerState& ps, std::int32_t event, bool is_continue, bool force) = 0;
+    /// A message for the console (Com_Printf): a warning the movement prints and goes on.
+    virtual void print(const char* message) = 0;
+    /// How long animation `anim` lasts (milliseconds; animation_t's int at 0x48).
+    virtual std::int32_t anim_duration(std::int32_t anim) const = 0;
+    /// Weapon `weapon`'s definition (bg_weaponDefs[weapon], the table at 0x01728200; unchecked).
+    virtual const weapon::WeaponDef& weapon_def(std::int32_t weapon) const = 0;
+    /// The highest weapon number defined (the word at 0x019A1C74).
+    virtual std::int32_t weapon_count() const = 0;
+    /// Client `client`'s animation state (0x4B8 bytes each from 0xB4BFC in the state at 0x019A1C78).
+    virtual anim::ClientAnimInfo& client_anim_info(std::int32_t client) = 0;
 };
+
+/// The animation scripts' events a move plays (scriptAnimEventTypes_t, Return to Castle
+/// Wolfenstein's names and order).
+inline constexpr std::int32_t kAnimEtDeath = 1, kAnimEtJump = 3, kAnimEtJumpBk = 4, kAnimEtLand = 5;
+/// The stance changes' (our names, from where duck::check_duck plays them).
+inline constexpr std::int32_t kAnimEtProneToCrouch = 12, kAnimEtStandToCrouch = 13, kAnimEtCrouchToStand = 14,
+                              kAnimEtProneToStand = 16;
 
 }  // namespace iw_pc::game::trace

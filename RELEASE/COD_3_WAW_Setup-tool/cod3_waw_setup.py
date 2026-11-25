@@ -150,7 +150,8 @@ def cmd_build(a: argparse.Namespace) -> int:
         build_linux=build_linux, build_windows=build_windows,
         binaries_only=a.binaries_only, force_unknown_iso=a.force, skip_dep_check=a.skip_dep_check,
         upscale_textures=a.upscale_textures, upscale_model=a.upscale_model, upscale_noise=a.upscale_noise,
-        upscale_scale=a.upscale_scale, trace_build=a.trace_build)
+        upscale_scale=a.upscale_scale, upscale_from_scratch=a.upscale_textures and a.upscale_again,
+        trace_build=a.trace_build)
     log = _cli_log()
     cancel = threading.Event()
     common.APPROVAL.ask = _cli_approval(a.yes)
@@ -509,6 +510,7 @@ def cmd_fh(a: argparse.Namespace) -> int:
         print("Give the disc: fh build \"<the .iso, or a folder copied from the disc>\"")
         return 2
     opts = fh.BuildOptions(source=a.source, output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
+                           clear_lift_cache=a.clear_lift_cache,   # [waw-decomp/speed1] 2026-11-23
                            jobs=a.jobs or common.recommended_jobs(), install_deps=not a.no_install_deps,
                            cleanup=not a.no_cleanup, tool_version=TOOL_VERSION)
     log = _cli_log()
@@ -554,6 +556,7 @@ def cmd_bro(a: argparse.Namespace) -> int:
         print("Give the disc: bro build \"<the .iso, or a folder copied from the disc>\"")
         return 2
     opts = bro.BuildOptions(source=a.source, output_dir=a.output, work_dir=a.work or str(common.default_work_dir()),
+                            clear_lift_cache=a.clear_lift_cache,   # [waw-decomp/speed1] 2026-11-23
                             jobs=a.jobs or common.recommended_jobs(), install_deps=not a.no_install_deps,
                             cleanup=not a.no_cleanup, tool_version=TOOL_VERSION)
     log = _cli_log()
@@ -677,6 +680,10 @@ def _main() -> int:
     b.add_argument("--upscale-scale", type=int, default=upscale.DEFAULT_SCALE, choices=sorted(upscale.SCALES),
                    help="how many times larger waifu2x makes the textures: 1 (noise reduction only, with the "
                         "cunet style), 2 (default) or 4 (slow; 16 times the texture memory)")
+    # [setup-layout] 2026-11-24 (owner 08:27) BuildOptions.upscale_from_scratch
+    b.add_argument("--upscale-again", action="store_true",
+                   help="with --upscale-textures: delete the upscaled copies from before (never the ripped "
+                        "originals) and upscale every texture again")
     b.add_argument("--trace-build", action="store_true",
                    help="also build the decomp trace version of the game into <output>/bin-trace/: it notes which "
                         "game functions run and who calls them, for mapping unnamed ones (docs/DECOMP_TRACE.md); "
@@ -761,6 +768,8 @@ def _main() -> int:
     br.add_argument("--work", help="temporary build folder (default: work/ here; its bro/ is deleted afterwards)")
     br.add_argument("--jobs", type=int, help="build threads (default: based on CPU cores and RAM)")
     br.add_argument("--no-cleanup", action="store_true", help="keep the recompiled C and the build in the work folder")
+    br.add_argument("--clear-lift-cache", action="store_true",   # [waw-decomp/speed1] 2026-11-23
+                    help="build: first delete the kept recompiler output of every disc (the recompile runs again)")
     br.add_argument("--no-install-deps", action="store_true", help="never install missing packages")
     br.add_argument("--yes", action="store_true",
                     help="approve the downloads and installs without asking (they are still listed)")
@@ -779,6 +788,8 @@ def _main() -> int:
     fp.add_argument("--work", help="temporary build folder (default: work/ here; its fh/ is deleted afterwards)")
     fp.add_argument("--jobs", type=int, help="build threads (default: based on CPU cores and RAM)")
     fp.add_argument("--no-cleanup", action="store_true", help="keep the recompiled C and the build in the work folder")
+    fp.add_argument("--clear-lift-cache", action="store_true",   # [waw-decomp/speed1] 2026-11-23
+                    help="build: first delete the kept recompiler output of every disc (the recompile runs again)")
     fp.add_argument("--no-install-deps", action="store_true", help="never install missing packages")
     fp.add_argument("--yes", action="store_true",
                     help="approve the downloads and installs without asking (they are still listed)")

@@ -108,6 +108,15 @@ static const uint32_t glow_blur_frag_spirv[] =     /* [rexglue-native] */
 static const uint32_t glow_add_frag_spirv[] =      /* [rexglue-native] */
 #include "glow_add.frag.inc"
 ;
+static const uint32_t bloom_first_frag_spirv[] =   /* [cod2-native] 2026-11-24: the IW bloom (make_bloom) */
+#include "bloom_first.frag.inc"
+;
+static const uint32_t bloom_blur_frag_spirv[] =    /* [cod2-native] */
+#include "bloom_blur.frag.inc"
+;
+static const uint32_t sky_bleed_frag_spirv[] =     /* [cod2-native] 2026-11-24 g4: the IW sky bleed */
+#include "sky_bleed.frag.inc"
+;
 static const uint32_t heat_warp_vert_spirv[] =     /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp (make_heat) */
 #include "heat_warp.vert.inc"
 ;
@@ -157,6 +166,7 @@ enum { MSAA_MESH, MSAA_CULL_CW, MSAA_CULL_CCW, MSAA_TWINS };
                                                      * picture (was 2) */
 #define GLOW_SIZE       256u                        /* [rexglue-native] the sky glow's two targets, each way (make_glow) */
 #define GLOW_MOST_BLURS 8u                          /* [rexglue-native] and the most blurs it draws (the game's levels: 4) */
+#define BLOOM_MOST_BLURS 4u                         /* [cod2-native] 2026-11-24: the IW bloom's blurs (the game: 2 a set) */
 #define OUTPUT_SETS     2u                          /* ngl_vk_output's: the target, the color table */
 #define EMPTY_CUBE_SETS 1u                          /* [rexglue-native] rn34: the empty cube's (make_empty_cube) */
 #define WINDOW_FX_SETS  4u                          /* [acct2-fh] the window's CAS / FSR 1: the target, the color
@@ -513,6 +523,21 @@ static struct {
     VkDescriptorSet glow_set[2];
     VkSampler glow_sampler;             /* filtered; black past the edges, as the game fetches its glow targets */
     VkPipeline glow_first_pipeline, glow_blur_pipeline, glow_add_pipeline;
+    /* [cod2-native] 2026-11-24: the IW engine's bloom (ngl_vk_set_bloom): the sky glow's targets, sets and adding
+     * with a first pass and a blur of its own (bloom_first.frag, bloom_blur.frag), and a layout of its own for their
+     * 32 floats. bloom_on: this frame's glow is the bloom (glow_on is set with it). bloom_ready 0: none. */
+    int bloom_ready;
+    int bloom_on;
+    int bloom_tried;    /* [cod2-native] g5: make_bloom asked once (on the first ngl_vk_set_bloom that wants it) */
+    float bloom_setup[4];
+    float bloom_taps[BLOOM_MOST_BLURS][32];
+    uint32_t bloom_blurs;
+    VkPipelineLayout bloom_layout;
+    VkPipeline bloom_first_pipeline, bloom_blur_pipeline;
+    /* [cod2-native] 2026-11-24 g4: the IW sky bleed (glow_apply_sky_bleed): the sky's share and color blurred by the
+     * bloom's own passes, the picture drawn toward that color by saturate(2 x share) x bloom_sky_bleed */
+    float bloom_sky_bleed;
+    VkPipeline bloom_bleed_pipeline;
     /* depth of field (ngl_vk_set_depth_of_field): after the second half, the target shrunk to a half and a quarter of
      * its size (two blits), blurred across into dof_temp and down back into dof_quarter, then mixed over the target
      * by the opaque depth in the overlay pass, the main pass's third part, which the quads are drawn in after it */
@@ -623,9 +648,31 @@ static struct {
     VkFramebuffer output_framebuffer;
     /* [acct2-bro] 2026-11-08: a frame recorded by a lower layer (ngl_vk_begin_frame .. ngl_vk_end_frame) */
     int low_frame_open;             /* begun and not yet ended */
+    /* [rexglue-native thread2] 2026-11-24: a frame's commands are being recorded or submitted now (draw, or
+     * ngl_vk_end_frame's submit with its overlay): ngl_vk_set_target_size must not run */
+    int recording;
     int low_showing;                /* it has a window image (acquired at the begin) */
     uint32_t low_window_image;
     VkPhysicalDeviceFeatures enabled_features;  /* the device's, as its owner says (ngl_vk_set_device_features) */
+    int block_textures;     /* [acct2-bro] 2026-11-23 c3camo v2: BC7 textures can be made (ngl_vk_texture_blocks) */
+    /* [rexglue-native thread2] 2026-11-24: depth probes (ngl_vk_probe_depth; made at the first points): the next
+     * draw's points and the frame they are for, the host buffer the texels go into (two slots of
+     * NGL_VK_DEPTH_PROBES floats, taken in turn), each slot's frame, points, state and which points were on the
+     * target, and the newest finished frame's depths (ngl_vk_probe_results) */
+    float probe_points[NGL_VK_DEPTH_PROBES][2];
+    uint32_t probe_count;
+    uint64_t probe_frame;
+    VkBuffer probe_buffer;
+    VkDeviceMemory probe_memory;
+    float *probe_mapped;
+    uint32_t probe_next_slot;
+    uint64_t probe_slot_frame[2];
+    uint32_t probe_slot_count[2];
+    int probe_slot_state[2];        /* PROBE_FREE, PROBE_RECORDED (in the commands being made), PROBE_SUBMITTED */
+    uint8_t probe_slot_on_target[2][NGL_VK_DEPTH_PROBES];
+    float probe_depths[NGL_VK_DEPTH_PROBES];
+    uint32_t probe_depth_count;
+    uint64_t probe_depth_frame;
 } vk;
 
 /* What ngl_vk_set_window was given (kept across ngl_vk_shutdown, which clears vk) */
@@ -649,6 +696,29 @@ static uint32_t msaa_wanted = 1u;
 /* [acct2-bro] 2026-11-22 rn114: ngl_vk_set_effect_count: the effect layer's samples counted, and whether a
  * borrowed device has occlusionQueryPrecise on (as its owner made it) */
 static int effect_count_wanted, effect_precise_on_borrowed_device;
+/* [acct2-bro] 2026-11-23 c3camo v2: ngl_vk_set_block_textures: asked for, and whether a borrowed device has
+ * textureCompressionBC on (as its owner made it) */
+static int block_textures_asked, block_textures_on_borrowed_device;
+/* [rexglue-native thread2] 2026-11-24: ngl_vk_set_target_size has been called (once is enough; it stays across
+ * ngl_vk_shutdown, as the window's settings do). The port then asks for its picture at the size it is shown, so the
+ * window copy is one to one when the target fits (record_window_copy); a port that never calls it keeps the copy
+ * scaled to fit, exactly as before. */
+static int target_size_asked;
+
+/* [acct2-bro] 2026-11-23 c3camo v2: the GPU samples format with linear filtering in optimal tiling (and, on Vulkan 1.1
+ * and later, can copy into it), as ngl_vk_texture_blocks' images need */
+static int block_format_sampled(VkFormat format)
+{
+    VkFormatProperties properties;
+    VkPhysicalDeviceProperties device;
+    VkFormatFeatureFlags wanted = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
+
+    vkGetPhysicalDeviceProperties(vk.gpu, &device);
+    if (device.apiVersion >= VK_MAKE_VERSION(1, 1, 0))
+        wanted |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    vkGetPhysicalDeviceFormatProperties(vk.gpu, format, &properties);
+    return (properties.optimalTilingFeatures & wanted) == wanted;
+}
 
 /* A memory type in type_bits with all of the wanted properties. */
 static int find_memory(uint32_t type_bits, VkMemoryPropertyFlags wanted, uint32_t *index)
@@ -782,6 +852,28 @@ static int make_image(uint32_t width, uint32_t height, uint32_t levels, VkFormat
                       VkImage *image, VkDeviceMemory *memory, VkImageView *view)
 {
     return make_image_or_cube(width, height, levels, 0, format, usage, image, memory, view);
+}
+
+/* [rexglue-native thread2] 2026-11-24: one combined image sampler of a set pointed at a view (nothing when the set
+ * or the view isn't made). The pointing of each set at an image sized from the target goes through here, so init and
+ * ngl_vk_set_target_size point them the same way. */
+static void point_image(VkDescriptorSet set, uint32_t binding, VkSampler sampler, VkImageView view,
+                        VkImageLayout layout)
+{
+    VkDescriptorImageInfo image_info = { 0 };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+
+    if (!set || !view)
+        return;
+    image_info.sampler = sampler;
+    image_info.imageView = view;
+    image_info.imageLayout = layout;
+    write.dstSet = set;
+    write.dstBinding = binding;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    write.pImageInfo = &image_info;
+    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
 }
 
 static int make_shader(const uint32_t *code, size_t bytes, VkShaderModule *module)
@@ -919,6 +1011,8 @@ static void wait_until_idle(void)
  * draws this one. The next call that writes memory the GPU may still be reading (the quads, a frame's corners and
  * lights, the shadow's and the grass's constants, the picture) or records into the draws' command buffer waits for
  * it first, here. */
+static void probe_publish(void);    /* [rexglue-native thread2] 2026-11-24: depth probes (ngl_vk_probe_depth) */
+
 static void finish_frame(void)
 {
     uint64_t started;
@@ -931,6 +1025,7 @@ static void finish_frame(void)
     vk.gpu_wait_ns += now_ns() - started;
     vk.gpu_waits++;
     vk.frame_pending = 0;
+    probe_publish();    /* [rexglue-native thread2] 2026-11-24: that frame's depth probes are in */
 }
 
 uint64_t ngl_vk_take_gpu_wait(uint32_t *waits)
@@ -983,6 +1078,19 @@ static int make_device(void)
             asked_features.occlusionQueryPrecise = VK_TRUE;
             info.pEnabledFeatures = &asked_features;
             vk.effect_query_flags = VK_QUERY_CONTROL_PRECISE_BIT;
+        }
+    }
+    /* [acct2-bro] 2026-11-23 c3camo v2: with block textures asked for (ngl_vk_set_block_textures), the device's
+     * textureCompressionBC feature on when the GPU has it and samples BC7; never asked: nothing here, the device as
+     * before */
+    if (block_textures_asked) {
+        vkGetPhysicalDeviceFeatures(vk.gpu, &gpu_features);
+        if (gpu_features.textureCompressionBC && block_format_sampled(VK_FORMAT_BC7_UNORM_BLOCK)) {
+            if (!info.pEnabledFeatures)
+                memset(&asked_features, 0, sizeof asked_features);
+            asked_features.textureCompressionBC = VK_TRUE;
+            info.pEnabledFeatures = &asked_features;
+            vk.block_textures = 1;
         }
     }
     CHECK(vkCreateDevice(vk.gpu, &info, NULL, &vk.device));
@@ -1504,16 +1612,12 @@ static int make_msaa_depth_parts(void)
     VkSubpassDescription subpass = { 0 };
     VkSubpassDependency dependencies[2];
     VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    VkImageView views[2] = { vk.target_view, vk.depth_view };
-    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
     VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     VkDescriptorSetLayoutBinding binding = { 0 };
     VkDescriptorSetLayoutCreateInfo set_layout_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO };
     VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
     VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    VkDescriptorImageInfo image_info = { 0 };
-    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
     VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -1563,13 +1667,7 @@ static int make_msaa_depth_parts(void)
     pass_info.dependencyCount = 2;
     pass_info.pDependencies = dependencies;
     CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, &vk.msaa_depth_pass));
-    framebuffer_info.renderPass = vk.msaa_depth_pass;
-    framebuffer_info.attachmentCount = 2;
-    framebuffer_info.pAttachments = views;
-    framebuffer_info.width = vk.width;
-    framebuffer_info.height = vk.height;
-    framebuffer_info.layers = 1;
-    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_depth_framebuffer));
+    /* (its framebuffer is sized from the target: make_msaa_sized) */
 
     /* the samples read texel by texel (texelFetch: the sampler's filters aren't used) */
     sampler_info.magFilter = VK_FILTER_NEAREST;
@@ -1594,16 +1692,7 @@ static int make_msaa_depth_parts(void)
     set_info.descriptorPool = vk.msaa_pool;
     set_info.descriptorSetCount = 1;
     set_info.pSetLayouts = &vk.msaa_set_layout;
-    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.msaa_set));
-    image_info.sampler = vk.msaa_sampler;
-    image_info.imageView = vk.msaa_depth_view;
-    image_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-    write.dstSet = vk.msaa_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image_info;
-    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.msaa_set));   /* (pointed by msaa_point) */
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &vk.msaa_set_layout;
     CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.msaa_depth_layout));
@@ -1662,12 +1751,49 @@ static int make_msaa_depth_parts(void)
  * samples asked for (msaa_wanted), fewer where the device can't draw or sample that many or the picture is very large
  * (MSAA_MOST_SAMPLES); none of it when 1 is asked or something can't be made (said on stderr: drawn with one sample).
  * The twins are made with the pipelines (msaa_twin) and checked when all are made (msaa_finish). */
+/* [rexglue-native thread2] 2026-11-24: MSAA's parts sized from the target (at init and at ngl_vk_set_target_size):
+ * the multisampled color and depth, the first half's framebuffer (their resolve into the target) and the depth
+ * pass's (the target and the one-sample depth). The passes are made already; vk.target_view and vk.depth_view are
+ * the current target's. */
+static int make_msaa_sized(void)
+{
+    VkImageView views[3];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+
+    if (make_msaa_image(TARGET_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &vk.msaa_color, &vk.msaa_color_memory,
+                        &vk.msaa_color_view) ||
+        make_msaa_image(DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                        &vk.msaa_depth, &vk.msaa_depth_memory, &vk.msaa_depth_view))
+        return -1;
+    views[0] = vk.msaa_color_view;
+    views[1] = vk.msaa_depth_view;
+    views[2] = vk.target_view;
+    framebuffer_info.renderPass = vk.msaa_opaque_pass;
+    framebuffer_info.attachmentCount = 3;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.width;
+    framebuffer_info.height = vk.height;
+    framebuffer_info.layers = 1;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_framebuffer));
+    views[0] = vk.target_view;
+    views[1] = vk.depth_view;
+    framebuffer_info.renderPass = vk.msaa_depth_pass;
+    framebuffer_info.attachmentCount = 2;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_depth_framebuffer));
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the depth pass's set pointed at the multisampled depth (read texel by texel
+ * in its read-only layout), once it and the set are made */
+static void msaa_point(void)
+{
+    point_image(vk.msaa_set, 0, vk.msaa_sampler, vk.msaa_depth_view, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+}
+
 static int make_msaa_target(void)
 {
     VkPhysicalDeviceProperties properties;
     VkSampleCountFlags can;
-    VkImageView views[3];
-    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
     uint32_t samples = msaa_wanted;
 
     vk.msaa_samples = 1u;
@@ -1684,24 +1810,11 @@ static int make_msaa_target(void)
         return -1;
     }
     vk.msaa_samples = samples;
-    if (make_msaa_image(TARGET_FORMAT, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT, &vk.msaa_color, &vk.msaa_color_memory,
-                        &vk.msaa_color_view) ||
-        make_msaa_image(DEPTH_FORMAT, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                        &vk.msaa_depth, &vk.msaa_depth_memory, &vk.msaa_depth_view) ||
-        make_msaa_opaque_pass())
+    /* [rexglue-native thread2] 2026-11-24: the passes and the depth's parts first, then what is sized from the
+     * target (make_msaa_sized, shared with ngl_vk_set_target_size), then the set pointed at it */
+    if (make_msaa_opaque_pass() || make_msaa_depth_parts() || make_msaa_sized())
         goto failed;
-    views[0] = vk.msaa_color_view;
-    views[1] = vk.msaa_depth_view;
-    views[2] = vk.target_view;
-    framebuffer_info.renderPass = vk.msaa_opaque_pass;
-    framebuffer_info.attachmentCount = 3;
-    framebuffer_info.pAttachments = views;
-    framebuffer_info.width = vk.width;
-    framebuffer_info.height = vk.height;
-    framebuffer_info.layers = 1;
-    if (vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.msaa_framebuffer) != VK_SUCCESS ||
-        make_msaa_depth_parts())
-        goto failed;
+    msaa_point();
     return 0;
 failed:
     fprintf(stderr, "[ngl_vk] rn113: MSAA x%u's parts couldn't all be made: drawn with one sample\n", samples);
@@ -1766,16 +1879,47 @@ static void msaa_resolve_depth(const VkViewport *view)
                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT);
 }
 
+/* [rexglue-native thread2] 2026-11-24: what make_target sizes from the target (vk.width x vk.height), shared with
+ * ngl_vk_set_target_size: the target and its depth, the main pass's framebuffer (its pass made already), the opaque
+ * depth's copy for soft effects, and the host's read-back buffer. */
+static int make_target_sized(void)
+{
+    VkImageView views[2];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+
+    if (make_image(vk.width, vk.height, 1, TARGET_FORMAT,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT,     /* ngl_vk_output samples it */
+                   &vk.target, &vk.target_memory, &vk.target_view) ||
+        make_image(vk.width, vk.height, 1, DEPTH_FORMAT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   &vk.depth, &vk.depth_memory, &vk.depth_view))
+        return -1;
+    views[0] = vk.target_view;
+    views[1] = vk.depth_view;
+    framebuffer_info.renderPass = vk.render_pass;
+    framebuffer_info.attachmentCount = 2;
+    framebuffer_info.pAttachments = views;
+    framebuffer_info.width = vk.width;
+    framebuffer_info.height = vk.height;
+    framebuffer_info.layers = 1;
+    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.framebuffer));
+    if (make_image(vk.width, vk.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   &vk.soft_depth, &vk.soft_depth_memory, &vk.soft_depth_view))
+        return -1;
+    return make_host_buffer_cached((VkDeviceSize)vk.width * vk.height * BYTES_PER_PIXEL,
+                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1, &vk.readback, &vk.readback_memory,
+                                   &vk.readback_pixels);
+}
+
 static int make_target(void)
 {
     VkAttachmentDescription attachments[2] = { { 0 }, { 0 } };
     VkAttachmentReference color = { 0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL };
     VkAttachmentReference depth = { 1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
-    VkImageView views[2];
     VkSubpassDescription subpass = { 0 };
     VkSubpassDependency dependencies[2];
     VkRenderPassCreateInfo pass_info = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO };
-    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 
     attachments[0].format = TARGET_FORMAT;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1810,31 +1954,11 @@ static int make_target(void)
     pass_info.pDependencies = dependencies;
     CHECK(vkCreateRenderPass(vk.device, &pass_info, NULL, &vk.render_pass));
 
-    if (make_image(vk.width, vk.height, 1, TARGET_FORMAT,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                       VK_IMAGE_USAGE_SAMPLED_BIT,     /* ngl_vk_output samples it */
-                   &vk.target, &vk.target_memory, &vk.target_view) ||
-        make_image(vk.width, vk.height, 1, DEPTH_FORMAT,
-                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                   &vk.depth, &vk.depth_memory, &vk.depth_view))
-        return -1;
-    views[0] = vk.target_view;
-    views[1] = vk.depth_view;
-    framebuffer_info.renderPass = vk.render_pass;
-    framebuffer_info.attachmentCount = 2;
-    framebuffer_info.pAttachments = views;
-    framebuffer_info.width = vk.width;
-    framebuffer_info.height = vk.height;
-    framebuffer_info.layers = 1;
-    CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.framebuffer));
-
     /* soft effects: the two halves and the depth's copy, read texel by texel */
     {
         VkSamplerCreateInfo sampler_info = { VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
 
-        if (make_half_pass(0, &vk.opaque_pass) || make_half_pass(1, &vk.blend_pass) ||
-            make_image(vk.width, vk.height, 1, DEPTH_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                       &vk.soft_depth, &vk.soft_depth_memory, &vk.soft_depth_view))
+        if (make_half_pass(0, &vk.opaque_pass) || make_half_pass(1, &vk.blend_pass))
             return -1;
         sampler_info.magFilter = VK_FILTER_NEAREST;
         sampler_info.minFilter = VK_FILTER_NEAREST;
@@ -1846,11 +1970,13 @@ static int make_target(void)
         CHECK(vkCreateSampler(vk.device, &sampler_info, NULL, &vk.soft_sampler));
     }
 
-    make_msaa_target();     /* [acct2-bro] 2026-11-22 rn113: MSAA's parts when asked (failing: one sample) */
+    /* [rexglue-native thread2] 2026-11-24: the images, framebuffer and read-back sized from the target, made the
+     * way ngl_vk_set_target_size makes them again */
+    if (make_target_sized())
+        return -1;
 
-    return make_host_buffer_cached((VkDeviceSize)vk.width * vk.height * BYTES_PER_PIXEL,
-                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1, &vk.readback, &vk.readback_memory,
-                                   &vk.readback_pixels);
+    make_msaa_target();     /* [acct2-bro] 2026-11-22 rn113: MSAA's parts when asked (failing: one sample) */
+    return 0;
 }
 
 static int make_pipeline(void)
@@ -2097,6 +2223,13 @@ static int make_quad_pipeline(void)
  * draws the casters into it, leaving it ready to sample; a sampler that compares (filtered where the GPU filters the
  * format, so four texels' answers are blended); and set 3 of the mesh pipelines: binding 0 the map, binding 1 the
  * frame's lookup (a uniform buffer: the camera's clip space to the light's, then the bias and a texel). */
+/* [rexglue-native thread2] 2026-11-24: the shadow set's binding 2 pointed at the opaque depth's copy (soft effects;
+ * sized from the target), at make_shadow and again at ngl_vk_set_target_size */
+static void soft_depth_point(void)
+{
+    point_image(vk.shadow_set, 2, vk.soft_sampler, vk.soft_depth_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
 static int make_shadow(void)
 {
     VkAttachmentDescription attachment = { 0 };
@@ -2117,11 +2250,9 @@ static int make_shadow(void)
     VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
     VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
     VkDescriptorImageInfo image_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo soft_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
     VkDescriptorBufferInfo buffer_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
     VkDescriptorBufferInfo lights_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
-    VkWriteDescriptorSet writes[4] = {
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+    VkWriteDescriptorSet writes[3] = {
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
         { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
@@ -2232,20 +2363,14 @@ static int make_shadow(void)
     writes[1].descriptorCount = 1;
     writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     writes[1].pBufferInfo = &buffer_info;
-    soft_info.sampler = vk.soft_sampler;
-    soft_info.imageView = vk.soft_depth_view;
-    writes[2].dstSet = vk.shadow_set;
-    writes[2].dstBinding = 2;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[2].pImageInfo = &soft_info;
     lights_info.buffer = vk.draw_lights;
-    writes[3].dstSet = vk.shadow_set;
-    writes[3].dstBinding = 3;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[3].pBufferInfo = &lights_info;
-    vkUpdateDescriptorSets(vk.device, 4, writes, 0, NULL);
+    writes[2].dstSet = vk.shadow_set;
+    writes[2].dstBinding = 3;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &lights_info;
+    vkUpdateDescriptorSets(vk.device, 3, writes, 0, NULL);
+    soft_depth_point();     /* [rexglue-native thread2] 2026-11-24: binding 2, as ngl_vk_set_target_size points it */
     return 0;
 }
 
@@ -2428,6 +2553,117 @@ uint64_t ngl_vk_take_staging(uint64_t *flushes)
     return bytes;
 }
 
+/* [rexglue-native thread2] 2026-11-24: MSAA's twins made again at another sample count (ngl_vk_set_target_size steps
+ * MSAA down when a new size is too large for its samples). A twin is the opaque mesh pipeline's create info with the
+ * samples and the multisampled pass (msaa_twin); that info lives in make_mesh_pipeline's locals, so the state it had
+ * when the first twin was made is kept here (copied, its pointers pointed at the copies). The three twins differ only
+ * in their culling (msaa_slot's order: none, the front faces, the back faces). The shader modules are made again from
+ * the same SPIR-V and freed after, as make_mesh_pipeline does. */
+static struct {
+    int kept;
+    VkVertexInputBindingDescription binding;
+    VkVertexInputAttributeDescription attributes[8];
+    VkPipelineVertexInputStateCreateInfo vertex_input;
+    VkPipelineInputAssemblyStateCreateInfo assembly;
+    VkPipelineViewportStateCreateInfo viewport;
+    VkPipelineRasterizationStateCreateInfo raster;
+    VkPipelineMultisampleStateCreateInfo multisample;
+    VkPipelineColorBlendAttachmentState blend_attachment;
+    VkPipelineColorBlendStateCreateInfo blend;
+    VkPipelineDepthStencilStateCreateInfo depth;
+    VkDynamicState dynamic_states[2];
+    VkPipelineDynamicStateCreateInfo dynamic;
+    VkPipelineLayout layout;
+} msaa_recipe;
+
+static void msaa_keep_recipe(const VkGraphicsPipelineCreateInfo *info)
+{
+    const VkPipelineVertexInputStateCreateInfo *input = info->pVertexInputState;
+
+    msaa_recipe.kept = 0;
+    if (input->vertexBindingDescriptionCount != 1u || input->vertexAttributeDescriptionCount > 8u ||
+        info->pColorBlendState->attachmentCount != 1u || info->pDynamicState->dynamicStateCount != 2u)
+        return;     /* (not the shape it has today: not kept, and MSAA can't be stepped down) */
+    msaa_recipe.binding = input->pVertexBindingDescriptions[0];
+    memcpy(msaa_recipe.attributes, input->pVertexAttributeDescriptions,
+           input->vertexAttributeDescriptionCount * sizeof msaa_recipe.attributes[0]);
+    msaa_recipe.vertex_input = *input;
+    msaa_recipe.vertex_input.pVertexBindingDescriptions = &msaa_recipe.binding;
+    msaa_recipe.vertex_input.pVertexAttributeDescriptions = msaa_recipe.attributes;
+    msaa_recipe.assembly = *info->pInputAssemblyState;
+    msaa_recipe.viewport = *info->pViewportState;
+    msaa_recipe.raster = *info->pRasterizationState;
+    msaa_recipe.multisample = *info->pMultisampleState;
+    msaa_recipe.blend_attachment = info->pColorBlendState->pAttachments[0];
+    msaa_recipe.blend = *info->pColorBlendState;
+    msaa_recipe.blend.pAttachments = &msaa_recipe.blend_attachment;
+    msaa_recipe.depth = *info->pDepthStencilState;
+    memcpy(msaa_recipe.dynamic_states, info->pDynamicState->pDynamicStates, sizeof msaa_recipe.dynamic_states);
+    msaa_recipe.dynamic = *info->pDynamicState;
+    msaa_recipe.dynamic.pDynamicStates = msaa_recipe.dynamic_states;
+    msaa_recipe.layout = info->layout;
+    msaa_recipe.kept = 1;
+}
+
+/* The three twins at vk.msaa_samples into the multisampled pass vk.msaa_opaque_pass (both new; vk.msaa_twin empty);
+ * 0 when every one-sample pipeline has its twin */
+static int msaa_make_twins(void)
+{
+    static const VkCullModeFlags culls[MSAA_TWINS] = { VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_BIT,
+                                                       VK_CULL_MODE_BACK_BIT };
+    VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
+    VkPipelineShaderStageCreateInfo stages[2] = {
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+        { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO },
+    };
+    VkPipelineRasterizationStateCreateInfo raster = msaa_recipe.raster;
+    VkPipelineMultisampleStateCreateInfo multisample = msaa_recipe.multisample;
+    VkGraphicsPipelineCreateInfo info = { VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO };
+    int missing = 0;
+
+    if (!msaa_recipe.kept || vk.msaa_samples < 2u)
+        return -1;
+    if (make_shader(mesh_vert_spirv, sizeof mesh_vert_spirv, &vertex_shader) ||
+        (vk.fabric_sets ? make_shader(mesh_frag_spirv, sizeof mesh_frag_spirv, &fragment_shader)
+                        : make_shader(mesh_four_sets_frag_spirv, sizeof mesh_four_sets_frag_spirv, &fragment_shader))) {
+        vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+        return -1;
+    }
+    /* the coverage build, as make_mesh_pipeline makes it (rn113b: told the new count by msaa_twin) */
+    if (vk.fabric_sets && make_shader(mesh_msaa_frag_spirv, sizeof mesh_msaa_frag_spirv, &vk.msaa_mesh_fragment))
+        vk.msaa_mesh_fragment = VK_NULL_HANDLE;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = vertex_shader;
+    stages[0].pName = "main";
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = fragment_shader;
+    stages[1].pName = "main";
+    info.stageCount = 2;
+    info.pStages = stages;
+    info.pVertexInputState = &msaa_recipe.vertex_input;
+    info.pInputAssemblyState = &msaa_recipe.assembly;
+    info.pViewportState = &msaa_recipe.viewport;
+    info.pRasterizationState = &raster;
+    info.pMultisampleState = &multisample;
+    info.pColorBlendState = &msaa_recipe.blend;
+    info.pDepthStencilState = &msaa_recipe.depth;
+    info.pDynamicState = &msaa_recipe.dynamic;
+    info.layout = msaa_recipe.layout;
+    info.renderPass = vk.render_pass;
+    info.subpass = 0;
+    vk.msaa_coverage = 0;
+    for (int slot = 0; slot < MSAA_TWINS; slot++) {
+        raster.cullMode = culls[slot];
+        msaa_twin(&info, &multisample, slot, *msaa_slot(slot));
+        missing += *msaa_slot(slot) && !vk.msaa_twin[slot];
+    }
+    vkDestroyShaderModule(vk.device, vertex_shader, NULL);
+    vkDestroyShaderModule(vk.device, fragment_shader, NULL);
+    vkDestroyShaderModule(vk.device, vk.msaa_mesh_fragment, NULL);
+    vk.msaa_mesh_fragment = VK_NULL_HANDLE;
+    return missing ? -1 : 0;
+}
+
 static int make_mesh_pipeline(void)
 {
     VkPushConstantRange matrices = { VK_SHADER_STAGE_VERTEX_BIT, 0, 32 * sizeof(float) };
@@ -2529,6 +2765,7 @@ static int make_mesh_pipeline(void)
     info.renderPass = vk.render_pass;
     info.subpass = 0;
     result = vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.mesh_pipeline);
+    msaa_keep_recipe(&info);    /* [rexglue-native thread2] 2026-11-24: for the twins made again (msaa_make_twins) */
     if (result == VK_SUCCESS)   /* [acct2-bro] 2026-11-22 rn113: its MSAA twin */
         msaa_twin(&info, &multisample, MSAA_MESH, vk.mesh_pipeline);
     /* [acct2-bro] 2026-11-13 rn69a: the two culling ones (front faces wind clockwise here, so CW is FRONT); without
@@ -3576,6 +3813,9 @@ void ngl_vk_set_sun_shadow(const float light_view_projection[16], const float ca
 #define PUSH_CORNER_ALPHA       128u    /* its alpha is its corners' alone (corner_alpha) */
 #define PUSH_MODE_SHIFT         8u      /* the draw's MESH_MODE_* bits, 8 of them */
 #define PUSH_DRAW_LIGHTS_SHIFT  16u     /* its own lights' slot in set 3 binding 3 (1 up), 0: none */
+/* [waw-decomp] 2026-11-24 (proposal): the slot takes bits 16-28 (MAX_DRAW_LIGHT_SLOTS 4096 + 1); bit 29 is free for
+ * corner_alpha 2 and mesh.frag reads the slot through SLOT_MASK. */
+#define PUSH_CORNER_TIMES_MAP   0x20000000u /* its alpha is its corners' times its base texture's (corner_alpha 2) */
 #define PUSH_BILLBOARD          0x80000000u /* [rexglue-native-world] 2026-11-11 w1: a card turned to face the view
                                              * (ngl_vk.h billboard); above the slot's bits (a slot is at most
                                              * MAX_MESH_DRAWS, bits 16-30); mesh.vert clears it before the slot
@@ -3710,6 +3950,8 @@ static void push_mesh_draw(const struct ngl_vk_mesh_draw *d, uint32_t mode)
         flags |= PUSH_SOFT;
     if (d->corner_alpha)
         flags |= PUSH_CORNER_ALPHA;
+    if (d->corner_alpha == NGL_VK_CORNER_TIMES_MAP)    /* [waw-decomp] 2026-11-24 (proposal) */
+        flags |= PUSH_CORNER_TIMES_MAP;
     if (d->billboard)                       /* [rexglue-native-world] 2026-11-11 w1 */
         flags |= PUSH_BILLBOARD;
     /* [acct2-bro] 2026-11-22 rn115a: the draw's own alpha test (alpha_cut) in the fourth light's color, which a draw
@@ -4390,6 +4632,162 @@ uint32_t ngl_vk_texture_levels(const void *const *levels, uint32_t level_count, 
     return n;
 }
 
+/* [acct2-bro] 2026-11-23 c3camo v2: see ngl_vk.h */
+void ngl_vk_set_block_textures(int on, int borrowed_device_has_it)
+{
+    block_textures_asked = on != 0;
+    block_textures_on_borrowed_device = borrowed_device_has_it != 0;
+}
+
+int ngl_vk_block_textures(void)
+{
+    return vk.device && vk.block_textures;
+}
+
+/* [acct2-bro] 2026-11-23 c3camo v2: stage_texture for block levels: texture n's levels, sizes[i] bytes each, laid out
+ * as copy[] says (each level's offset a multiple of 16, a block), into this frame's half of the staging buffer */
+static int stage_blocks(uint32_t n, const void *const *levels, uint32_t level_count, const VkBufferImageCopy *copy,
+                        const VkDeviceSize *sizes, VkDeviceSize bytes)
+{
+    VkDeviceSize at;
+    uint32_t level;
+
+    if ((vk.texture_staged + bytes > TEXTURE_STAGING_HALF || vk.pending_count == MAX_PENDING_TEXTURES) &&
+        flush_textures())
+        return -1;
+    at = (VkDeviceSize)vk.texture_staging_half * TEXTURE_STAGING_HALF + vk.texture_staged;
+    for (level = 0; level < level_count; level++) {
+        memcpy(vk.texture_staging_data + at + copy[level].bufferOffset, levels[level], (size_t)sizes[level]);
+        vk.pending[vk.pending_count].copies[level] = copy[level];
+        vk.pending[vk.pending_count].copies[level].bufferOffset += at;
+    }
+    vk.pending[vk.pending_count].texture = n;
+    vk.pending[vk.pending_count].level_count = level_count;
+    vk.pending_count++;
+    vk.texture_staged += (bytes + 15u) & ~(VkDeviceSize)15u;   /* the next one's start 16-byte aligned */
+    vk.batched_textures++;
+    return 0;
+}
+
+/* [acct2-bro] 2026-11-23 c3camo v2: see ngl_vk.h. ngl_vk_texture_levels' steps with a block format: the levels'
+ * sizes in blocks, a BC7 UNORM image, the same copies, barriers, descriptor set and sampler. */
+uint32_t ngl_vk_texture_blocks(uint32_t format, const void *const *levels, uint32_t level_count, uint32_t width,
+                               uint32_t height)
+{
+    VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
+    VkSubmitInfo submit = { VK_STRUCTURE_TYPE_SUBMIT_INFO };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
+    VkDescriptorImageInfo image_info;
+    VkBufferImageCopy copy[MAX_TEXTURE_LEVELS];
+    VkDeviceSize sizes[MAX_TEXTURE_LEVELS];
+    VkBuffer staging = VK_NULL_HANDLE;
+    VkDeviceMemory staging_memory = VK_NULL_HANDLE;
+    void *staging_pixels = NULL;
+    VkDeviceSize bytes = 0;
+    uint32_t n, level, most = 1;
+    int failed = 0, batched;
+
+    if (format != NGL_VK_BLOCKS_BC7 || !vk.device || !vk.block_textures || !levels || !levels[0] || !level_count ||
+        !width || !height || vk.texture_count == MAX_TEXTURES)
+        return 0;
+    while (most < MAX_TEXTURE_LEVELS && ((width >> most) || (height >> most)))
+        most++;                                         /* down to 1 x 1 */
+    if (level_count > most)
+        level_count = most;
+    for (level = 0; level < level_count; level++) {     /* level i: max(1, width >> i) x max(1, height >> i) texels */
+        uint32_t w = width >> level ? width >> level : 1, h = height >> level ? height >> level : 1;
+
+        if (!levels[level]) {                           /* the levels given stop here */
+            level_count = level;
+            break;
+        }
+        memset(&copy[level], 0, sizeof copy[level]);
+        copy[level].bufferOffset = bytes;               /* a multiple of 16: whole blocks before it */
+        copy[level].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy[level].imageSubresource.mipLevel = level;
+        copy[level].imageSubresource.layerCount = 1;
+        copy[level].imageExtent.width = w;              /* the level's own size: the copy reaches its edges */
+        copy[level].imageExtent.height = h;
+        copy[level].imageExtent.depth = 1;
+        sizes[level] = (VkDeviceSize)((w + 3u) / 4u) * ((h + 3u) / 4u) * 16u;
+        bytes += sizes[level];
+    }
+    batched = vk.batch_textures && vk.texture_staging_data && bytes <= TEXTURE_STAGING_HALF && !vk.low_frame_open;
+    if (!batched)
+        finish_frame();     /* its upload reuses the draws' command buffer and fence */
+    n = vk.texture_count + 1;
+    if (make_image(width, height, level_count, VK_FORMAT_BC7_UNORM_BLOCK,
+                   VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, &vk.textures[n].image,
+                   &vk.textures[n].memory, &vk.textures[n].view) ||
+        (!batched &&
+         make_host_buffer(bytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &staging_memory, &staging_pixels)))
+        failed = 1;
+    if (!failed && !batched) {
+        for (level = 0; level < level_count; level++)
+            memcpy((uint8_t *)staging_pixels + copy[level].bufferOffset, levels[level], (size_t)sizes[level]);
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &vk.commands;
+        failed = vkResetFences(vk.device, 1, &vk.done) != VK_SUCCESS ||
+                 vkResetCommandBuffer(vk.commands, 0) != VK_SUCCESS ||
+                 vkBeginCommandBuffer(vk.commands, &begin) != VK_SUCCESS;
+    }
+    if (!failed && !batched) {
+        levels_barrier(vk.textures[n].image, level_count, VK_IMAGE_LAYOUT_UNDEFINED,
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+        vkCmdCopyBufferToImage(vk.commands, staging, vk.textures[n].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               level_count, copy);
+        levels_barrier(vk.textures[n].image, level_count, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                       VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+        failed = vkEndCommandBuffer(vk.commands) != VK_SUCCESS ||
+                 submit_to_queue(&submit, vk.done) != VK_SUCCESS ||
+                 vkWaitForFences(vk.device, 1, &vk.done, VK_TRUE, WAIT_NS) != VK_SUCCESS;
+    }
+    if (!failed && !vk.textures[n].set) {               /* a number given out again keeps its set */
+        set_info.descriptorPool = vk.descriptor_pool;
+        set_info.descriptorSetCount = 1;
+        set_info.pSetLayouts = &vk.set_layout;
+        failed = vkAllocateDescriptorSets(vk.device, &set_info, &vk.textures[n].set) != VK_SUCCESS;
+    }
+    if (!failed) {
+        image_info.sampler = vk.sampler;
+        if (level_count > 1 && vk.aniso_sampler)
+            image_info.sampler = vk.aniso_sampler;
+        image_info.imageView = vk.textures[n].view;
+        image_info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        write.dstSet = vk.textures[n].set;
+        write.dstBinding = 0;
+        write.descriptorCount = 1;
+        write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        write.pImageInfo = &image_info;
+        vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    }
+    if (!failed && batched)                             /* last: a failure above leaves nothing waiting */
+        failed = stage_blocks(n, levels, level_count, copy, sizes, bytes) != 0;
+    if (staging_memory)
+        vkUnmapMemory(vk.device, staging_memory);
+    vkDestroyBuffer(vk.device, staging, NULL);
+    vkFreeMemory(vk.device, staging_memory, NULL);
+    if (failed) {
+        VkDescriptorSet set = vk.textures[n].set;       /* kept for the next texture with this number */
+
+        vkDestroyImageView(vk.device, vk.textures[n].view, NULL);
+        vkDestroyImage(vk.device, vk.textures[n].image, NULL);
+        vkFreeMemory(vk.device, vk.textures[n].memory, NULL);
+        memset(&vk.textures[n], 0, sizeof vk.textures[n]);
+        vk.textures[n].set = set;
+        fprintf(stderr, "[ngl_vk] a %ux%u BC7 texture couldn't be made\n", width, height);
+        return 0;
+    }
+    vk.textures[n].cube = 0;
+    vk.texture_count = n;
+    return n;
+}
+
 /* [waw-decomp] 2026-11-10: new pixels for a texture made earlier (ngl_vk.h ngl_vk_texture_rewrite): its one level
  * written whole. With batched textures it waits in the staging buffer like a new texture's pixels and is copied in at
  * the start of the next draw, in the order asked (so after the texture's own first copy, when that still waits);
@@ -4601,6 +4999,25 @@ void ngl_vk_forget(void)
     vk.lookup_table = 0;
 }
 
+/* [cod2-native 2026-11-24] Every mesh forgotten, the textures kept (see ngl_vk.h): ngl_vk_forget without its textures,
+ * so a game whose mesh corners run out (Call of Duty 2's world, every minute or two) doesn't decode and upload every
+ * texture again. The last frame is waited for first, as there. */
+void ngl_vk_forget_meshes(void)
+{
+    if (!vk.device)
+        return;
+    finish_frame();
+    vk.mesh_count = 0;
+    vk.corners_used = 0;
+    vk.indices_used = 0;
+    /* the copies still waiting were for the meshes just forgotten (the textures' own uploads wait apart, and stay) */
+    vk.copy_count[0] = 0;
+    vk.copy_count[1] = 0;
+    vk.staged = 0;
+    /* numbers the caller set for this frame: as ngl_vk_forget, set again each frame */
+    vk.grass_patch_count = 0;
+}
+
 void ngl_vk_room(uint32_t *textures, uint32_t *texture_room, uint32_t *corners, uint32_t *corner_room)
 {
     if (textures)
@@ -4761,7 +5178,9 @@ static void effect_count_end(void)
  * DST_COLOR x out + SRC_COLOR x behind = the picture x 2 x out: camo.frag's factor (0 to 2) over 2 multiplies what
  * the draw left; red, green and blue only. With MSAA (msaa_finish kept it) each also gets a multisampled twin for the
  * first half. What isn't made is left out: no camo is drawn there (said once on stderr); nothing else uses them. */
-static void make_camo(void)
+/* [rexglue-native thread2] 2026-11-24: msaa_only 1: only the multisampled twins, for the one-sample ones made
+ * already (ngl_vk_set_target_size, after MSAA stepped down to fewer samples and a new multisampled pass) */
+static void make_camo_pipelines(int msaa_only)
 {
     VkShaderModule vertex_shader = VK_NULL_HANDLE, fragment_shader = VK_NULL_HANDLE;
     VkPipelineShaderStageCreateInfo stages[2] = {
@@ -4788,7 +5207,7 @@ static void make_camo(void)
     static const VkCullModeFlags culls[3] = { VK_CULL_MODE_NONE, VK_CULL_MODE_FRONT_BIT, VK_CULL_MODE_BACK_BIT };
     int made = 0;
 
-    if (!vk.device || !vk.mesh_layout || !vk.render_pass || vk.camo_pipeline[0])
+    if (!vk.device || !vk.mesh_layout || !vk.render_pass || (!msaa_only && vk.camo_pipeline[0]))
         return;
     if (make_shader(camo_vert_spirv, sizeof camo_vert_spirv, &vertex_shader) ||
         make_shader(camo_frag_spirv, sizeof camo_frag_spirv, &fragment_shader)) {
@@ -4848,7 +5267,8 @@ static void make_camo(void)
         raster.cullMode = culls[k];
         multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
         info.renderPass = vk.render_pass;
-        if (vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.camo_pipeline[k]) != VK_SUCCESS)
+        if (!msaa_only &&
+            vkCreateGraphicsPipelines(vk.device, VK_NULL_HANDLE, 1, &info, NULL, &vk.camo_pipeline[k]) != VK_SUCCESS)
             vk.camo_pipeline[k] = VK_NULL_HANDLE;
         made += vk.camo_pipeline[k] != VK_NULL_HANDLE;
         if (vk.camo_pipeline[k] && vk.msaa_samples >= 2u && vk.msaa_opaque_pass) {
@@ -4861,8 +5281,13 @@ static void make_camo(void)
     }
     vkDestroyShaderModule(vk.device, vertex_shader, NULL);
     vkDestroyShaderModule(vk.device, fragment_shader, NULL);
-    if (made < 3)
+    if (!msaa_only && made < 3)
         fprintf(stderr, "[ngl_vk] camo: %d of its 3 pipelines made: the draws without one get no camo\n", made);
+}
+
+static void make_camo(void)
+{
+    make_camo_pipelines(0);
 }
 
 uint32_t ngl_vk_camo_count(void)    /* [acct2-bro] 2026-11-22 Camo lane (ngl_vk.h) */
@@ -4963,6 +5388,10 @@ int ngl_vk_init_on_device(uint32_t width, uint32_t height, void *instance, void 
     vk.queue_user = user;
     vk.anisotropy_feature = anisotropy_on_borrowed_device;     /* [acct2-bro] 2026-11-12: as its owner made it */
     vk.effect_query_flags = effect_precise_on_borrowed_device ? VK_QUERY_CONTROL_PRECISE_BIT : 0;  /* rn114 */
+    /* [acct2-bro] 2026-11-23 c3camo v2: block textures on a borrowed device only when asked for and its owner turned
+     * textureCompressionBC on (ngl_vk_set_block_textures), and the GPU samples BC7 */
+    vk.block_textures = block_textures_asked && block_textures_on_borrowed_device &&
+                        block_format_sampled(VK_FORMAT_BC7_UNORM_BLOCK);
     vkGetDeviceQueue(vk.device, queue_family, queue_index, &vk.queue);
     vkGetPhysicalDeviceProperties(vk.gpu, &properties);
     snprintf(device_name, sizeof device_name, "%s", properties.deviceName);
@@ -5082,7 +5511,14 @@ void ngl_vk_set_window_table(const uint32_t *table)    /* [acct2-ocr] 2026-11-13
 /* [acct2-fh] 2026-11-14 How the finished target is scaled into the window (ngl_vk.h ngl_vk_set_window_scaling): a
  * setting, kept across ngl_vk_shutdown. NGL_VK_SCALE_SMOOTH, the default, is the window copy as it always was. */
 static int window_scaling = NGL_VK_SCALE_SMOOTH;
-static struct { uint32_t from_width, from_height; int32_t x, y, width, height; int scaling, passes, ramp; } window_copy_said;
+static struct {
+    uint32_t from_width, from_height;
+    int32_t x, y, width, height;
+    int scaling, passes, ramp;
+    uint32_t window_width, window_height;   /* [rexglue-native thread2] 2026-11-24: the swapchain's size */
+} window_copy_said;
+/* [rexglue-native thread2] 2026-11-24: the warning that a sized target is larger than the window has been given */
+static int window_too_small_said;
 
 void ngl_vk_set_window_scaling(int scaling)
 {
@@ -5140,21 +5576,71 @@ static void record_window_copy(uint32_t index)
     VkClearColorValue black = { { 0.0f, 0.0f, 0.0f, 1.0f } };
     VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
     VkImageBlit blit = { { 0 } };
-    float scale_x = (float)vk.swap_extent.width / (float)vk.width;
-    float scale_y = (float)vk.swap_extent.height / (float)vk.height;
-    float fit = scale_x < scale_y ? scale_x : scale_y;
-    float scale = window_scaling == NGL_VK_SCALE_INTEGER && fit >= 1.0f ? (float)(int32_t)fit : fit;  /* [acct2-fh] */
-    VkFilter filter = window_scaling == NGL_VK_SCALE_SHARP || window_scaling == NGL_VK_SCALE_INTEGER ? VK_FILTER_NEAREST
-                                                                                                 : VK_FILTER_LINEAR;
-    int32_t width = (int32_t)((float)vk.width * scale + 0.5f), height = (int32_t)((float)vk.height * scale + 0.5f);
-    int32_t x = ((int32_t)vk.swap_extent.width - width) / 2, y = ((int32_t)vk.swap_extent.height - height) / 2;
+    /* [rexglue-native thread2] 2026-11-24: the place worked out in whole pixels (no float rounding), so a target
+     * whose fitted size is its own size is known exactly: then it takes the same-size path (a nearest blit of equal
+     * extents: each pixel as it is) at a whole-pixel offset, e.g. 1440x1080 into 1920x1080 at x 240. Before, that
+     * case was a linear blit at 1:1, which gives the same pixels; for every port the result is unchanged. */
+    const uint32_t window_width = vk.swap_extent.width, window_height = vk.swap_extent.height;
+    const int fits = vk.width <= window_width && vk.height <= window_height;
+    int32_t width, height, x, y;
+    int32_t src_x = 0, src_y = 0;   /* [rexglue-native thread2] 2026-11-24: the crop's corner in the target */
+    int same_size, one_to_one, filtered, passes = 0, fx = -1, crop = 0;
+    VkFilter filter;
+
+    if (window_scaling == NGL_VK_SCALE_INTEGER && fits) {   /* [acct2-fh] the largest whole multiple that fits */
+        uint32_t times_x = window_width / vk.width, times_y = window_height / vk.height;
+        uint32_t times = times_x < times_y ? times_x : times_y;
+
+        width = (int32_t)(vk.width * times);
+        height = (int32_t)(vk.height * times);
+    } else if ((uint64_t)window_width * vk.height <= (uint64_t)window_height * vk.width) {   /* the width limits */
+        width = (int32_t)window_width;
+        height = (int32_t)(((uint64_t)vk.height * window_width * 2u + vk.width) / (2u * (uint64_t)vk.width));
+    } else {                                                                                 /* the height limits */
+        height = (int32_t)window_height;
+        width = (int32_t)(((uint64_t)vk.width * window_height * 2u + vk.height) / (2u * (uint64_t)vk.height));
+    }
+    same_size = width == (int32_t)vk.width && height == (int32_t)vk.height;
+    /* (owner 07:48: no upscaling or downscaling) once the port sizes the target itself (ngl_vk_set_target_size), a
+     * target that fits the window is also copied one to one, centered with black bars, rather than scaled up; it is
+     * scaled only when it is larger than the window (said once). Ports that never call it keep the scale to fit. */
+    one_to_one = same_size || (target_size_asked && fits);
+    if (one_to_one) {
+        width = (int32_t)vk.width;
+        height = (int32_t)vk.height;
+    }
+    /* [rexglue-native thread2] 2026-11-24 (coordinator 18:14Z, from the BRO run): a port that sizes the target itself
+     * can have a frame where the swapchain was just remade smaller and its next ngl_vk_set_target_size hasn't run
+     * yet. That frame shows the target's centre at its own size (a crop, nearest), never a rescale; the next frame
+     * has the new target. An acquired image must be presented, and black would flash, so a crop it is. */
+    if (target_size_asked && !fits) {
+        crop = 1;
+        one_to_one = 1;
+        width = (int32_t)(vk.width < window_width ? vk.width : window_width);
+        height = (int32_t)(vk.height < window_height ? vk.height : window_height);
+        src_x = ((int32_t)vk.width - width) / 2;
+        src_y = ((int32_t)vk.height - height) / 2;
+    }
+    filter = one_to_one || window_scaling == NGL_VK_SCALE_SHARP || window_scaling == NGL_VK_SCALE_INTEGER
+                 ? VK_FILTER_NEAREST
+                 : VK_FILTER_LINEAR;
+    x = ((int32_t)window_width - width) / 2;
+    y = ((int32_t)window_height - height) / 2;
     /* [acct2-fh] CAS or FSR 1 (window_fx): FSR when the picture is scaled up, with an EASU pass for each doubling
      * (at most fsr_passes); passes 0 is CAS. With a color table on (window_ramp) the table comes first, at the
      * picture's size, and CAS / FSR 1 work from its image (11-14 stage 5c; before, a table meant smooth). */
-    int filtered = (window_scaling == NGL_VK_SCALE_CAS || window_scaling == NGL_VK_SCALE_FSR) && !window_fx.failed &&
-                   width > 0 && height > 0;
-    int passes = 0, fx = -1;
+    filtered = (window_scaling == NGL_VK_SCALE_CAS || window_scaling == NGL_VK_SCALE_FSR) && !window_fx.failed &&
+               width > 0 && height > 0 && !crop;   /* the crop's one frame goes as it is */
 
+    if (target_size_asked && !fits) {   /* [rexglue-native thread2] 2026-11-24: the last resort, said once */
+        if (!window_too_small_said)
+            fprintf(stderr, "[ngl_vk] the target (%u x %u) is larger than the window (%u x %u): a transitional "
+                    "frame shows its centre at its own size (a crop, not scaled) until the port's next "
+                    "ngl_vk_set_target_size\n", vk.width, vk.height, vk.swap_extent.width, vk.swap_extent.height);
+        window_too_small_said = 1;
+    } else {
+        window_too_small_said = 0;  /* (said again if it happens again) */
+    }
     if (filtered && window_scaling == NGL_VK_SCALE_FSR)
         while (passes < window_fx.fsr_passes &&
                ((vk.width << passes) < (uint32_t)width || (vk.height << passes) < (uint32_t)height))
@@ -5162,7 +5648,8 @@ static void record_window_copy(uint32_t index)
     if (vk.width != window_copy_said.from_width || vk.height != window_copy_said.from_height ||
         x != window_copy_said.x || y != window_copy_said.y || width != window_copy_said.width ||
         height != window_copy_said.height || window_scaling != window_copy_said.scaling ||
-        passes != window_copy_said.passes || window_ramp.on != window_copy_said.ramp) {
+        passes != window_copy_said.passes || window_ramp.on != window_copy_said.ramp ||
+        window_width != window_copy_said.window_width || window_height != window_copy_said.window_height) {
         /* [acct2-fh] 2026-11-14 said once for each new placement, so a run's log shows where the picture went */
         char how[96];
 
@@ -5174,7 +5661,9 @@ static void record_window_copy(uint32_t index)
                      window_scaling == NGL_VK_SCALE_CAS ? "AMD CAS" : "AMD FSR 1 asked, not scaled up: AMD CAS");
         else
             snprintf(how, sizeof how, "%s",
-                     window_scaling == NGL_VK_SCALE_SHARP     ? "sharp"
+                     crop ? "its centre, cropped at its own size (transitional)"
+                     : one_to_one && !filtered ? "same size, exact (nearest)"   /* [rexglue-native thread2] */
+                     : window_scaling == NGL_VK_SCALE_SHARP   ? "sharp"
                      : window_scaling == NGL_VK_SCALE_INTEGER ? "whole multiples, sharp"
                      : window_scaling == NGL_VK_SCALE_CAS && filtered ? "AMD CAS"
                      : window_scaling == NGL_VK_SCALE_FSR && filtered ? "AMD FSR 1 asked, not scaled up: AMD CAS"
@@ -5191,6 +5680,8 @@ static void record_window_copy(uint32_t index)
         window_copy_said.scaling = window_scaling;
         window_copy_said.passes = passes;
         window_copy_said.ramp = window_ramp.on;
+        window_copy_said.window_width = window_width;      /* [rexglue-native thread2]: and again after a */
+        window_copy_said.window_height = window_height;    /* new swapchain */
     }
     image_barrier(image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 0,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
@@ -5223,8 +5714,10 @@ static void record_window_copy(uint32_t index)
     if (window_ramp.on && !window_ramp.failed && window_ramp_record() == 0) {     /* [acct2-ocr] 2026-11-13 */
         blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;                /* [acct2-ocr] as below, from */
         blit.srcSubresource.layerCount = 1;                                        /* the target through the */
-        blit.srcOffsets[1].x = (int32_t)vk.width;                                  /* window's color table */
-        blit.srcOffsets[1].y = (int32_t)vk.height;
+        blit.srcOffsets[0].x = src_x;                                              /* window's color table */
+        blit.srcOffsets[0].y = src_y;                                              /* (a crop: its centre) */
+        blit.srcOffsets[1].x = crop ? src_x + width : (int32_t)vk.width;
+        blit.srcOffsets[1].y = crop ? src_y + height : (int32_t)vk.height;
         blit.srcOffsets[1].z = 1;
         blit.dstSubresource = blit.srcSubresource;
         blit.dstOffsets[0].x = x;
@@ -5241,8 +5734,10 @@ static void record_window_copy(uint32_t index)
     }
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
-    blit.srcOffsets[1].x = (int32_t)vk.width;
-    blit.srcOffsets[1].y = (int32_t)vk.height;
+    blit.srcOffsets[0].x = src_x;     /* [rexglue-native thread2] 2026-11-24: a crop's corner, else 0 */
+    blit.srcOffsets[0].y = src_y;
+    blit.srcOffsets[1].x = crop ? src_x + width : (int32_t)vk.width;
+    blit.srcOffsets[1].y = crop ? src_y + height : (int32_t)vk.height;
     blit.srcOffsets[1].z = 1;
     blit.dstSubresource = blit.srcSubresource;
     blit.dstOffsets[0].x = x;
@@ -5276,9 +5771,175 @@ static void depth_barrier(VkImage image, VkImageLayout from, VkImageLayout to, V
     vkCmdPipelineBarrier(vk.commands, from_stage, to_stage, 0, 0, NULL, 0, NULL, 1, &barrier);
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * [rexglue-native thread2] 2026-11-24: depth probes (ngl_vk.h ngl_vk_probe_depth). The texels are copied where
+ * copy_soft_depth copies the whole depth (the image already in its transfer layout, after the opaque half, its
+ * barriers covering the copy), into a host-cached buffer of two slots: the frame being recorded takes one, the
+ * frame on the GPU may hold the other. A slot's depths are read once its frame's fence has signalled: in
+ * finish_frame, which waits for it anyway before the next draw records, or in ngl_vk_probe_results when the fence
+ * is already signalled (asked without waiting). The depth is D32_SFLOAT (DEPTH_FORMAT), so a texel's copy is the
+ * float the depth test compared, 4 bytes, no unpacking. */
+enum { PROBE_FREE, PROBE_RECORDED, PROBE_SUBMITTED };
+
+static void probe_free(void)
+{
+    if (vk.device && vk.probe_memory && vk.probe_mapped)
+        vkUnmapMemory(vk.device, vk.probe_memory);
+    if (vk.device && vk.probe_buffer)
+        vkDestroyBuffer(vk.device, vk.probe_buffer, NULL);
+    if (vk.device && vk.probe_memory)
+        vkFreeMemory(vk.device, vk.probe_memory, NULL);
+    vk.probe_buffer = VK_NULL_HANDLE;
+    vk.probe_memory = VK_NULL_HANDLE;
+    vk.probe_mapped = NULL;
+    vk.probe_slot_state[0] = vk.probe_slot_state[1] = PROBE_FREE;
+    vk.probe_count = 0;
+}
+
+/* Once a frame's fence has signalled: its slot's depths become the newest results (the older slot first, so the
+ * newer one wins if both are in) */
+static void probe_publish(void)
+{
+    int order[2] = { 0, 1 };
+
+    if (!vk.probe_mapped)
+        return;
+    if (vk.probe_slot_frame[1] < vk.probe_slot_frame[0]) {
+        order[0] = 1;
+        order[1] = 0;
+    }
+    for (int k = 0; k < 2; k++) {
+        const int slot = order[k];
+        const float *texels = vk.probe_mapped + (size_t)slot * NGL_VK_DEPTH_PROBES;
+
+        if (vk.probe_slot_state[slot] != PROBE_SUBMITTED)
+            continue;
+        for (uint32_t i = 0; i < vk.probe_slot_count[slot]; i++)
+            vk.probe_depths[i] = vk.probe_slot_on_target[slot][i] ? texels[i] : -1.0f;
+        vk.probe_depth_count = vk.probe_slot_count[slot];
+        vk.probe_depth_frame = vk.probe_slot_frame[slot];
+        vk.probe_slot_state[slot] = PROBE_FREE;
+    }
+}
+
+/* In copy_soft_depth (the depth in VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL): this draw's points, placed through the
+ * meshes' viewport (view), each texel copied into a free slot. A point's pixel is the one its place falls in, as
+ * the rasterizer samples a pixel at its center: (x, y) = the viewport's corner + (ndc x + 1) / 2 x its width and
+ * (1 - ndc y) / 2 x its height (Direct3D's y up, the target's rows down, as mesh.vert turns y over). */
+static void probe_record(const VkViewport *view)
+{
+    VkBufferImageCopy regions[NGL_VK_DEPTH_PROBES];
+    VkBufferMemoryBarrier to_host = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER };
+    uint32_t copies = 0, slot;
+    void *mapped = NULL;
+
+    if (!vk.probe_count || vk.probe_frame != vk.frames_done + 1)
+        return;
+    if (!vk.probe_buffer) {
+        if (make_host_buffer_cached(2u * NGL_VK_DEPTH_PROBES * sizeof(float), VK_BUFFER_USAGE_TRANSFER_DST_BIT, 1,
+                                    &vk.probe_buffer, &vk.probe_memory, &mapped)) {
+            fprintf(stderr, "[ngl_vk] no buffer for the depth probes: none are read\n");
+            probe_free();
+            return;
+        }
+        vk.probe_mapped = (float *)mapped;
+    }
+    /* a slot left recorded by a frame that was never submitted is free again; one on the GPU is not */
+    for (slot = 0; slot < 2; slot++) {
+        if (vk.probe_slot_state[slot] == PROBE_RECORDED)
+            vk.probe_slot_state[slot] = PROBE_FREE;
+    }
+    slot = vk.probe_next_slot;
+    if (vk.probe_slot_state[slot] != PROBE_FREE)
+        slot ^= 1u;
+    if (vk.probe_slot_state[slot] != PROBE_FREE)
+        return;     /* (cannot happen: finish_frame publishes before the next draw records) */
+    memset(regions, 0, sizeof regions);
+    for (uint32_t i = 0; i < vk.probe_count; i++) {
+        const float x = view->x + (vk.probe_points[i][0] * 0.5f + 0.5f) * view->width;
+        const float y = view->y + (0.5f - vk.probe_points[i][1] * 0.5f) * view->height;
+        /* (written this way round, a NaN place is off the target too) */
+        const int on = x >= 0.0f && y >= 0.0f && x < (float)vk.width && y < (float)vk.height;
+
+        vk.probe_slot_on_target[slot][i] = (uint8_t)on;
+        if (!on)
+            continue;
+        /* a depth aspect's buffer offset must be a multiple of 4: every float is */
+        regions[copies].bufferOffset = ((VkDeviceSize)slot * NGL_VK_DEPTH_PROBES + i) * sizeof(float);
+        regions[copies].imageSubresource.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+        regions[copies].imageSubresource.layerCount = 1;
+        regions[copies].imageOffset.x = (int32_t)x;
+        regions[copies].imageOffset.y = (int32_t)y;
+        regions[copies].imageExtent.width = 1;
+        regions[copies].imageExtent.height = 1;
+        regions[copies].imageExtent.depth = 1;
+        copies++;
+    }
+    if (copies) {
+        vkCmdCopyImageToBuffer(vk.commands, vk.depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.probe_buffer, copies,
+                               regions);
+        to_host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        to_host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        to_host.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        to_host.buffer = vk.probe_buffer;
+        to_host.offset = (VkDeviceSize)slot * NGL_VK_DEPTH_PROBES * sizeof(float);
+        to_host.size = NGL_VK_DEPTH_PROBES * sizeof(float);
+        vkCmdPipelineBarrier(vk.commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 0, NULL, 1,
+                             &to_host, 0, NULL);
+    }
+    vk.probe_slot_frame[slot] = vk.probe_frame;
+    vk.probe_slot_count[slot] = vk.probe_count;
+    vk.probe_slot_state[slot] = PROBE_RECORDED;
+    vk.probe_next_slot = slot ^ 1u;
+    vk.probe_count = 0;     /* this draw's alone */
+}
+
+/* After a frame's commands are submitted (submit_and_show): its recorded slot is on the GPU */
+static void probe_submitted(void)
+{
+    for (int slot = 0; slot < 2; slot++) {
+        if (vk.probe_slot_state[slot] == PROBE_RECORDED)
+            vk.probe_slot_state[slot] = PROBE_SUBMITTED;
+    }
+    vk.probe_count = 0;     /* points given for a draw that took none (no meshes) are dropped with it */
+}
+
+uint64_t ngl_vk_probe_depth(const float (*points)[2], uint32_t count)
+{
+    if (!vk.device || !points || !count) {
+        vk.probe_count = 0;
+        return 0;
+    }
+    if (count > NGL_VK_DEPTH_PROBES)
+        count = NGL_VK_DEPTH_PROBES;
+    memcpy(vk.probe_points, points, (size_t)count * sizeof vk.probe_points[0]);
+    vk.probe_count = count;
+    vk.probe_frame = vk.frames_done + 1;    /* the next draw's (frames_done counts the frames finished) */
+    return vk.probe_frame;
+}
+
+uint32_t ngl_vk_probe_results(float *depths, uint32_t max, uint64_t *frame)
+{
+    uint32_t count;
+
+    /* the frame on the GPU, if it is done already: a zero timeout only asks */
+    if (vk.device && vk.frame_pending && vk.probe_mapped &&
+        (vk.probe_slot_state[0] == PROBE_SUBMITTED || vk.probe_slot_state[1] == PROBE_SUBMITTED) &&
+        vkWaitForFences(vk.device, 1, &vk.done, VK_TRUE, 0) == VK_SUCCESS)
+        probe_publish();
+    count = vk.probe_depth_count < max ? vk.probe_depth_count : max;
+    if (depths && count)
+        memcpy(depths, vk.probe_depths, (size_t)count * sizeof depths[0]);
+    if (frame)
+        *frame = vk.probe_depth_frame;
+    return depths ? count : 0;
+}
+
 /* Between the halves: the opaque meshes' depth (left in the transfer layout by the first half) copied for mesh.frag,
- * then back to a depth attachment for the second half's tests. */
-static void copy_soft_depth(void)
+ * then back to a depth attachment for the second half's tests. [rexglue-native thread2] 2026-11-24: and the depth
+ * probes' texels (probe_record), through the meshes' viewport (view). */
+static void copy_soft_depth(const VkViewport *view)
 {
     VkImageCopy copy = { 0 };
 
@@ -5293,6 +5954,7 @@ static void copy_soft_depth(void)
     copy.extent.depth = 1;
     vkCmdCopyImage(vk.commands, vk.depth, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, vk.soft_depth,
                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    probe_record(view);     /* [rexglue-native thread2] 2026-11-24 (nothing unless points were given) */
     depth_barrier(vk.soft_depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                   VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
@@ -5491,25 +6153,11 @@ static int make_fullscreen_pipeline(const uint32_t *fragment_code, size_t fragme
     return 0;
 }
 
-/* Depth of field's images, passes, sets and pipelines (after the main pass, the textures' pool and the shadow's set,
- * whose binding 2, the opaque depth, the mix reads). */
-static int make_dof(void)
+/* [rexglue-native thread2] 2026-11-24: depth of field's images, sized from the target (make_dof, and
+ * ngl_vk_set_target_size): the half, the quarter and the blur's other quarter. [acct2-bro] 2026-11-12 rn61a: a
+ * quarter of the shown picture (the target is shown_scale times it). */
+static int make_dof_images(void)
 {
-    VkDescriptorSetLayout layouts[DOF_SETS] = { vk.set_layout, vk.set_layout };
-    VkDescriptorSet sets[DOF_SETS] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    VkDescriptorImageInfo images[DOF_SETS] = { { 0 }, { 0 } };
-    VkWriteDescriptorSet writes[DOF_SETS] = { { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
-                                              { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET } };
-    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-    /* [acct2-bro] 2026-11-13 rn64c: four floats (the step, the kind of blur, one not used), it was two */
-    VkPushConstantRange blur_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float) };
-    /* [acct2-bro] 2026-11-13 rn64a: eight floats (dof_focus), it was four */
-    VkPushConstantRange mix_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 * sizeof(float) };
-    VkDescriptorSetLayout mix_layouts[2] = { vk.set_layout, vk.shadow_set_layout };
-    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-
-    /* [acct2-bro] 2026-11-12 rn61a: a quarter of the shown picture (the target is shown_scale times it) */
     vk.dof_width = vk.width / (4u * shown_scale) ? vk.width / (4u * shown_scale) : 1u;
     vk.dof_height = vk.height / (4u * shown_scale) ? vk.height / (4u * shown_scale) : 1u;
     /* [rexglue-native] 2026-11-09: sampled too, only because make_image gives every image a view and a view needs a
@@ -5523,9 +6171,15 @@ static int make_dof(void)
                    &vk.dof_quarter, &vk.dof_quarter_memory, &vk.dof_quarter_view) ||
         make_image(vk.dof_width, vk.dof_height, 1, TARGET_FORMAT,
                    VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
-                   &vk.dof_temp, &vk.dof_temp_memory, &vk.dof_temp_view) ||
-        make_dof_blur_pass() || make_overlay_pass())
+                   &vk.dof_temp, &vk.dof_temp_memory, &vk.dof_temp_view))
         return -1;
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the blur pass's two framebuffers over the quarters (the pass made already) */
+static int make_dof_framebuffers(void)
+{
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
 
     framebuffer_info.renderPass = vk.dof_blur_pass;
     framebuffer_info.attachmentCount = 1;
@@ -5536,6 +6190,34 @@ static int make_dof(void)
     CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.dof_quarter_framebuffer));
     framebuffer_info.pAttachments = &vk.dof_temp_view;
     CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.dof_temp_framebuffer));
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the two blurred quarters' sets pointed at them */
+static void dof_point(void)
+{
+    point_image(vk.dof_quarter_set, 0, vk.sampler, vk.dof_quarter_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    point_image(vk.dof_temp_set, 0, vk.sampler, vk.dof_temp_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* Depth of field's images, passes, sets and pipelines (after the main pass, the textures' pool and the shadow's set,
+ * whose binding 2, the opaque depth, the mix reads). */
+static int make_dof(void)
+{
+    VkDescriptorSetLayout layouts[DOF_SETS] = { vk.set_layout, vk.set_layout };
+    VkDescriptorSet sets[DOF_SETS] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    /* [acct2-bro] 2026-11-13 rn64c: four floats (the step, the kind of blur, one not used), it was two */
+    VkPushConstantRange blur_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 4 * sizeof(float) };
+    /* [acct2-bro] 2026-11-13 rn64a: eight floats (dof_focus), it was four */
+    VkPushConstantRange mix_range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 8 * sizeof(float) };
+    VkDescriptorSetLayout mix_layouts[2] = { vk.set_layout, vk.shadow_set_layout };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+    /* [rexglue-native thread2] 2026-11-24: the images, the passes, then the framebuffers, in the order they always
+     * were made; the images and framebuffers are made the same way again by ngl_vk_set_target_size */
+    if (make_dof_images() || make_dof_blur_pass() || make_overlay_pass() || make_dof_framebuffers())
+        return -1;
 
     set_info.descriptorPool = vk.descriptor_pool;
     set_info.descriptorSetCount = DOF_SETS;
@@ -5543,19 +6225,7 @@ static int make_dof(void)
     CHECK(vkAllocateDescriptorSets(vk.device, &set_info, sets));
     vk.dof_quarter_set = sets[0];
     vk.dof_temp_set = sets[1];
-    images[0].sampler = vk.sampler;
-    images[0].imageView = vk.dof_quarter_view;
-    images[0].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    images[1] = images[0];
-    images[1].imageView = vk.dof_temp_view;
-    for (uint32_t i = 0; i < DOF_SETS; i++) {
-        writes[i].dstSet = sets[i];
-        writes[i].dstBinding = 0;
-        writes[i].descriptorCount = 1;
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-        writes[i].pImageInfo = &images[i];
-    }
-    vkUpdateDescriptorSets(vk.device, DOF_SETS, writes, 0, NULL);
+    dof_point();
 
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &vk.set_layout;
@@ -5597,63 +6267,79 @@ void ngl_vk_set_depth_of_field_bands(float near_depth, float far_depth, float ke
     vk.dof_focus[6] = front_amount < 0.0f ? 0.0f : front_amount > 1.0f ? 1.0f : front_amount;
 }
 
-/* The tint's copy of the target (sampled through set 0) and its pipeline, drawn in the overlay pass. */
-static int make_tint(void)
+/* [rexglue-native thread2] 2026-11-24: the tint's images, sized from the target (make_tint, and
+ * ngl_vk_set_target_size): the last frame's picture and the target's copy (both needed: -1 without them), then the
+ * afterimage's kept picture (want_after) and its quarter (want_small). At init (must 0) those two may be missing (no
+ * afterimage, or the full-size one: as before); at a resize (must 1) the ones the init made must be made again, else
+ * -1 and the old ones stay. *after_made: the kept picture was made. */
+static int make_post_images(int want_after, int want_small, int must, int *after_made)
 {
-    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    VkDescriptorImageInfo image = { 0 };
-    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    VkPushConstantRange range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof vk.tint };  /* rn41b: (was 12 floats) */
-    /* the target's copy, the opaque depth, the last frame's picture, the color look-up's table */
-    VkDescriptorSetLayout layouts[4] = { vk.set_layout, vk.shadow_set_layout, vk.set_layout, vk.set_layout };
-    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
-
-    if (!vk.overlay_pass || !vk.shadow_set_layout)
-        return -1;
+    *after_made = 0;
     if (make_image(vk.width, vk.height, 1, TARGET_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    &vk.post_history, &vk.post_history_memory, &vk.post_history_view))
         return -1;
     if (make_image(vk.width, vk.height, 1, TARGET_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    &vk.post_copy, &vk.post_copy_memory, &vk.post_copy_view))
         return -1;
-    set_info.descriptorPool = vk.descriptor_pool;
-    set_info.descriptorSetCount = 1;
-    set_info.pSetLayouts = &vk.set_layout;
-    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.post_copy_set));
-    image.sampler = vk.sampler;
-    image.imageView = vk.post_copy_view;
-    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    write.dstSet = vk.post_copy_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image;
-    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
-    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.post_history_set));
-    image.imageView = vk.post_history_view;
-    write.dstSet = vk.post_history_set;
-    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
-    /* [rexglue-native] 2026-11-11 rn47g: the afterimage's kept picture (ngl_vk_set_afterimage); without it (no
-     * memory) the afterimage is left out (draw: after) */
-    if (!make_image(vk.width, vk.height, 1, TARGET_FORMAT, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                    &vk.after_image, &vk.after_memory, &vk.after_view)) {
-        if (vkAllocateDescriptorSets(vk.device, &set_info, &vk.after_set) == VK_SUCCESS) {
-            image.imageView = vk.after_view;
-            write.dstSet = vk.after_set;
-            vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
-        } else {
-            vk.after_set = VK_NULL_HANDLE;
-        }
+    if (want_after) {
+        if (!make_image(vk.width, vk.height, 1, TARGET_FORMAT,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, &vk.after_image,
+                        &vk.after_memory, &vk.after_view))
+            *after_made = 1;
+        else if (must)
+            return -1;
     }
     /* [rexglue-native] 2026-11-11 rn48b: the afterimage's kept picture at a quarter size; without it the full-size one is used */
     /* [acct2-bro] 2026-11-12 rn61a: of the shown picture, as the depth of field's quarter */
     vk.after_small_width = vk.width / (4u * shown_scale) ? vk.width / (4u * shown_scale) : 1u;
     vk.after_small_height = vk.height / (4u * shown_scale) ? vk.height / (4u * shown_scale) : 1u;
     /* [rexglue-native] 2026-11-11 rn48c: a blit source too (stretched back into after_image); no set of its own */
-    if (make_image(vk.after_small_width, vk.after_small_height, 1, TARGET_FORMAT,
-                   VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                   &vk.after_small_image, &vk.after_small_memory, &vk.after_small_view))
+    if (want_small && make_image(vk.after_small_width, vk.after_small_height, 1, TARGET_FORMAT,
+                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                     VK_IMAGE_USAGE_SAMPLED_BIT,
+                                 &vk.after_small_image, &vk.after_small_memory, &vk.after_small_view)) {
+        if (must)
+            return -1;
         vk.after_small_image = VK_NULL_HANDLE;
+    }
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the tint's sets pointed at its images (the sets not made are left out) */
+static void post_point(void)
+{
+    point_image(vk.post_copy_set, 0, vk.sampler, vk.post_copy_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    point_image(vk.post_history_set, 0, vk.sampler, vk.post_history_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    point_image(vk.after_set, 0, vk.sampler, vk.after_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* The tint's copy of the target (sampled through set 0) and its pipeline, drawn in the overlay pass. */
+static int make_tint(void)
+{
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkPushConstantRange range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof vk.tint };  /* rn41b: (was 12 floats) */
+    /* the target's copy, the opaque depth, the last frame's picture, the color look-up's table */
+    VkDescriptorSetLayout layouts[4] = { vk.set_layout, vk.shadow_set_layout, vk.set_layout, vk.set_layout };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+    int after_made = 0;
+
+    if (!vk.overlay_pass || !vk.shadow_set_layout)
+        return -1;
+    /* [rexglue-native thread2] 2026-11-24: the images first (make_post_images, as ngl_vk_set_target_size makes them
+     * again), then their sets, pointed by post_point */
+    if (make_post_images(1, 1, 0, &after_made))
+        return -1;
+    set_info.descriptorPool = vk.descriptor_pool;
+    set_info.descriptorSetCount = 1;
+    set_info.pSetLayouts = &vk.set_layout;
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.post_copy_set));
+    CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.post_history_set));
+    /* [rexglue-native] 2026-11-11 rn47g: the afterimage's kept picture (ngl_vk_set_afterimage); without it (no
+     * memory) the afterimage is left out (draw: after) */
+    if (after_made && vkAllocateDescriptorSets(vk.device, &set_info, &vk.after_set) != VK_SUCCESS)
+        vk.after_set = VK_NULL_HANDLE;
+    post_point();
 
     layout_info.setLayoutCount = 4;
     layout_info.pSetLayouts = layouts;
@@ -5710,39 +6396,10 @@ static int make_effect_pass(int fill, VkRenderPass *pass)
     return 0;
 }
 
-/* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer): its two images, passes, framebuffer, sets and
- * pipelines. After make_dof (the overlay pass and the mix's layout, which the fill and the blend back use: set 0 a
- * texture, set 1 the shadow set's layout) and the shadow's set. Returns 0 when made (effect_ready 1); when something
- * can't be made the layer stays off and its draws go into the main target, as before. */
-static int make_effect_layer(void)
+/* [rexglue-native thread2] 2026-11-24: the effect layer's images, half the target's size (make_effect_layer, and
+ * ngl_vk_set_target_size) */
+static int make_effect_images(void)
 {
-    VkImageView views[2];
-    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-    VkDescriptorPoolSize pool_sizes[3] = {
-        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },   /* the layer's color; the shadow map and the layer's depth */
-        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
-        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
-    };
-    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.shadow_set_layout };
-    VkDescriptorSet sets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
-    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    VkDescriptorImageInfo color_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo shadow_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-    VkDescriptorImageInfo depth_info = { VK_NULL_HANDLE, VK_NULL_HANDLE,
-                                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL };
-    VkDescriptorBufferInfo buffer_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
-    VkDescriptorBufferInfo lights_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
-    VkWriteDescriptorSet writes[5] = {
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
-        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
-    };
-
-    vk.effect_ready = 0;
-    if (!vk.overlay_pass || !vk.dof_mix_layout || !vk.shadow_set_layout || !vk.shadow_view || !vk.soft_depth ||
-        !vk.blend_pass || !vk.shadow_uniform || !vk.draw_lights)
-        return -1;
     vk.effect_width = (vk.width + 1u) / 2u;
     vk.effect_height = (vk.height + 1u) / 2u;
     if (make_image(vk.effect_width, vk.effect_height, 1, TARGET_FORMAT,
@@ -5750,9 +6407,17 @@ static int make_effect_layer(void)
                    &vk.effect_color, &vk.effect_color_memory, &vk.effect_color_view) ||
         make_image(vk.effect_width, vk.effect_height, 1, DEPTH_FORMAT,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                   &vk.effect_depth, &vk.effect_depth_memory, &vk.effect_depth_view) ||
-        make_effect_pass(1, &vk.effect_fill_pass) || make_effect_pass(0, &vk.effect_pass))
+                   &vk.effect_depth, &vk.effect_depth_memory, &vk.effect_depth_view))
         return -1;
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the layer's framebuffer (its color and depth, for both of its passes) */
+static int make_effect_framebuffer(void)
+{
+    VkImageView views[2];
+    VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
+
     views[0] = vk.effect_color_view;
     views[1] = vk.effect_depth_view;
     framebuffer_info.renderPass = vk.effect_fill_pass;
@@ -5762,6 +6427,50 @@ static int make_effect_layer(void)
     framebuffer_info.height = vk.effect_height;
     framebuffer_info.layers = 1;
     CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.effect_framebuffer));
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the layer's images in its sets: its color for the blend back (unfiltered:
+ * fetched texel by texel), its depth in the layer's shadow set's binding 2 (the opaque depth's place) */
+static void effect_point(void)
+{
+    point_image(vk.effect_color_set, 0, vk.soft_sampler, vk.effect_color_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    point_image(vk.effect_shadow_set, 2, vk.soft_sampler, vk.effect_depth_view,
+                VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
+}
+
+/* [rexglue-native] 2026-11-10: the effect layer (ngl_vk.h effect_layer): its two images, passes, framebuffer, sets and
+ * pipelines. After make_dof (the overlay pass and the mix's layout, which the fill and the blend back use: set 0 a
+ * texture, set 1 the shadow set's layout) and the shadow's set. Returns 0 when made (effect_ready 1); when something
+ * can't be made the layer stays off and its draws go into the main target, as before. */
+static int make_effect_layer(void)
+{
+    VkDescriptorPoolSize pool_sizes[3] = {
+        { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 3 },   /* the layer's color; the shadow map and the layer's depth */
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1 },
+        { VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 },
+    };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.shadow_set_layout };
+    VkDescriptorSet sets[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorImageInfo shadow_info = { VK_NULL_HANDLE, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+    VkDescriptorBufferInfo buffer_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+    VkDescriptorBufferInfo lights_info = { VK_NULL_HANDLE, 0, VK_WHOLE_SIZE };
+    VkWriteDescriptorSet writes[3] = {
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET }, { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+        { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET },
+    };
+
+    vk.effect_ready = 0;
+    if (!vk.overlay_pass || !vk.dof_mix_layout || !vk.shadow_set_layout || !vk.shadow_view || !vk.soft_depth ||
+        !vk.blend_pass || !vk.shadow_uniform || !vk.draw_lights)
+        return -1;
+    /* [rexglue-native thread2] 2026-11-24: the images, the passes, then the framebuffer, in the order they always
+     * were made; the images and the framebuffer are made the same way again by ngl_vk_set_target_size */
+    if (make_effect_images() || make_effect_pass(1, &vk.effect_fill_pass) || make_effect_pass(0, &vk.effect_pass) ||
+        make_effect_framebuffer())
+        return -1;
 
     pool_info.maxSets = 2;
     pool_info.poolSizeCount = 3;
@@ -5773,41 +6482,29 @@ static int make_effect_layer(void)
     CHECK(vkAllocateDescriptorSets(vk.device, &set_info, sets));
     vk.effect_color_set = sets[0];
     vk.effect_shadow_set = sets[1];
-    color_info.sampler = vk.soft_sampler;       /* unfiltered: the blend back fetches texel by texel */
-    color_info.imageView = vk.effect_color_view;
-    writes[0].dstSet = vk.effect_color_set;
+    /* the shadow set over again (make_shadow), but for binding 2: the layer's depth in the opaque depth's place
+     * (effect_point, with the layer's color) */
+    shadow_info.sampler = vk.shadow_sampler;
+    shadow_info.imageView = vk.shadow_view;
+    writes[0].dstSet = vk.effect_shadow_set;
     writes[0].dstBinding = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[0].pImageInfo = &color_info;
-    /* the shadow set over again (make_shadow), but for binding 2: the layer's depth in the opaque depth's place */
-    shadow_info.sampler = vk.shadow_sampler;
-    shadow_info.imageView = vk.shadow_view;
-    writes[1].dstSet = vk.effect_shadow_set;
-    writes[1].dstBinding = 0;
-    writes[1].descriptorCount = 1;
-    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[1].pImageInfo = &shadow_info;
+    writes[0].pImageInfo = &shadow_info;
     buffer_info.buffer = vk.shadow_uniform;
-    writes[2].dstSet = vk.effect_shadow_set;
-    writes[2].dstBinding = 1;
-    writes[2].descriptorCount = 1;
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    writes[2].pBufferInfo = &buffer_info;
-    depth_info.sampler = vk.soft_sampler;
-    depth_info.imageView = vk.effect_depth_view;
-    writes[3].dstSet = vk.effect_shadow_set;
-    writes[3].dstBinding = 2;
-    writes[3].descriptorCount = 1;
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    writes[3].pImageInfo = &depth_info;
+    writes[1].dstSet = vk.effect_shadow_set;
+    writes[1].dstBinding = 1;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[1].pBufferInfo = &buffer_info;
     lights_info.buffer = vk.draw_lights;
-    writes[4].dstSet = vk.effect_shadow_set;
-    writes[4].dstBinding = 3;
-    writes[4].descriptorCount = 1;
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    writes[4].pBufferInfo = &lights_info;
-    vkUpdateDescriptorSets(vk.device, 5, writes, 0, NULL);
+    writes[2].dstSet = vk.effect_shadow_set;
+    writes[2].dstBinding = 3;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &lights_info;
+    vkUpdateDescriptorSets(vk.device, 3, writes, 0, NULL);
+    effect_point();
 
     if (make_fullscreen_pipeline(effect_depth_frag_spirv, sizeof effect_depth_frag_spirv, vk.dof_mix_layout,
                                  vk.effect_fill_pass, 3, &vk.effect_fill_pipeline) ||
@@ -5912,6 +6609,55 @@ void ngl_vk_set_glow(float tap, float gain, uint32_t passes, float strength, flo
     vk.glow_toward[1] = toward ? toward[1] : 0.0f;
 }
 
+/* [cod2-native] 2026-11-24: the IW bloom's layout (the sky glow's two sets, 32 floats) and its two pipelines; the
+ * targets, sets and adding are the sky glow's (make_glow, before). */
+static int make_bloom(void)
+{
+    VkPushConstantRange range = { VK_SHADER_STAGE_FRAGMENT_BIT, 0, 32 * sizeof(float) };
+    VkDescriptorSetLayout set_layouts[2] = { vk.set_layout, vk.shadow_set_layout };
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+    vk.bloom_ready = 0;
+    if (!vk.glow_ready)
+        return -1;
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = set_layouts;
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &range;
+    CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.bloom_layout));
+    if (make_fullscreen_pipeline(bloom_first_frag_spirv, sizeof bloom_first_frag_spirv, vk.bloom_layout,
+                                 vk.dof_blur_pass, 0, &vk.bloom_first_pipeline) ||
+        make_fullscreen_pipeline(bloom_blur_frag_spirv, sizeof bloom_blur_frag_spirv, vk.bloom_layout,
+                                 vk.dof_blur_pass, 0, &vk.bloom_blur_pipeline) ||
+        make_fullscreen_pipeline(sky_bleed_frag_spirv, sizeof sky_bleed_frag_spirv, vk.glow_layout,   /* g4 */
+                                 vk.render_pass, 1, &vk.bloom_bleed_pipeline))
+        return -1;
+    vk.bloom_ready = 1;
+    return 0;
+}
+
+void ngl_vk_set_bloom(const float setup[4], const float *taps, uint32_t blurs, float intensity, float sky_bleed)
+{
+    /* [cod2-native] g5: made on the first call that wants a bloom, so a port that never asks makes nothing */
+    if (!vk.bloom_ready && !vk.bloom_tried && vk.device && setup && taps && (intensity > 0.0f || sky_bleed > 0.0f)) {
+        vk.bloom_tried = 1;
+        if (make_bloom())
+            fprintf(stderr, "[ngl_vk] no bloom: drawn without it\n");
+        else
+            fprintf(stderr, "[ngl_vk] bloom made (first ngl_vk_set_bloom)\n");
+    }
+    vk.bloom_on = vk.bloom_ready && setup && taps && (intensity > 0.0f || sky_bleed > 0.0f);   /* g4: or a bleed */
+    vk.bloom_sky_bleed = vk.bloom_on && sky_bleed > 0.0f ? sky_bleed : 0.0f;
+    if (!vk.bloom_on)
+        return;
+    vk.glow_on = 1;
+    vk.glow_strength = intensity > 0.0f ? intensity : 0.0f;
+    memcpy(vk.bloom_setup, setup, sizeof vk.bloom_setup);
+    vk.bloom_blurs = blurs < BLOOM_MOST_BLURS ? blurs : BLOOM_MOST_BLURS;
+    memset(vk.bloom_taps, 0, sizeof vk.bloom_taps);
+    memcpy(vk.bloom_taps, taps, (size_t)vk.bloom_blurs * sizeof vk.bloom_taps[0]);
+}
+
 static void record_post_copy(void);     /* [rexglue-native-fx] 2026-11-11 fx1: (draw_warp copies the target first) */
 
 /* [rexglue-native-fx] 2026-11-11 fx1: the screen warp's pipeline: heat_warp.vert / heat_warp.frag, one triangle strip
@@ -6002,24 +6748,13 @@ static int make_warp_pipeline(void)
     return 0;
 }
 
-/* [rexglue-native-fx] 2026-11-11 fx1: the heat mask, its framebuffer (effect_pass: the mask and the layer's depth), its
- * set, the warp's layout, buffers and pipeline. After make_effect_layer (its size, depth and pass) and make_tint
- * (post_copy). */
-static int make_heat(void)
+/* [rexglue-native thread2] 2026-11-24: the heat mask, the effect layer's size, and its framebuffer (the mask and the
+ * layer's depth, for the effect pass), at make_heat and again at ngl_vk_set_target_size (after the layer's images) */
+static int make_heat_sized(void)
 {
     VkImageView views[2];
     VkFramebufferCreateInfo framebuffer_info = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO };
-    VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
-    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
-    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    VkDescriptorImageInfo image = { 0 };
-    VkWriteDescriptorSet write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
-    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.set_layout };   /* the picture's copy, the mask */
-    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
 
-    vk.heat_ready = 0;
-    if (!vk.effect_ready || !vk.mesh_heat_pipeline || !vk.post_copy_set || !vk.overlay_pass)
-        return -1;
     if (make_image(vk.effect_width, vk.effect_height, 1, TARGET_FORMAT,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                    &vk.heat_mask, &vk.heat_mask_memory, &vk.heat_mask_view))
@@ -6033,6 +6768,31 @@ static int make_heat(void)
     framebuffer_info.height = vk.effect_height;
     framebuffer_info.layers = 1;
     CHECK(vkCreateFramebuffer(vk.device, &framebuffer_info, NULL, &vk.heat_framebuffer));
+    return 0;
+}
+
+/* [rexglue-native thread2] 2026-11-24: the mask's set pointed at it */
+static void heat_point(void)
+{
+    point_image(vk.heat_mask_set, 0, vk.sampler, vk.heat_mask_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* [rexglue-native-fx] 2026-11-11 fx1: the heat mask, its framebuffer (effect_pass: the mask and the layer's depth), its
+ * set, the warp's layout, buffers and pipeline. After make_effect_layer (its size, depth and pass) and make_tint
+ * (post_copy). */
+static int make_heat(void)
+{
+    VkDescriptorPoolSize pool_size = { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1 };
+    VkDescriptorPoolCreateInfo pool_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO };
+    VkDescriptorSetAllocateInfo set_info = { VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
+    VkDescriptorSetLayout layouts[2] = { vk.set_layout, vk.set_layout };   /* the picture's copy, the mask */
+    VkPipelineLayoutCreateInfo layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
+
+    vk.heat_ready = 0;
+    if (!vk.effect_ready || !vk.mesh_heat_pipeline || !vk.post_copy_set || !vk.overlay_pass)
+        return -1;
+    if (make_heat_sized())      /* [rexglue-native thread2] 2026-11-24: shared with ngl_vk_set_target_size */
+        return -1;
     pool_info.maxSets = 1;
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_size;
@@ -6041,15 +6801,7 @@ static int make_heat(void)
     set_info.descriptorSetCount = 1;
     set_info.pSetLayouts = &vk.set_layout;
     CHECK(vkAllocateDescriptorSets(vk.device, &set_info, &vk.heat_mask_set));
-    image.sampler = vk.sampler;
-    image.imageView = vk.heat_mask_view;
-    image.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    write.dstSet = vk.heat_mask_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
-    write.pImageInfo = &image;
-    vkUpdateDescriptorSets(vk.device, 1, &write, 0, NULL);
+    heat_point();
     layout_info.setLayoutCount = 2;
     layout_info.pSetLayouts = layouts;
     CHECK(vkCreatePipelineLayout(vk.device, &layout_info, NULL, &vk.heat_layout));
@@ -6105,8 +6857,53 @@ static void draw_warp(VkRenderPassBeginInfo *pass, const VkViewport *view, const
 /* [rexglue-native] 2026-11-10: the sky glow's small passes, between two parts of the overlay pass (the target left
  * ready to be copied, post_copy holding the picture as it is now): the sky alone into glow 0, then glow_passes blurs
  * to and fro; returns which of the two holds the last one. screen: the game's screen within the target (0..1). */
+/* [cod2-native] 2026-11-24: the IW bloom's small passes (ngl_vk_set_bloom), where record_glow's are and as they
+ * are drawn: the bright part into glow 0, then each blur to and fro; returns which of the two holds the last. */
+/* g4: sky 1: the first pass keeps the sky's own color times its share instead of the bright part (sky_bleed) */
+static int record_bloom(const float screen[4], int sky)
+{
+    VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
+    VkViewport view = { 0.0f, 0.0f, (float)GLOW_SIZE, (float)GLOW_SIZE, 0.0f, 1.0f };
+    VkRect2D area = { { 0, 0 }, { GLOW_SIZE, GLOW_SIZE } };
+    VkDescriptorSet first_sets[2] = { vk.post_copy_set, vk.shadow_set };
+    float first[8];
+    int from = 0;
+
+    memcpy(first, screen, 4 * sizeof(float));
+    memcpy(first + 4, vk.bloom_setup, 4 * sizeof(float));
+    first[6] = sky ? 1.0f : 0.0f;   /* [cod2-native] g4: the setup's z, unused by the game's glow_setup */
+    pass.renderPass = vk.dof_blur_pass;
+    pass.renderArea = area;
+    pass.framebuffer = vk.glow_framebuffer[0];
+    vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdSetViewport(vk.commands, 0, 1, &view);
+    vkCmdSetScissor(vk.commands, 0, 1, &area);
+    vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.bloom_first_pipeline);
+    vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.bloom_layout, 0, 2, first_sets, 0, NULL);
+    vkCmdPushConstants(vk.commands, vk.bloom_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof first, first);
+    vkCmdDraw(vk.commands, 3, 1, 0, 0);
+    vkCmdEndRenderPass(vk.commands);
+    for (uint32_t k = 0; k < vk.bloom_blurs; k++) {
+        pass.framebuffer = vk.glow_framebuffer[from ^ 1];
+        vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(vk.commands, 0, 1, &view);
+        vkCmdSetScissor(vk.commands, 0, 1, &area);
+        vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.bloom_blur_pipeline);
+        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.bloom_layout, 0, 1,
+                                &vk.glow_set[from], 0, NULL);
+        vkCmdPushConstants(vk.commands, vk.bloom_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof vk.bloom_taps[k],
+                           vk.bloom_taps[k]);
+        vkCmdDraw(vk.commands, 3, 1, 0, 0);
+        vkCmdEndRenderPass(vk.commands);
+        from ^= 1;
+    }
+    return from;
+}
+
 static int record_glow(const float screen[4])
 {
+    if (vk.bloom_on)    /* [cod2-native] 2026-11-24: this frame's glow is the IW bloom */
+        return record_bloom(screen, 0);
     VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
     VkViewport view = { 0.0f, 0.0f, (float)GLOW_SIZE, (float)GLOW_SIZE, 0.0f, 1.0f };
     VkRect2D area = { { 0, 0 }, { GLOW_SIZE, GLOW_SIZE } };
@@ -6490,6 +7287,25 @@ static void draw_glow(VkRenderPassBeginInfo *pass, const VkViewport *view, const
         record_film_copy();
     else
         record_post_copy();
+    if (vk.bloom_on && vk.bloom_sky_bleed > 0.0f) {
+        /* [cod2-native] 2026-11-24 g4: the sky bleed first (the game's glow_apply_sky_bleed), its own blurred sky
+         * color and share, drawn over the screen; the bloom after it reads the same copy, as the game's chain does */
+        float bleed[4] = { vk.bloom_sky_bleed, 0.0f, 0.0f, 0.0f };
+
+        last = record_bloom(screen, 1);
+        pass->renderPass = vk.overlay_pass;
+        vkCmdBeginRenderPass(vk.commands, pass, VK_SUBPASS_CONTENTS_INLINE);
+        vkCmdSetViewport(vk.commands, 0, 1, view);
+        vkCmdSetScissor(vk.commands, 0, 1, whole);
+        vkCmdBindPipeline(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.bloom_bleed_pipeline);
+        vkCmdBindDescriptorSets(vk.commands, VK_PIPELINE_BIND_POINT_GRAPHICS, vk.glow_layout, 0, 1,
+                                &vk.glow_set[last], 0, NULL);
+        vkCmdPushConstants(vk.commands, vk.glow_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof bleed, bleed);
+        vkCmdDraw(vk.commands, 3, 1, 0, 0);
+        if (vk.glow_strength <= 0.0f)
+            return;
+        vkCmdEndRenderPass(vk.commands);
+    }
     last = record_glow(screen);
     pass->renderPass = vk.overlay_pass;
     vkCmdBeginRenderPass(vk.commands, pass, VK_SUBPASS_CONTENTS_INLINE);
@@ -6637,6 +7453,7 @@ static int submit_and_show(int showing, uint32_t window_image)
         submit.pSignalSemaphores = &vk.swap_shown[window_image];
     }
     CHECK(submit_to_queue(&submit, vk.done));
+    probe_submitted();      /* [rexglue-native thread2] 2026-11-24: this frame's depth probes are on the GPU */
     if (vk.frame_corners_written) {     /* side214: this draw reads these corners; the next frame writes the others */
         vk.frame_corner_half ^= 1u;
         vk.frame_corners_written = 0;
@@ -6669,13 +7486,14 @@ static int submit_and_show(int showing, uint32_t window_image)
     vk.under_count = 0;     /* [rexglue-native] 2026-11-11 rn47i: and quads under the effects */
     vk.keep_frame = 0;      /* [rexglue-native] 2026-11-11 rn47n: and a frame kept for the next */
     vk.glow_on = 0;         /* [rexglue-native] and a sky glow */
+    vk.bloom_on = 0;        /* [cod2-native] 2026-11-24: or a bloom */
     vk.frames_done++;
     return 0;
 }
 
-static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pitch,
-                const struct ngl_vk_vertex *quad_vertices, uint32_t vertex_count,
-                float screen_width, float screen_height)
+static int draw_recorded(const void *pixels, uint32_t width, uint32_t height, uint32_t pitch,
+                         const struct ngl_vk_vertex *quad_vertices, uint32_t vertex_count,
+                         float screen_width, float screen_height)
 {
     VkCommandBufferBeginInfo begin = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
     VkRenderPassBeginInfo pass = { VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
@@ -6797,7 +7615,7 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
                 msaa_resolve_depth(&view);
                 pass.framebuffer = vk.framebuffer;
             }
-            copy_soft_depth();
+            copy_soft_depth(&view);     /* [rexglue-native thread2] 2026-11-24: the probes' viewport */
             pass.renderPass = vk.blend_pass;
             vkCmdBeginRenderPass(vk.commands, &pass, VK_SUBPASS_CONTENTS_INLINE);
             vkCmdSetViewport(vk.commands, 0, 1, &view);
@@ -7120,6 +7938,21 @@ static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pi
     return submit_and_show(showing, window_image);
 }
 
+/* [rexglue-native thread2] 2026-11-24: one frame (draw_recorded), marked as being recorded from its start to its
+ * submit whichever way it returns, so ngl_vk_set_target_size called from inside it (an overlay's callback, say)
+ * refuses instead of freeing what the frame's commands use */
+static int draw(const void *pixels, uint32_t width, uint32_t height, uint32_t pitch,
+                const struct ngl_vk_vertex *quad_vertices, uint32_t vertex_count,
+                float screen_width, float screen_height)
+{
+    int result;
+
+    vk.recording = 1;
+    result = draw_recorded(pixels, width, height, pitch, quad_vertices, vertex_count, screen_width, screen_height);
+    vk.recording = 0;
+    return result;
+}
+
 /* ---------------------------------------------------------------------------------------------------------------
  * [acct2-bro] 2026-11-08: the backend (ngl_vk_backend.h), for a lower layer that records frames with its own
  * pipelines on ngl_vk's device and target (acct2-waw's ngl_vk_low: World at War, Call of Duty 4). */
@@ -7186,10 +8019,15 @@ VkCommandBuffer ngl_vk_begin_frame(void)
 
 int ngl_vk_end_frame(void)
 {
+    int result;
+
     if (!vk.low_frame_open)
         return -1;
     vk.low_frame_open = 0;
-    return submit_and_show(vk.low_showing, vk.low_window_image);
+    vk.recording = 1;   /* [rexglue-native thread2] 2026-11-24: until it is submitted (draw's note) */
+    result = submit_and_show(vk.low_showing, vk.low_window_image);
+    vk.recording = 0;
+    return result;
 }
 
 int ngl_vk_draw_picture(const void *pixels, uint32_t width, uint32_t height, uint32_t pitch)
@@ -7825,6 +8663,349 @@ static int window_fx_record(uint32_t width, uint32_t height, int passes, int fro
     return into;
 }
 
+/* ---------------------------------------------------------------------------------------------------------------
+ * [rexglue-native thread2] 2026-11-24: ngl_vk_set_target_size (ngl_vk.h; owner 07:48: "make sure we are getting all
+ * these native renderers to actually render the required resolutions without upscaling then downscaling"; the design
+ * is drafts/NATIVE-RES-AUDIT.md section 7). Everything sized from the target is listed in struct sized_set. A resize
+ * moves the old set out of vk, makes the new one in its place with the same functions init uses (make_target_sized,
+ * make_msaa_sized, make_dof_images and _framebuffers, make_post_images, make_effect_images and _framebuffer,
+ * make_heat_sized), and only when all of it is made points the sets at it and frees the old set; if any of it
+ * can't be made, what was made is freed and the old set goes back, untouched (no set was pointed elsewhere yet). */
+#define SIZED_IMAGES(X)                                                                                              \
+    X(target) X(depth) X(soft_depth) X(msaa_color) X(msaa_depth) X(dof_half) X(dof_quarter) X(dof_temp)              \
+    X(post_copy) X(post_history) X(after_image) X(after_small_image) X(effect_color) X(effect_depth) X(heat_mask)
+#define SIZED_MEMORY(X)                                                                                              \
+    X(target_memory) X(depth_memory) X(soft_depth_memory) X(msaa_color_memory) X(msaa_depth_memory)                  \
+    X(dof_half_memory) X(dof_quarter_memory) X(dof_temp_memory) X(post_copy_memory) X(post_history_memory)            \
+    X(after_memory) X(after_small_memory) X(effect_color_memory) X(effect_depth_memory) X(heat_mask_memory)          \
+    X(readback_memory)
+#define SIZED_VIEWS(X)                                                                                               \
+    X(target_view) X(depth_view) X(soft_depth_view) X(msaa_color_view) X(msaa_depth_view) X(dof_half_view)            \
+    X(dof_quarter_view) X(dof_temp_view) X(post_copy_view) X(post_history_view) X(after_view) X(after_small_view)     \
+    X(effect_color_view) X(effect_depth_view) X(heat_mask_view)
+#define SIZED_FRAMEBUFFERS(X)                                                                                        \
+    X(framebuffer) X(msaa_framebuffer) X(msaa_depth_framebuffer) X(dof_quarter_framebuffer) X(dof_temp_framebuffer)  \
+    X(effect_framebuffer) X(heat_framebuffer)
+#define SIZED_NUMBERS(X)                                                                                             \
+    X(width) X(height) X(dof_width) X(dof_height) X(after_small_width) X(after_small_height) X(effect_width)           \
+    X(effect_height)
+
+struct sized_set {
+#define SIZED_FIELD(type, name) type name;
+#define SIZED_IMAGE_FIELD(name) SIZED_FIELD(VkImage, name)
+#define SIZED_MEMORY_FIELD(name) SIZED_FIELD(VkDeviceMemory, name)
+#define SIZED_VIEW_FIELD(name) SIZED_FIELD(VkImageView, name)
+#define SIZED_FRAMEBUFFER_FIELD(name) SIZED_FIELD(VkFramebuffer, name)
+#define SIZED_NUMBER_FIELD(name) SIZED_FIELD(uint32_t, name)
+    SIZED_IMAGES(SIZED_IMAGE_FIELD)
+    SIZED_MEMORY(SIZED_MEMORY_FIELD)
+    SIZED_VIEWS(SIZED_VIEW_FIELD)
+    SIZED_FRAMEBUFFERS(SIZED_FRAMEBUFFER_FIELD)
+    SIZED_NUMBERS(SIZED_NUMBER_FIELD)
+#undef SIZED_FIELD
+#undef SIZED_IMAGE_FIELD
+#undef SIZED_MEMORY_FIELD
+#undef SIZED_VIEW_FIELD
+#undef SIZED_FRAMEBUFFER_FIELD
+#undef SIZED_NUMBER_FIELD
+    VkBuffer readback;
+    void *readback_pixels;
+};
+
+/* The set moved out of vk into *set (vk's handles left empty; its sizes kept, as the next make reads and sets them) */
+static void sized_take(struct sized_set *set)
+{
+#define SIZED_TAKE(name) set->name = vk.name; vk.name = VK_NULL_HANDLE;
+#define SIZED_COPY(name) set->name = vk.name;
+    SIZED_IMAGES(SIZED_TAKE)
+    SIZED_MEMORY(SIZED_TAKE)
+    SIZED_VIEWS(SIZED_TAKE)
+    SIZED_FRAMEBUFFERS(SIZED_TAKE)
+    SIZED_NUMBERS(SIZED_COPY)
+#undef SIZED_TAKE
+#undef SIZED_COPY
+    set->readback = vk.readback;
+    set->readback_pixels = vk.readback_pixels;
+    vk.readback = VK_NULL_HANDLE;
+    vk.readback_pixels = NULL;
+}
+
+/* *set moved back into vk (whose handles of the set must be empty: freed or taken) */
+static void sized_put(const struct sized_set *set)
+{
+#define SIZED_PUT(name) vk.name = set->name;
+    SIZED_IMAGES(SIZED_PUT)
+    SIZED_MEMORY(SIZED_PUT)
+    SIZED_VIEWS(SIZED_PUT)
+    SIZED_FRAMEBUFFERS(SIZED_PUT)
+    SIZED_NUMBERS(SIZED_PUT)
+#undef SIZED_PUT
+    vk.readback = set->readback;
+    vk.readback_pixels = set->readback_pixels;
+}
+
+/* Everything in *set freed (empty handles are skipped by Vulkan); the GPU must be done with it */
+static void sized_free(struct sized_set *set)
+{
+#define SIZED_DESTROY_FRAMEBUFFER(name) vkDestroyFramebuffer(vk.device, set->name, NULL);
+#define SIZED_DESTROY_VIEW(name) vkDestroyImageView(vk.device, set->name, NULL);
+#define SIZED_DESTROY_IMAGE(name) vkDestroyImage(vk.device, set->name, NULL);
+#define SIZED_FREE_MEMORY(name) vkFreeMemory(vk.device, set->name, NULL);
+    SIZED_FRAMEBUFFERS(SIZED_DESTROY_FRAMEBUFFER)
+    SIZED_VIEWS(SIZED_DESTROY_VIEW)
+    SIZED_IMAGES(SIZED_DESTROY_IMAGE)
+    if (set->readback_pixels)
+        vkUnmapMemory(vk.device, set->readback_memory);
+    vkDestroyBuffer(vk.device, set->readback, NULL);
+    SIZED_MEMORY(SIZED_FREE_MEMORY)
+#undef SIZED_DESTROY_FRAMEBUFFER
+#undef SIZED_DESTROY_VIEW
+#undef SIZED_DESTROY_IMAGE
+#undef SIZED_FREE_MEMORY
+}
+
+/* Which groups of the set to make again: the ones the init made and the frame uses (taken before the old set is
+ * moved out). A group that isn't in use (its init failed part way) isn't made again; its leftovers go with the old
+ * set, and nothing reads them (each is checked where it is drawn). */
+struct sized_groups {   /* (the target's own group, make_target_sized, is always made: the init needs all of it) */
+    int msaa;   /* 1: made again; -1: let go (not even 2 samples fit the new size); 0: not in use */
+    uint32_t samples;   /* with msaa 1: the samples it settles on (fewer than now: stepped down) */
+    int dof_images, dof_framebuffers, post, after, after_small, effect, heat;
+};
+
+static void sized_groups_in_use(struct sized_groups *groups, uint32_t width, uint32_t height)
+{
+    memset(groups, 0, sizeof *groups);
+    groups->msaa = vk.msaa_samples >= 2u && vk.msaa_framebuffer;
+    groups->samples = vk.msaa_samples;
+    if (groups->msaa) {
+        /* as make_msaa_target chooses at init: halved until the device can draw and sample that many and the
+         * picture's samples are within ngl_vk's budget (MSAA_MOST_SAMPLES); never more than now (the setting's) */
+        VkPhysicalDeviceProperties properties;
+        VkSampleCountFlags can;
+
+        vkGetPhysicalDeviceProperties(vk.gpu, &properties);
+        can = properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts &
+              properties.limits.sampledImageDepthSampleCounts;
+        while (groups->samples >= 2u &&
+               (!(can & groups->samples) || (uint64_t)width * height * groups->samples > MSAA_MOST_SAMPLES))
+            groups->samples /= 2u;
+        if (groups->samples < 2u)
+            groups->msaa = -1;
+    }
+    groups->dof_images = vk.dof_half != VK_NULL_HANDLE;
+    groups->dof_framebuffers = vk.dof_quarter_framebuffer && vk.dof_temp_framebuffer;
+    groups->post = vk.post_history != VK_NULL_HANDLE;
+    groups->after = vk.after_image != VK_NULL_HANDLE;
+    groups->after_small = vk.after_small_image != VK_NULL_HANDLE;
+    groups->effect = vk.effect_ready;
+    groups->heat = vk.heat_ready && vk.effect_ready;
+}
+
+/* The new set at vk.width x vk.height (vk's handles of the set empty), group by group as the init made it; -1 when
+ * something can't be made (what was made stays in vk, for sized_take and sized_free) */
+static int make_sized(const struct sized_groups *groups)
+{
+    int after_made;
+
+    if (make_target_sized())    /* the target, its depth and framebuffer, the soft depth, the read-back */
+        return -1;
+    if (groups->msaa > 0 && make_msaa_sized())
+        return -1;
+    if (groups->dof_images && make_dof_images())
+        return -1;
+    if (groups->dof_images && groups->dof_framebuffers && make_dof_framebuffers())
+        return -1;
+    if (groups->post && make_post_images(groups->after, groups->after_small, 1, &after_made))
+        return -1;
+    if (groups->effect && (make_effect_images() || make_effect_framebuffer()))
+        return -1;
+    if (groups->heat && make_heat_sized())
+        return -1;
+    return 0;
+}
+
+/* Every set that reads an image of the set pointed at the new one (the sets not made are left out) */
+static void sized_point(void)
+{
+    soft_depth_point();
+    if (vk.msaa_samples >= 2u && vk.msaa_depth_view)
+        msaa_point();
+    dof_point();
+    post_point();
+    effect_point();
+    heat_point();
+    point_image(vk.output_target_set, 0, vk.sampler, vk.target_view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+}
+
+/* [rexglue-native thread2] 2026-11-24: MSAA's parts made for its sample count (the size-free ones: the multisampled
+ * pass, the mesh twins, the camo twins), kept aside while a stepped-down set is made */
+struct msaa_parts {
+    uint32_t samples;
+    int coverage;
+    VkRenderPass opaque_pass;
+    VkPipeline twins[MSAA_TWINS];
+    VkPipeline camo[3];
+};
+
+static void msaa_parts_take(struct msaa_parts *parts)
+{
+    parts->samples = vk.msaa_samples;
+    parts->coverage = vk.msaa_coverage;
+    parts->opaque_pass = vk.msaa_opaque_pass;
+    vk.msaa_opaque_pass = VK_NULL_HANDLE;
+    for (int i = 0; i < MSAA_TWINS; i++) {
+        parts->twins[i] = vk.msaa_twin[i];
+        vk.msaa_twin[i] = VK_NULL_HANDLE;
+    }
+    for (int k = 0; k < 3; k++) {
+        parts->camo[k] = vk.camo_msaa_pipeline[k];
+        vk.camo_msaa_pipeline[k] = VK_NULL_HANDLE;
+    }
+}
+
+static void msaa_parts_put(const struct msaa_parts *parts)
+{
+    vk.msaa_samples = parts->samples;
+    vk.msaa_coverage = parts->coverage;
+    vk.msaa_opaque_pass = parts->opaque_pass;
+    for (int i = 0; i < MSAA_TWINS; i++)
+        vk.msaa_twin[i] = parts->twins[i];
+    for (int k = 0; k < 3; k++)
+        vk.camo_msaa_pipeline[k] = parts->camo[k];
+}
+
+static void msaa_parts_free(struct msaa_parts *parts)
+{
+    vkDestroyRenderPass(vk.device, parts->opaque_pass, NULL);
+    for (int i = 0; i < MSAA_TWINS; i++)
+        vkDestroyPipeline(vk.device, parts->twins[i], NULL);
+    for (int k = 0; k < 3; k++)
+        vkDestroyPipeline(vk.device, parts->camo[k], NULL);
+}
+
+/* the stepped-down parts made so far freed (vk's fields emptied for msaa_parts_put) */
+static void msaa_parts_free_new(void)
+{
+    struct msaa_parts made;
+
+    msaa_parts_take(&made);
+    msaa_parts_free(&made);
+}
+
+int ngl_vk_set_target_size(uint32_t width, uint32_t height)
+{
+    VkPhysicalDeviceProperties properties;
+    struct sized_groups groups;
+    struct sized_set old, failed;
+    struct msaa_parts old_msaa;
+    uint32_t most_width, most_height, old_samples;
+    int stepped = 0;
+
+    if (!vk.device) {
+        fprintf(stderr, "[ngl_vk] ngl_vk_set_target_size(%u, %u) before ngl_vk_init: the init's size is the "
+                "target's\n", width, height);
+        return -1;
+    }
+    target_size_asked = 1;      /* (the port sizes the target: the window copy is one to one from now on) */
+    if (width == vk.width && height == vk.height)
+        return 0;
+    if (vk.recording || vk.low_frame_open) {
+        fprintf(stderr, "[ngl_vk] warning: ngl_vk_set_target_size(%u, %u) called inside a frame: the target stays "
+                "%u x %u (call it between frames)\n", width, height, vk.width, vk.height);
+        return -1;
+    }
+    vkGetPhysicalDeviceProperties(vk.gpu, &properties);
+    most_width = properties.limits.maxImageDimension2D < properties.limits.maxFramebufferWidth
+                     ? properties.limits.maxImageDimension2D
+                     : properties.limits.maxFramebufferWidth;
+    most_height = properties.limits.maxImageDimension2D < properties.limits.maxFramebufferHeight
+                      ? properties.limits.maxImageDimension2D
+                      : properties.limits.maxFramebufferHeight;
+    if (!width || !height || width > most_width || height > most_height) {
+        fprintf(stderr, "[ngl_vk] a %u x %u target can't be made (the device allows 1 x 1 to %u x %u): it stays "
+                "%u x %u\n", width, height, most_width, most_height, vk.width, vk.height);
+        return -1;
+    }
+
+    /* the frame in flight reads and writes the old set (and its window copy, in the same commands): its fence, and
+     * the last ngl_vk_output's; nothing else of ngl_vk's is on the GPU (one frame in flight) */
+    finish_frame();
+    if (vk.output_pending) {
+        if (vkWaitForFences(vk.device, 1, &vk.output_done, VK_TRUE, WAIT_NS) != VK_SUCCESS) {
+            fprintf(stderr, "[ngl_vk] the last output didn't finish: the target stays %u x %u\n", vk.width,
+                    vk.height);
+            return -1;
+        }
+        vk.output_pending = 0;
+    }
+
+    sized_groups_in_use(&groups, width, height);
+    old_samples = vk.msaa_samples;
+    /* MSAA stepped down: a multisampled pass, twins and camo twins at the new count first (the old ones kept aside
+     * until all of the new set is made) */
+    if (groups.msaa > 0 && groups.samples != vk.msaa_samples) {
+        msaa_parts_take(&old_msaa);
+        stepped = 1;
+        vk.msaa_samples = groups.samples;
+        if (make_msaa_opaque_pass() || msaa_make_twins()) {
+            msaa_parts_free_new();
+            msaa_parts_put(&old_msaa);
+            fprintf(stderr, "[ngl_vk] rn113: MSAA x%u's passes and pipelines couldn't be made for a %u x %u target: "
+                    "it stays %u x %u\n", groups.samples, width, height, vk.width, vk.height);
+            return -1;
+        }
+        make_camo_pipelines(1);     /* (one not made: that culling's camo is left out of the first half, as at init) */
+    }
+    sized_take(&old);
+    vk.width = width;
+    vk.height = height;
+    if (make_sized(&groups)) {
+        sized_take(&failed);
+        sized_free(&failed);
+        sized_put(&old);        /* (its sizes too: vk.width and vk.height are the old ones again) */
+        if (stepped) {
+            msaa_parts_free_new();
+            msaa_parts_put(&old_msaa);
+        }
+        fprintf(stderr, "[ngl_vk] a %u x %u target couldn't all be made: it stays %u x %u\n", width, height,
+                vk.width, vk.height);
+        return -1;
+    }
+    sized_point();
+    sized_free(&old);
+    if (stepped)
+        msaa_parts_free(&old_msaa);
+    if (groups.msaa < 0)        /* (its images went with the old set; its passes, pipelines and set go now) */
+        msaa_free();
+    /* the samples MSAA settled on, once a resize (the owner chose MSAA for Call of Duty 3's anti-aliasing: a size
+     * too large for it is said, never silent) */
+    if (groups.msaa > 0)
+        fprintf(stderr, "[ngl_vk] rn113: MSAA x%u at %u x %u%s\n", vk.msaa_samples, vk.width, vk.height,
+                stepped ? " (stepped down: more samples are over the device's or ngl_vk's limit at this size)" : "");
+    else if (groups.msaa < 0)
+        fprintf(stderr, "[ngl_vk] rn113: MSAA x%u can't hold a %u x %u picture even at 2 samples: let go, drawn "
+                "with one sample\n", old_samples, vk.width, vk.height);
+
+    /* what pointed at the old set or held its pictures starts over */
+    window_ramp_free();                         /* remade at the next window copy, at the new size */
+    window_fx.target_view = VK_NULL_HANDLE;     /* its set pointed at the target again when next read */
+    vk.drawn = 0;               /* nothing to output or read back until the next draw (the new target is undefined) */
+    vk.read_back = 0;
+    vk.soft_ready = 0;          /* the new images' layouts are undefined: put in their sampled layouts again */
+    vk.history_layout_ok = 0;
+    vk.heat_layout_ok = 0;
+    vk.history_frame = 0;       /* no last frame (motion blur, NGL_VK_LAST_FRAME) */
+    vk.after_frame = 0;         /* the afterimage's kept picture starts as the next frame's */
+    /* the depth probes: results not yet read were read at the old size; the points given for the next draw stay */
+    vk.probe_slot_state[0] = vk.probe_slot_state[1] = PROBE_FREE;
+    vk.probe_slot_count[0] = vk.probe_slot_count[1] = 0;
+    vk.probe_depth_count = 0;
+    fprintf(stderr, "[ngl_vk] the target is now %u x %u (was %u x %u)\n", vk.width, vk.height, old.width,
+            old.height);
+    return 0;
+}
+
 void ngl_vk_shutdown(void)
 {
     uint32_t row;
@@ -7837,6 +9018,7 @@ void ngl_vk_shutdown(void)
         window_fx_free();       /* [acct2-fh] 2026-11-14: the window's CAS / FSR 1 parts (made only when used) */
         msaa_free();            /* [acct2-bro] 2026-11-22 rn113: MSAA's parts (made only when asked) */
         effect_count_free();    /* [acct2-bro] 2026-11-22 rn114 */
+        probe_free();           /* [rexglue-native thread2] 2026-11-24: the depth probes' buffer (made only when used) */
         /* ngl_vk_output's (none of it made unless it was used) */
         vkDestroyFramebuffer(vk.device, vk.output_framebuffer, NULL);
         vkDestroyPipeline(vk.device, vk.output_pipeline, NULL);
@@ -7990,6 +9172,11 @@ void ngl_vk_shutdown(void)
         vkDestroyPipeline(vk.device, vk.glow_first_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.glow_blur_pipeline, NULL);
         vkDestroyPipeline(vk.device, vk.glow_add_pipeline, NULL);
+        /* [cod2-native] 2026-11-24: the IW bloom and sky bleed (make_bloom); null handles where not made */
+        vkDestroyPipeline(vk.device, vk.bloom_first_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.bloom_blur_pipeline, NULL);
+        vkDestroyPipeline(vk.device, vk.bloom_bleed_pipeline, NULL);
+        vkDestroyPipelineLayout(vk.device, vk.bloom_layout, NULL);
         vkDestroyPipelineLayout(vk.device, vk.glow_layout, NULL);
         vkDestroyDescriptorPool(vk.device, vk.glow_pool, NULL);
         vkDestroySampler(vk.device, vk.glow_sampler, NULL);
@@ -8041,6 +9228,7 @@ void ngl_vk_shutdown(void)
     if (vk.instance && !vk.borrowed && vkDestroyInstance)
         vkDestroyInstance(vk.instance, NULL);
     free(vk.draws);
+    msaa_recipe.kept = 0;   /* [rexglue-native thread2] 2026-11-24: its layout went with the device's parts */
     memset(&vk, 0, sizeof vk);
     device_name[0] = '\0';
 }

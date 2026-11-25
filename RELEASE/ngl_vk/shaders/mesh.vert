@@ -118,7 +118,10 @@ void main()
         float units = length(vec3(m[0][3], m[1][3], m[2][3]));
         float from_eye = length(position - vec3(eye_x.w, eye_y.w, eye_w.w));
         float eye_distance = from_eye < 1e5 ? from_eye * units : max(gl_Position.w, 0.0);
-        fog_amount = draw.fog.z * (1.0 - exp2(draw.fog.x * eye_distance));
+        // [waw-decomp] 2026-11-23: from fog[1] on (NGL_VK_FOG_START): the amount at the end x
+        // (1 - 2^(start x max(the distance - fog[1], 0))); fog[1] 0, as Call of Duty 2 passes, is the old curve,
+        // amount x (1 - 2^(start x the distance)), exactly
+        fog_amount = draw.fog.z * (1.0 - exp2(draw.fog.x * max(eye_distance - draw.fog.y, 0.0)));
     }
     fog_rgb = vec3(float(c & 255u), float((c >> 8) & 255u), float((c >> 16) & 255u)) / 255.0;
     gl_Position.y = -gl_Position.y;         // Direct3D's clip space has y up, Vulkan's down; z is 0..1 in both

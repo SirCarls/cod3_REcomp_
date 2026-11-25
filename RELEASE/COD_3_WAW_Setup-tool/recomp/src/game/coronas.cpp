@@ -19,6 +19,13 @@
 // the screen's middle) from one ray along the view. Those two are the game's only CPU reads of a GPU resolve, so with
 // both the CPU never waits on the GPU for a readback. Rays are few: at most 4 per 1/60 s, each corona's kept for
 // 150 ms or until the eye moves 16 units. The fade above keeps the edges soft.
+//
+// [rexglue-native thread2] 2026-11-24 cod3_corona_depth_probe (work folder drafts/MACE-LAMP-DEPTH.md): the ray sees
+// world brushes and entities with a box or brush model only, so a static model or a vehicle whose collision is its
+// model never hid a corona (The Mace: a lamp glowing through the tank). In native mode the corona is now asked of
+// the native scene's own depth, the game's original test: ngl_side projects it with the frame's own camera and
+// ngl_vk reads the depth texel under it (ngl_side.h AskCoronaDepth). The answer is 1 or 2 frames old, hidden by the
+// fade; the ray still answers when there is none yet (a corona's first frames, off the picture, no probes).
 
 #include <algorithm>
 #include <chrono>
@@ -32,6 +39,8 @@
 #include <rex/logging.h>  // [acct2-bro] 2026-11-15 rn98a
 
 #include "game/guest.h"
+#include "game/build_address.h"  // [waw-decomp] 2026-11-23: A(), this build's address of a USA address (discmap)
+#include "game/ngl_side.h"  // [rexglue-native thread2] 2026-11-24: the native depth probes (AskCoronaDepth)
 
 REXCVAR_DEFINE_BOOL(cod3_fix_corona_fade, true, "cod3/Video",
                     "Light coronas (lanterns, lamps) fade in and out at the same speed at any frame rate; off: one "
@@ -40,6 +49,12 @@ REXCVAR_DEFINE_BOOL(cod3_fix_corona_fade, true, "cod3/Video",
 REXCVAR_DEFINE_BOOL(cod3_corona_trace, false, "cod3/Video",
                     "Light coronas hidden by a ray against the world and characters, and the aim-down-sights blur "
                     "focused by a ray, instead of reading the GPU's depth buffer back (no wait on the GPU)")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// [rexglue-native thread2] 2026-11-24
+REXCVAR_DEFINE_BOOL(cod3_corona_depth_probe, true, "cod3/Video",
+                    "In native mode, light coronas hidden by the native picture's own depth at their place, as the "
+                    "game tests them (models and vehicles hide them too), with the ray only until an answer comes; "
+                    "off: the ray alone")
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // [acct2-bro] 2026-11-15 rn98a (debug, off by default): why the coronas' trace (on in native mode) falls back to
@@ -61,6 +76,10 @@ constexpr uint32_t kRecordSize = 0x30;
 constexpr uint32_t kRecordFade = 0x24;   // a record: its fade (float, 0 hidden .. 1 shown)
 constexpr size_t kMaxRecords = 8192;
 constexpr double kStepSeconds = 1.0 / 60.0;
+// [rexglue-native thread2] 2026-11-24 rule 14 (owner 04:37: "every game needs to be able to function propery regardless
+// of FPS"): below 60 fps a pass may take up to this many 60 Hz steps (10 fps), so a lantern fades in the same time at
+// 20 or 30 as at 60; it was at most one step a pass, 3x slower at 20 (FPS-RULE14.md A3).
+constexpr double kMaxShare = 6.0;
 constexpr int kSystems = 8;              // corona systems seen, by view ([acct2-bro] 2026-11-15 b97: 4 -> 8)
 
 // [acct2-bro] 2026-11-15 b97 (owner 18:06, split screen): cod3mp's pass is handed one corona system for every view (the
@@ -97,6 +116,7 @@ struct TraceCounts {
   uint64_t bad_record = 0, bad_eye = 0, bad_ray = 0, off = 0;  // fell back to the depth read
   uint64_t fell_far = 0;                       // fallbacks whose read said 0 (far: shown)
   uint64_t shared = 0;                         // [acct2-bro] b97: answers for a record another view asked last
+  uint64_t probed = 0, probe_hidden = 0;       // [rexglue-native thread2] 2026-11-24: answered by the depth probe
   uint32_t views = 0;                          // b97: the views (bits) that ran a pass
   uint32_t first_system = 0;                   // b97: the first system seen
   uint64_t other_system = 0;                   // b97: passes for another system than that one
@@ -109,12 +129,13 @@ void LogTraceCounts() {
   if (!REXCVAR_GET(cod3_debug_corona_trace)) return;
   const auto now = Clock::now();
   if (std::chrono::duration<double>(now - g_tc.last).count() < 2.0) return;
-  REXLOG_INFO("cod3: coronas: rn98a trace {}: passes {} records {}; depth reads {} (+{} elsewhere): shown {} hidden "
+  REXLOG_INFO("cod3: coronas: rn98a trace {}: passes {} records {}; depth reads {} (+{} elsewhere): depth probe {} "
+              "(hidden {}); shown {} hidden "
               "{} (fresh rays {}, blocked {}); fell back: record {} eye {} ray {} off {} (read 0, far: {}); views "
               "{:x}, passes for another system {}, records asked by another view last {}; sample "
               "record {:08X} at {:.1f} {:.1f} {:.1f} f30 {:.2f} v127 {:.1f} {:.1f} {:.1f} {:.1f} lr {:08X} read {:.4g}",
               REXCVAR_GET(cod3_corona_trace) ? "on" : "off", g_tc.passes, g_tc.records, g_tc.reads, g_tc.reads_other,
-              g_tc.seen, g_tc.hidden, g_tc.fresh, g_tc.blocked, g_tc.bad_record, g_tc.bad_eye, g_tc.bad_ray, g_tc.off,
+              g_tc.probed, g_tc.probe_hidden, g_tc.seen, g_tc.hidden, g_tc.fresh, g_tc.blocked, g_tc.bad_record, g_tc.bad_eye, g_tc.bad_ray, g_tc.off,
               g_tc.fell_far, g_tc.views, g_tc.other_system, g_tc.shared, g_tc.sample_record, g_tc.sample_pos[0],
               g_tc.sample_pos[1], g_tc.sample_pos[2],
               g_tc.sample_f30, g_tc.sample_v[0], g_tc.sample_v[1], g_tc.sample_v[2], g_tc.sample_v[3], g_tc.sample_lr,
@@ -141,7 +162,7 @@ double StepShare(uint32_t arg, uint32_t view) {
   }
   const double dt = std::chrono::duration<double>(now - s->last).count();
   s->last = now;
-  return std::clamp(dt / kStepSeconds, 0.0, 1.0);
+  return std::clamp(dt / kStepSeconds, 0.0, kMaxShare);  // [rexglue-native thread2] 2026-11-24: was at most 1
 }
 
 void Save(uint8_t* base, uint32_t system) {
@@ -162,7 +183,10 @@ void Save(uint8_t* base, uint32_t system) {
 void Scale(uint8_t* base, double share) {
   for (const Saved& s : g_saved) {
     const float now = g::ReadF32(base, s.addr);
-    if (now != s.fade) g::WriteF32(base, s.addr, static_cast<float>(s.fade + (now - s.fade) * share));
+    if (now == s.fade) continue;
+    // [rexglue-native thread2] 2026-11-24: above 1 (below 60 fps) the pass's one step is stretched, kept to 0..1
+    const double scaled = s.fade + (now - s.fade) * share;
+    g::WriteF32(base, s.addr, static_cast<float>(share > 1.0 ? std::clamp(scaled, 0.0, 1.0) : scaled));
   }
 }
 
@@ -189,7 +213,7 @@ REX_HOOK_RAW(sub_8245C208) {
   }
   const bool fix = REXCVAR_GET(cod3_fix_corona_fade) && Valid(system);
   const double share = fix ? StepShare(system, g::ReadU32(base, kViewClient)) : 1.0;  // [acct2-bro] b97: by view
-  const bool scale = fix && share < 1.0;
+  const bool scale = fix && share != 1.0;  // [rexglue-native thread2] 2026-11-24: below 60 fps too (was < 1)
   if (scale) Save(base, system);
 #if defined(COD3_MP)
   __imp__sub_82476FD0(ctx, base);
@@ -204,8 +228,9 @@ REX_HOOK_RAW(sub_8245C208) {
 namespace {
 
 #if defined(COD3_MP)
-constexpr uint32_t kDepthReadReturn = 0x8247784C;  // the corona pass's call of the depth read, its return
-constexpr uint32_t kCgTrace = 0x824604A8;
+// [waw-decomp] 2026-11-23: A() gives the build's own address (tools/discmap); USA: the same.
+constexpr uint32_t kDepthReadReturn = A(0x8247784C);  // the corona pass's call of the depth read, its return
+constexpr uint32_t kCgTrace = A(0x824604A8);
 constexpr uint32_t kTraceFilterVtable = 0x82065DCC;
 constexpr uint32_t kEntityList = 0x82BCC7FC;       // *(it) + 4 (client + 1): the player's entity
 constexpr uint32_t kEntityNumber = 484;
@@ -232,6 +257,9 @@ constexpr double kRayBurst = 8.0;
 constexpr double kKeepSeconds = 0.15;
 constexpr float kKeepMove = 16.0f;
 constexpr float kShortOfCorona = 4.0f;        // the ray stops short of the corona's own lamp
+// [rexglue-native thread2] 2026-11-24: a depth probe's answer is used while it is this fresh (answers come 1 or 2
+// drawn frames after the ask: 100 ms at a 20 fps cap); older, or none, and the ray answers
+constexpr double kProbeKeepSeconds = 0.25;
 
 struct Seen {
   bool visible = false;
@@ -350,9 +378,72 @@ bool CoronaInSight(PPCContext& ctx, uint8_t* base, uint32_t record, bool* visibl
   return true;
 }
 
+// [rexglue-native thread2] 2026-11-24: whether the native scene's depth says the corona `record` is in sight (true:
+// answered in *visible). Every call asks again for this frame (ngl_side places it with this frame's camera); the
+// answer is the latest that came back, kProbeKeepSeconds at most. False (the ray answers): no native probes, the
+// record or the eye can't be read, or no fresh answer yet.
+bool CoronaByDepth(PPCContext& ctx, uint8_t* base, uint32_t record, bool* visible) {
+  if (!Valid(record)) return false;
+  float pos[3], eye[3];
+  ReadVec3(base, record, pos);
+  if (!PassEye(ctx, pos, eye)) return false;
+  const uint32_t view = g::ReadU32(base, kActiveClient);  // one view's answer is never another's (as g_seen's)
+  const uint64_t key = (uint64_t(view) << 32) | record;
+  if (!cod3::ngl_side::AskCoronaDepth(key, pos, eye)) return false;
+  return cod3::ngl_side::CoronaDepthAnswer(key, kProbeKeepSeconds, visible);
+}
+
+// [rexglue-native thread2] 2026-11-24 (debug, cod3_debug_corona_trace): a corona the depth probe hides, with what
+// decided it and the ray's verdict beside it, so each hidden corona can be checked by numbers (drafts/
+// MACE-LAMP-DEPTH.md, "Proving the hidden ones"): the occluder point (the probed depth unprojected through the same
+// view-projection) must be a surface between the eye and the corona. At most one line per record every 2 s and
+// kMostProbeLines a run.
+constexpr int kMostProbeLines = 40;
+constexpr double kProbeLineSeconds = 2.0;
+std::unordered_map<uint32_t, Clock::time_point> g_probe_line_last;  // by record (main thread)
+int g_probe_lines = 0;
+
+void LogProbeHides(PPCContext& ctx, uint8_t* base, uint32_t record) {
+  if (g_probe_lines >= kMostProbeLines) return;
+  const auto now = Clock::now();
+  auto [last, added] = g_probe_line_last.try_emplace(record, now);
+  if (!added && std::chrono::duration<double>(now - last->second).count() < kProbeLineSeconds) return;
+  last->second = now;
+  float pos[3], eye[3];
+  ReadVec3(base, record, pos);
+  if (!PassEye(ctx, pos, eye)) return;
+  ++g_probe_lines;
+  const uint32_t view = g::ReadU32(base, kActiveClient);
+  cod3::ngl_side::CoronaDepthDetail detail;
+  const bool have = cod3::ngl_side::CoronaDepthDetails((uint64_t(view) << 32) | record, &detail);
+  const float dx = pos[0] - eye[0], dy = pos[1] - eye[1], dz = pos[2] - eye[2];
+  const float distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+  // the occluder: its distance from the eye, and how far along the eye-to-corona line it lies (its projection on it)
+  float occluder_distance = -1.0f, along = -1.0f;
+  if (have && detail.occluder_ok) {
+    const float ox = detail.occluder[0] - eye[0], oy = detail.occluder[1] - eye[1], oz = detail.occluder[2] - eye[2];
+    occluder_distance = std::sqrt(ox * ox + oy * oy + oz * oz);
+    along = distance > 0.0f ? (ox * dx + oy * dy + oz * dz) / distance : 0.0f;
+  }
+  // the ray as the old path casts it (from the eye to kShortOfCorona short of the corona)
+  const float k = distance > kShortOfCorona ? (distance - kShortOfCorona) / distance : 0.0f;
+  const float end[3] = {eye[0] + dx * k, eye[1] + dy * k, eye[2] + dz * k};
+  const float f = RayFraction(ctx, base, eye, end);
+  const bool ray_shows = f >= 0.999f;
+  REXLOG_INFO("cod3: coronas: probe-hides{} record {:08X} view {} at {:.1f} {:.1f} {:.1f} eye {:.1f} {:.1f} {:.1f} "
+              "distance {:.1f}; depth {:.7f} near_depth {:.7f} ndc {:.4f} {:.4f}; occluder {} {:.1f} {:.1f} {:.1f} "
+              "distance {:.1f} along {:.1f} (corona - 8: {:.1f}); ray fraction {:.4f} ({})",
+              ray_shows ? " ray-would-show" : "", record, view, pos[0], pos[1], pos[2], eye[0], eye[1], eye[2],
+              distance, have ? detail.depth : -1.0f, have ? detail.near_depth : -1.0f, have ? detail.ndc[0] : 0.0f,
+              have ? detail.ndc[1] : 0.0f, have && detail.occluder_ok ? "at" : "(none)", detail.occluder[0],
+              detail.occluder[1], detail.occluder[2], occluder_distance, along, distance - 8.0f, f,
+              f < 0.0f ? "no ray" : ray_shows ? "shown" : "blocked");
+}
+
 }  // namespace
 
 // The depth read (r1 f1 f2: the screen point; returns f1 the scene's depth there): from the corona pass, a ray.
+// [rexglue-native thread2] 2026-11-24: or, in native mode, the native scene's depth there (CoronaByDepth) first.
 #if defined(COD3_MP)
 REX_EXTERN(__imp__sub_82438DF0);
 REX_HOOK_RAW(sub_82438DF0) {
@@ -369,6 +460,14 @@ REX_HOOK_RAW(sub_82420F48) {
   }
   if (REXCVAR_GET(cod3_corona_trace) && from_pass) {
     bool visible = false;
+    if (REXCVAR_GET(cod3_corona_depth_probe) && CoronaByDepth(ctx, base, ctx.r30.u32, &visible)) {
+      // (debug) before the answer is written: the log's ray runs the game's trace from this context, as the old path
+      if (!visible && REXCVAR_GET(cod3_debug_corona_trace)) LogProbeHides(ctx, base, ctx.r30.u32);
+      ctx.f1.f64 = visible ? double(kNoHit) : 0.0;  // the same two answers as the ray's
+      ++g_tc.probed;
+      if (!visible) ++g_tc.probe_hidden;
+      return;
+    }
     if (CoronaInSight(ctx, base, ctx.r30.u32, &visible)) {
       ctx.f1.f64 = visible ? double(kNoHit) : 0.0;
       visible ? ++g_tc.seen : ++g_tc.hidden;  // rn98a

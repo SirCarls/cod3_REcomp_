@@ -326,10 +326,22 @@ void LogClocks(const uint8_t* base, double seconds) {
     auto f = [&](uint32_t offset) { return ReadGuestFloat(base, ps + offset); };
     const int32_t low = g_clocks.height_min.exchange(INT32_MAX, std::memory_order_relaxed);
     const int32_t high = g_clocks.height_max.exchange(INT32_MIN, std::memory_order_relaxed);
-    REXLOG_INFO("waw: player at ({:.1f} {:.1f} {:.1f}), velocity ({:.1f} {:.1f} {:.1f}); height {:.1f} to {:.1f}",
-                f(kPlayerStateOrigin), f(kPlayerStateOrigin + 4), f(kPlayerStateOrigin + 8), f(kPlayerStateVelocity),
+    // [waw-decomp/waw2] 2026-11-24 round 9: how far the player went across the ground since the last line, in all
+    // and a second (the waw_move_hz decision's walk measure, FRAMERATE-WAW-2026-11-24.md section 7: the 360 has no
+    // viewpos command); 0 on the first line and when the player state moved (a new level)
+    static uint32_t last_ps = 0;
+    static float last_x = 0.0f, last_y = 0.0f;
+    const float x = f(kPlayerStateOrigin), y = f(kPlayerStateOrigin + 4);
+    double walked = 0.0;
+    if (last_ps == ps && std::isfinite(x) && std::isfinite(y)) walked = std::hypot(double(x) - last_x, double(y) - last_y);
+    last_ps = ps;
+    last_x = x;
+    last_y = y;
+    REXLOG_INFO("waw: player at ({:.1f} {:.1f} {:.1f}), velocity ({:.1f} {:.1f} {:.1f}); height {:.1f} to {:.1f}; "
+                "moved {:.1f} across the ground ({:.1f} a second)",
+                x, y, f(kPlayerStateOrigin + 8), f(kPlayerStateVelocity),
                 f(kPlayerStateVelocity + 4), f(kPlayerStateVelocity + 8), low == INT32_MAX ? 0.0 : low / 10.0,
-                high == INT32_MIN ? 0.0 : high / 10.0);
+                high == INT32_MIN ? 0.0 : high / 10.0, walked, seconds > 0.0 ? walked / seconds : 0.0);
   }
   const uint64_t snaps = take(g_clocks.snaps);
   const uint64_t snaps_skipped = take(g_clocks.snaps_skipped);

@@ -266,8 +266,8 @@ void Cod3MpApp::OnConfigurePaths(rex::PathConfig& paths) {
   cod3::font_fill::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::text_overlay::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);
   cod3::voice::SetGameDataRoot(paths.game_data_root.empty() ? root / "assets" : paths.game_data_root);  // [acct2-ocr]
-  // [rexglue-native-io] 2026-11-16: as the campaign: the game folder, or the player's own folder when it can't be
-  // written (user_root.h; both programs pick the same one, so the campaign's cod3.toml and userdata are there).
+  // [rexglue-native-io] 2026-11-16, [setup-layout] 2026-11-24: as the campaign: always the game folder (portable),
+  // so the campaign's cod3.toml and userdata are there; one that can't be written ends with a message (user_root.h).
   cod3::user_root::DataRoot() = root;
   const std::filesystem::path data_root =
       rex::cvar::GetFlagByName("user_data_root").empty() ? cod3::user_root::Pick(root) : root;
@@ -647,6 +647,9 @@ void Cod3MpApp::OnCreateDialogs(rex::ui::ImGuiDrawer* drawer) {
     if (auto* win = window()) {
       // The picture follows the window's shape live (game/ultrawide.h).
       cod3::UpdateDisplayAspect(win->GetActualPhysicalWidth(), win->GetActualPhysicalHeight());
+      // [rexglue-native thread2] 2026-11-24 (SDK 0322): with the native renderer, a named resolution is the window's
+      // own size (game/render_resolution.h)
+      cod3::NamedResolutionSizesWindow(win);
       // A relaunch (back to the campaign) opens the window the same way (game/relaunch.h).
       cod3::NoteWindowState(win->IsFullscreen(), win->GetActualLogicalWidth(), win->GetActualLogicalHeight(),
                             win->HasFocus());

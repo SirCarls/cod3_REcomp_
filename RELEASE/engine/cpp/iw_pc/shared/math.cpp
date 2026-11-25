@@ -123,6 +123,10 @@ void angle_vectors(const std::array<float, 3>& angles, std::array<float, 3>* for
     }
 }
 
+void snap_vector(std::array<float, 3>& v) {
+    for (float& c : v) c = x87::F24::integer(x87::F24::load(c).round_to_int()).store();
+}
+
 std::array<float, 3> vec3_lerp(const std::array<float, 3>& from, const std::array<float, 3>& to, float fraction) {
     std::array<float, 3> out{};
     for (std::size_t i = 0; i < 3; ++i)
@@ -134,6 +138,52 @@ float vectopitch(const std::array<float, 3>& v) {
     std::array<float, 3> angles{};
     vec_to_angles(v, angles);
     return angles[0];
+}
+
+namespace {
+/// a by whole turns while `more(a)` (+360 or -360 by `step`), each step stored; no progress ends it.
+template <class More>
+float turn_while(float a, float step, More more) {
+    while (more(a)) {
+        float next = (F24::load(a) + F24::load(step)).store();
+        if (next == a) return a;  // (the original never returns here)
+        a = next;
+    }
+    return a;
+}
+}  // namespace
+
+float angle_wrap360(float angle) {
+    if (angle < 0.0f) return turn_while(angle, 360.0f, [](float a) { return a < 0.0f; });  // (only below)
+    return turn_while(angle, -360.0f, [](float a) { return a >= 360.0f; });  // (at or above; NaN doesn't)
+}
+
+float angle_wrap180(float angle) {
+    if (angle <= -180.0f) return turn_while(angle, 360.0f, [](float a) { return a <= -180.0f; });
+    return turn_while(angle, -360.0f, [](float a) { return a > 180.0f; });
+}
+
+float angle_delta(float a1, float a2) { return angle_normalize180((F24::load(a1) - F24::load(a2)).store()); }
+
+void add_lean_to_position(std::array<float, 3>& position, float yaw, float lean, float roll, float dist) {
+    auto l = F24::load;
+    if (lean == 0.0f) return;  // (only 0 skips; NaN leans)
+    float ease = ((l(2.0f) - l(l(lean).abs().store())) * l(lean)).store();
+    float rolled = (l(ease) * l(roll)).store();
+    std::array<float, 3> right{};
+    angle_vectors({0.0f, yaw, rolled}, nullptr, &right, nullptr);
+    float d = (l(ease) * l(dist)).store();
+    for (std::size_t i = 0; i < 3; ++i) position[i] = (l(right[i]) * l(d) + l(position[i])).store();
+}
+
+float pitch_for_yaw_on_normal(float yaw, const std::array<float, 3>& normal) {
+    auto l = F24::load;
+    float s, c;
+    sin_cos_degrees(yaw, s, c);
+    F24 n0 = l(normal[0]), n1 = l(normal[1]), n2 = l(normal[2]);
+    float d = (n2 * l(0.0f) - l(c) * n0 - l(s) * n1).store();
+    std::array<float, 3> along{(l(d) * n0 + l(c)).store(), (l(d) * n1 + l(s)).store(), (l(d) * n2 + l(0.0f)).store()};
+    return vectopitch(along);
 }
 
 float angle_subtract(float a1, float a2) {
@@ -152,5 +202,24 @@ float angle_subtract(float a1, float a2) {
 }
 
 std::int32_t round_float_to_int(float x) { return (F24::load(x) + F24::dbl(9.313225746154785e-10)).round_to_int(); }
+
+float diff_track(float tgt, float cur, float rate, float delta_time) {
+    auto l = F24::load;
+    float d = (l(tgt) - l(cur)).store();
+    float step = (l(d) * l(rate) * l(delta_time)).store();
+    float size = l(d).abs().store();
+    if (l(size).v > l(0.001f).v) {  // (only above moves; NaN doesn't)
+        float step_size = l(step).abs().store();
+        if (!(l(size).v < l(step_size).v)) return (l(step) + l(cur)).store();  // (only below stops; NaN moves)
+    }
+    return tgt;
+}
+
+float i_fclamp(float val, float min, float max) {
+    // (fsub, fcomp 0, test ah,1: below 0, or NaN.)
+    auto below = [](float a, float b) { return !((F24::load(a) - F24::load(b)).v >= 0.0); };
+    float upper = below(val, max) ? val : max;
+    return below(min, val) ? upper : min;
+}
 
 }  // namespace iw_pc::shared::math

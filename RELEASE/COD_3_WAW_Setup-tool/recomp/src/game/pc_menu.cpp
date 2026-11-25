@@ -50,6 +50,7 @@
 #endif
 #include "game/text_language.h"  // [acct2-ocr] the quit question in the chosen language
 #include "game/ultrawide.h"
+#include "ui/menus/cod3_menukit.h"  // [waw-decomp/menus2] 2026-11-23 native menus
 
 REXCVAR_DEFINE_BOOL(cod3_pc_menus, true, "cod3/Mouse",
                     "Mouse and keyboard in the game's menus: the pointer selects, click to choose, "
@@ -1689,6 +1690,16 @@ void OnMenuInput(PPCContext& ctx, uint8_t* base, uint32_t system) {
     }
   }
 
+  {  // [waw-decomp/menus2] 2026-11-23 the native menus' page (cod3_native_menus) has the pointer and
+     // its clicks; keys, the wheel and right click still go through Press below, to HandleButton
+    const bool click = request && request->ask == Ask::kClick;
+    if (cod3::nativemenus::TakePointer(ctx, base, system, click ? request->x : x, click ? request->y : y,
+                                       over || click, moved, click)) {
+      if (click) request.reset();
+      if (!request) return;
+    }
+  }
+
   // The pad (the game's own input, read just before this) moved the
   // highlight: it has it now, like the keys.
   const bool trace = REXCVAR_GET(cod3_menu_trace);
@@ -2368,6 +2379,11 @@ void SetItemLabelKey(PPCContext& ctx, uint8_t* base, uint32_t entry, const char*
 
 void DumpMenuPanel(uint8_t* base, uint32_t panel, const char* what) { DumpPanel(base, panel, what); }
 
+// [waw-decomp/menus2] 2026-11-23 for the native menus (ui/menus/cod3_menukit.cpp)
+uint32_t SystemPage(PPCContext& ctx, uint8_t* base, uint32_t system) {
+  return Valid(system) ? CurrentPage(ctx, base, system) : 0;
+}
+
 }  // namespace cod3::pcmenu
 
 // FEMenuSystem::ProcessInput (vfunc_12; cod3mp: FEMenuSystem__ProcessInput,
@@ -2394,6 +2410,8 @@ REX_HOOK_RAW(FEMenuSystem__vfunc_17) {
   if (REXCVAR_GET(cod3_menu_trace))
     REXLOG_INFO("cod3: menu trace: button {} (player {}, system {:08X})", ctx.r4.u32, int32_t(ctx.r5.u32),
                 ReadU32(base, ctx.r3.u32));
+  // [waw-decomp/menus2] 2026-11-23 the native menus' page (cod3_native_menus) takes its buttons first
+  if (cod3::nativemenus::TakeButton(ctx, base, ctx.r3.u32, ctx.r4.u32, int32_t(ctx.r5.u32))) return;
 #if defined(COD3_MP)
   if (cod3::optionsmp::TakeMove(ctx, base, ctx.r3.u32, ctx.r4.u32)) return;  // [menus-native]
 #endif
@@ -2573,6 +2591,8 @@ REX_HOOK_RAW(FrontEndMenuSystem__vfunc_14) {
 
 REX_EXTERN(__imp__InGameMenuSystem__vfunc_14);
 REX_HOOK_RAW(InGameMenuSystem__vfunc_14) {
+  // [waw-decomp/menus2] 2026-11-23 the native menus' page (cod3_native_menus) is drawn by the overlay instead
+  if (cod3::nativemenus::DrawSystem(ctx, base, ctx.r3.u32)) return;
   const uint32_t outer = t_drawing_system;
   t_drawing_system = ctx.r3.u32;
   __imp__InGameMenuSystem__vfunc_14(ctx, base);

@@ -229,3 +229,4 @@ address	name	group	stack_bytes	register_args	returns	stand_in_return	params	size
 002221B0	Sys_ReadLaunchInfo	startup	0		undefined4	native bro_launch_info	char * param_1	1217	
 0023EE60	RE_AddPolyToScene	quad	0		void	(ngl_quad_batch_add_poly(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12)), 0)	undefined4 param_1, int param_2, int param_3	604	
 000110F0	FastSinCos	math	0	eax,ecx	void	native bro_fast_sincos	float angle, float * sine (eax), float * cosine (ecx)	261	
+00233BD0	G_VehiclePhysicsFrame	physics	0		void	native bro_physics_frame	float seconds	86	

@@ -59,6 +59,7 @@
 #include "cod2_pc_input.h"  // [f2-menus] the PC copy's keys: their console commands
 #include "game/dvar_peek.h"  // [f2-menus] tests: the game's dvars in the log (cod2_debug_dvars)
 #include "game/pc_movement.h"  // [f2-menus] the PC copy's movement numbers (cod2_pc_movement; the campaign)
+#include "game/rumble.h"  // [input-port] no vibration on the first controller while the keyboard and mouse are in use
 
 #include <atomic>
 #include <cctype>
@@ -340,6 +341,10 @@ void OnMenuOpened(std::string_view name) {
 COD2_HOOK_RAW(COD2_XINPUT_GET_STATE) {
   const uint32_t user = ctx.r3.u32, state = ctx.r4.u32;
   COD2_IMP(COD2_XINPUT_GET_STATE)(ctx, base);
+
+  // [input-port] 2026-11-24 The first controller's read, as the game got it (before the test presses below): which
+  // device the player uses, for its vibration (game/rumble.h). r3 now holds the read's answer (0 = connected).
+  if (user == 0) cod2::rumble::OnPadRead(ctx, base, ctx.r3.u32, state);
 
   // [f2-menus] Commands from the F2 window (typed on its CONSOLE page, or a row that sets one of the game's dvars):
   // added to the game's command buffer here, on the game's main thread, as the test commands below are.

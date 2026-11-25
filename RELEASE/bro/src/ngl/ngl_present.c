@@ -422,6 +422,38 @@ static int section_order(uint32_t mesh, unsigned count, unsigned *order)
     return 1;
 }
 
+/* [waw-decomp/bro1] 2026-11-23 The decals' pull toward the eye (ngl_mesh_section_decal says how far, as the game's
+ * class draws set it on the Xbox): on unless BRO_DECAL_BIAS=0. */
+static int decal_depth_on(void)
+{
+    static int on = -1;
+
+    if (on < 0) {
+        const char *setting = getenv("BRO_DECAL_BIAS");
+
+        on = !(setting && setting[0] == '0');
+        fprintf(stderr, "[present] decals pulled toward the eye as the game's draws pull them: %s\n",
+                on ? "on (BRO_DECAL_BIAS=0 turns it off)" : "off (BRO_DECAL_BIAS=0)");
+    }
+    return on;
+}
+
+/* The slope part of cdDecal_Draw's polygon offset (nglSetDecalZBias(10): -10 / 4), for ngl_vk's decal pipelines;
+ * Vulkan's slope factor means what the NV2A's scale factor means. */
+#define DECAL_SLOPE (-10.0f / 4.0f)
+#define DEPTH_STEPS 16777215.0f       /* the Xbox's 24-bit depth buffer: depth 0..1 in this many steps */
+
+/* A draw's depth moved toward the eye by the game's two parts (ngl_mesh_section_decal): steps of the 24-bit depth
+ * buffer at every pixel (z/w - steps / 2^24, as the NV2A's polygon offset bias), and pull off its screen depth
+ * before the divide (z/w - pull / 2^24 / w), both through its view-projection (Direct3D row vectors; z is column 2,
+ * w column 3; the mesh's corners come with w 1). ngl_vk's depth is the Xbox's (z/w over 0..1, screen_to_clip). */
+static void pull_toward_eye(float view_projection[16], float steps, float pull)
+{
+    for (int r = 0; r < 4; r++)
+        view_projection[4 * r + 2] -= steps / DEPTH_STEPS * view_projection[4 * r + 3];
+    view_projection[14] -= pull / DEPTH_STEPS;
+}
+
 /* This frame's meshes for ngl_vk, a draw for each section it can draw, then the effects'. Returns how many. */
 static unsigned frame_meshes(void)
 {
@@ -573,6 +605,17 @@ static unsigned frame_meshes(void)
             }
             memcpy(mesh_draws[n].world, list[i].world, sizeof mesh_draws[n].world);
             memcpy(mesh_draws[n].view_projection, list[i].view_projection, sizeof mesh_draws[n].view_projection);
+            {   /* [waw-decomp/bro1] 2026-11-23 a decal pulled toward the eye as its class draw pulls it */
+                float steps, pull;
+
+                if (decal_depth_on() && ngl_mesh_section_decal(section, &list[i], &steps, &pull)) {
+                    pull_toward_eye(mesh_draws[n].view_projection, steps, pull);
+#if defined(NGL_VK_BLEND_DECAL_ALPHA)
+                    if (mesh_draws[n].alpha == NGL_VK_ALPHA_BLEND && mesh_draws[n].blend == NGL_VK_BLEND_ALPHA)
+                        mesh_draws[n].blend = NGL_VK_BLEND_DECAL_ALPHA;     /* + the slope part, red green blue */
+#endif
+                }
+            }
             if (list[i].scene != world_scene) {
                 unsigned j = 0;
 
@@ -930,6 +973,74 @@ static void window_gamma(void)
     for (i = 0; i < 256; i++)
         words[i] = (uint32_t)ramp[0][i] | (uint32_t)ramp[1][i] << 8 | (uint32_t)ramp[2][i] << 16 | 0xFF000000u;
     ngl_vk_set_window_table(words);
+}
+
+/* Big Red One's glow (acct2-ocr's audit #2, drawn first in its private build glow1, 2026-11-13; on by default since
+ * [waw-decomp/bro1] 2026-11-23), drawn by ngl_vk's sky glow. Each frame in the world the view's render function
+ * (0x00234D90) writes a mask into the screen's alpha (two alpha-only quads: 0 over the whole screen, then 0.5 wherever
+ * the scene lies beyond 0.9 x the float at 0x0095E514, by the depth test) and adds a custom node (0x00045850, made by
+ * 0x00045EF0) that takes the screen times that alpha into a 256 x 256 target, blurs it `passes` times (the mean of
+ * four taps in a plus, k x spread texels out on blur k, times 2 x the blur's alpha) and adds the last blur over the
+ * screen at 2 x the add's alpha. bro/ draws neither (nglListAddCustomNode is a stand-in; nglSetColorWriteMask only
+ * stores the mask). Call of Duty 3's glow in ngl_vk is the same chain with the sky ("nothing drawn") as its mask at 1,
+ * so the mask's 0.5 goes into the strength (glow1's runs: Big Red One's sky counts as "nothing drawn" there). The
+ * switches are the game's, read each frame: on (0x00897950), the add's and the blur's strengths (floats at 0x00897954
+ * and 0x0089795C, as the game makes its alpha: min(int(s x 128), 255) / 255), the spread (0x00897958) and the passes
+ * (0x00897960); the game's setters 0x002F50E0..0x002F5110 and the levels change them (Omaha Beach: 6 passes). ngl_vk
+ * draws at most 8 blurs (the image's default is 4). BRO_GLOW=0: not drawn. */
+#define GLOW_ON 0x00897950u
+#define GLOW_ADD 0x00897954u
+#define GLOW_SPREAD 0x00897958u
+#define GLOW_BLUR 0x0089795Cu
+#define GLOW_PASSES 0x00897960u
+#define GLOW_MASK_DISTANCE 0x0095E514u     /* x 0.9: the mask's depth (0x00234E8E) */
+
+static float glow_alpha(float s)
+{
+    float a = s * 128.0f;
+
+    if (!(a > 0.0f))
+        return 0.0f;                /* (the game would wrap a negative one) */
+    return a >= 255.0f ? 1.0f : (float)(int)a / 255.0f;
+}
+
+static void game_glow(int meshes)
+{
+    static int on = -1;
+    static uint32_t said[6] = { 0xFFFFFFFFu };     /* the six words last logged (compared as bits) */
+    uint32_t enabled, passes, now[6];
+    float add, spread, blur, distance;
+
+    if (on < 0) {
+        const char *setting = getenv("BRO_GLOW");
+
+        on = !(setting && setting[0] == '0');
+        fprintf(stderr, "[ngl] the game's glow: %s\n",
+                on ? "drawn (BRO_GLOW=0 leaves it out)" : "left out (BRO_GLOW=0)");
+    }
+    if (!on || !meshes)
+        return;
+    enabled = *(const uint32_t *)XBOX_PTR(GLOW_ON);
+    passes = *(const uint32_t *)XBOX_PTR(GLOW_PASSES);
+    memcpy(&add, (const void *)XBOX_PTR(GLOW_ADD), sizeof add);
+    memcpy(&spread, (const void *)XBOX_PTR(GLOW_SPREAD), sizeof spread);
+    memcpy(&blur, (const void *)XBOX_PTR(GLOW_BLUR), sizeof blur);
+    memcpy(&distance, (const void *)XBOX_PTR(GLOW_MASK_DISTANCE), sizeof distance);
+    now[0] = enabled;
+    now[1] = passes;
+    memcpy(now + 2, &add, 4);
+    memcpy(now + 3, &spread, 4);
+    memcpy(now + 4, &blur, 4);
+    memcpy(now + 5, &distance, 4);
+    if (memcmp(now, said, sizeof now)) {
+        memcpy(said, now, sizeof said);
+        fprintf(stderr, "[ngl] the game's glow: %s, %u passes, spread %g, blur %g (gain %.4f), add %g (strength %.4f); "
+                "its mask from %g (0.9 x %g)\n", enabled ? "on" : "off", passes, spread, blur,
+                2.0f * glow_alpha(blur), add, glow_alpha(add), 0.9f * distance, distance);
+    }
+    if (!enabled || !passes || !isfinite(spread) || !isfinite(blur) || !isfinite(add))
+        return;
+    ngl_vk_set_glow(spread, 2.0f * glow_alpha(blur), passes, glow_alpha(add), 0.0f, NULL);
 }
 
 /* Save the target as a picture (RGBA in, RGB out), and say how far it is from the game's picture it was drawn from
@@ -1621,6 +1732,11 @@ void ngl_present_frame(void)
      * the GPU, so the copy back was 4.9 MB a frame (at 1280 x 960) for nothing. */
     ngl_vk_set_readback(describing_effects);
     window_gamma();                 /* [acct2-ocr] 2026-11-13: the game's brightness in the window */
+    game_glow(meshes != 0);         /* [waw-decomp/bro1] 2026-11-23: the game's glow (acct2-ocr's glow1; BRO_GLOW=0) */
+#if defined(NGL_VK_DECAL_DEPTH_BIAS)
+    if (decal_depth_on())           /* [waw-decomp/bro1] 2026-11-23: cdDecal's slope part (frame_meshes) */
+        ngl_vk_set_decal_depth_bias(0.0f, DECAL_SLOPE);
+#endif
     if (ngl_vk_draw_quads(vertices, count, (float)SCREEN_WIDTH, (float)SCREEN_HEIGHT, meshes ? NULL : picture,
                           width, height, pitch)) {
         fprintf(stderr, "[ngl] Vulkan: drawing frame %lu failed; frames are not drawn from here on\n", frames);

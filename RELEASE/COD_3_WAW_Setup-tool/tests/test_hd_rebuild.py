@@ -209,6 +209,35 @@ class RebuildTests(unittest.TestCase):
             self.assertTrue((data / "textures" / "a.png").is_file())                     # the originals too
             self.assertFalse([t for k, t in lines if k == "warn"], lines)
 
+    def test_from_scratch_keeps_the_copies_when_the_rip_is_too_old(self):
+        # [setup-layout] 2026-11-24 nothing is deleted when the upscaling can't run afterwards
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = a_build(root)
+            data = upscale.data_dir(out)
+            (data / "textures" / upscale.KEYS_FILE).unlink()   # a rip from an older ripper
+            old = data / upscale.OUTPUT_NAME
+            old.mkdir()
+            (old / "a.png").write_bytes(png_bytes(32, 16))
+            lines = []
+            p = Pipeline(self.options(out, root / "work", from_scratch=True), lines_log(lines), threading.Event())
+            p.runner = FakeWaifu2x()
+            with mock.patch.object(deps, "fetch_portable", return_value=make_tool(root)):
+                p.upscale_textures()
+            self.assertTrue((old / "a.png").is_file())
+            self.assertTrue(any("copies from before were kept" in t for k, t in lines if k == "warn"), lines)
+
+    def test_disk_space_counts_what_earlier_builds_left(self):
+        # [setup-layout] 2026-11-24 a second build doesn't ask for the upscaled copies' room again
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            out = a_build(root)
+            old = upscale.data_dir(out) / upscale.OUTPUT_NAME
+            old.mkdir()
+            (old / "a.png").write_bytes(b"x" * 1000)
+            have = sum(g.size for g in upscale.generated(out))
+            self.assertEqual(have, 1000)
+
     def test_without_from_scratch_up_to_date_copies_stay(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -289,6 +318,27 @@ class DeleteTests(unittest.TestCase):
             self.assertEqual(left, [])
             self.assertFalse((upscale.data_dir(out) / upscale.OUTPUT_NAME).is_symlink())
             self.assertTrue((elsewhere / "keep.png").is_file())
+
+    @unittest.skipIf(os.name == "nt", "symbolic links need extra rights on Windows")
+    def test_a_link_inside_the_data_folder_is_removed_not_emptied(self):
+        # [setup-layout] 2026-11-24 a link (or a Windows junction) that stays inside data/cod3 is unlinked; what it
+        # points to keeps its files
+        with tempfile.TemporaryDirectory() as tmp:
+            out = a_build(Path(tmp))
+            inside = upscale.data_dir(out) / "moved_copies"
+            inside.mkdir()
+            (inside / "keep.png").write_bytes(b"k")
+            os.symlink(inside, upscale.data_dir(out) / upscale.OUTPUT_NAME)
+            self.assertTrue(upscale._is_link(upscale.data_dir(out) / upscale.OUTPUT_NAME))
+            freed, left = upscale.delete_generated(out, frozenset({upscale.PICTURES}), Log(sinks=[]))
+            self.assertEqual((left, freed), ([], 0))
+            self.assertFalse((upscale.data_dir(out) / upscale.OUTPUT_NAME).is_symlink())
+            self.assertTrue((inside / "keep.png").is_file())
+
+    def test_a_folder_is_not_a_link(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(upscale._is_link(Path(tmp)))
+            self.assertFalse(upscale._is_link(Path(tmp) / "missing"))
 
     def test_without_a_record(self):
         with tempfile.TemporaryDirectory() as tmp:

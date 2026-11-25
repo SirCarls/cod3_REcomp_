@@ -147,20 +147,29 @@ void ScriptedInputDriver::EnumerateDevices(std::vector<DeviceInfo>& out) {
   }
 }
 
-void ScriptedInputDriver::Update(int which) {
+void ScriptedInputDriver::Update(int which, bool state_read) {
   double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - start_).count();
   X_INPUT_GAMEPAD pad{};
   uint16_t buttons = 0;
   int16_t axis[4] = {};
   uint8_t lt = 0, rt = 0;
-  for (const auto& ev : events_) {
-    if (ev.pad != which || t < ev.start || t >= ev.end) continue;
+  for (auto& ev : events_) {
+    if (ev.pad != which || t < ev.start) continue;
+    // [input-port] Held now, or a tap that came and went since the last state read (see Event::shown_at).
+    const bool held = t < ev.end;
+    if (held && state_read) ev.seen_held = true;
+    const bool first =
+        !ev.seen_held && ev.shown_at < 0.0 && last_read_[which] >= 0.0 && ev.end > last_read_[which];
+    const bool again = ev.shown_at >= 0.0 && t < ev.shown_at + kTapHoldS;
+    if (!held && !first && !again) continue;
+    if (!held && first && state_read) ev.shown_at = t;
     buttons |= ev.buttons;
     lt = std::max(lt, ev.lt);
     rt = std::max(rt, ev.rt);
     for (int i = 0; i < 4; ++i)
       if (ev.has_axis[i]) axis[i] = ev.axis[i];
   }
+  if (state_read) last_read_[which] = t;  // [input-port] the same clock reading the entries were judged by
   pad.buttons = buttons;
   pad.left_trigger = lt;
   pad.right_trigger = rt;
@@ -191,7 +200,7 @@ X_RESULT ScriptedInputDriver::GetDeviceState(DeviceId id, X_INPUT_STATE* out_sta
   const int which = PadOf(id);  // [claude-9b]
   if (which < 0) return X_ERROR_DEVICE_NOT_CONNECTED;
   std::lock_guard lock(mutex_);
-  Update(which);
+  Update(which, true);
   if (out_state) {
     out_state->packet_number = packet_[which];
     out_state->gamepad = pad_[which];
@@ -222,7 +231,7 @@ X_RESULT ScriptedInputDriver::GetDeviceKeystroke(DeviceId id, uint32_t,
   const int which = PadOf(id);  // [claude-9b]
   if (which < 0) return X_ERROR_DEVICE_NOT_CONNECTED;
   std::lock_guard lock(mutex_);
-  Update(which);
+  Update(which, false);
   if (keys_[which].empty()) return X_ERROR_EMPTY;
   if (out_keystroke) *out_keystroke = keys_[which].front();
   keys_[which].pop();

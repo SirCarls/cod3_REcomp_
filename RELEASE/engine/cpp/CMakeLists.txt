@@ -21,10 +21,18 @@ add_library(iw_pc STATIC
   iw_pc/client/client.cpp
   iw_pc/client/connect.cpp
   iw_pc/client/download.cpp
+  iw_pc/game/anim.cpp
+  iw_pc/game/duck.cpp
+  iw_pc/game/ground.cpp
+  iw_pc/game/jump.cpp
+  iw_pc/game/mantle.cpp
   iw_pc/game/moves.cpp
   iw_pc/game/pmove.cpp
   iw_pc/game/prone.cpp
   iw_pc/game/slide.cpp
+  iw_pc/game/view.cpp
+  iw_pc/game/weapon.cpp
+  iw_pc/game/weapon_state.cpp
   iw_pc/net/delta.cpp
   iw_pc/net/game_state.cpp
   iw_pc/net/huffman.cpp

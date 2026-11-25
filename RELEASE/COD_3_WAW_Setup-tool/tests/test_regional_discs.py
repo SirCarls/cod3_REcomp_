@@ -2,7 +2,7 @@
 German and the French/Spanish/Italian discs carry the USA/Europe campaign
 program byte for byte, so the setup tool takes them, says which one it is,
 and tells the French/Spanish/Italian disc's owner to pick the console
-language (Game settings > Console language, the SDK's user_language).
+language (Game settings > Language > Voices sets the SDK's user_language).
 
     python -m unittest discover -s COD_3_WAW_Setup-tool/tests
 """
@@ -60,9 +60,10 @@ class RegionalDiscTests(unittest.TestCase):
             self.assertIn(("info", f"Game: {name} (default.xex {sha[:12]}...)"), lines)
 
     def test_only_the_fr_es_it_disc_asks_for_the_console_language(self):
+        # [setup-layout] 2026-11-24 picked with Voices now (it sets the console language)
         for sha in (USA, GERMANY):
-            self.assertFalse(any("Console language" in m for _, m in _check(sha)), sha)
-        self.assertTrue(any("Console language" in m for _, m in _check(FR_ES_IT)))
+            self.assertFalse(any("pick it with Voices" in m for _, m in _check(sha)), sha)
+        self.assertTrue(any("pick it with Voices" in m for _, m in _check(FR_ES_IT)))
 
     def test_an_unknown_disc_lists_the_known_ones(self):
         with self.assertRaises(SetupError) as e:

@@ -75,6 +75,50 @@ REXCVAR_DEFINE_BOOL(cod4_debug_native_side_variants, false, "cod4",
 REXCVAR_DEFINE_BOOL(cod4_debug_native_side_models, false, "cod4",
                     "Debug (the native renderer): with cod4_debug_native_side, also draw the static models (surface "
                     "type 1: placed by their instance, lit by the model lighting texture where it is read)");
+// [cod4-r7] 2026-11-24
+REXCVAR_DEFINE_INT32(cod4_debug_native_kinds, 7, "cod4",
+                     "Debug (the native renderer): with cod4_native_vulkan, which kinds beside the world and the "
+                     "static models are drawn natively, one bit each: 1 the brush models (doors, targets), 2 the "
+                     "models (guns, props), 4 the skinned models (soldiers, the player's arms); 7 all, 0 none");
+// [cod4-r8] 2026-11-24
+REXCVAR_DEFINE_BOOL(cod4_native_2d, true, "cod4",
+                    "The native renderer: with cod4_native_vulkan, the game's 2D (the HUD, the menus, the text) drawn "
+                    "natively over the 3D, from the back end's tess draws (campaign 0x8210B678, cod4mp 0x82142BB0)");
+// [cod4-r10] 2026-11-24: the cube's faces decode right (mp_crash, run cod4r10b), but the box came out black.
+// [cod4-r12] 2026-11-24: found: the sky draw's own registers are not a view-projection (the box's faces land at w
+// around 1e8, run cod4r12); through the first world surface's the sky shows (cod4r12-mp). On by default again.
+REXCVAR_DEFINE_BOOL(cod4_native_sky, true, "cod4",
+                    "The native renderer: the sky (a material named sky, drawn by the game with its cube map) as a box "
+                    "of the cube's six faces around the eye, behind everything else (off: drawn as round 7 did)");
+REXCVAR_DEFINE_BOOL(cod4_native_omni, true, "cod4",
+                    "The native renderer: the game's dynamic omni lights (technique type 15, the added light pass) as "
+                    "point lights on the lit draws they light");
+// [cod4-r13] 2026-11-24: the models' texture coordinates. A model's 32-byte corner is IW3's packed vertex (KisakCOD
+// r_gfx.h GfxPackedVertex: xyz, binormal sign, color at +0x10, then at +0x14 ONE word holding u in its high 16 bits
+// and v in its low 16 (com_pack.cpp Vec2PackTexCoords, a half-float form), the normal at +0x18, the tangent at
+// +0x1C). Rounds 6 to 12 read two floats at +0x14 and +0x18 (from a 32-byte shader that is the 2D/effects vertex's,
+// GfxVertex: xyzw, color, float u v, normal), so every model sampled one texel of its color map: the flat purple
+// trees, walls, pipes and dumpster lid of mp_crash (cod4r12-mp: "texture coordinate 0.0072 0.0000" and "0.0004
+// 0.0000", the packed word read as a float: u's half 0x3BEB is 0.99, and v the normal's word, tiny).
+REXCVAR_DEFINE_BOOL(cod4_native_model_uv_halves, true, "cod4",
+                    "The native renderer: the models' texture coordinate read as the game packs it (u and v as two "
+                    "16-bit halves of one word; off: two floats, as rounds 6 to 12 did)");
+// [cod4-r13] 2026-11-24: the native picture's size. The owner, 11-24 07:48 PT: the native renderers draw at the size
+// they are shown at, with no picture of another size scaled up or down. Rounds 6 to 12 drew a fixed 1280x720 that the
+// presenter then stretched to the window. Now with cod4_native_vulkan the picture is the window's drawable size (the
+// largest 16:9 inside it, the game's view being 16:9; the presenter puts it in the middle pixel for pixel), chosen
+// again when the window's size changes and has stayed the same for a third of a second (as Finest Hour's live
+// resolution, dev/agents/acct2-fh/RESOLUTION.md: ngl_vk closed and opened again at the new size). Call of Duty 3's
+// cod3_native_resolution (ChooseTargetSize) is the same idea.
+REXCVAR_DEFINE_STRING(cod4_native_resolution, "", "cod4/Display",
+                      "The native renderer's picture size: empty (the default) the window's own size, pixel for "
+                      "pixel; or 720p, 1080p, 1440p, 2160p or WxH (then shown in the window at that size, scaled "
+                      "only if it doesn't fit). 16:9, from 640x360 to 7680x4320");
+// [cod4-r15] 2026-11-24: a test of the live resize (ngl_vk_set_target_size) without touching the window: from frame N
+// the picture is asked at 1920x1080, from frame 2N at the window's size again (0, the default: off)
+REXCVAR_DEFINE_INT32(cod4_debug_native_resize_test, 0, "cod4",
+                     "Test of the live picture resize: from this frame 1920x1080, from twice it the window's size "
+                     "again (0: off)");
 REXCVAR_DEFINE_DOUBLE(cod4_debug_native_light_scale, 0.0, "cod4",
                       "Debug (the native renderer): the factor the world's light (made halved) is multiplied by in "
                       "the native picture; 0 = the built-in 2 (the game's own: its shaders have no factor)");
@@ -185,14 +229,51 @@ constexpr uint32_t kWorldStride = 44;
 // Offset=4 FMT_8_8_8_8 the color at +0x10, Offset=5 FMT_32_32_FLOAT the texture coordinate at +0x14)
 constexpr uint32_t kStaticModelSurfaces = 1;
 constexpr uint32_t kModelStride = 32;
+// [cod4-r7] 2026-11-24: the kinds round 6 left out (the runs' "first material of each kind": cod4nat1, cod4mpnat1):
+// 2 the brush models (doors, targets: "wc/" materials, lm_ techniques, the world's corners), 3 the models (guns,
+// props: "mc/" materials, lp_ techniques), 4 the skinned models (the soldiers, the player's arms). Drawn with the
+// native display mode on (cod4_native_vulkan), as the world's (44-byte corners) or as the static models' (32-byte
+// corners) by their stride; anything else is counted as misread, by its stride and vertex declaration type.
+constexpr uint32_t kBrushModelSurfaces = 2, kModelSurfaces = 3, kSkinnedModelSurfaces = 4;
+static_assert(kModelSurfaces == kBrushModelSurfaces + 1 && kSkinnedModelSurfaces == kModelSurfaces + 1,
+              "the kinds' bits in cod4_debug_native_kinds go by surface type");
+// [cod4-r8] 2026-11-24: the 2D. The back end's tess (RB_EndTessSurface 0x8211F560 -> R_DrawTessTechnique 0x8211F460)
+// draws each pass with 0x8210B678(state, {vertex count, triangle count}) (cod4mp 0x82142BB0, the same 172 bytes):
+// Direct3D's 0x8209B898(device, 4, 0, vertices, indices, 1, 0x20, ...) then copies the corners from *(state + 0xA40)
+// and the 16-bit indices from *(state + 0xA3C). A corner is 32 bytes: x y z w floats, the color (bytes A R G B as
+// 0x8230F398 packs it: the word is a D3DCOLOR), u v floats, the packed normal (0x821240D8 writes them so). The source
+// state's view mode (source + 0xEB8: campaign 0x83794408, cod4mp 0x8501BE98) is 2 for the 2D (0x820F0000's quads; x
+// and y the screen's pixels, the viewport at state + 0xA5C its size) and 3 for the identity view 0x82124038 sets
+// (x and y from -1 to 1 across the viewport); the 2D's materials set technique type 4 (unlit) through
+// RB_SetTessTechnique 0x8211F6D8.
+constexpr uint32_t kStateTessIndices = 0xA3Cu, kStateTessVertices = 0xA40u, kStateViewport = 0xA5Cu;
+constexpr uint32_t kTessCornerBytes = 32;
+constexpr uint32_t kTessMaxVertices = 0x800u, kTessMaxIndices = 0xC00u;  // the tess's room (0x821240D8's checks)
+constexpr uint32_t kViewMode2D = 2, kViewModeIdentity = 3;
+#if defined(COD4_MP)
+constexpr uint32_t kViewModeAddress = 0x8501BE98u;  // 0x82155678 (the campaign's 0x82124038) sets it to 3
+#else
+constexpr uint32_t kViewModeAddress = 0x83794408u;
+#endif
+constexpr size_t kMax2DCorners = 8192u * 6u;  // a frame's (3 a triangle): ngl_vk_draw_quads takes at most 8192 quads
+                                              // (MAX_VERTICES); round 8 passed more and the frame failed
 constexpr uint32_t kFirstLitTechnique = 7, kLastLitTechnique = 13;  // lit; with the sun, a spot or an omni light
 constexpr uint32_t kSunTechniqueFirst = 8, kSunTechniqueLast = 9;   // lit by the sun (9: with its shadow map)
+// [cod4-r9] 2026-11-24: the added omni light pass (the 360's 26 techniques: 14 light spot, 15 light omni, 16 light spot
+// shadow; round 7's mp_crash: "l_omni_r0c0n0_w", "l_omni_b0c0_m"). Its light is the source's code constants 0 (the
+// place relative to the eye, w = 1 / radius) and 1 (the diffuse color) (KisakCOD r_draw_shadowable_light.cpp; the pass
+// arguments 5:5:00000001 5:6:00010001 put them in pixel c5 and c6)
+constexpr uint32_t kLightOmniTechnique = 15;
+constexpr uint32_t kCodeConstantLightPosition = 0, kCodeConstantLightDiffuse = 1;
 
 constexpr uint64_t kKeepEvery = 600;  // frames
 constexpr uint64_t kKeepLast = 4800;
 constexpr size_t kMaxMeshDraws = 16000;           // a kept frame's (ngl_vk takes 16384)
 constexpr uint32_t kMaxMeshIndices = 0x60000u;    // one draw's; more is taken as a misread
 constexpr uint32_t kPictureWidth = 1280, kPictureHeight = 720;  // the game's output (its 3D is 1024 x 600, stretched)
+// [cod4-r13] the size ngl_vk draws at (PictureSize); kPictureWidth x kPictureHeight stays the game's 2D screen and the
+// size the check runs (no window) draw at
+uint32_t g_picture_width = kPictureWidth, g_picture_height = kPictureHeight;
 // The world's light is made halved (LightmapFor); 2 restores it (the lm_r0c0 pixel shaders have no factor of their own)
 constexpr float kLightScale = 2.0f;
 
@@ -248,6 +329,32 @@ struct MeshDraw {
   std::array<uint32_t, 6> lighting_fetch{};
   float lighting_place[4] = {};
   bool lighting_place_from_packet = false;  // from the command buffer's packet (else the device's copy of c8)
+  // [cod4-r7] 2026-11-24: a draw whose corners may change from frame to frame at the same address (the skinned
+  // models, surface type 4: the soldiers, the player's arms): its corners are copied at the game's draw, in the
+  // order its triangles use them, and drawn as this frame's corners (MeshFor), never kept as a mesh
+  bool dynamic = false;
+  std::vector<float> own_corners;
+  // [cod4-r9] 2026-11-24: the draw's index range and base vertex (to find it again at its omni light pass), and up to
+  // two omni lights from those passes, as ngl_vk_mesh_draw's point_light takes them (place, 1 / radius, color)
+  uint32_t first_index = 0, index_count = 0, base_vertex = 0;
+  uint32_t omni_count = 0;
+  float omni[2][8] = {};
+  // [cod4-r9] 2026-11-24: the sky's draw: drawn as a box of its cube's faces around the eye (SetMeshes), not as itself
+  bool sky = false;
+  TextureRef cube;
+};
+
+// [cod4-r8] 2026-11-24: one corner of the 2D, as ngl_vk_vertex takes it, and one 2D draw: its corners in the frame's
+// list, its texture (the device's sampler 0 at the draw: the 2D materials' color map) and its state word 0 (the blend)
+struct Corner2D {
+  float x = 0, y = 0, u = 0, v = 0;
+  uint32_t color = 0xFFFFFFFFu;  // 0xAARRGGBB
+};
+struct Draw2D {
+  TextureRef texture;
+  uint32_t first = 0, count = 0;
+  uint32_t state0 = 0x800u;
+  uint32_t material = 0;
 };
 
 struct Frame {
@@ -291,12 +398,47 @@ struct Frame {
   uint32_t model_light_from_packet = 0;  // of them, with the place from the command buffer's packet
   int model_light_samples = 0;           // logged in full
   bool quiet = false;  // [waw-decomp-cod4] 2026-11-11 round 6: drawn for the window alone: no samples logged
+  // [cod4-r7] 2026-11-24: the lit draws of surface types 2 to 4 (the brush models, the models, the skinned models)
+  // kept, by surface type; and every lit draw left out as misread, by (surface type, stride, vertex declaration
+  // type), so a run tells which corners a kind has
+  std::map<uint32_t, uint32_t> r7_kept;
+  std::map<std::tuple<uint32_t, uint32_t, uint32_t>, uint32_t> r7_misread;
+  // [cod4-r8] 2026-11-24: the 2D (SideTess): its corners and draws; every tess draw by (view mode, technique type);
+  // the 2D's viewports (x, y, width, height) and materials; draws misread or past the room; the corners' extent
+  std::vector<Corner2D> corners_2d;
+  std::vector<Draw2D> draws_2d;
+  std::map<std::pair<uint32_t, uint32_t>, uint32_t> tess_kinds;
+  std::map<std::array<int32_t, 4>, uint32_t> viewports_2d;
+  std::map<uint32_t, uint32_t> materials_2d;
+  uint32_t misread_2d = 0, dropped_2d = 0, tess_state = 0;
+  // [cod4-r9] omni light passes: attached to a lit draw, with no lit draw found, past two on one draw
+  uint32_t omni_attached = 0, omni_unmatched = 0, omni_full = 0;
+  uint32_t sky_kept = 0, sky_no_cube = 0;  // [cod4-r9] the sky's draws kept as the box, and those without a cube
+  // [cod4-r10] 2D draws left out: the post-effect copy of the scene, and the cinematic's full-screen quad
+  uint32_t postfx_2d = 0, cinematic_2d = 0;
+  float min_x_2d = 0, max_x_2d = 0, min_y_2d = 0, max_y_2d = 0;
+  float screen_2d[2] = {0, 0};  // the last 2D draw's viewport size
+  int samples_2d = 0;
 
   void Clear() {
     meshes.clear();
     seen = no_state = not_world = misread = no_matrix = dropped = as_rows = model_draws = model_placed = 0;
     model_light_found = model_light_from_packet = 0;
     model_light_samples = 0;
+    r7_kept.clear();
+    r7_misread.clear();
+    corners_2d.clear();
+    draws_2d.clear();
+    tess_kinds.clear();
+    viewports_2d.clear();
+    materials_2d.clear();
+    misread_2d = dropped_2d = tess_state = 0;
+    omni_attached = omni_unmatched = omni_full = 0;
+    sky_kept = sky_no_cube = 0;
+    postfx_2d = cinematic_2d = 0;
+    min_x_2d = max_x_2d = min_y_2d = max_y_2d = 0;
+    screen_2d[0] = screen_2d[1] = 0;
+    samples_2d = 0;
     sky_materials.clear();
     kind_materials.clear();
     kind_techniques.clear();
@@ -357,18 +499,61 @@ float GpuF32(const uint8_t* base, uint32_t physical) {
   return f;
 }
 
+// [cod4-r13] 2026-11-24: a 16-bit half float (sign, 5 exponent bits, 10 mantissa bits). IW3's texture coordinate
+// halves (Vec2PackTexCoords) are this form for every value a texture coordinate takes (0.5 is 0x3800, 2 is 0x4000).
+float HalfToFloat(uint32_t h) {
+  const uint32_t sign = (h & 0x8000u) << 16, exponent = (h >> 10) & 0x1Fu, mantissa = h & 0x3FFu;
+  uint32_t bits;
+  if (exponent == 0) {
+    if (mantissa == 0) {
+      bits = sign;
+    } else {  // a subnormal: m x 2^-24
+      const float f = std::ldexp(static_cast<float>(mantissa), -24);
+      std::memcpy(&bits, &f, 4);
+      bits |= sign;
+    }
+  } else if (exponent == 31) {
+    bits = sign | 0x7F800000u | (mantissa << 13);
+  } else {
+    bits = sign | ((exponent + 112u) << 23) | (mantissa << 13);
+  }
+  float f;
+  std::memcpy(&f, &bits, 4);
+  return f;
+}
+
+// [cod4-r13] a corner's texture coordinate: the world's (44 bytes) two floats at +0x14; a model's (32 bytes) one word
+// at +0x14, u its high half and v its low (cod4_native_model_uv_halves)
+void TexCoordAt(const uint8_t* base, uint32_t v, bool model, float* u_out, float* v_out) {
+  if (model && REXCVAR_GET(cod4_native_model_uv_halves)) {
+    const uint32_t word = GpuU32(base, v + 0x14u);
+    *u_out = HalfToFloat(word >> 16);
+    *v_out = HalfToFloat(word & 0xFFFFu);
+    return;
+  }
+  *u_out = GpuF32(base, v + 0x14u);
+  *v_out = GpuF32(base, v + 0x18u);
+}
+
 // A 16-bit index of the GPU's memory (big-endian, the high half of its word when it starts the word).
 uint32_t GpuU16(const uint8_t* base, uint32_t physical) {
   return (GpuU32(base, physical & ~3u) >> ((physical & 2u) ? 0u : 16u)) & 0xFFFFu;
 }
 
-// A guest address on the host: the console's physical memory (0xA0000000 to 0xDFFFFFFF, where the device, the heaps'
-// buffers and the textures are) through the host's whole mapping of it (a page of the guest's own view of it can be
-// unmapped, as Call of Duty 3's side138 found), the rest as it is.
+// A guest address on the host: the console's 0xA0000000 view of its physical memory (the device, the heaps' buffers
+// and the textures) through the host's whole mapping of it (a page of the guest's own view of it can be unmapped, as
+// Call of Duty 3's side138 found); everything else through the guest's own view.
+// [cod4-r10] 2026-11-24: the 0xE0000000 view is the same physical memory a page further on (its address 0xE0000000
+// + x is physical x + 0x1000). The SDK maps base + 0xE0000000 there itself where it can, and where the host's pages
+// are bigger than 4 KB (Windows, macOS on arm64) adds that page back on each read: base + addr +
+// rex::memory::detail::PhysicalHostOffset(addr), as GuestPtr reads it. Round 9 added that offset to the physical
+// mapping instead, which was a page short on Linux and fed multiplayer's draws the wrong bytes (a dark picture, run
+// cod4r10).
 const uint8_t* Host(const uint8_t* base, uint32_t addr) {
   if (addr >= 0xA0000000u && addr < 0xE0000000u) {
     if (const uint8_t* physical = PhysicalBase()) return physical + (addr & 0x1FFFFFFFu);
   }
+  if (addr >= 0xE0000000u) return base + addr + rex::memory::detail::PhysicalHostOffset(addr);
   return base + addr;
 }
 
@@ -598,8 +783,29 @@ int FindSurface(const uint8_t* base, uint32_t first_index, uint32_t stream_offse
 }
 
 // Keeps one lit world draw: everything the native picture needs is copied or noted now, at the game's own draw.
+// [cod4-r7] 2026-11-24: one corner as ngl_vk takes it (MeshFor's layout): position, texture coordinate, lightmap
+// coordinate (none on a model's 32-byte corner), color
+constexpr size_t kCornerFloats = 11;  // NGL_VK_CORNER_FLOATS (checked where ngl_vk is built in)
+#if defined(COD4_NGL_VK)
+static_assert(kCornerFloats == NGL_VK_CORNER_FLOATS, "ngl_vk's corner changed");
+#endif
+void CornerAt(const uint8_t* base, uint32_t vertices, uint32_t stride, bool model, uint32_t vertex_index,
+              float out[kCornerFloats]) {
+  const uint32_t v = vertices + vertex_index * stride;
+  const uint32_t color = GpuU32(base, v + 0x10u);  // 0xAARRGGBB
+  float color_bits;
+  std::memcpy(&color_bits, &color, 4);  // as ngl_vk takes it: bytes blue, green, red, alpha
+  float tu, tv;  // [cod4-r13]
+  TexCoordAt(base, v, model, &tu, &tv);
+  const float corner[kCornerFloats] = {
+      GpuF32(base, v), GpuF32(base, v + 4u), GpuF32(base, v + 8u), tu, tv,
+      model ? 0.0f : GpuF32(base, v + 0x1Cu), model ? 0.0f : GpuF32(base, v + 0x20u), color_bits, 0.0f, 0.0f, 0.0f};
+  std::memcpy(out, corner, sizeof corner);
+}
+
 void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_t device, uint32_t base_vertex,
-                   uint32_t first_index, uint32_t index_count, uint32_t technique_type, Frame& f, bool model) {
+                   uint32_t first_index, uint32_t index_count, uint32_t technique_type, Frame& f, bool model,
+                   uint32_t surface_type) {
   if (f.meshes.size() >= kMaxMeshDraws) {
     ++f.dropped;
     return;
@@ -613,11 +819,17 @@ void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_
       stride != (model ? kModelStride : kWorldStride) || index_count == 0 || index_count > kMaxMeshIndices ||
       index_count % 3 != 0) {
     ++f.misread;
+    // [cod4-r7] 2026-11-24: which corners the kinds not drawn before have
+    if (surface_type >= 2)
+      ++f.r7_misread[{surface_type, stride, LoadU32(base, state + kStateStream0 - 4u)}];
     return;
   }
   MeshDraw m;
   m.material = material;
   m.technique_type = technique_type;
+  m.first_index = first_index;
+  m.index_count = index_count;
+  m.base_vertex = base_vertex;
   m.stride = stride;
   m.vertices = (LoadU32(base, vertex_buffer + kBufferData) & 0x1FFFFFFCu) + offset;
   const bool wide = (LoadU32(base, index_buffer) >> 31) != 0;
@@ -639,6 +851,13 @@ void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_
   m.key = key;
   m.model = model;
   if (!model) m.surface = FindSurface(base, first_index, offset, m.lightmap_index, m.probe_index);
+  // [cod4-r7] 2026-11-24: a skinned model's corners now, while they are the ones this draw uses
+  if (surface_type == kSkinnedModelSurfaces) {
+    m.dynamic = true;
+    m.own_corners.resize(size_t(index_count) * kCornerFloats);
+    for (uint32_t i = 0; i < index_count; ++i)
+      CornerAt(base, m.vertices, m.stride, model, m.used[i], &m.own_corners[size_t(i) * kCornerFloats]);
+  }
   // the pass's arguments: where the world-view-projection goes, and which samplers take the color map and the
   // lightmaps
   const uint32_t argument_count = uint32_t(LoadU8(base, pass + kPassArgumentCounts)) +
@@ -684,8 +903,40 @@ void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_
     ++f.no_matrix;
     return;
   }
+  const bool color_fallback = color_sampler < 0;  // [cod4-r13]
   if (color_sampler < 0) color_sampler = first_sampler;
   if (color_sampler >= 0) m.color = BoundTexture(base, state, static_cast<uint32_t>(color_sampler));
+  // [cod4-r13] 2026-11-24: after the models' texture coordinates (cod4r13), flat purple is left on some model and
+  // world surfaces (walls, trims, the gun) whatever their coordinates: one color over the whole surface, as a flat
+  // normal map's would be. Logged once a material: the draws whose color map was not found by its semantic (the first
+  // material sampler taken instead), with the pass's arguments and the material's texture table (name hash, semantic)
+  // and the format of what was taken, to see which texture the color map is.
+  const bool tiny_color = m.color.texture != 0 && (m.color.fetch[2] & 0x1FFFu) < 8u && ((m.color.fetch[2] >> 13) & 0x1FFFu) < 8u;
+  // or a DXN (two-channel) texture taken, or one of 8 x 8 texels or fewer (one color)
+  if ((color_fallback || (m.color.fetch[1] & 0x3Fu) == 49u || tiny_color) && !f.quiet) {
+    static std::map<uint32_t, int> logged;
+    if (logged.size() < 24 && logged.emplace(material, 1).second) {
+      std::string args, table;
+      for (uint32_t i = 0; i < argument_count && i < 24 && IsGuestData(arguments); ++i) {
+        char entry[40];
+        std::snprintf(entry, sizeof entry, " %u:%u:%08X", LoadU16(base, arguments + 8u * i),
+                      LoadU16(base, arguments + 8u * i + 2u), LoadU32(base, arguments + 8u * i + 4u));
+        args += entry;
+      }
+      for (uint32_t t = 0; t < texture_count && t < 16 && IsGuestData(textures); ++t) {
+        char entry[48];
+        std::snprintf(entry, sizeof entry, " %08X/s%u/%u", LoadU32(base, textures + 12u * t),
+                      LoadU8(base, textures + 12u * t + 7u), LoadU8(base, textures + 12u * t + 6u));
+        table += entry;
+      }
+      REXLOG_INFO("cod4: native side: r13 color map check ({}): material \"{}\" technique type {} ({}), "
+                  "arguments{}; textures (hash/semantic/sampler state){}; taken sampler {} texture {:08X} format {} "
+                  "{}x{}", color_fallback ? "not found by its semantic" : tiny_color ? "a texture of 8 x 8 or fewer taken" : "a DXN texture taken",
+                  NameOf(base, material), technique_type, model ? "model" : "world", args, table,
+                  color_sampler, m.color.texture, m.color.fetch[1] & 0x3Fu, (m.color.fetch[2] & 0x1FFFu) + 1,
+                  ((m.color.fetch[2] >> 13) & 0x1FFFu) + 1);
+    }
+  }
   if (primary_sampler >= 0) m.lightmap_primary = BoundTexture(base, state, static_cast<uint32_t>(primary_sampler));
   if (secondary_sampler >= 0)
     m.lightmap_secondary = BoundTexture(base, state, static_cast<uint32_t>(secondary_sampler));
@@ -794,11 +1045,14 @@ void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_
       const uint32_t v = m.vertices + m.used[0] * stride;
       REXLOG_INFO("cod4: native side: model sample: material \"{}\", technique type {}, {} indices, color map "
                   "{:08X} (sampler {}), matrix code constant {} at c{}, world matrix at c{} (moves by {:.1f} {:.1f} "
-                  "{:.1f}); first corner {:.2f} {:.2f} {:.2f}, color {:08X}, texture coordinate {:.4f} {:.4f}",
+                  "{:.1f}); first corner {:.2f} {:.2f} {:.2f}, color {:08X}, texture coordinate {:.4f} {:.4f} (words at "
+                  "+0x14 {:08X}, +0x18 {:08X}, +0x1C {:08X}; as two halves of +0x14: {:.4f} {:.4f})",
                   NameOf(base, material), technique_type, index_count, m.color.texture, color_sampler,
                   m.matrix_index, matrix_register, world_register, m.world_rows[0][3], m.world_rows[1][3],
                   m.world_rows[2][3], GpuF32(base, v), GpuF32(base, v + 4u), GpuF32(base, v + 8u),
-                  GpuU32(base, v + 0x10u), GpuF32(base, v + 0x14u), GpuF32(base, v + 0x18u));
+                  GpuU32(base, v + 0x10u), GpuF32(base, v + 0x14u), GpuF32(base, v + 0x18u),
+                  GpuU32(base, v + 0x14u), GpuU32(base, v + 0x18u), GpuU32(base, v + 0x1Cu),
+                  HalfToFloat(GpuU32(base, v + 0x14u) >> 16), HalfToFloat(GpuU32(base, v + 0x14u) & 0xFFFFu));
     }
   } else if (!f.quiet && f.samples < 6) {  // the first ones of a kept frame in full (08:55: 6, was 3; round 6: saved)
     ++f.samples;
@@ -873,6 +1127,7 @@ void KeepWorldDraw(const uint8_t* base, uint32_t state, uint32_t source, uint32_
                 clip[2], clip[3], m.sun_position[0], m.sun_position[1], m.sun_position[2], m.sun_diffuse[0],
                 m.sun_diffuse[1], m.sun_diffuse[2]);
   }
+  if (surface_type >= 2) ++f.r7_kept[surface_type];  // [cod4-r7] 2026-11-24
   f.meshes.push_back(std::move(m));
 }
 
@@ -1491,11 +1746,83 @@ void DecodeLevelsFetch(const uint8_t* base, const std::array<uint32_t, 6>& fetch
 
 int g_state = 0;  // 0 not started, 1 ready, -1 failed (no more tries)
 
+// [cod4-r13] 2026-11-24: the largest 16:9 size inside width x height (whole pixels; within 1% of 16:9 kept as it is)
+void FitSixteenByNine(uint32_t* width, uint32_t* height) {
+  if (*width == 0 || *height == 0) return;
+  const uint64_t w = *width, h = *height;
+  if (w * 9 > h * 16) {  // wider than 16:9: the height decides
+    const uint32_t fitted = static_cast<uint32_t>(h * 16 / 9);
+    if (w * 100 > uint64_t{fitted} * 101) *width = fitted;
+  } else if (w * 9 < h * 16) {  // taller: the width decides
+    const uint32_t fitted = static_cast<uint32_t>(w * 9 / 16);
+    if (h * 100 > uint64_t{fitted} * 101) *height = fitted;
+  }
+}
+
+// [cod4-r13] the picture's size: cod4_native_resolution when it names one, else (with cod4_native_vulkan) the window's
+// drawable size, else 1280x720; fitted to 16:9 and kept within 640x360 to 7680x4320. from says which.
+void PictureSize(uint32_t* width, uint32_t* height, const char** from) {
+  uint32_t w = 0, h = 0;
+  *from = "cod4_native_resolution";
+  const std::string asked = REXCVAR_GET(cod4_native_resolution);
+  if (asked == "720p") {
+    w = 1280, h = 720;
+  } else if (asked == "1080p") {
+    w = 1920, h = 1080;
+  } else if (asked == "1440p") {
+    w = 2560, h = 1440;
+  } else if (asked == "2160p" || asked == "4k" || asked == "4K") {
+    w = 3840, h = 2160;
+  } else if (!asked.empty()) {
+    unsigned a = 0, b = 0;
+    if (std::sscanf(asked.c_str(), "%ux%u", &a, &b) == 2 || std::sscanf(asked.c_str(), "%uX%u", &a, &b) == 2) {
+      w = a;
+      h = b;
+    }
+  }
+  if (!w || !h) {
+    *from = "the window";
+    if (!NativeVulkanOn() || !WindowPixelSize(&w, &h)) {
+      w = kPictureWidth;
+      h = kPictureHeight;
+      *from = NativeVulkanOn() ? "no window size yet" : "the check's fixed size";
+    }
+  }
+  FitSixteenByNine(&w, &h);
+  w = std::clamp(w, 640u, 7680u);
+  h = std::clamp(h, 360u, 4320u);
+  *width = w;
+  *height = h;
+}
+uint32_t g_2d_failures = 0;  // [cod4-r8b] frames whose 2D failed to draw (logged up to 8)
+
 struct CachedTexture {
   std::array<uint32_t, 6> fetch{};
   uint32_t id = 0;  // ngl_vk's, 0 when it couldn't be decoded
 };
 std::unordered_map<uint32_t, CachedTexture> g_textures;  // by the Direct3D texture's address
+
+// [cod4-r14] 2026-11-24: whether two fetch constants name the same texels: the address, format, endian, size, tiling
+// and pitch, signs, swizzle, levels and mip address, but not the sampler state (clamping, filters, LOD bias,
+// anisotropy) that the same texture is bound with by different materials. Run cod4r14 found ngl_vk's 2048 textures
+// all used with 171 kept here: each texture bound with two sampler states was made again at every change, one
+// ngl_vk texture more each time (ngl_vk gives none back until ngl_vk_forget), until ngl_vk refused every new one and
+// those surfaces were drawn without their texture (the flat purple left after round 13).
+bool SameTexture(const std::array<uint32_t, 6>& a, const std::array<uint32_t, 6>& b) {
+  constexpr uint32_t kWord0 = 0xFFC003FFu;  // tiled, pitch, signs, type (not the clamps 10-18 or rf mode 19-21)
+  constexpr uint32_t kWord3 = 0x00001FFEu;  // the swizzle (not the filters)
+  constexpr uint32_t kWord4 = 0x000003FCu;  // the first and last level (not the LOD bias or anisotropy)
+  constexpr uint32_t kWord5 = 0x1FFFFE00u;  // the mip address (physical), packed mips, dimension (not the border or aniso bias)
+  // [cod4-r16] 2026-11-25: the base address (word 1's top 20 bits) and the mip address (word 5's) are compared as the
+  // texels are read, through physical memory (& 0x1FFFFFFF), not by their top three bits: run cod4r16 found one
+  // texture (A4DB6838, SP) bound by turns at 04E1B000 and A4E1B000, the same memory through the 0xA0000000 mirror,
+  // made again at every turn (about 30 a second), each one more ngl_vk texture until the forget at three quarters.
+  // Word 3's other difference (bit 24, the mip filter) is sampler state and was already left out.
+  constexpr uint32_t kWord1 = 0x1FFFFFFFu;  // format, endian, request size, stacked, clamp policy, base address
+  return (a[0] & kWord0) == (b[0] & kWord0) && (a[1] & kWord1) == (b[1] & kWord1) && a[2] == b[2] &&
+         (a[3] & kWord3) == (b[3] & kWord3) &&
+         (a[4] & kWord4) == (b[4] & kWord4) && (a[5] & kWord5) == (b[5] & kWord5);
+}
 std::map<std::string, int> g_failed;                     // why textures weren't decoded, and how many
 constexpr size_t kMaxTextures = 1500;                    // ngl_vk has room for 2048
 std::unordered_map<uint64_t, uint32_t> g_meshes;         // the meshes made so far, by MeshDraw::key
@@ -1529,8 +1856,23 @@ double MillisecondsSince(std::chrono::steady_clock::time_point start) {
   return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
 }
 
+// [cod4-r9] 2026-11-24: the sky's cube as six 2D textures (SkyFacesFor) and the box's six faces (SkyBoxFace)
+struct SkyFaces {
+  uint32_t texture = 0;
+  std::array<uint32_t, 6> fetch{};
+  uint32_t faces[6] = {};
+  bool tried = false;
+};
+std::map<uint32_t, SkyFaces> g_skies;  // [cod4-r14] by the cube's address: two skies drawn by turns kept both
+uint32_t g_sky_box[6] = {};
+// how far from the eye the box's faces are: the 360's projection has no far plane (its z register is the near plane's
+// 4 alone, run cod4r8b: "depth far away 0.0000"), so the box only has to be past the world's farthest corner
+constexpr float kSkyBoxReach = 262144.0f;
+
 void ForgetAll() {
   ngl_vk_forget();
+  g_skies.clear();
+  for (uint32_t& face : g_sky_box) face = 0;
   g_textures.clear();
   g_meshes.clear();
   g_lightmaps.clear();
@@ -1549,11 +1891,35 @@ uint32_t InOrderMesh() {
   return g_in_order;
 }
 
+// [cod4-r14] 2026-11-24: the material whose texture TextureFor is making (logged with a flat or refused texture)
+uint32_t g_texture_material = 0;
+const uint8_t* g_texture_base = nullptr;
+
 // A draw's texture as an ngl_vk texture, with the game's own smaller levels when they can be read; 0 for none.
+uint64_t g_textures_remade = 0, g_textures_new = 0;  // [cod4-r16] since the last forget
 uint32_t TextureFor(const uint8_t* base, const TextureRef& ref) {
   if (ref.texture == 0) return 0;
   auto found = g_textures.find(ref.texture);
-  if (found != g_textures.end() && found->second.fetch == ref.fetch) return found->second.id;
+  if (found != g_textures.end() && SameTexture(found->second.fetch, ref.fetch)) return found->second.id;  // [cod4-r14]
+  // [cod4-r16] 2026-11-24: cod4r15 still forgets every ~700 frames with ngl_vk's textures at three quarters (1538 of
+  // 2048): a texture made again under the same address (its fetch constant differs past SameTexture) leaks the old
+  // one in ngl_vk (no per-texture free). Each one is counted, and the first 24 logged with both fetch constants.
+  if (found != g_textures.end()) {
+    ++g_textures_remade;
+    static int remade_logged = 0;
+    if (remade_logged < 24) {
+      ++remade_logged;
+      const auto& was = found->second.fetch;
+      REXLOG_INFO("cod4: native side: r16 texture {:08X} made again: was {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}, now "
+                  "{:08X} {:08X} {:08X} {:08X} {:08X} {:08X} (differs {:08X} {:08X} {:08X} {:08X} {:08X} {:08X})",
+                  ref.texture, was[0], was[1], was[2], was[3], was[4], was[5], ref.fetch[0], ref.fetch[1],
+                  ref.fetch[2], ref.fetch[3], ref.fetch[4], ref.fetch[5], was[0] ^ ref.fetch[0],
+                  was[1] ^ ref.fetch[1], was[2] ^ ref.fetch[2], was[3] ^ ref.fetch[3], was[4] ^ ref.fetch[4],
+                  was[5] ^ ref.fetch[5]);
+    }
+  } else {
+    ++g_textures_new;
+  }
   if (g_textures.size() >= kMaxTextures) g_forget = true;  // forgotten before the next frame
   CachedTexture& cached = g_textures[ref.texture];
   cached.fetch = ref.fetch;
@@ -1562,17 +1928,204 @@ uint32_t TextureFor(const uint8_t* base, const TextureRef& ref) {
   uint32_t width = 0, height = 0;
   std::string why;
   if (DecodeFetch(base, ref.fetch, bgra, width, height, why)) {
+    // [cod4-r14] 2026-11-24: the flat purple left after round 13 is one color over a whole surface although the color
+    // map is the one the material names (cod4r13b's check): a texture of 16 x 16 or more that decodes to one color
+    // (every channel within 8) is logged, with its fetch constant and the material, up to 24 of them
+    static int flat_logged = 0;
+    if (flat_logged < 24 && width * height >= 256 && bgra.size() >= size_t{width} * height * 4) {
+      uint8_t low[4] = {255, 255, 255, 255}, high[4] = {0, 0, 0, 0};
+      uint64_t sum[4] = {};
+      for (size_t i = 0; i + 3 < bgra.size(); i += 4)
+        for (int k = 0; k < 4; ++k) {
+          low[k] = std::min(low[k], bgra[i + k]);
+          high[k] = std::max(high[k], bgra[i + k]);
+          sum[k] += bgra[i + k];
+        }
+      if (high[0] - low[0] <= 8 && high[1] - low[1] <= 8 && high[2] - low[2] <= 8) {
+        ++flat_logged;
+        const uint64_t n = bgra.size() / 4;
+        REXLOG_INFO("cod4: native side: r14 flat texture {:08X} {}x{} format {} endian {} {} packed {} swizzle {:03X}: "
+                    "one color, red {} green {} blue {} alpha {}; fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}; "
+                    "material \"{}\"", ref.texture, width, height, ref.fetch[1] & 0x3Fu, (ref.fetch[1] >> 6) & 3u,
+                    (ref.fetch[0] >> 31) ? "tiled" : "linear", (ref.fetch[5] >> 11) & 1u, (ref.fetch[3] >> 1) & 0xFFFu,
+                    sum[2] / n, sum[1] / n, sum[0] / n, sum[3] / n, ref.fetch[0], ref.fetch[1], ref.fetch[2],
+                    ref.fetch[3], ref.fetch[4], ref.fetch[5],
+                    g_texture_material && g_texture_base ? NameOf(g_texture_base, g_texture_material) : std::string());
+      }
+    }
     std::vector<std::vector<uint8_t>> levels;
     DecodeLevelsFetch(base, ref.fetch, levels);
     std::vector<const void*> pictures{bgra.data()};
     for (const auto& level : levels) pictures.push_back(level.data());
     cached.id = ngl_vk_texture_levels(pictures.data(), static_cast<uint32_t>(pictures.size()), width, height);
-    if (cached.id == 0) why = "ngl_vk has no room";
+    if (cached.id == 0) {
+      why = "ngl_vk has no room";
+      // [cod4-r14] each refusal, up to 16: ngl_vk's counts then, and the texture's size and levels
+      static int refused_logged = 0;
+      if (refused_logged++ < 16) {
+        uint32_t textures = 0, texture_room = 0, corners = 0, corner_room = 0;
+        ngl_vk_room(&textures, &texture_room, &corners, &corner_room);
+        REXLOG_INFO("cod4: native side: r14 texture {:08X} {}x{} ({} levels) refused by ngl_vk: {} of {} textures, {} "
+                    "of {} corners; {} kept here", ref.texture, width, height, pictures.size(), textures,
+                    texture_room, corners, corner_room, g_textures.size());
+      }
+    }
   }
   if (cached.id == 0 && g_failed[why]++ == 0)
     REXLOG_INFO("cod4: native side: texture {:08X} not drawn ({}); its color alone is (further ones not logged)",
                 ref.texture, why);
   return cached.id;
+}
+
+// [cod4-r9] 2026-11-24: the sky. The game draws its sky surfaces with the sky material's own color map, a cube,
+// read by each pixel's direction from the eye (the PC copy's wc_sky shaders: the vertex shader hands the world
+// matrix's position on as the cube's direction, and the world matrix of the world's surfaces moves them by the eye's
+// place, so that is the direction from the eye in world axes; the pixel shader is the cube's color alone, no fog;
+// World at War's mod tools' sky.tech: color_only, skyMapSampler = the material's color map). ngl_vk reads cubes only
+// for reflections, so the cube's six faces are made into 2D textures and drawn on a box around the eye, far past the
+// world: where nothing nearer is drawn, the box shows the cube as the game's sky shows it.
+
+// The sky material's own cube (fetch dword 5 bits 9-10: 3 a cube): the draw's color map when it is one, else the
+// first cube among the textures its pass binds from the material (the state's samplers); none when the material binds
+// none. Not the device's other samplers: round 9's first run (cod4r9-sp) took sampler 1's cube there, a 64 x 64
+// reflection probe (B216B614, B216B6F8: the images 0x4C apart that round 5 saw in samplers 1 and 2). What each
+// place holds is logged once (the sky's first draw).
+TextureRef FindSkyCube(const uint8_t* base, uint32_t state, uint32_t device, const TextureRef& color) {
+  auto is_cube = [](const TextureRef& ref) { return ref.texture != 0 && ((ref.fetch[5] >> 9) & 3u) == 3u; };
+  static bool logged = false;
+  if (!logged) {
+    logged = true;
+    std::string text;
+    char entry[96];
+    std::snprintf(entry, sizeof entry, "color map %08X dimension %u", color.texture, (color.fetch[5] >> 9) & 3u);
+    text += entry;
+    for (uint32_t sampler = 0; sampler < 16; ++sampler) {
+      const TextureRef own = BoundTexture(base, state, sampler);
+      if (own.texture != 0) {
+        std::snprintf(entry, sizeof entry, "; material sampler %u: %08X %ux%u dimension %u", sampler, own.texture,
+                      (own.fetch[2] & 0x1FFFu) + 1, ((own.fetch[2] >> 13) & 0x1FFFu) + 1, (own.fetch[5] >> 9) & 3u);
+        text += entry;
+      }
+      const TextureRef bound = DeviceTexture(base, device, sampler);
+      if (bound.texture != 0) {
+        std::snprintf(entry, sizeof entry, "; device sampler %u: %08X %ux%u dimension %u", sampler, bound.texture,
+                      (bound.fetch[2] & 0x1FFFu) + 1, ((bound.fetch[2] >> 13) & 0x1FFFu) + 1,
+                      (bound.fetch[5] >> 9) & 3u);
+        text += entry;
+      }
+    }
+    REXLOG_INFO("cod4: native side: the sky's draw: {}", text);
+  }
+  if (is_cube(color)) return color;
+  for (uint32_t sampler = 0; sampler < 26; ++sampler) {
+    const TextureRef own = BoundTexture(base, state, sampler);
+    if (is_cube(own)) return own;
+  }
+  return TextureRef{};
+}
+
+// The cube's six faces as 2D textures, top level only, in Direct3D's order (+x, -x, +y, -y, +z, -z): on the Xenos a
+// cube is six 2D faces one after another, each laid out (and tiled) as a 2D texture of its size, its pitch and rows
+// rounded up to 32 blocks when tiled, and each face starting on a 4 KB boundary (Xenia's texture layout: array
+// slices and cube faces aligned to xenos::kTextureSubresourceAlignmentBytes). Null when it can't be read.
+const SkyFaces* SkyFacesFor(const uint8_t* base, const TextureRef& ref) {
+  if (ref.texture == 0) return nullptr;
+  // [cod4-r14] 2026-11-24: one entry a cube (round 9 kept one, and made six faces again at each change: cod4r13 drew
+  // two skies a frame from frame 2400 on)
+  if (auto found = g_skies.find(ref.texture); found != g_skies.end() && SameTexture(found->second.fetch, ref.fetch))
+    return found->second.faces[0] != 0 ? &found->second : nullptr;
+  if (g_skies.size() >= 8) g_forget = true;  // forgotten before the next frame
+  SkyFaces& g_sky = g_skies[ref.texture];
+  g_sky = SkyFaces{};
+  g_sky.tried = true;
+  g_sky.texture = ref.texture;
+  g_sky.fetch = ref.fetch;
+  const uint32_t format = ref.fetch[1] & 0x3Fu, physical = ref.fetch[1] & 0x1FFFF000u;
+  const uint32_t width = (ref.fetch[2] & 0x1FFFu) + 1, height = ((ref.fetch[2] >> 13) & 0x1FFFu) + 1;
+  const bool tiled = (ref.fetch[0] >> 31) != 0;
+  const uint32_t pitch = ((ref.fetch[0] >> 22) & 0x1FFu) * 32;
+  Format f;
+  std::string why;
+  uint32_t face_bytes = 0;
+  double sum[6][3] = {};
+  if (!FormatOf(format, &f)) {
+    why = "format " + std::to_string(format);
+  } else if (width != height || width <= 16 || physical == 0) {
+    why = "not a square face past 16 texels, or no address";  // a small cube's faces share packed tiles
+  } else {
+    const uint32_t blocks = (width + f.block - 1) / f.block;
+    uint32_t pitch_blocks = std::max(pitch / f.block, blocks), rows = blocks;
+    if (tiled) pitch_blocks = (pitch_blocks + 31) & ~31u, rows = (rows + 31) & ~31u;
+    face_bytes = static_cast<uint32_t>((static_cast<size_t>(pitch_blocks) * rows * f.bytes + 4095) & ~size_t{4095});
+    for (uint32_t face = 0; face < 6; ++face) {
+      std::array<uint32_t, 6> fetch = ref.fetch;
+      fetch[1] = (fetch[1] & ~0x1FFFF000u) | ((physical + face * face_bytes) & 0x1FFFF000u);
+      fetch[5] &= ~(1u << 11);  // the top level alone: not read as a packed tile
+      std::vector<uint8_t> bgra;
+      uint32_t w = 0, h = 0;
+      if (!DecodeFetch(base, fetch, bgra, w, h, why)) break;
+      for (size_t i = 0; i < bgra.size(); i += 4)
+        for (int k = 0; k < 3; ++k) sum[face][k] += bgra[i + k];
+      for (int k = 0; k < 3; ++k) sum[face][k] /= std::max<double>(1.0, double(w) * h);
+      if (REXCVAR_GET(cod4_debug_native_side) && !g_folder.empty()) {
+        char name[64];
+        std::snprintf(name, sizeof name, "ngl-side-sky-%08X-%u.ppm", ref.texture, face);
+        WritePpm(g_folder / name, bgra.data(), size_t(w) * 4, w, h);
+      }
+      g_sky.faces[face] = ngl_vk_texture(bgra.data(), w, h);
+      if (g_sky.faces[face] == 0) {
+        why = "ngl_vk has no room";
+        g_forget = true;
+        break;
+      }
+    }
+  }
+  const bool made = g_sky.faces[5] != 0;
+  if (!made) g_sky.faces[0] = 0;
+  REXLOG_INFO("cod4: native side: the sky's cube {:08X} (fetch {:08X} {:08X} {:08X} {:08X} {:08X} {:08X}): {}x{}, "
+              "format {}, {}, faces {} bytes apart; {}; the faces' averages (blue green red) {:.0f} {:.0f} {:.0f} / "
+              "{:.0f} {:.0f} {:.0f} / {:.0f} {:.0f} {:.0f} / {:.0f} {:.0f} {:.0f} / {:.0f} {:.0f} {:.0f} / {:.0f} "
+              "{:.0f} {:.0f}", ref.texture, ref.fetch[0], ref.fetch[1], ref.fetch[2], ref.fetch[3], ref.fetch[4],
+              ref.fetch[5], width, height, format, tiled ? "tiled" : "linear", face_bytes,
+              made ? "made" : "not made (" + why + ")", sum[0][0], sum[0][1], sum[0][2], sum[1][0], sum[1][1],
+              sum[1][2], sum[2][0], sum[2][1], sum[2][2], sum[3][0], sum[3][1], sum[3][2], sum[4][0], sum[4][1],
+              sum[4][2], sum[5][0], sum[5][1], sum[5][2]);
+  return made ? &g_sky : nullptr;
+}
+
+// One face of the box around the eye, in the eye-relative world axes the view-projection takes (kSkyBoxReach out),
+// each corner's texture coordinate as Direct3D reads a cube in that corner's direction (the face's major axis ma and
+// its sc, tc: u = (sc / |ma| + 1) / 2, v = (tc / |ma| + 1) / 2), white corners. 0 when there is no room.
+uint32_t SkyBoxFace(uint32_t face) {
+  if (g_sky_box[face] != 0) return g_sky_box[face];
+  float corners[4 * NGL_VK_CORNER_FLOATS] = {};
+  const uint16_t indices[6] = {0, 1, 3, 0, 3, 2};
+  const uint32_t axis = face / 2, one = (axis + 1) % 3, two = (axis + 2) % 3;
+  const float sign = (face & 1u) ? -1.0f : 1.0f;
+  for (uint32_t c = 0; c < 4; ++c) {
+    float d[3];
+    d[axis] = sign;
+    d[one] = (c & 1u) ? 1.0f : -1.0f;
+    d[two] = (c & 2u) ? 1.0f : -1.0f;
+    float sc = 0.0f, tc = 0.0f;
+    switch (face) {
+      case 0: sc = -d[2], tc = -d[1]; break;  // +x
+      case 1: sc = d[2], tc = -d[1]; break;   // -x
+      case 2: sc = d[0], tc = d[2]; break;    // +y
+      case 3: sc = d[0], tc = -d[2]; break;   // -y
+      case 4: sc = d[0], tc = -d[1]; break;   // +z
+      default: sc = -d[0], tc = -d[1]; break; // -z
+    }
+    float* corner = &corners[c * NGL_VK_CORNER_FLOATS];
+    for (int k = 0; k < 3; ++k) corner[k] = d[k] * kSkyBoxReach;
+    corner[3] = (sc + 1.0f) * 0.5f;
+    corner[4] = (tc + 1.0f) * 0.5f;
+    const uint32_t white = 0xFFFFFFFFu;
+    std::memcpy(&corner[7], &white, 4);
+  }
+  g_sky_box[face] = ngl_vk_mesh(corners, 4, indices, 6);
+  if (g_sky_box[face] == 0) g_forget = true;
+  return g_sky_box[face];
 }
 
 // The world's lightmap as ngl_vk takes it (its lightmap_scale shading), from the texture the device has bound beside
@@ -1662,6 +2215,17 @@ uint32_t LightmapFor(const uint8_t* base, const TextureRef& ref, int mode) {
 uint32_t MeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built, uint32_t& frame_corners,
                  uint32_t& index_count) {
   frame_corners = index_count = 0;
+  // [cod4-r7] 2026-11-24: a skinned model's corners, copied at its draw: this frame's corners, never kept
+  if (m.dynamic) {
+    const uint32_t count = static_cast<uint32_t>(m.own_corners.size() / NGL_VK_CORNER_FLOATS);
+    if (count == 0 || count > kInOrder || InOrderMesh() == 0) return 0;
+    const uint32_t first = ngl_vk_frame_corners(m.own_corners.data(), count);
+    if (first == 0) return 0;
+    frame_corners = first;
+    index_count = count;
+    ++g_native_cost.frame_corner_draws;
+    return g_in_order;
+  }
   if (auto found = g_meshes.find(m.key); found != g_meshes.end()) return found->second;
   std::unordered_map<uint32_t, uint16_t> local;
   std::vector<float> corners;
@@ -1681,9 +2245,11 @@ uint32_t MeshFor(const uint8_t* base, const MeshDraw& m, uint32_t& built, uint32
       g_corners_not_white += (color & 0xFFFFFFu) != 0xFFFFFFu;
       float color_bits;
       std::memcpy(&color_bits, &color, 4);  // as ngl_vk takes it: bytes blue, green, red, alpha
+      float tu, tv;  // [cod4-r13] the models' packed in one word
+      TexCoordAt(base, v, m.model, &tu, &tv);
       const float corner[NGL_VK_CORNER_FLOATS] = {
           GpuF32(base, v), GpuF32(base, v + 4u), GpuF32(base, v + 8u),   // position
-          GpuF32(base, v + 0x14u), GpuF32(base, v + 0x18u),              // texture coordinate
+          tu, tv,                                                        // texture coordinate
           m.model ? 0.0f : GpuF32(base, v + 0x1Cu),                      // lightmap coordinate (none on a
           m.model ? 0.0f : GpuF32(base, v + 0x20u),                      // static model's 32-byte corner)
           color_bits, 0.0f, 0.0f, 0.0f};
@@ -2216,7 +2782,13 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
     if (found == votes.end() || found->second[0] == found->second[1]) return m.columns;
     return found->second[0] > found->second[1];
   };
-  uint32_t turned_by_view = 0, models_lit = 0;
+  uint32_t turned_by_view = 0, models_lit = 0, omni_draws = 0, sky_draws = 0;
+  // [cod4-r12] 2026-11-24: the sky's box is drawn after the other draws, through the first world surface's
+  // view-projection (the box is in the eye-relative world axes that one takes), not the sky draw's own registers:
+  // rounds 7 to 10 drew the sky black both as itself and as the box, the one thing those share being its registers
+  const SkyFaces* sky_faces = nullptr;
+  float sky_own_vp[16] = {}, world_vp[16] = {};
+  bool have_world_vp = false;
   for (const MeshDraw& m : kept.meshes) {
     if (m.model && mode == 6) continue;  // 10:10: mode 6 is mode 0 without the static models
     uint32_t frame_corners = 0, index_count = 0;  // [waw-decomp-cod4] round 6 (g_mesh_room_tight)
@@ -2230,7 +2802,10 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
     d.corners = frame_corners;  // [waw-decomp-cod4] round 6: this frame's corners, or 0: the mesh's own
     d.index_count = index_count;  // and how many of the shared mesh's indices, or 0: all
     d.tint = 0x7F7F7Fu;  // a draw without a texture: mid grey (not 0x808080: bit 23 is a flag on lit draws)
+    g_texture_material = m.material;  // [cod4-r14]
+    g_texture_base = base;
     d.texture = TextureFor(base, m.color);
+    g_texture_material = 0;
     bool no_lightmap = m.model;  // the surface's lightmap index is 0x1F (or a static model): drawn unlit
     const TextureRef page = m.model ? TextureRef{} : page_of(m, no_lightmap);
     models += m.model;
@@ -2278,6 +2853,17 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
         ++models_lit;
       }
     }
+    // [cod4-r9] 2026-11-24: the omni lights found for this draw (AttachOmni), in the same eye-relative space its world
+    // matrix maps it to; their color taken before the lightmap's scale, as the sun's is; mode 0 only, lit draws only
+    if (d.lit && mode == 0 && m.omni_count > 0) {
+      d.point_light_count = m.omni_count;
+      for (uint32_t l = 0; l < m.omni_count; ++l) {
+        for (int k = 0; k < 8; ++k) d.point_light[l][k] = m.omni[l][k];
+        if (d.lightmap)
+          for (int k = 4; k < 7; ++k) d.point_light[l][k] = std::clamp(m.omni[l][k] / light_scale, 0.0f, 16.0f);
+      }
+      ++omni_draws;
+    }
     // The console's depth runs the other way (1 at the near plane, 0 far away: the state's depth range is 1 to 0,
     // run cod4cap1): far along the view (the w register's direction) clip z over w nears `limit`, and where that is
     // below one half, z is turned over (w - z) for ngl_vk, which takes Direct3D's usual 0 near to 1 far.
@@ -2299,7 +2885,58 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
                   m.rows[2][2], m.rows[2][3], m.rows[3][0], m.rows[3][1], m.rows[3][2], m.rows[3][3],
                   m.columns ? "columns" : "rows", limit, limit < 0.5f ? " (turned over)" : "", light_scale);
     }
+    // [cod4-r9] 2026-11-24: the sky's draw as the box of its cube's faces (SkyFacesFor), seen through the same
+    // view-projection (its depth already turned over), unlit and without fog as the sky's pixel shader is
+    if (m.sky) {
+      if (const SkyFaces* faces = SkyFacesFor(base, m.cube)) {
+        sky_faces = faces;  // [cod4-r12] drawn after the loop (below)
+        std::memcpy(sky_own_vp, d.view_projection, sizeof sky_own_vp);
+        ++sky_draws;
+        continue;
+      }
+    }
+    if (!have_world_vp && !m.model && !m.dynamic && m.surface >= 0) {  // [cod4-r12] the first world surface's
+      std::memcpy(world_vp, d.view_projection, sizeof world_vp);
+      have_world_vp = true;
+    }
     draws.push_back(d);
+  }
+  // [cod4-r12] 2026-11-24: the sky's box, unlit and without fog as the sky's pixel shader is, through the first world
+  // surface's view-projection (its own when the frame has none). On saved frames, where the middle of each face lands
+  // (clip x y z w) under both, so a black sky can be told from a box off the screen.
+  if (sky_faces != nullptr) {
+    const float* vp = have_world_vp ? world_vp : sky_own_vp;
+    for (uint32_t face = 0; face < 6; ++face) {
+      const uint32_t box = SkyBoxFace(face);
+      if (box == 0) continue;
+      ngl_vk_mesh_draw s{};
+      s.mesh = box;
+      s.tint = 0x7F7F7Fu;
+      s.texture = sky_faces->faces[face];
+      s.shading = NGL_VK_SHADE_UNLIT;
+      s.alpha = NGL_VK_ALPHA_OPAQUE;
+      for (int i = 0; i < 16; ++i) s.world[i] = (i % 5 == 0) ? 1.0f : 0.0f;
+      std::memcpy(s.view_projection, vp, sizeof s.view_projection);
+      draws.push_back(s);
+    }
+    if (mode == 0 && !quiet) {
+      std::string where;
+      for (uint32_t face = 0; face < 6; ++face) {
+        float p[3] = {0.0f, 0.0f, 0.0f};
+        p[face / 2] = (face & 1u) ? -kSkyBoxReach : kSkyBoxReach;
+        for (const float* m4 : {world_vp, sky_own_vp}) {
+          float c[4];
+          for (int k = 0; k < 4; ++k) c[k] = p[0] * m4[k] + p[1] * m4[4 + k] + p[2] * m4[8 + k] + m4[12 + k];
+          char text[96];
+          std::snprintf(text, sizeof text, "%s%u%s %.2f %.2f %.6f w %.0f", m4 == world_vp ? (face ? "; " : "") : " / ",
+                        face, m4 == world_vp ? ":" : " own:", c[3] != 0.0f ? c[0] / c[3] : 0.0f,
+                        c[3] != 0.0f ? c[1] / c[3] : 0.0f, c[3] != 0.0f ? c[2] / c[3] : 0.0f, c[3]);
+          where += text;
+        }
+      }
+      REXLOG_INFO("cod4: native side: frame {}: the sky's box through {} view-projection; the faces' middles (x y z "
+                  "over w): {}", frame, have_world_vp ? "the first world surface's" : "its own", where);
+    }
   }
   ngl_vk_set_meshes(draws.data(), static_cast<uint32_t>(draws.size()));
   ngl_vk_set_sun_shadow(nullptr, nullptr);
@@ -2308,7 +2945,8 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
             " with their registers' way taken from their view, " +
             std::to_string(textured) + " textured, " + std::to_string(lightmapped) + " lightmapped, " +
             std::to_string(turned) + " with the depth turned over, " + std::to_string(built) + " meshes made, " +
-            std::to_string(failed) + " not made) drawn";
+            std::to_string(failed) + " not made, " + std::to_string(omni_draws) + " with omni lights, " +
+            std::to_string(sky_draws) + " sky drawn as the cube's box) drawn";
   if (g_corner_count > 0) {
     const double n = static_cast<double>(g_corner_count);
     char line[256];
@@ -2326,17 +2964,70 @@ void SetMeshes(const uint8_t* base, uint64_t frame, const Frame& kept, int mode,
 void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   if (g_state < 0) return;
   const bool saved = SavedFrame(frame);
+  // [cod4-r13] 2026-11-24: the window's size changed (and has stayed so for a third of a second): ngl_vk closed and
+  // opened again at the new size, between two frames (every texture and mesh then made again as they are drawn);
+  // [cod4-r15] with an ngl_vk that has ngl_vk_set_target_size, only the target is remade
+  if (g_state == 1 && NativeVulkanOn()) {
+    static uint32_t pending_width = 0, pending_height = 0;
+    static auto pending_since = std::chrono::steady_clock::now();
+    uint32_t width = 0, height = 0;
+    const char* from = "";
+    PictureSize(&width, &height, &from);
+    const int32_t resize_test = REXCVAR_GET(cod4_debug_native_resize_test);
+    if (resize_test > 0 && frame >= uint64_t(resize_test) && frame < 2 * uint64_t(resize_test)) {
+      width = 1920;
+      height = 1080;
+      from = "cod4_debug_native_resize_test";
+    }
+    if (width == g_picture_width && height == g_picture_height) {
+      pending_width = pending_height = 0;
+    } else if (width != pending_width || height != pending_height) {
+      pending_width = width;
+      pending_height = height;
+      pending_since = std::chrono::steady_clock::now();
+    } else if (MillisecondsSince(pending_since) >= 300.0) {
+      REXLOG_INFO("cod4: native side: frame {}: the picture's size changes from {}x{} to {}x{} ({})", frame,
+                  g_picture_width, g_picture_height, width, height, from);
+      pending_width = pending_height = 0;
+      bool resized = false;
+#ifdef NGL_VK_SET_TARGET_SIZE
+      // [cod4-r15] 2026-11-24: ngl_vk remakes only the target and what is sized from it, keeping every texture, mesh
+      // and pipeline (rexglue-native's ngl_vk_set_target_size); between frames, as it asks. CoD4 doesn't take
+      // ngl_vk_backend, so there is no view of the old target to take again. On failure the old target stays whole
+      // and the close-and-open below is used.
+      if (ngl_vk_set_target_size(width, height) == 0) {
+        g_picture_width = width;
+        g_picture_height = height;
+        resized = true;
+        REXLOG_INFO("cod4: native side: ngl_vk's picture is now {}x{} (textures and meshes kept)", width, height);
+      } else {
+        REXLOG_WARN("cod4: native side: ngl_vk_set_target_size({}x{}) failed; ngl_vk is closed and opened again",
+                    width, height);
+      }
+#endif
+      if (!resized) {
+        ForgetAll();
+        ngl_vk_shutdown();
+        g_picture_width = width;
+        g_picture_height = height;
+        g_state = 0;  // started again below
+      }
+    }
+  }
   if (g_state == 0) {
     // [waw-decomp-cod4] round 6: with cod4_native_vulkan, on the window's own device when it can
-    if ((NativeVulkanOn() ? StartNglVkForWindow(kPictureWidth, kPictureHeight)
-                          : ngl_vk_init(kPictureWidth, kPictureHeight)) != 0) {
+    // [cod4-r13] at the window's size (PictureSize), not a fixed 1280x720
+    const char* from = "";
+    PictureSize(&g_picture_width, &g_picture_height, &from);
+    if ((NativeVulkanOn() ? StartNglVkForWindow(g_picture_width, g_picture_height)
+                          : ngl_vk_init(g_picture_width, g_picture_height)) != 0) {
       REXLOG_WARN("cod4: native side: ngl_vk couldn't start (see its reason on stderr); nothing more is drawn");
       g_state = -1;
       return;
     }
     g_state = 1;
-    REXLOG_INFO("cod4: native side: ngl_vk started on {}, a {}x{} picture", ngl_vk_device_name(), kPictureWidth,
-                kPictureHeight);
+    REXLOG_INFO("cod4: native side: ngl_vk started on {}, a {}x{} picture ({})", ngl_vk_device_name(),
+                g_picture_width, g_picture_height, from);
   }
   const auto setup_start = std::chrono::steady_clock::now();
   // between frames, on the drawing thread: forgotten when ngl_vk ran out of room, or before a frame could
@@ -2344,17 +3035,22 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   // (g_mesh_room_tight); the check alone forgets at half, as before
   uint32_t corners_used = 0, corner_room = 0;
   ngl_vk_room(nullptr, nullptr, &corners_used, &corner_room);
-  if (g_forget || corners_used > (NativeVulkanOn() ? corner_room / 4 * 3 : corner_room / 2)) {
+  // [cod4-r14] 2026-11-24: and when ngl_vk's textures pass three quarters of its room (cod4r14: all 2048 used)
+  uint32_t textures_used = 0, texture_room = 0;
+  ngl_vk_room(&textures_used, &texture_room, nullptr, nullptr);
+  const bool textures_full = texture_room > 0 && textures_used > texture_room / 4 * 3;
+  if (g_forget || textures_full || corners_used > (NativeVulkanOn() ? corner_room / 4 * 3 : corner_room / 2)) {
     static int forgets_logged = 0;
     if (NativeVulkanOn() && forgets_logged < 12) {
       ++forgets_logged;
-      uint32_t textures = 0, texture_room = 0;
-      ngl_vk_room(&textures, &texture_room, nullptr, nullptr);
       REXLOG_INFO("cod4: native side: frame {}: everything forgotten: {}; {} of {} textures in ngl_vk, {} of {} mesh "
-                  "corners", frame, g_forget ? "something found no room" : "the corners past three quarters",
-                  textures, texture_room, corners_used, corner_room);
+                  "corners; [r16] {} kept here, {} made new and {} made again since the last forget, {} skies, {} lightmaps", frame,
+                  g_forget ? "something found no room" : textures_full ? "the textures past three quarters" : "the corners past three quarters",
+                  textures_used, texture_room, corners_used, corner_room, g_textures.size(), g_textures_new,
+                  g_textures_remade, g_skies.size(), g_lightmaps.size());
     }
     ForgetAll();
+    g_textures_new = g_textures_remade = 0;
     ++g_native_cost.forgets;
     corners_used = 0;
   }
@@ -2398,6 +3094,27 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   // also saved
   const bool on_gpu = NativeVulkanOn() && PictureOnGpu();
   if (on_gpu) ngl_vk_set_readback(saved ? 1 : 0);
+  // [cod4-r8] 2026-11-24: the 2D over the 3D (SideTess), in the order the game drew it, on the 2D's own screen size;
+  // a draw's texture as the world's are made (TextureFor), blended as its state word 0 says (AlphaOf)
+  std::vector<ngl_vk_vertex> quads;
+  float screen_width = static_cast<float>(kPictureWidth), screen_height = static_cast<float>(kPictureHeight);
+  if (REXCVAR_GET(cod4_native_2d) && !kept.draws_2d.empty()) {
+    if (kept.screen_2d[0] > 0 && kept.screen_2d[1] > 0) {
+      screen_width = kept.screen_2d[0];
+      screen_height = kept.screen_2d[1];
+    }
+    quads.reserve(kept.corners_2d.size());
+    for (const Draw2D& d : kept.draws_2d) {
+      const uint32_t texture = TextureFor(base, d.texture);
+      const uint32_t alpha = AlphaOf(d.state0);
+      float textured = texture == 0 ? 0.0f : alpha == NGL_VK_ALPHA_OPAQUE ? 1.0f : 2.0f;
+      if (texture != 0 && alpha == NGL_VK_ALPHA_BLEND && ((d.state0 >> 4) & 0xFu) == 2) textured += NGL_VK_QUAD_ADD;
+      for (uint32_t i = d.first; i < d.first + d.count && i < kept.corners_2d.size(); ++i) {
+        const Corner2D& c = kept.corners_2d[i];
+        quads.push_back(ngl_vk_vertex{c.x, c.y, c.u, c.v, c.color, textured, texture});
+      }
+    }
+  }
   Job job;
   job.frame = frame;
   for (int mode = 0; mode < modes; ++mode) {
@@ -2405,10 +3122,27 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
     std::string summary;
     SetMeshes(base, frame, kept, mode, summary);
     if (mode == 0) g_native_cost.setup_ms += MillisecondsSince(setup_start);
+    // [cod4-r7] 2026-11-24: the film pass on the GPU (COD4-NATIVE.md round 4 (4)): IW3 draws it over the whole 3D
+    // picture, the gun included, so no depth is kept (keep_depth 0). ngl_vk applies it only in a frame with meshes;
+    // the picture read back then has it, so the CPU's ApplyFilm is skipped for it (below)
+    const bool film_on_gpu = film_on && mode == 0 && on_gpu && !kept.meshes.empty();
+    if (film_on_gpu) ngl_vk_set_film_tweak(film.bias, film.base, film.delta, 0.0f);
     const auto draw_start = std::chrono::steady_clock::now();
     const ngl_vk_vertex none{};
-    if (ngl_vk_draw_quads(&none, 0, static_cast<float>(kPictureWidth), static_cast<float>(kPictureHeight), nullptr,
-                          0, 0, 0) != 0) {
+    if (quads.size() > kMax2DCorners) quads.resize(kMax2DCorners);
+    int drawn = ngl_vk_draw_quads(quads.empty() ? &none : quads.data(), static_cast<uint32_t>(quads.size()),
+                                  screen_width, screen_height, nullptr, 0, 0, 0);
+    // [cod4-r8b] 2026-11-24: round 8 lost the whole picture at frame 444 when the 2D's draw failed; now the 2D is
+    // dropped for that frame (logged with its sizes) and the 3D drawn alone, and only a failure without 2D stops
+    if (drawn != 0 && !quads.empty()) {
+      if (g_2d_failures++ < 8)
+        REXLOG_WARN("cod4: native side: frame {}: the 2D failed to draw ({} corners, {} draws, screen {}x{}); drawn "
+                    "without it", frame, quads.size(), kept.draws_2d.size(), screen_width, screen_height);
+      quads.clear();
+      drawn = ngl_vk_draw_quads(&none, 0, static_cast<float>(kPictureWidth), static_cast<float>(kPictureHeight),
+                                nullptr, 0, 0, 0);
+    }
+    if (drawn != 0) {
       REXLOG_WARN("cod4: native side: drawing frame {} failed; nothing more is drawn", frame);
       g_state = -1;
       return;
@@ -2418,7 +3152,7 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
     // channels, isn't applied there yet: COD4-NATIVE.md round 4's ngl_vk_set_film_tweak), or through the CPU with the
     // film applied first (below)
     if (mode == 0 && on_gpu) {
-      ShowOnGpu(shown);
+      ShowOnGpu(shown, g_picture_width, g_picture_height);  // [cod4-r16] the window's picture follows the target
       g_native_cost.draw_ms += MillisecondsSince(draw_start);
       if (!saved) break;
     }
@@ -2435,7 +3169,7 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
       job.summary = summary;
       if (modes > 1) job.variants.push_back(picture);  // m1: before the film and the ramp
     }
-    if (film_on) ApplyFilm(film, picture);
+    if (film_on && !film_on_gpu) ApplyFilm(film, picture);
     if (mode == 0 && NativeVulkanOn() && !on_gpu) {  // round 6: through the CPU, the ramp applied on the way
       ShowPixels(picture.data(), out_width, out_height, shown);
       g_native_cost.draw_ms += MillisecondsSince(draw_start);
@@ -2450,6 +3184,24 @@ void DrawFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
   }
   // [waw-decomp-cod4] 2026-11-11 round 6: what the native picture cost, a line every 600 frames drawn
   g_native_cost.draws += kept.meshes.size();
+  {  // [cod4-r8] 2026-11-24: the 2D, a line every 600 frames drawn (with the cost's) and at its first frame
+    static uint64_t corners_2d = 0, draws_2d = 0, frames_2d = 0;
+    static bool first_logged = false;
+    corners_2d += quads.size();
+    draws_2d += kept.draws_2d.size();
+    if (!kept.draws_2d.empty()) ++frames_2d;
+    if (NativeVulkanOn() && !first_logged && !quads.empty()) {
+      first_logged = true;
+      REXLOG_INFO("cod4: native 2D: frame {}: the first 2D drawn natively: {} draws, {} corners on a {:.0f}x{:.0f} "
+                  "screen", frame, kept.draws_2d.size(), quads.size(), screen_width, screen_height);
+    }
+    if (NativeVulkanOn() && g_native_cost.frames + 1 == 600) {
+      REXLOG_INFO("cod4: native 2D: frame {}: over the last 600 frames {} had 2D; on average {:.1f} draws, {:.0f} "
+                  "corners", frame, frames_2d, static_cast<double>(draws_2d) / 600.0,
+                  static_cast<double>(corners_2d) / 600.0);
+      corners_2d = draws_2d = frames_2d = 0;
+    }
+  }
   if (NativeVulkanOn() && ++g_native_cost.frames == 600) {
     const NativeCost& c = g_native_cost;
     REXLOG_INFO("cod4: native Vulkan: frame {}: over the last 600 frames {} times everything was forgotten; on average "
@@ -2482,6 +3234,47 @@ void LogFrame(const uint8_t* base, uint64_t frame, const Frame& kept) {
               "the matrix, {} past the room; by surface type/technique type:draws(triangles):{}", frame, kept.seen,
               kept.meshes.size(), kept.model_draws, kept.model_placed, kept.no_state, kept.not_world, kept.misread,
               kept.no_matrix, kept.dropped, kinds);
+  {  // [cod4-r7] 2026-11-24
+    std::string kept_kinds, misread_kinds;
+    for (const auto& [kind, count] : kept.r7_kept) kept_kinds += " " + std::to_string(kind) + ":" + std::to_string(count);
+    for (const auto& [kind, count] : kept.r7_misread) {
+      char entry[64];
+      std::snprintf(entry, sizeof entry, " %u/stride %u/declaration %u:%u", std::get<0>(kind), std::get<1>(kind),
+                    std::get<2>(kind), count);
+      misread_kinds += entry;
+    }
+    REXLOG_INFO("cod4: native side: frame {}: brush models, models and skinned models kept (surface type:draws):{}; "
+                "left out as misread (surface type/stride/vertex declaration type:draws):{}", frame,
+                kept_kinds.empty() ? " none" : kept_kinds, misread_kinds.empty() ? " none" : misread_kinds);
+  }
+  {  // [cod4-r8] 2026-11-24: the 2D (SideTess)
+    std::string tess, viewports, materials;
+    for (const auto& [kind, count] : kept.tess_kinds) {
+      char entry[48];
+      std::snprintf(entry, sizeof entry, " %u/%u:%u", kind.first, kind.second, count);
+      tess += entry;
+    }
+    for (const auto& [viewport, count] : kept.viewports_2d) {
+      char entry[64];
+      std::snprintf(entry, sizeof entry, " %d,%d %dx%d:%u", viewport[0], viewport[1], viewport[2], viewport[3], count);
+      viewports += entry;
+    }
+    std::vector<std::pair<uint32_t, uint32_t>> by_draws;
+    for (const auto& [material, count] : kept.materials_2d) by_draws.push_back({count, material});
+    std::sort(by_draws.rbegin(), by_draws.rend());
+    for (size_t i = 0; i < by_draws.size() && i < 16; ++i)
+      materials += " \"" + NameOf(base, by_draws[i].second) + "\":" + std::to_string(by_draws[i].first);
+    REXLOG_INFO("cod4: native 2D: frame {}: {} draws kept, {} corners ({} misread, {} past the room), x {:.1f} to "
+                "{:.1f}, y {:.1f} to {:.1f}; tess draws by view mode/technique type:{}; viewports:{}; materials:{}; "
+                "state {:08X}", frame, kept.draws_2d.size(), kept.corners_2d.size(), kept.misread_2d, kept.dropped_2d,
+                kept.min_x_2d, kept.max_x_2d, kept.min_y_2d, kept.max_y_2d, tess.empty() ? " none" : tess,
+                viewports.empty() ? " none" : viewports, materials.empty() ? " none" : materials, kept.tess_state);
+  }
+  // [cod4-r9] 2026-11-24
+  REXLOG_INFO("cod4: native side: frame {}: omni light passes: {} attached to a lit draw, {} with no lit draw found, "
+              "{} past two on one draw; the sky: {} draws kept as the cube's box, {} named sky with no cube bound "
+              "(drawn as before); 2D left out: {} post-effect copies, {} cinematic quads", frame, kept.omni_attached,
+              kept.omni_unmatched, kept.omni_full, kept.sky_kept, kept.sky_no_cube, kept.postfx_2d, kept.cinematic_2d);
   std::string depth_kinds;
   for (const auto& [kind, count] : kept.depth_kinds) {
     char entry[80];
@@ -2566,6 +3359,45 @@ void FrameEnd(const uint8_t* base) {
 // [waw-decomp-cod4] 2026-11-11 round 6: or the native picture is the game's (cod4_native_vulkan)
 bool SideOn() { return REXCVAR_GET(cod4_debug_native_side) || NativeVulkanOn(); }
 
+void AttachOmni(const uint8_t* base, uint32_t state, uint32_t source, uint32_t base_vertex, uint32_t first_index,
+                uint32_t index_count, Frame& f) {
+  const uint32_t vertex_buffer = LoadU32(base, state + kStateStream0 + 4u);
+  if (!IsGuestData(vertex_buffer)) {
+    ++f.omni_unmatched;
+    return;
+  }
+  const uint32_t vertices =
+      (LoadU32(base, vertex_buffer + kBufferData) & 0x1FFFFFFCu) + LoadU32(base, state + kStateStream0 + 8u);
+  const uint32_t at = source + kSourceCodeConstants;
+  const float inverse_radius = LoadF32(base, at + 16u * kCodeConstantLightPosition + 12u);
+  if (!(inverse_radius > 0.0f) || !std::isfinite(inverse_radius)) {
+    ++f.omni_unmatched;
+    return;
+  }
+  // the lit draws of this frame, newest first (the light pass follows its surface's lit draw)
+  const size_t stop = f.meshes.size() > 256 ? f.meshes.size() - 256 : 0;
+  for (size_t i = f.meshes.size(); i-- > stop;) {
+    MeshDraw& m = f.meshes[i];
+    if (m.vertices != vertices || m.first_index != first_index || m.index_count != index_count ||
+        m.base_vertex != base_vertex)
+      continue;
+    if (m.omni_count >= 2) {
+      ++f.omni_full;
+      return;
+    }
+    float* light = m.omni[m.omni_count++];
+    for (int k = 0; k < 3; ++k) {
+      light[k] = LoadF32(base, at + 16u * kCodeConstantLightPosition + 4u * k);
+      light[4 + k] = LoadF32(base, at + 16u * kCodeConstantLightDiffuse + 4u * k);
+    }
+    light[3] = inverse_radius;
+    light[7] = 0.0f;
+    ++f.omni_attached;
+    return;
+  }
+  ++f.omni_unmatched;
+}
+
 void SideDraw(const uint8_t* base, uint32_t context, uint32_t surface_type, uint32_t device, uint32_t caller,
               uint32_t base_vertex, uint32_t first_index, uint32_t index_count) {
   if (!SideOn()) return;
@@ -2627,10 +3459,12 @@ void SideDraw(const uint8_t* base, uint32_t context, uint32_t surface_type, uint
       f.film_view = LoadU32(base, back_end + kBackEndViews);
   }
   const uint32_t material = LoadU32(base, state + kStateMaterial);
+  bool sky_named = false;  // [cod4-r9] 2026-11-24: drawn as the cube's box when it has a cube bound (below)
   if (const std::string name = NameOf(base, material); name.find("sky") != std::string::npos) {
     auto& sky = f.sky_materials[name];
     sky.first = {surface_type, technique_type};
     ++sky.second;
+    sky_named = name.rfind("sky", 0) == 0 || name.find("/sky") != std::string::npos;
   }
   f.last_draws.push_back({material, surface_type, technique_type});
   if (f.last_draws.size() > 8) f.last_draws.pop_front();
@@ -2662,6 +3496,12 @@ void SideDraw(const uint8_t* base, uint32_t context, uint32_t surface_type, uint
     }
     f.film_draw = text;
   }
+  // [cod4-r9] 2026-11-24: an omni light pass draws the same triangles as a lit draw kept just before it; its light goes
+  // on that draw (at most two: ngl_vk's point_light)
+  if (technique_type == kLightOmniTechnique && REXCVAR_GET(cod4_native_omni)) {
+    AttachOmni(base, state, source, base_vertex, first_index, index_count, f);
+    return;
+  }
   if (technique_type < kFirstLitTechnique || technique_type > kLastLitTechnique) return;
   // the world's lit surfaces come through its tess function (run cod4side4: none of them from 0x8210C468, the
   // world's draw of its own index buffer, which draws the shadow maps and the depth prepass), with the world's
@@ -2670,11 +3510,148 @@ void SideDraw(const uint8_t* base, uint32_t context, uint32_t surface_type, uint
   // [waw-decomp-cod4] 2026-11-11 round 6: and always in the game's own native picture (cod4_native_vulkan)
   const bool static_model = surface_type == kStaticModelSurfaces &&
                             (REXCVAR_GET(cod4_debug_native_side_models) || NativeVulkanOn());
+  // [cod4-r7] 2026-11-24: the brush models, the models and the skinned models, with the native display mode on;
+  // as models when their corners are 32 bytes, else as the world's
+  const bool other_kind = surface_type >= kBrushModelSurfaces && surface_type <= kSkinnedModelSurfaces &&
+                          NativeVulkanOn() &&
+                          (REXCVAR_GET(cod4_debug_native_kinds) & (1 << (surface_type - kBrushModelSurfaces))) != 0;
+  if (other_kind) {
+    const bool as_model = LoadU32(base, state + kStateStream0) == kModelStride;
+    KeepWorldDraw(base, state, source, device, base_vertex, first_index, index_count, technique_type, f, as_model,
+                  surface_type);
+    return;
+  }
   if (surface_type != kWorldSurfaces && !static_model) {
     ++f.not_world;
     return;
   }
-  KeepWorldDraw(base, state, source, device, base_vertex, first_index, index_count, technique_type, f, static_model);
+  const size_t kept_before = f.meshes.size();
+  KeepWorldDraw(base, state, source, device, base_vertex, first_index, index_count, technique_type, f, static_model,
+                surface_type);
+  // [cod4-r9] 2026-11-24: the sky (a world surface whose material is named sky): kept with its view-projection and
+  // the cube the device has bound for it, and drawn as the box of the cube's faces (SetMeshes)
+  if (sky_named && surface_type == kWorldSurfaces && REXCVAR_GET(cod4_native_sky) && f.meshes.size() > kept_before) {
+#if defined(COD4_NGL_VK)
+    MeshDraw& m = f.meshes.back();
+    m.cube = FindSkyCube(base, state, device, m.color);
+    if (m.cube.texture != 0) {
+      m.sky = true;
+      ++f.sky_kept;
+    } else {
+      ++f.sky_no_cube;
+    }
+#endif
+  }
+}
+
+// [cod4-r8] 2026-11-24: the 2D. At the tess's pass draw (0x8210B678; cod4mp 0x82142BB0): `state` the command
+// buffer's state (r3), `counts` its {vertex count, triangle count} (r4). Each draw in the 2D view or the identity view
+// is kept, its triangles laid out as corners in screen pixels; every other tess draw is only counted.
+void SideTess(const uint8_t* base, uint32_t state, uint32_t counts) {
+  if (!SideOn() || !REXCVAR_GET(cod4_native_2d)) return;
+  const uint64_t next = g_frames.load(std::memory_order_relaxed) + 1;
+  if (!DrawnFrame(next)) return;
+  if (!IsGuestData(state) || !IsGuestData(counts)) return;
+  std::lock_guard lock(g_frame_mutex);
+  Frame& f = g_frame;
+  f.quiet = !SavedFrame(next);
+  const uint32_t technique_type = LoadU32(base, state + kStateTechniqueType);
+  const uint32_t view_mode = LoadU32(base, kViewModeAddress);
+  ++f.tess_kinds[{view_mode, technique_type}];
+  f.tess_state = state;
+  if (view_mode != kViewMode2D && view_mode != kViewModeIdentity) return;
+  const uint32_t vertex_count = LoadU32(base, counts), triangle_count = LoadU32(base, counts + 4u);
+  const uint32_t vertices = LoadU32(base, state + kStateTessVertices);
+  const uint32_t indices = LoadU32(base, state + kStateTessIndices);
+  if (vertex_count == 0 || vertex_count > kTessMaxVertices || triangle_count == 0 ||
+      3u * triangle_count > kTessMaxIndices || !IsGuestData(vertices) || !IsGuestData(indices)) {
+    ++f.misread_2d;
+    return;
+  }
+  if (f.corners_2d.size() + 3u * triangle_count > kMax2DCorners) {
+    ++f.dropped_2d;
+    return;
+  }
+  std::array<int32_t, 4> viewport{};
+  for (uint32_t k = 0; k < 4; ++k) viewport[k] = static_cast<int32_t>(LoadU32(base, state + kStateViewport + 4u * k));
+  ++f.viewports_2d[viewport];
+  const float width = viewport[2] >= 64 && viewport[2] <= 8192 ? static_cast<float>(viewport[2]) : float(kPictureWidth);
+  const float height =
+      viewport[3] >= 64 && viewport[3] <= 8192 ? static_cast<float>(viewport[3]) : float(kPictureHeight);
+  const uint32_t material = LoadU32(base, state + kStateMaterial);
+  // [cod4-r10] 2026-11-24 "postfx*" draws a full-screen copy of the scene the GPU emulation drew, which is black
+  // when the native renderer draws the scene instead, and "cinematic*" draws the video's full-screen quad, which
+  // holds the white texture when no video plays. Either one, drawn opaque over the native 3D, hid the whole scene.
+  if (IsGuestData(material)) {
+    const std::string name = NameOf(base, material);
+    if (name.rfind("postfx", 0) == 0) {
+      ++f.postfx_2d;
+      return;
+    }
+    if (name.rfind("cinematic", 0) == 0) {
+      ++f.cinematic_2d;
+      return;
+    }
+  }
+  Draw2D d;
+  d.material = material;
+  d.first = static_cast<uint32_t>(f.corners_2d.size());
+  if (IsGuestData(material) && technique_type < 0x20u) {
+    const uint32_t entry = LoadU8(base, material + kMaterialStateEntries + technique_type);
+    const uint32_t state_table = LoadU32(base, material + kMaterialStateTable);
+    if (entry != 0xFFu && IsGuestData(state_table)) d.state0 = LoadU32(base, state_table + 8u * entry);
+  }
+  const uint32_t device = LoadU32(base, state + kStateDevice);
+  if (IsGuestData(device)) d.texture = DeviceTexture(base, device, 0);
+  const bool identity = view_mode == kViewModeIdentity;
+  for (uint32_t i = 0; i < 3u * triangle_count; ++i) {
+    const uint32_t index = LoadU16(base, indices + 2u * i);
+    if (index >= vertex_count) {
+      f.corners_2d.resize(d.first);
+      ++f.misread_2d;
+      return;
+    }
+    const uint32_t at = vertices + kTessCornerBytes * index;
+    Corner2D c;
+    c.x = LoadF32(base, at);
+    c.y = LoadF32(base, at + 4u);
+    if (identity) {  // -1..1 across the viewport, y up
+      c.x = (c.x + 1.0f) * 0.5f * width;
+      c.y = (1.0f - c.y) * 0.5f * height;
+    }
+    c.color = LoadU32(base, at + 0x10u);
+    c.u = LoadF32(base, at + 0x14u);
+    c.v = LoadF32(base, at + 0x18u);
+    if (f.corners_2d.empty()) {
+      f.min_x_2d = f.max_x_2d = c.x;
+      f.min_y_2d = f.max_y_2d = c.y;
+    }
+    f.min_x_2d = std::min(f.min_x_2d, c.x);
+    f.max_x_2d = std::max(f.max_x_2d, c.x);
+    f.min_y_2d = std::min(f.min_y_2d, c.y);
+    f.max_y_2d = std::max(f.max_y_2d, c.y);
+    f.corners_2d.push_back(c);
+  }
+  d.count = 3u * triangle_count;
+  f.screen_2d[0] = width;
+  f.screen_2d[1] = height;
+  ++f.materials_2d[material];
+  if (!f.quiet && f.samples_2d < 6) {
+    ++f.samples_2d;
+    const uint32_t first = vertices + kTessCornerBytes * LoadU16(base, indices);
+    std::string words;
+    for (uint32_t k = 0; k < 8; ++k) {
+      char w[12];
+      std::snprintf(w, sizeof w, " %08X", LoadU32(base, first + 4u * k));
+      words += w;
+    }
+    REXLOG_INFO("cod4: native 2D: frame {}: draw \"{}\" view mode {} technique type {}: {} corners, {} triangles; "
+                "viewport {} {} {} {}; state word 0 {:08X}; texture {:08X} fetch {:08X} {:08X} {:08X}; state {:08X}; "
+                "first corner:{}", next, NameOf(base, material), view_mode, technique_type, vertex_count,
+                triangle_count, viewport[0], viewport[1], viewport[2], viewport[3], d.state0, d.texture.texture,
+                d.texture.fetch[0], d.texture.fetch[1], d.texture.fetch[2], state, words);
+  }
+  f.draws_2d.push_back(d);
 }
 
 void SideFrame(const uint8_t* base) {

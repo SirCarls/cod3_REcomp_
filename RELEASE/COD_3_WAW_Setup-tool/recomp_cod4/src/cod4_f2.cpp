@@ -48,8 +48,8 @@ REXCVAR_DEFINE_BOOL(cod4_f2_pad_shortcut, true, "cod4/Interface",
 REXCVAR_DEFINE_BOOL(cod4_show_fps, false, "cod4", "Show the game's own frame rate counter (sets the game's cg_drawFPS)");
 REXCVAR_DEFINE_INT32(cod4_max_fps, 0, "cod4",
                      "Frame rate limit: the most frames a second the game runs, by a wait at each frame's start "
-                     "(0 = none; the game stops at 60 by itself)")
-    .range(0, 250);
+                     "(0 = none)")
+    .range(0, 1000);
 REXCVAR_DEFINE_STRING(cod4_f2_test_script, "", "cod4",
                       "Debug: F2 window steps for test runs, \"<seconds>:<step>|...\" from the first drawn frame; a "
                       "step is open, close, page <LABEL>, set <setting> <value> (as a row would, then unsaved), "
@@ -129,12 +129,14 @@ void DrawVideo(PageContext& c) {
     Help("Which graphics API draws the game. Applies after a restart.");
   }
 #endif
-  // [f2-menus] 2026-11-11 05:47 the slider ends at 60: this port's game stops at 60 frames a second by itself (run
-  // fpsiw0428: a limit of 120 gave 60), so a higher limit did nothing.
-  c.dirty |= f2::SliderInt("Frame rate limit", "cod4_max_fps", 0, 60, "%d fps", Applies::kAtOnce, &c.restart);
+  // [f2-menus] 2026-11-11 05:47 the slider ended at 60: this port's game stopped at 60 frames a second by itself (run
+  // fpsiw0428: a limit of 120 gave 60). [menus-native] 2026-11-24 up to 1000 again, as the other games' (owner
+  // 12:37 "every game needs to be able to function propery regardless of FPS. This is a project wide rule."): the
+  // game's own 60 is the CoD4 port's to lift, and a limit above it then applies as set.
+  c.dirty |= f2::SliderInt("Frame rate limit", "cod4_max_fps", 0, 1000, "%d fps", Applies::kAtOnce, &c.restart);
   Help("The most frames a second the game draws, by a wait at the start of each frame; 0 is no limit of this "
-       "window's. The game itself never goes above 60 frames a second in this port. The mouse turns the same at "
-       "any frame rate. With V-Sync on, the monitor's refresh rate is the limit when it is lower.");
+       "window's. The mouse turns the same at any frame rate. With V-Sync on, the monitor's refresh rate is the "
+       "limit when it is lower.");
   c.dirty |= f2::Check("Show the frame rate", "cod4_show_fps", Applies::kAtOnce, &c.restart);
   Help("The game's own frame rate counter in the corner (its cg_drawFPS).");
 
@@ -271,8 +273,13 @@ void DrawControls(PageContext& c) {
         Help("The mouse turns the view through Call of Duty 4's own PC mouse code: the game's sensitivity in its "
              "Options, as on the PC, and the pointer is held while you play. Off: the mouse moves the right stick, "
              "at the mouse sensitivity above.");
+        // [menus-native] 2026-11-24 for input-port: Call of Duty 3's "Even turning at high frame rates".
+        g.dirty |= f2::Check("Even turning at high frame rates", "cod4_mouse_resample", Applies::kAtOnce, &g.restart);
+        Help("On (the default): the mouse's motion is spread over the time it arrived in, so every frame turns by "
+             "its share (up to a few milliseconds later). Off: each frame takes what arrived since the last one. "
+             "Applies at once.");
       },
-      {"cod4_mouse_look"});
+      {"cod4_mouse_look", "cod4_mouse_resample"});
 }
 
 // ------------------------------------------------------------------------------------------------- EMULATION

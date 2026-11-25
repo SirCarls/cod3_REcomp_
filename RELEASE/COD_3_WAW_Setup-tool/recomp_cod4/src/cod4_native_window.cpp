@@ -28,6 +28,7 @@ extern "C" {
 #include <rex/system/interfaces/graphics.h>
 #include <rex/system/kernel_state.h>
 #include <rex/ui/presenter.h>
+#include <rex/ui/window.h>  // [cod4-r13] the window's drawable size
 #include <rex/ui/vulkan/presenter.h>
 #include <rex/ui/vulkan/provider.h>
 #include <rex/ui/vulkan/util.h>
@@ -165,12 +166,30 @@ struct Feed {
   bool pending = false;  // the fence waits on the last copy
 };
 Feed g_feed;
+bool MakeFeedBuffer(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes);
 
 // The upload buffer and the rest, made once for the window's device (false: they couldn't be)
 bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
-  if (f.device) return f.device == device && f.bytes >= bytes;
+  if (f.device && f.device != device) return false;
+  if (f.device && f.bytes >= bytes) return true;
   const auto& dfn = device->functions();
   const VkDevice vk_device = device->device();
+  if (f.device) {  // [cod4-r13] 2026-11-24: a larger picture (the window grew): the upload buffer made again
+    if (f.pending) {
+      dfn.vkWaitForFences(vk_device, 1, &f.fence, VK_TRUE, UINT64_MAX);
+      dfn.vkResetFences(vk_device, 1, &f.fence);
+      f.pending = false;
+    }
+    dfn.vkUnmapMemory(vk_device, f.memory);
+    dfn.vkDestroyBuffer(vk_device, f.buffer, nullptr);
+    dfn.vkFreeMemory(vk_device, f.memory, nullptr);
+    f.buffer = VK_NULL_HANDLE;
+    f.memory = VK_NULL_HANDLE;
+    f.mapped = nullptr;
+    f.bytes = 0;
+    f.device = nullptr;
+    return MakeFeedBuffer(f, device, bytes);
+  }
   VkCommandPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;  // begun again each frame
   pool_info.queueFamilyIndex = device->queue_family_graphics_compute();
@@ -182,6 +201,13 @@ bool FeedReady(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSiz
   if (dfn.vkAllocateCommandBuffers(vk_device, &allocate_info, &f.commands) != VK_SUCCESS) return false;
   VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
   if (dfn.vkCreateFence(vk_device, &fence_info, nullptr, &f.fence) != VK_SUCCESS) return false;
+  return MakeFeedBuffer(f, device, bytes);
+}
+
+// [cod4-r13] the upload buffer alone (FeedReady), made again when the picture grows
+bool MakeFeedBuffer(Feed& f, const rex::ui::vulkan::VulkanDevice* device, VkDeviceSize bytes) {
+  const auto& dfn = device->functions();
+  const VkDevice vk_device = device->device();
   VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
   buffer_info.size = bytes;
   buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
@@ -251,6 +277,20 @@ bool StartNativeVulkan(rex::RuntimeConfig& config) {
 bool NativeVulkanOn() { return g_native; }
 
 #if defined(COD4_NGL_VK)
+bool WindowPixelSize(uint32_t* width, uint32_t* height) {
+  auto* kernel = rex::system::kernel_state();
+  auto* runtime = kernel ? kernel->emulator() : nullptr;
+  rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
+  if (!window) return false;
+  *width = window->GetActualPhysicalWidth();
+  *height = window->GetActualPhysicalHeight();
+  return *width > 0 && *height > 0;
+}
+#else
+bool WindowPixelSize(uint32_t*, uint32_t*) { return false; }
+#endif
+
+#if defined(COD4_NGL_VK)
 int StartNglVkForWindow(uint32_t width, uint32_t height) {
   g_width = width;
   g_height = height;
@@ -271,8 +311,21 @@ int StartNglVkForWindow(uint32_t width, uint32_t height) {
 
 bool PictureOnGpu() { return g_on_gpu; }
 
-void ShowOnGpu(const uint8_t table[3][256]) {
+void ShowOnGpu(const uint8_t table[3][256], uint32_t target_width, uint32_t target_height) {
   if (g_shown.failed) return;
+  // [cod4-r16] 2026-11-25: the window's picture (the presenter's guest output image, made at the size
+  // RefreshGuestOutput is given) follows ngl_vk's target. Before this g_width x g_height was set only when ngl_vk
+  // started (StartNglVkForWindow), so after a live resize (ngl_vk_set_target_size, round 15) the guest output kept the
+  // old size and ngl_vk_output scaled the new target into it: drawn at one size, shown at another (the owner, 11-24:
+  // no upscaling then downscaling). Each change is logged with both sizes; ngl_vk_output copies pixel for pixel only
+  // when they are equal.
+  if (target_width && target_height && (target_width != g_width || target_height != g_height)) {
+    REXLOG_INFO("cod4: native Vulkan: the window's picture (guest output image) {}x{} -> {}x{}; ngl_vk's target {}x{} "
+                "({})", g_width, g_height, target_width, target_height, target_width, target_height,
+                "the same size: copied pixel for pixel");
+    g_width = target_width;
+    g_height = target_height;
+  }
   if (g_painter->Busy()) {  // the last picture is still being painted
     ++g_shown.dropped;
     return;
@@ -404,7 +457,7 @@ void ShowPixels(const uint8_t* rgba, uint32_t width, uint32_t height, const uint
 #else
 int StartNglVkForWindow(uint32_t, uint32_t) { return -1; }
 bool PictureOnGpu() { return false; }
-void ShowOnGpu(const uint8_t[3][256]) {}
+void ShowOnGpu(const uint8_t[3][256], uint32_t, uint32_t) {}
 void ShowPixels(const uint8_t*, uint32_t, uint32_t, const uint8_t[3][256]) {}
 #endif  // COD4_NGL_VK
 

@@ -36,6 +36,11 @@ bool SideOn();
 void SideDraw(const uint8_t* base, uint32_t context, uint32_t surface_type, uint32_t device, uint32_t caller,
               uint32_t base_vertex, uint32_t first_index, uint32_t index_count);
 
+// [cod4-r8] 2026-11-24: at the back end's tess pass draw (campaign 0x8210B678, cod4mp 0x82142BB0; cod4_native_tess in
+// cod4_census.cpp): `state` the command buffer's state (r3), `counts` its {vertex count, triangle count} (r4). The 2D
+// (the HUD, the menus, the text) is kept from here for the native picture (cod4_native_2d).
+void SideTess(const uint8_t* base, uint32_t state, uint32_t counts);
+
 // At the start of the back end's frame (0x82128488; cod4_native_frame in cod4_census.cpp): the frame before it has
 // ended.
 void SideFrame(const uint8_t* base);

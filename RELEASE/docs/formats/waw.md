@@ -102,6 +102,42 @@ A pointer of `0xFFFFFFFF` means the data follows inline in the stream (see [Read
 
 **Xbox 360** zones are not read asset by asset yet. Their structures may differ in places: the Xbox 360 build's asset type list has the extra type 7, and its `dvar_s` is Call of Duty 4's rather than PC 1.7's. So they need a layout of their own, read big-endian.
 
+## Xbox 360 images (verified)
+
+`ff_t4::Zone::xbox_images` (`engine/crates/ff_t4/src/xbox_images.rs`) and `rip waw-images` read the textures of Xbox 360 zones without a zone layout, by their own records. Found by us in the disc's zones on 2026-11-24 (`code_post_gfx`, `ui`, `ber1`, `mp_seelow`). The reference tools don't read Xbox 360 assets: OpenAssetTools writes an Xbox 360 zone out as one raw dump, and the image-stream header it skips is only in Modern Warfare 2's Xbox 360 files (SOURCES.md).
+
+**The record.** 40 bytes, big-endian:
+
+| Offset | Field |
+|---|---|
+| 0 | u32 map type: 3 = 2D, 5 = cube (4 = 3D, not seen yet) |
+| 4 | pointer to the D3D texture: always -2 (it follows, with a slot) |
+| 8 | u8 semantic (2 colour, 5 normal, 8 specular, ...), 3 bytes padding |
+| 12 | u32 card memory: the bytes of pixel data, mips included, a multiple of 4 KB |
+| 16 | u16 width, height, depth |
+| 22 | u8 category; u8 "pixels at the end" (see below) |
+| 24 | pointer to the pixels: -1 |
+| 28 | u32, not needed (unknown) |
+| 32 | u16 stream slot; u8 streamed (1: `highmip/` has this texture); u8 0 |
+| 36 | pointer to the name: -1 (the name follows) or a reference to a string read before (3 images in `ber1`) |
+
+Then, in this order:
+
+1. the name, when its pointer is -1;
+2. the pixels, unless they are at the end;
+3. a 16-byte load record: u8 levels, u8 flags, u16 width, height, depth (the same as the record's), u32 D3D format (0x1A200152 DXT1, 0x1A200154 DXT5, 0x1A200171 DXN, 0x18280186 A8R8G8B8), u32 -1;
+4. the 52-byte D3D texture header, **stored little-endian**: 7 words (common = 3, reference count 1, ...), then the six-word texture fetch constant that `engine/crates/xenos` reads for Call of Duty 3.
+
+**Pixels at the end.** Most textures (every one in a level's zone) keep their pixels in block 2, LARGE_RUNTIME, which the stream holds last: the last `blockSize[2]` bytes are every such image's pixels, one after another in record order. The check that every record was found is that their sizes add up to the block exactly: in `ber1` 810 records with an inline name add up to 119,730,176 bytes, and the 3 with a name read before bring it to the block's 119,853,056. When the sizes don't add up, the reader gives no image pixels from that block. Block 3 is empty in every zone looked at; the reader refuses a zone that uses it.
+
+**The pixels** are tiled and byte-swapped like Call of Duty 3's, and untile with the `xenos` crate unchanged. Checked by eye on the colour and normal maps of a `ber1` uniform and the `ui` logo.
+
+**`highmip/`.** 3,212 files named `<image name>.hi`, with no header. Each is the top level of a streamed texture at twice the width and height, tiled the same way, in the same format: exactly that level's tiled size (a 512 x 512 DXT1 texture in the zone has a 524,288-byte file: 1024 x 1024 DXT1). `rip waw-images` writes that level as `<name>.png` / `.dds` and the zone's own top level as `<name>.zone.png`. In `ber1`, 415 textures have one; in `mp_seelow`, 318.
+
+**HD pack keys (2026-11-24).** `rip waw-hd-textures <file.ff | folder> <out_dir>` lists every texture the HD pack can replace as `rip captured-textures` does (`<out_dir>/textures/` PNGs and `hd_keys.tsv`), so World at War's HD pack needs no playing first. The key is `xenos::hd_key` of the top level, the bytes the game's texture cache hashes. A streamed texture gets two keys, the zone's level and the `highmip/` level, because either can be in memory when the game first draws with it. Kinds are guessed as for captured textures (DXN normal, the rest diffuse; `hd::keep_original` left alone). In `ber1`: 1,137 keys, 811 diffuse and 322 normal pictures, 4 left alone; `cod3-hd-pack` packs the list (checked at 1x). Not yet checked against the running game: no World at War texture capture exists on the build PC.
+
+**Results.** Every record found and every block adding up in the four zones: `code_post_gfx` 81 images, `ui` 111, `ber1` 813, `mp_seelow` 490. Not converted yet: cube maps (79 in `ber1`, 21 in `mp_seelow`: reflection probes and skies) and two formats `xenos` doesn't handle (Xenos formats 2 and 10, one-channel and two-channel 8-bit: 13 in `code_post_gfx`, 14 in `ui`, 3 in each level).
+
 ## Map packs from the PC patches
 
 The discs have no map packs. The official PC patches add them as ordinary PC fastfiles (plus `.iwd` files), which the ripper reads like any other. Patch 1.6 adds Map Pack 3: `mp_drum` (Battery), `mp_bgate` (Breach), `mp_vodka` (Revolution) and `nazi_zombie_factory` (Der Riese). Sources: SOURCES.md, section 3.
@@ -112,6 +148,6 @@ The discs have no map packs. The official PC patches add them as ordinary PC fas
 
 - The Xbox 360 asset loader (its layout).
 - A layout made only from the game's own loader with our own names, which could be published.
-- Turning the assets read into open formats (models, materials, images, sounds): PC zones are read completely, nothing is converted yet but raw files.
-- Xbox 360 images, which are tiled like CoD3's (see `engine/crates/xenos`), and `highmip/`.
+- Turning the assets read into open formats (models, materials, images, sounds): PC zones are read completely, nothing is converted yet but raw files. Xbox 360 images are converted (section above).
+- Xbox 360 cube maps, and the two 8-bit formats above.
 - `.iwd` contents on PC (zip archives; `engine/crates/inflate` reads them).

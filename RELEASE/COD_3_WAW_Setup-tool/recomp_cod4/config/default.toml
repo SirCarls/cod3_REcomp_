@@ -242,6 +242,15 @@ address = 0x82128488
 name = "cod4_native_frame"
 registers = ["ctx", "base"]
 
+# [cod4-r8] 2026-11-24: the native renderer's 2D (src/cod4_native_side.cpp, with cod4_native_vulkan and
+# cod4_native_2d). 0x8210B678, the back end's tess pass draw, at its start (R_DrawTessTechnique 0x8211F460 calls it
+# for each pass of RB_EndTessSurface 0x8211F560's draw; r3 the command buffer's state, r4 {vertex count, triangle
+# count}): every 2D draw (the HUD, the menus, the text) goes through it.
+[[midasm_hook]]
+address = 0x8210B678
+name = "cod4_native_tess"
+registers = ["ctx", "base"]
+
 # [f2-menus] game_draw_size (../recomp/src/f2/f2_render_size.cpp, "console" by default): the size the game draws its 3D
 # scene at. The video setup 0x82135318 (the same code as World at War's 0x823F9088)
 # picks 1024x600 (896x680 on 4:3) and stores it into its record (r31) at +8 / +0xC. Here, at the height's store

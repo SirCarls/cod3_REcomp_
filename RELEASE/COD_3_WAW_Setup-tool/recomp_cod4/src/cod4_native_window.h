@@ -35,11 +35,18 @@ bool NativeVulkanOn();
 // own. Returns 0 when ngl_vk is ready (as ngl_vk_init does).
 int StartNglVkForWindow(uint32_t width, uint32_t height);
 
+// [cod4-r13] 2026-11-24: the window's drawable size in pixels (its physical size), false when there is no window yet
+// or it is minimized. The native picture is drawn at this size (the largest 16:9 inside it), so the presenter shows it
+// pixel for pixel: no picture of another size stretched or shrunk to the window (the owner, 11-24 07:48 PT).
+bool WindowPixelSize(uint32_t* width, uint32_t* height);
+
 // True when ngl_vk draws on the window's device (StartNglVkForWindow), so the picture goes to the window on the GPU.
 bool PictureOnGpu();
 
 // Hands ngl_vk's last picture to the window (on the GPU), through table (each channel's 256 values, as shown).
-void ShowOnGpu(const uint8_t table[3][256]);
+// [cod4-r16] target_width x target_height is ngl_vk's target as it is now (it changes with a live resize): the window's
+// picture is made that size, so ngl_vk_output copies it pixel for pixel.
+void ShowOnGpu(const uint8_t table[3][256], uint32_t target_width, uint32_t target_height);
 
 // Hands a width x height picture (4 bytes a pixel: red, green, blue, unused) to the window through the CPU, through
 // table (as ShowOnGpu).

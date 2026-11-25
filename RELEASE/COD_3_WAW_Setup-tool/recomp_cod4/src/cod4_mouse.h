@@ -19,6 +19,8 @@
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
 
+#include "inputkit/rex/pointer_capture.h"
+
 namespace cod4::mouse {
 
 // cod4_mouse_look and the keyboard pad (mnk_mode) both on.
@@ -41,11 +43,8 @@ class Listener : public rex::ui::WindowInputListener {
  private:
   void UpdateCapture();
 
-  bool captured_ = false;
-  bool relative_ = false;  // pointer lock (else the cursor is put back at the window's center)
-  int32_t prev_x_ = 0;
-  int32_t prev_y_ = 0;
-  rex::ui::Window::CursorVisibility prev_cursor_ = rex::ui::Window::CursorVisibility::kVisible;
+  // [input-port] 2026-11-24 holding the pointer: the code every rexglue port shares (inputkit/rex/pointer_capture.h)
+  inputkit::rexui::PointerCapture capture_;
 };
 
 }  // namespace cod4::mouse

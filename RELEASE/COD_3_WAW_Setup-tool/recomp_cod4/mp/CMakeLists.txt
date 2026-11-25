@@ -30,6 +30,8 @@ set(COD4MP_SOURCES
     ${COD4_SRC}/cod4_census.cpp
     ${COD4_SRC}/cod4_shots.cpp
     ${COD4_SRC}/cod4_mouse.cpp
+    ${COD4_SRC}/cod4_rumble.cpp  # [input-port] 2026-11-24 no vibration on controller 1 while the keyboard and mouse are in use
+    ${COD4_SRC}/cod4_ads.cpp  # [input-port] 2026-11-24 the turn while aiming down the sights (monitor distance, a percentage)
     ${COD4_SRC}/cod4_profile.cpp
     ${COD4_SRC}/cod4_native_side.cpp  # [waw-decomp-cod4] 2026-11-11 the native renderer's side check (cod4_debug_native_side)
     ${COD4_SRC}/cod4_native_window.cpp  # [waw-decomp-cod4] 2026-11-11 round 6: the native picture as the game's
@@ -72,6 +74,25 @@ target_compile_definitions(cod4mp PRIVATE COD4_MP=1)
 target_include_directories(cod4mp PRIVATE ${COD4_SRC} ${COD3_RECOMP_SRC})
 
 rexglue_setup_target(cod4mp GPU_PLUGINS xenos)
+
+# [input-port] 2026-11-24: inputkit (the project's inputkit/ folder, the input code every game shares: the mouse
+# motion queue and the pointer capture cod4mp's mouse look uses). The setup tool passes INPUTKIT_DIR; otherwise it
+# is found next to COD3_RECOMP_SRC's COD_3_WAW_Setup-tool/ (the tool passes that too, for a copy in its work folder),
+# or 3 up from this folder (a build in place). The mouse code needs it, so it is required.
+if(NOT INPUTKIT_DIR)
+    foreach(_ik IN ITEMS "${COD3_RECOMP_SRC}/../../../inputkit" "${CMAKE_CURRENT_SOURCE_DIR}/../../../inputkit")
+        if(NOT INPUTKIT_DIR AND EXISTS "${_ik}/cmake/Inputkit.cmake")
+            get_filename_component(INPUTKIT_DIR "${_ik}" ABSOLUTE)
+        endif()
+    endforeach()
+endif()
+if(NOT EXISTS "${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+    message(FATAL_ERROR "cod4mp: the project's inputkit/ folder wasn't found (INPUTKIT_DIR, next to "
+        "COD3_RECOMP_SRC's tool folder, or 3 up). Configure with -DINPUTKIT_DIR=<project>/inputkit.")
+endif()
+include("${INPUTKIT_DIR}/cmake/Inputkit.cmake")
+inputkit_add_library()
+target_link_libraries(cod4mp PRIVATE inputkit::inputkit)
 
 # [waw-decomp-cod4] 2026-11-11: ngl_vk (the project's ngl_vk/ folder, the Vulkan library Call of Duty 3's, Big Red
 # One's and Call of Duty 2's native renderers draw with), for the native renderer's side check

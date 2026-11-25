@@ -252,3 +252,11 @@ registers = ["ctx", "base"]
 address = 0x82159AC8
 name = "cod4_native_frame"
 registers = ["ctx", "base"]
+
+# [cod4-r8] 2026-11-24: the native renderer's 2D (as the campaign's 0x8210B678): the back end's tess pass draw
+# 0x82142BB0, the campaign function's 172 bytes here (the decompile's same body, its Direct3D call 0x820AB178 the
+# campaign's 0x8209B898 and the retry flag 0x85023050 its 0x8379B1CC). r3 the state, r4 the counts.
+[[midasm_hook]]
+address = 0x82142BB0
+name = "cod4_native_tess"
+registers = ["ctx", "base"]

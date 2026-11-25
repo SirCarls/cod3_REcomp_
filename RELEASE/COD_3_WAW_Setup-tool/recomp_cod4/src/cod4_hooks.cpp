@@ -42,6 +42,16 @@ REXCVAR_DEFINE_BOOL(cod4_auto_save_device, true, "cod4",
                     "never opens the \"Game save Error\" popup because no device was chosen");
 #endif
 
+// [cod4-native] 2026-11-24 the any-frame-rate rule (owner 12:37 UTC). The 360's Com_Frame (campaign 0x821DD008) caps
+// the game at 3 frames per 1000/com_maxfps ms (acct2-cod4 NOTES 11-07), and its own setting stopped every run at
+// exactly 60.0 fps with V-Sync off and cod4_max_fps 0 (3000/50; probe G/cod4fps1). The SDK's vblank already runs at
+// 1000 Hz with vsync off (graphics_system.cpp), so that is the only stop. With the game's com_maxfps 0 and r_vsync 0
+// the frame rate followed cod4_max_fps in both games (probe G/cod4fps2: multiplayer 30.0 at 30, 139.9 at 144; campaign
+// 30.0 at 30), the server stayed at 20 frames a second and jumps stayed 37.3-38.5 units.
+REXCVAR_DEFINE_BOOL(cod4_game_frame_cap, false, "cod4",
+                    "Keep the game's own frame cap (its com_maxfps and r_vsync, which stop it at 60 fps). Off: they "
+                    "are set to 0 at start, so the frame rate limit (cod4_max_fps) is the only limit");
+
 REXCVAR_DEFINE_DOUBLE(cod4_fov, 0.0, "cod4",
                       "Field of view in degrees for the player's view when not aiming (the game's cg_fov; the console "
                       "uses 65). 0 = the game's own. Any value is allowed, beyond the console's 65-80 limits; "
@@ -161,6 +171,17 @@ void cod4_frame_start(PPCContext& ctx, uint8_t* base) {
   }
   static const auto first_frame = std::chrono::steady_clock::now();
   const auto since_first_frame = std::chrono::steady_clock::now() - first_frame;
+  // [cod4-native] 2026-11-24 the game's own 60 fps cap off (cod4_game_frame_cap): sent at the first frame and again
+  // at 10 s, after the game's start-up configs have run. "set" works before the game registers a dvar. A level start
+  // keeps the values (probe G/cod4fps2 sent them before devmap).
+  static int frame_cap_sends = 0;
+  if (!REXCVAR_GET(cod4_game_frame_cap) &&
+      ((frame_cap_sends == 0) || (frame_cap_sends == 1 && since_first_frame >= std::chrono::seconds(10)))) {
+    ++frame_cap_sends;
+    QueueConsoleCommand(ctx, base, "set com_maxfps 0");
+    QueueConsoleCommand(ctx, base, "set r_vsync 0");
+    if (frame_cap_sends == 1) REXLOG_INFO("cod4: the game's own frame cap off (com_maxfps 0, r_vsync 0)");
+  }
 #ifndef COD4_MP
   // The save device. On the console the player picks it when pressing START at the title; a level reached any other
   // way (devmap, a test, later the port's own menus) has none, and its level-start save fails with

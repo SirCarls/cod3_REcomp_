@@ -342,6 +342,13 @@ void cod4_native_frame(PPCContext& ctx, uint8_t* base) {
   cod4::native::SideFrame(base);
 }
 
+// [cod4-r8] 2026-11-24: the back end's tess pass draw (campaign 0x8210B678, cod4mp 0x82142BB0), at its start: r3 the
+// command buffer's state, r4 its {vertex count, triangle count}. The 2D comes this way, never through the indexed
+// draw above (cod4_native_side.h).
+void cod4_native_tess(PPCContext& ctx, uint8_t* base) {
+  cod4::native::SideTess(base, ctx.r3.u32, ctx.r4.u32);
+}
+
 namespace {
 
 void EnterPass(uint32_t pass) {

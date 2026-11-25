@@ -2,8 +2,11 @@
 
 #include "cod4_mouse.h"
 
+#include "cod4_ads.h"  // [input-port] 2026-11-24 the turn while aiming down the sights
+
 #include "cod4_f2.h"  // [f2-menus] the pointer is let go while the F2 window is open
 #include "f2/f2_common.h"  // [f2-menus] 2026-11-11 f2::accel: mouse acceleration and the sensitivity randomizer inside the game
+#include "inputkit/mouse.h"  // [input-port] the motion queue (cod4_mouse_resample)
 
 #include <algorithm>
 #include <atomic>
@@ -43,6 +46,18 @@ REXCVAR_DEFINE_STRING(cod4_debug_mouse_events, "", "cod4",
                       "a mouse sends them whatever the game draws; once a second the log shows the counts handed to "
                       "the game");
 
+// [input-port] 2026-11-24 (owner: "make the controller module from our cod3 project work in the others ... Same goes
+// with how the mouse works"): Call of Duty 3's cod3_mouse_resample (on there since 2026-11-02, the owner confirmed the
+// smoother turning). The window hands the mouse's motion over in batches, as often as it runs its event loop; above
+// that rate some usercmds got no counts and the next a whole batch, an uneven turn. With this on, each batch is
+// spread over the time since the one before (at most 8 ms) and each read gets its share (inputkit::mouse::
+// MotionQueue): every count still reaches the game, at most one batch interval (8 ms) later.
+REXCVAR_DEFINE_BOOL(cod4_mouse_resample, true, "cod4",
+                    "Even mouse turning at high frame rates: the mouse's motion is spread over the time it arrived in, "
+                    "so every frame turns by its share (up to a few milliseconds later); off: each read takes what "
+                    "arrived since the last one")
+    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+
 REXCVAR_DECLARE(bool, mnk_mode);
 
 namespace cod4::mouse {
@@ -55,9 +70,8 @@ using Clock = std::chrono::steady_clock;
 constexpr int64_t kInGameWindowNs = 1'500'000'000;
 
 std::atomic<int64_t> g_last_read_ns{0};
-std::mutex g_mutex;
-float g_dx = 0.0f;  // motion not yet handed to the game; the fractions of a count stay for the next read
-float g_dy = 0.0f;
+// Motion not yet handed to the game (window thread -> the game's reads). [input-port] 2026-11-24
+inputkit::mouse::MotionQueue g_motion;
 
 int64_t NowNs() { return Clock::now().time_since_epoch().count(); }
 
@@ -72,9 +86,7 @@ void AddMotion(float dx, float dy) {
     last_ns = now;
     f2::accel::Apply(&dx, &dy, ms);
   }
-  std::lock_guard lock(g_mutex);
-  g_dx += dx;
-  g_dy += dy;
+  g_motion.Add(dx, dy, NowNs(), REXCVAR_GET(cod4_mouse_resample));
 }
 
 // [f2-menus] 2026-11-11 04:00 cod4_debug_mouse_events: started once, at the first read that finds the setting.
@@ -98,10 +110,7 @@ void StartTestMouseOnce() {
   }).detach();
 }
 
-void ClearMotion() {
-  std::lock_guard lock(g_mutex);
-  g_dx = g_dy = 0.0f;
-}
+void ClearMotion() { g_motion.Clear(); }
 
 bool InGame() { return NowNs() - g_last_read_ns.load(std::memory_order_relaxed) < kInGameWindowNs; }
 
@@ -114,23 +123,9 @@ bool InGameplay() { return InGame(); }
 
 void Listener::OnMouseMove(rex::ui::MouseEvent& e) {
   UpdateCapture();
-  if (!captured_) return;
   // The motion is the game's alone while it holds the pointer: the SDK's driver doesn't turn the right stick too.
-  e.set_handled(true);
-  if (relative_) {
-    AddMotion(float(e.dx()), float(e.dy()));
-    return;
-  }
-  // No pointer lock: measure from the window's center and put the cursor back there.
-  AddMotion(float(e.x() - prev_x_), float(e.y() - prev_y_));
-  int32_t cx = 0, cy = 0;
-  if (window && window->WarpMouseToCenter(cx, cy)) {
-    prev_x_ = cx;
-    prev_y_ = cy;
-  } else {
-    prev_x_ = e.x();
-    prev_y_ = e.y();
-  }
+  float dx = 0.0f, dy = 0.0f;
+  if (capture_.Motion(window, e, &dx, &dy)) AddMotion(dx, dy);
 }
 
 void Listener::OnMouseDown(rex::ui::MouseEvent& e) {
@@ -142,23 +137,8 @@ void Listener::UpdateCapture() {
   if (!window) return;
   const bool want = Enabled() && InGame() && window->HasFocus() &&
                     cod4::f2ui::GameGetsInput();  // [f2-menus] not while the F2 window (or an SDK window) is in use
-  if (want == captured_) return;
-  ClearMotion();  // motion from before the switch belongs to the menu, not to the view
-  if (want) {
-    prev_cursor_ = window->GetCursorVisibility();
-    window->SetCursorVisibility(rex::ui::Window::CursorVisibility::kHidden);
-    window->CaptureMouse();
-    relative_ = window->SetRelativeMouseMode(true);
-    if (!relative_) window->WarpMouseToCenter(prev_x_, prev_y_);
-    captured_ = true;
-    REXLOG_INFO("cod4: mouse look holds the pointer ({})", relative_ ? "relative mode" : "re-centering");
-  } else {
-    if (relative_) window->SetRelativeMouseMode(false);
-    window->ReleaseMouse();
-    window->SetCursorVisibility(prev_cursor_);
-    captured_ = false;
-    relative_ = false;
-  }
+  // Motion from before the switch belongs to the menu, not to the view.
+  if (capture_.Update(window, want, "cod4")) ClearMotion();
 }
 
 }  // namespace cod4::mouse
@@ -193,6 +173,19 @@ uint32_t LoadBe32(const uint8_t* base, uint32_t address) {
   uint32_t v;
   std::memcpy(&v, base + address, sizeof(v));
   return __builtin_bswap32(v);
+}
+
+// [input-port] 2026-11-25 Split screen: only the keyboard player's clientActive_t takes the host's mouse; the
+// keyboard is player 1, local client 0. cod4mp's CL_GetMouseMovement caller passes *(0x82435818) + lc * 0x1BEE60;
+// the campaign has one clientActive_t.
+bool KeyboardClient(const uint8_t* base, uint32_t cl) {
+#ifdef COD4_MP
+  return cl == LoadBe32(base, 0x82435818u);
+#else
+  (void)base;
+  (void)cl;
+  return true;
+#endif
 }
 
 void StoreBe32(uint8_t* base, uint32_t address, uint32_t value) {
@@ -233,6 +226,10 @@ void GetMouseMovement(Ctx& ctx, uint8_t* base, Game game) {
   using namespace cod4::mouse;
   g_last_read_ns.store(NowNs(), std::memory_order_relaxed);
   const uint32_t cl = ctx.r3.u32;
+  if (!KeyboardClient(base, cl)) {  // another local client's pad turns it; queued motion waits for player 1
+    game();
+    return;
+  }
   g_client_active.store(cl, std::memory_order_relaxed);
   const uint32_t mx_ptr = ctx.r4.u32;
   const uint32_t my_ptr = ctx.r5.u32;
@@ -242,11 +239,16 @@ void GetMouseMovement(Ctx& ctx, uint8_t* base, Game game) {
   StartTestMouseOnce();  // [f2-menus] 04:00 cod4_debug_mouse_events
   const bool test_mouse = g_test_mouse_on.load(std::memory_order_relaxed);
   if (Enabled() || test_mouse) {
-    std::lock_guard lock(g_mutex);
-    dx = static_cast<int32_t>(std::trunc(g_dx));
-    dy = static_cast<int32_t>(std::trunc(g_dy));
-    g_dx -= float(dx);
-    g_dy -= float(dy);
+    // The motion due now (cod4_mouse_resample), as whole counts; the fractions of a count stay for the next read.
+    static float carry_x = 0.0f, carry_y = 0.0f;  // the game's thread only
+    float fx = 0.0f, fy = 0.0f;
+    g_motion.Take(NowNs(), &fx, &fy);
+    fx += carry_x;
+    fy += carry_y;
+    dx = static_cast<int32_t>(std::trunc(fx));
+    dy = static_cast<int32_t>(std::trunc(fy));
+    carry_x = fx - float(dx);
+    carry_y = fy - float(dy);
   }
   const DebugCounts debug = ReadDebugCounts();
   if (debug.on) {
@@ -406,10 +408,18 @@ void MouseMove(uint8_t* base, Game game) {
 REX_EXTERN(__imp__sub_822D14C8);
 REX_HOOK_RAW(sub_822D14C8) { GetMouseMovement(ctx, base, [&] { __imp__sub_822D14C8(ctx, base); }); }
 REX_EXTERN(__imp__sub_822D3D48);
-REX_HOOK_RAW(sub_822D3D48) { MouseMove(base, [&] { __imp__sub_822D3D48(ctx, base); }); }
+// [input-port] 2026-11-24 cod4::ads::Swap: the zoom ratio the player picked, for this read only (cod4_ads.h).
+REX_HOOK_RAW(sub_822D3D48) {
+  const cod4::ads::Swap ads(base, g_client_active.load(std::memory_order_relaxed));
+  MouseMove(base, [&] { __imp__sub_822D3D48(ctx, base); });
+}
 #else
 REX_EXTERN(__imp__sub_822CAFB0);
 REX_HOOK_RAW(sub_822CAFB0) { GetMouseMovement(ctx, base, [&] { __imp__sub_822CAFB0(ctx, base); }); }
 REX_EXTERN(__imp__sub_822CC838);
-REX_HOOK_RAW(sub_822CC838) { MouseMove(base, [&] { __imp__sub_822CC838(ctx, base); }); }
+// [input-port] 2026-11-24 cod4::ads::Swap: the zoom ratio the player picked, for this read only (cod4_ads.h).
+REX_HOOK_RAW(sub_822CC838) {
+  const cod4::ads::Swap ads(base, g_client_active.load(std::memory_order_relaxed));
+  MouseMove(base, [&] { __imp__sub_822CC838(ctx, base); });
+}
 #endif

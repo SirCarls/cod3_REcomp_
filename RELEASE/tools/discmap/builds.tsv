@@ -1,0 +1,43 @@
+# [waw-decomp] 2026-11-16 discmap: the builds of Call of Duty 3's programs it knows, by the SHA-1 of the
+# decrypted image (the same program on two discs is one build). Data, not code: a new build is added here
+# once its map is reviewed. From rc-discs' disc_programs.tsv (2026-11-16, read off the four discs).
+# status: reference (the build the sources are written for) | mapped (addresses carried from `reference`)
+# export: a Ghidra export (WawExport.java) of the program, relative to the project, when there is one
+# sha1_raw: the XEX files' own SHA-1s seen for this image (a disc's file differs; its image doesn't)
+build	program	part	sha1_decrypted	sha1_raw	status	reference	export	note
+usa_sp	campaign	default.xex	3a465d6194646ab5766d4c4c14850718242ba507	681724c40e250e584e6585dd903e05afa00a8634,52447cb4189bc4168e71324255e9e7acf5495eb8,6f9247bb74c4006632a8556dcd1d41332139ff83	reference		dev/waw-decomp/cod3	USA/Europe disc; the German and Fr/Es/It campaigns are this build
+usa_sp	level:blkbrn	sp/blkbrn/blkbrn.dll	9b19f037f32017e2cd3c429c0d447e0633e7ba75		reference			
+usa_sp	level:chambois	sp/chambois/chambois.dll	f7540820e2f90a5fbffc46cd1bbdef790513cd13		reference			
+usa_sp	level:credits	sp/credits/credits.dll	3086d5f4d940d4e5189fc14a48e8b2df946b6b2d		reference			
+usa_sp	level:crssrds	sp/crssrds/crssrds.dll	7c216ce3ace579b4c395858af353d5a759bce0aa		reference			
+usa_sp	level:falaise	sp/falaise/falaise.dll	c391befe32c4eb5b36d27d90275a298803d8218a		reference			
+usa_sp	level:forest	sp/forest/forest.dll	1aa2a696c379e05bbb49293e73a7e1fd7b513741		reference			
+usa_sp	level:fuelplnt	sp/fuelplnt/fuelplnt.dll	aed8bc586e5deefca4e2af742c983d952391ef7f		reference			
+usa_sp	level:hostage	sp/hostage/hostage.dll	c03a87bd4e0a43936c5ee080a812f9537590d8e1		reference			
+usa_sp	level:island	sp/island/island.dll	28cdf988aa077e532f5e69c298c335642480ed37		reference			
+usa_sp	level:laison	sp/laison/laison.dll	29a7e1f44c1c82e0353045a74eb30311f7f34770		reference			
+usa_sp	level:mace2	sp/mace2/mace2.dll	eb7cdd6e6f38fd1b3785c1b7f2cdb145d9634b0e		reference			
+usa_sp	level:mayenne	sp/mayenne/mayenne.dll	9e4829fe59ac8b4101dca8fccc23e5eb4ee880d7		reference			
+usa_sp	level:nightd	sp/nightd/nightd.dll	6b82f24c819c8a7621e6c345dba4fd48677cac49		reference			
+usa_sp	level:saint_lo	sp/saint_lo/saint_lo.dll	51edc08dd977c0bfd77e0976eae117f35a62f595		reference			
+usa_sp	level:stbert	sp/stbert/stbert.dll	0b3ff2e21b31346cc22b43919088fd73969da681		reference			
+usa_mp	mp	codmp_xenonf.xex	6d1bada5fc996ef90d4e0e8486b478f135301430	907985e2f1bdea255b52226ef39acf627c2d7ffc	reference		dev/waw-decomp/cod3/mp	USA/Europe disc
+de_mp	mp	codmp_xenonf.xex	876124514865f748e32fd722723e69026a13b1d6	3bf53b8853650b214954358ee54b3ea9b4470053	mapped	usa_mp		German disc: a rebuild of usa_mp (the same functions, some moved or changed)
+eu_mp	mp	codmp_xenonf.xex	e0d0a09a36b824c0dd840974450e4e4f7058f772	758c31d57488502bdef19b5c016a97adfd81c28a	mapped	usa_mp		French/Spanish/Italian disc: a rebuild of usa_mp
+jp_sp	campaign	default.xex	3520e5cc12b76dff03036a606090c71a7eefe708	44cbd1e1d4e6d2e6b3ca1fdb525713cca144a888	mapped	usa_sp	dev/x360-family/cod3_regions/jp/sp	Japanese disc: a later build, level DLLs too
+jp_sp	level:blkbrn	sp/blkbrn/blkbrn.dll	4f2fd76766acfb89ea8c503b7d047ce43e0aa46c		mapped	usa_sp		
+jp_sp	level:chambois	sp/chambois/chambois.dll	23005b6e9828efe4784e4bc05adf7a3821eaad99		mapped	usa_sp		
+jp_sp	level:credits	sp/credits/credits.dll	37faf6faf586cc851e93d0df1a4f7b832c9d1018		mapped	usa_sp		
+jp_sp	level:crssrds	sp/crssrds/crssrds.dll	613e677aa74494883441429e087f4b078ca11d13		mapped	usa_sp		
+jp_sp	level:falaise	sp/falaise/falaise.dll	3528b6838cae5d179571fa3a7fc18ab140cdedf2		mapped	usa_sp		
+jp_sp	level:forest	sp/forest/forest.dll	eb5a5d2e6bc30831b3164cad59afcabf412f2b4c		mapped	usa_sp		
+jp_sp	level:fuelplnt	sp/fuelplnt/fuelplnt.dll	0b77c018cfeeef2f780fa188d10f33caf355df74		mapped	usa_sp		
+jp_sp	level:hostage	sp/hostage/hostage.dll	1b3afb2151a7945913675b1c27d8f728fbb0bf4c		mapped	usa_sp		
+jp_sp	level:island	sp/island/island.dll	e098708d7add945675f86930b521fa774e94972e		mapped	usa_sp		
+jp_sp	level:laison	sp/laison/laison.dll	ae7f8921a1a265b597580055115fc2f7a00a4ac2		mapped	usa_sp		
+jp_sp	level:mace2	sp/mace2/mace2.dll	0198acc192b774e8a9fdcca134e824058f20e93c		mapped	usa_sp		
+jp_sp	level:mayenne	sp/mayenne/mayenne.dll	335b4a1f47d5a4a7cfd5b786fb44ef16db8cbf3d		mapped	usa_sp		
+jp_sp	level:nightd	sp/nightd/nightd.dll	264947a360eae2036e16bd99c144f8ab520114d1		mapped	usa_sp		
+jp_sp	level:saint_lo	sp/saint_lo/saint_lo.dll	d9af230099c155a3eb9c707773b63e5df4695436		mapped	usa_sp		
+jp_sp	level:stbert	sp/stbert/stbert.dll	a666553063f90ea33f04ec65f81aaa0008364fa8		mapped	usa_sp		
+jp_mp	mp	codmp_xenonf.xex	2f79a4ad19ba02231fbc6a77395492f68f3b3e9c	d4ee5ba811b43bf89753d6a7f381f0650242d972	mapped	usa_mp	dev/x360-family/cod3_regions/jp/mp	Japanese disc: a later build

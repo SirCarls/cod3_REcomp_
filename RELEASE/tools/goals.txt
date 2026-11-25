@@ -1,0 +1,71 @@
+Add these in addition to the other requests
+I've provided the world at war folder as well. (do not hard code paths, and account for the differences in windows and linux paths)
+
+COD_3_WAW_Setup-tool
+    Wanna make this as painless as possible for the end user (pull required dependencies):
+    GUI launcher to compile for user (linux and windows)
+        cod3_xbox_360 iso (.iso)
+            REXGLUE NEEDED
+            Extract-xiso
+                execute needed commands to extract and from iso.
+        Cod_WAW steam PC (folder)
+            Include fix for .iso version
+        Creates new folder and pull/copy all assets from both the iso and WAW folder and create new folder/structure so it's independent of the two and executable(appimage or .exe).
+        cleans up files (doesn't delete iso or WAW folder)
+
+Statically recomped C++ project (AppImage and .exe)
+Features
+    Multi-threading (Customizable but creates threads based on CPU)
+    Up to 4K native rendering
+    Advanced anti-aliasing
+        fxaa
+        smaa
+        msaa
+        AMD FSR support
+        Open-source upscaling options with appropriate menu options.
+    no-DRM
+    *Uncapped FPS (that won't affect the timescale of anything) 120 is the goal for baseline, 500 should be the goal/max
+        proper refresh rate handling
+        fullscreen
+        borderless
+        windowed
+    adjustable fov and fovScale
+        cod 3 models
+        additional WAW guns added, and added to the appropriate side (axis/allies if possible with proper damage scaling)
+    world at war styled console.
+    world at war sensitivity
+        with keybinds and assets to replace the xbox button logos depending if you're using mouse or keyboard.
+        Valve esque customization (crosshairs, raw-input, etc)
+    Splitscreen support
+        Controller for players 2+ (up to 8) only
+    Network emulation (if possible)
+        server_browser/local (atleast)
+        128 player support
+
+
+Use as additional sources
+https://forum.plutonium.pw/ (Check for additional quality of life fixes and features)
+https://github.com/rehan-remade/universal-modder
+https://github.com/rexglue/rexglue-sdk
+https://github.com/SK8-ENGINE/skate-3-rust-engine
+https://github.com/chasmlol/skate3clone
+https://github.com/chasmlol/SkyCraft
+https://github.com/chasmlol/2010-rust-rewrite-mashup
+https://github.com/vladtrc/iw4L
+https://verrial.itch.io/projectaether
+https://github.com/callofduty4x/CoD4x_Server
+https://github.com/Brentdevent/S2x
+https://github.com/iw4x/iw4x-client
+https://github.com/NVIDIA/DLSS
+https://gpuopen.com/fidelityfx-super-resolution-3/
+https://github.com/auroramod/h1-mod
+https://callofduty.fandom.com/wiki/Category:Zombies_(mode)_Per_Game
+https://www.devraw.net/assets
+https://github.com/JariKCoding/CoDLuaDecompiler
+https://github.com/SwagSoftware/KisakBlack
+https://github.com/Rattpak/S2MP-Mod
+https://github.com/SwagSoftware/KisakCOD
+https://horizonmw.org/
+https://github.com/project-bo4/shield-development
+https://shield-bo4.gitbook.io/document
+https://codxenon.dev/guides/t4/fastfiles/

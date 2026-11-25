@@ -1,0 +1,376 @@
+diff --git a/include/rex/graphics/pipeline/texture/capture.h b/include/rex/graphics/pipeline/texture/capture.h
+new file mode 100644
+index 0000000..8cf9e68
+--- /dev/null
++++ b/include/rex/graphics/pipeline/texture/capture.h
+@@ -0,0 +1,66 @@
++/**
++ * @file        rex/graphics/pipeline/texture/capture.h
++ *
++ * @brief       Texture capture: the textures a game draws with, saved as the
++ *              files an HD texture pack is made from.
++ *
++ * Why: an HD pack (replacement.h) needs every texture's key and picture. For
++ * Call of Duty 3 the ripper reads them from the game's files; for the other
++ * Xbox 360 games on this SDK (World at War, Call of Duty 2, Call of Duty 4)
++ * no ripper reads their textures yet. With `texture_capture_path` set, the
++ * texture cache saves each texture a pack could replace, the first time the
++ * game uses it, so playing the game collects its textures. The setup tool
++ * then turns them into pictures, upscales them and packs them, exactly as it
++ * does Call of Duty 3's ripped textures.
++ *
++ * What is saved, into the folder `texture_capture_path` names:
++ *
++ *  - `<key>.dds`: the guest texture's base level, in the pack's own layout
++ *    (the rows of blocks ComputeKey hashes: BC1/BC2/BC3/BC5 for k_DXT1,
++ *    k_DXT2_3, k_DXT4_5 and k_DXN, 32-bit B, G, R, A texels for k_8_8_8_8),
++ *    with a legacy DDS header and no mips. So the picture is exactly the
++ *    data the key is the hash of, and the pack built from it matches.
++ *  - `captured.tsv`: one line per file,
++ *        <key>\t<width>\t<height>\t<xenos_format>\t<file>
++ *    the first five columns of a pack's index.tsv. Lines are only appended;
++ *    keys already in the file are read at start and never saved again, so
++ *    the folder grows over several sessions without repeats.
++ *
++ * Only textures a pack could replace are saved (TextureCache::
++ * IsReplacementCandidate, and not data the GPU wrote, such as render
++ * targets: ComputeReplacementKey refuses those). Saving stops at
++ * `texture_capture_limit_mb` of files in the folder, so a long session can't
++ * fill the disk. Any error is logged once and turns capture off for the
++ * session; the game itself is never affected. Off by default.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++#include <string>
++
++#include <rex/graphics/xenos.h>
++
++namespace rex::graphics::texture_capture {
++
++// Whether capture is on: `texture_capture_path` is set and nothing has gone
++// wrong yet. Cheap; the texture cache asks it for every texture it creates.
++bool Enabled();
++
++// Saves one texture, unless its key was saved before or the size limit is
++// reached. `blocks` and `size`: the base level as ComputeKey leaves it in its
++// scratch (rows of blocks without padding, byte-swapped). Called on the GPU
++// thread; also safe from any other thread.
++void Capture(uint64_t key, xenos::TextureFormat format, uint32_t width, uint32_t height,
++             const uint8_t* blocks, size_t size);
++
++// The DDS header (with its "DDS " magic: 128 bytes) for a base level of this
++// format and size, or an empty string for a format a pack can't hold. For
++// tests, and used by Capture.
++std::string MakeDdsHeader(xenos::TextureFormat format, uint32_t width, uint32_t height,
++                          size_t data_size);
++
++}  // namespace rex::graphics::texture_capture
+diff --git a/src/graphics/CMakeLists.txt b/src/graphics/CMakeLists.txt
+index b7be39b..a8b49e6 100644
+--- a/src/graphics/CMakeLists.txt
++++ b/src/graphics/CMakeLists.txt
+@@ -26,6 +26,7 @@ set(REXGPU_XENOS_SOURCES
+     pipeline/render_target/cache.cpp
+     shared_memory.cpp
+     pipeline/texture/cache.cpp
++    pipeline/texture/capture.cpp
+     pipeline/texture/replacement.cpp
+     pipeline/shader/interpreter.cpp
+     pipeline/shader/translator.cpp
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index 0f7c198..1158509 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -27,6 +27,7 @@
+ #include <rex/graphics/flags.h>
+ #include <rex/graphics/native_census.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
++#include <rex/graphics/pipeline/texture/capture.h>
+ #include <rex/graphics/gpu_stats.h>
+ #include <rex/graphics/pipeline/texture/info.h>
+ #include <rex/graphics/pipeline/texture/replacement.h>
+@@ -1152,6 +1153,17 @@ TextureCache::Texture* TextureCache::FindOrCreateTexture(TextureKey key) {
+     std::optional<uint64_t> denied_key;
+     uint64_t load_id = 0;
+     uint32_t policy_generation = 0;
++    // [setup-layout] 2026-11-24 texture capture (texture_capture_path): the
++    // texture's base level is saved under its pack key the first time it's
++    // created, so the games without a texture ripper can get HD packs too
++    // (capture.h). Before the replacement lookup, which reuses the scratch.
++    if (texture_capture::Enabled() && IsReplacementCandidate(key)) {
++      uint64_t capture_key;
++      if (ComputeReplacementKey(key, capture_key)) {
++        texture_capture::Capture(capture_key, key.format, key.GetWidth(), key.GetHeight(),
++                                 replacement_key_scratch_.data(), replacement_key_scratch_.size());
++      }
++    }
+     if (replacement_index_ && IsReplacementCandidate(key)) {
+       // The policy as of now: the texture remembers the generation, so a
+       // later change is noticed (ReplacementDecisionChanged).
+diff --git a/src/graphics/pipeline/texture/capture.cpp b/src/graphics/pipeline/texture/capture.cpp
+new file mode 100644
+index 0000000..950a414
+--- /dev/null
++++ b/src/graphics/pipeline/texture/capture.cpp
+@@ -0,0 +1,256 @@
++/**
++ * @file        graphics/pipeline/texture/capture.cpp
++ * @brief       Texture capture: see rex/graphics/pipeline/texture/capture.h.
++ *
++ * @license     BSD 3-Clause License
++ *              See LICENSE file in the project root for full license text.
++ */
++
++#include <rex/graphics/pipeline/texture/capture.h>
++
++#include <algorithm>
++#include <atomic>
++#include <cstring>
++#include <filesystem>
++#include <fstream>
++#include <mutex>
++#include <string_view>
++#include <system_error>
++#include <unordered_set>
++
++#include <fmt/format.h>
++
++#include <rex/cvar.h>
++#include <rex/filesystem.h>
++#include <rex/graphics/pipeline/texture/replacement.h>
++#include <rex/logging.h>
++
++// Read once, the first time a texture is created: set it at start (on the
++// command line or in the game's settings file).
++REXCVAR_DEFINE_STRING(texture_capture_path, "", "GPU",
++                      "Folder to save the textures the game draws with (DDS files and "
++                      "captured.tsv), for making an HD texture pack. Empty = off")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_INT32(texture_capture_limit_mb, 8192, "GPU",
++                     "Texture capture stops once its folder holds this many MB of files")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++namespace rex::graphics::texture_capture {
++
++namespace {
++
++constexpr std::string_view kListName = "captured.tsv";
++
++// Everything below is guarded by `mutex`; `enabled` is read without it (a
++// stale "true" only means one more call that returns early under the lock).
++struct State {
++  std::mutex mutex;
++  std::atomic<bool> enabled{false};
++  bool started = false;
++  std::filesystem::path folder;
++  std::unordered_set<uint64_t> saved;
++  uint64_t bytes = 0;
++  uint64_t limit = 0;
++  bool limit_logged = false;
++  uint32_t saved_this_session = 0;
++};
++
++State& GetState() {
++  static State state;
++  return state;
++}
++
++void PutU32(std::string& out, size_t offset, uint32_t value) {
++  // DDS is little-endian whatever the host.
++  for (int i = 0; i < 4; ++i) {
++    out[offset + i] = char((value >> (8 * i)) & 0xFF);
++  }
++}
++
++uint32_t FourCC(const char (&code)[5]) {
++  return uint32_t(uint8_t(code[0])) | uint32_t(uint8_t(code[1])) << 8 |
++         uint32_t(uint8_t(code[2])) << 16 | uint32_t(uint8_t(code[3])) << 24;
++}
++
++// Turns capture off for the session, with one log line saying why.
++void Stop(State& s, const std::string& why) {
++  s.enabled = false;
++  REXGPU_WARN("Texture capture: {}; capture is off for this session ({} textures saved)", why,
++              s.saved_this_session);
++}
++
++// Reads the keys already in captured.tsv and the size of the folder's files,
++// so a new session adds only textures not saved before.
++bool Start(State& s) {
++  s.started = true;
++  const std::string path = REXCVAR_GET(texture_capture_path);
++  if (path.empty()) {
++    return false;
++  }
++  s.folder = rex::to_path(path);
++  std::error_code ec;
++  std::filesystem::create_directories(s.folder, ec);
++  if (ec || !std::filesystem::is_directory(s.folder, ec)) {
++    REXGPU_WARN("Texture capture: can't make the folder {}; capture is off", path);
++    return false;
++  }
++  // At least 16 MB, so a mistyped 0 or negative value doesn't save nothing silently.
++  s.limit = uint64_t(std::max<int32_t>(REXCVAR_GET(texture_capture_limit_mb), 16)) << 20;
++  for (const auto& entry : std::filesystem::directory_iterator(s.folder, ec)) {
++    std::error_code size_ec;
++    if (entry.is_regular_file(size_ec)) {
++      uint64_t size = entry.file_size(size_ec);
++      if (!size_ec) {
++        s.bytes += size;
++      }
++    }
++  }
++  std::ifstream list(s.folder / std::string(kListName));
++  std::string line;
++  while (std::getline(list, line)) {
++    if (!line.empty() && line.back() == '\r') line.pop_back();  // CR LF (a list edited on Windows)
++    if (line.empty() || line[0] == '#') {
++      continue;
++    }
++    uint64_t key;
++    if (texture_replacement::ParseKey(std::string_view(line).substr(0, line.find('\t')), key)) {
++      s.saved.insert(key);
++    }
++  }
++  REXGPU_INFO("Texture capture: saving new textures to {} ({} saved before, {} MB of {} MB used)",
++              path, s.saved.size(), s.bytes >> 20, s.limit >> 20);
++  return true;
++}
++
++}  // namespace
++
++std::string MakeDdsHeader(xenos::TextureFormat format, uint32_t width, uint32_t height,
++                          size_t data_size) {
++  // DDS_HEADER flags and the pixel format, from the DDS file format's
++  // documentation: CAPS | HEIGHT | WIDTH | PIXELFORMAT, plus LINEARSIZE for
++  // compressed data or PITCH for uncompressed.
++  constexpr uint32_t kCaps = 0x1, kHeight = 0x2, kWidth = 0x4, kPitch = 0x8, kPixelFormat = 0x1000,
++                     kLinearSize = 0x80000;
++  constexpr uint32_t kPfFourCC = 0x4, kPfRgb = 0x40, kPfAlphaPixels = 0x1;
++  constexpr uint32_t kCapsTexture = 0x1000;
++  uint32_t four_cc = 0;
++  switch (format) {
++    case xenos::TextureFormat::k_DXT1:
++      four_cc = FourCC("DXT1");
++      break;
++    case xenos::TextureFormat::k_DXT2_3:
++      four_cc = FourCC("DXT3");
++      break;
++    case xenos::TextureFormat::k_DXT4_5:
++      four_cc = FourCC("DXT5");
++      break;
++    case xenos::TextureFormat::k_DXN:
++      four_cc = FourCC("ATI2");  // BC5, as the pack's DDS files and the ripper name it
++      break;
++    case xenos::TextureFormat::k_8_8_8_8:
++      break;
++    default:
++      return std::string();
++  }
++  std::string out(128, '\0');
++  std::memcpy(out.data(), "DDS ", 4);
++  PutU32(out, 4, 124);  // dwSize
++  if (four_cc) {
++    PutU32(out, 8, kCaps | kHeight | kWidth | kPixelFormat | kLinearSize);
++    PutU32(out, 20, uint32_t(data_size));  // dwPitchOrLinearSize: the level's bytes
++  } else {
++    PutU32(out, 8, kCaps | kHeight | kWidth | kPixelFormat | kPitch);
++    PutU32(out, 20, width * 4);  // dwPitchOrLinearSize: one row's bytes
++  }
++  PutU32(out, 12, height);
++  PutU32(out, 16, width);
++  PutU32(out, 28, 1);  // dwMipMapCount: the base level only
++  // DDS_PIXELFORMAT at 76.
++  PutU32(out, 76, 32);
++  if (four_cc) {
++    PutU32(out, 80, kPfFourCC);
++    PutU32(out, 84, four_cc);
++  } else {
++    // B, G, R, A in memory (replacement.h: the order the guest data has after
++    // the GPU's byte swap), which is what these masks describe.
++    PutU32(out, 80, kPfRgb | kPfAlphaPixels);
++    PutU32(out, 88, 32);
++    PutU32(out, 92, 0x00FF0000);
++    PutU32(out, 96, 0x0000FF00);
++    PutU32(out, 100, 0x000000FF);
++    PutU32(out, 104, 0xFF000000);
++  }
++  PutU32(out, 108, kCapsTexture);
++  return out;
++}
++
++bool Enabled() {
++  State& s = GetState();
++  if (!s.started) {
++    std::lock_guard<std::mutex> lock(s.mutex);
++    if (!s.started) {
++      s.enabled = Start(s);
++    }
++  }
++  return s.enabled;
++}
++
++void Capture(uint64_t key, xenos::TextureFormat format, uint32_t width, uint32_t height,
++             const uint8_t* blocks, size_t size) {
++  State& s = GetState();
++  if (!Enabled() || !blocks || !size) {
++    return;
++  }
++  std::lock_guard<std::mutex> lock(s.mutex);
++  if (!s.enabled || s.saved.count(key)) {
++    return;
++  }
++  const std::string header = MakeDdsHeader(format, width, height, size);
++  if (header.empty()) {
++    return;  // not a format a pack can hold (IsReplacementCandidate already checks this)
++  }
++  if (s.bytes + header.size() + size > s.limit) {
++    if (!s.limit_logged) {
++      s.limit_logged = true;
++      REXGPU_WARN("Texture capture: the folder has reached texture_capture_limit_mb ({} MB); no "
++                  "more textures are saved",
++                  s.limit >> 20);
++    }
++    return;
++  }
++  const std::string file = fmt::format("{:016x}.dds", key);
++  // Written under another name and renamed, so a crash never leaves a short
++  // file under the real name (the setup tool would reject it, but then the key
++  // would never be saved again).
++  const std::filesystem::path final_path = s.folder / file;
++  const std::filesystem::path temp_path = s.folder / (file + ".part");
++  {
++    std::ofstream out(temp_path, std::ios::binary | std::ios::trunc);
++    out.write(header.data(), std::streamsize(header.size()));
++    out.write(reinterpret_cast<const char*>(blocks), std::streamsize(size));
++    if (!out) {
++      Stop(s, "can't write " + rex::path_to_utf8(temp_path));
++      return;
++    }
++  }
++  std::error_code ec;
++  std::filesystem::rename(temp_path, final_path, ec);
++  if (ec) {
++    std::filesystem::remove(temp_path, ec);
++    Stop(s, "can't rename " + rex::path_to_utf8(temp_path));
++    return;
++  }
++  // The list line goes last: a key is listed only once its file is complete.
++  std::ofstream list(s.folder / std::string(kListName), std::ios::binary | std::ios::app);
++  list << fmt::format("{:016x}\t{}\t{}\t{}\t{}\n", key, width, height, uint32_t(format), file);
++  if (!list) {
++    Stop(s, "can't add to " + std::string(kListName));
++    return;
++  }
++  s.saved.insert(key);
++  s.bytes += header.size() + size;
++  ++s.saved_this_session;
++}
++
++}  // namespace rex::graphics::texture_capture

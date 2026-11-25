@@ -1,0 +1,44 @@
+# Codegen overrides for Call of Duty Classic's default.xex (Xbox Live Arcade, title 58410957,
+# media ID 1F7E7EEE, version 0.0.1.2, built 2009-09-12 06:38:49 UTC),
+# SHA-1 4b01c0e8968f86d68bfce1a699f23da2a0025c84. [acct2-uo]
+#
+# The same keys as Call of Duty 3's recomp/config/default.toml (the SDK's src/codegen/config.cpp
+# reads them). Addresses here are CoD Classic's own; how each one was found is in
+# dev/agents/acct2-uo/NOTES.md.
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (C runtime), found by their callers (11-07 22:46): Com_Frame (0x8207F060) and
+# Com_Init begin with setjmp on the abort frame 0x82640AA0, and Com_Error longjmps to it with -1; the
+# script VM keeps a second jmp_buf at 0x82814A90 (five longjmps to it in 0x820B0000-, two in
+# 0x820A0000-). longjmp 0x821EFF40 (788 bytes) ends 12 bytes before setjmp 0x821F0260. As in Call of
+# Duty 2's file, the codegen turns each setjmp call into a host setjmp keyed by the guest jmp_buf and
+# each longjmp into the host's, so an error (ERR_DROP: a missing map, a script error) gets back to the
+# frame loop instead of returning into the middle of a translated function. Before this, the builds
+# up to b9 translated both as plain functions.
+# ---------------------------------------------------------------------------
+setjmp_address = 0x821F0260
+longjmp_address = 0x821EFF40
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own. The first codegen (2026-11-07 21:56) stopped
+# with three "UnresolvedCall" errors: tail branches (b, not bl) to code that no .pdata entry and no
+# call names. As in Call of Duty 3's and Call of Duty 2's files, the codegen works out each one's
+# extent itself.
+# ---------------------------------------------------------------------------
+[functions]
+0x8213F088 = {}  # b from 0x8213F9F4
+0x8213FA10 = {}  # b from 0x8213FDDC
+0x821EF3B0 = {}  # b from 0x821EF574
+
+# Called at run time but not found by the codegen (run acct2-uo-r9, 2026-11-07 23:33: "[FATAL] Call to
+# invalid or unregistered function at guest address 0x8208BDF8", right after the GPU interrupt callback
+# was set). It sat inside sub_8208BDE8, one of a row of short functions 0x10 apart (0x8208BD98 ..
+# 0x8208BDE8), probably reached only through a table of pointers.
+0x8208BDF8 = {}  # indirect call target (run r9)
+
+# 0x8210A370 (336 bytes by Ghidra, two callers) branches into the body of 0x8210A4C0 (1,060 bytes,
+# six callers): the compiler shared their code. The codegen took part of 0x8210A4C0 into
+# 0x8210A370 (labels up to 0x8210A7B0) but not the blocks at 0x8210A820, 0x8210A8C0, 0x8210A8C4
+# and 0x8210A8D8 (compile errors "use of undeclared label", 22:00). Its end is set to
+# 0x8210A4C0's, so it holds all of the shared code; 0x8210A4C0 stays a function of its own.
+0x8210A370 = { end = 0x8210A8E8 }

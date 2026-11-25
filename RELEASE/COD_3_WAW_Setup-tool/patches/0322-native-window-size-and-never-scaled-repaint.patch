@@ -1,0 +1,222 @@
+diff --git a/include/rex/ui/presenter.h b/include/rex/ui/presenter.h
+--- a/include/rex/ui/presenter.h
++++ b/include/rex/ui/presenter.h
+@@ -400,6 +400,26 @@
+   // Requests (re)painting with the UI if there's UI to draw.
+   void RequestUIPaintFromUIThread();
+ 
++  // [cod3 0322] For a program that draws its guest output at exactly the size it is shown at (Call of Duty 3's
++  // native renderer): when the output rectangle isn't the guest output's size (the window has just changed and the
++  // program hasn't drawn at the new size yet), the guest output is shown at its own size, centred on the rectangle
++  // (cropped where it is larger, with bars where it is smaller), never scaled. Off (the default): stretched into the
++  // rectangle as before. Any thread.
++#define REX_UI_PRESENTER_GUEST_OUTPUT_NEVER_SCALED 1
++  void SetGuestOutputNeverScaled(bool never_scaled) {
++    guest_output_never_scaled_.store(never_scaled, std::memory_order_relaxed);
++  }
++  bool IsGuestOutputNeverScaled() const { return guest_output_never_scaled_.load(std::memory_order_relaxed); }
++  // Paints since the start, and how many of them showed the guest output at another size than its own (tests).
++  struct GuestOutputScaleCounts {
++    uint64_t painted = 0;
++    uint64_t scaled = 0;
++  };
++  GuestOutputScaleCounts GetGuestOutputScaleCounts() const {
++    return {guest_output_painted_.load(std::memory_order_relaxed),
++            guest_output_scaled_.load(std::memory_order_relaxed)};
++  }
++
+  protected:
+   enum class PaintResult {
+     kPresented,
+@@ -759,6 +779,11 @@
+   void ExecuteUIDrawersFromUIThread(UIDrawContext& ui_draw_context);
+ 
+  private:
++  // [cod3 0322] SetGuestOutputNeverScaled, and GetGuestOutputPaintFlow's counts (it is const: counters only)
++  std::atomic<bool> guest_output_never_scaled_{false};
++  mutable std::atomic<uint64_t> guest_output_painted_{0};
++  mutable std::atomic<uint64_t> guest_output_scaled_{0};
++
+   enum class PaintMode {
+     // Don't paint at all.
+     // Painting lifecycle is accessible only by the UI thread.
+diff --git a/include/rex/ui/window.h b/include/rex/ui/window.h
+--- a/include/rex/ui/window.h
++++ b/include/rex/ui/window.h
+@@ -275,6 +275,14 @@
+   bool IsFullscreen() const { return fullscreen_; }
+   void SetFullscreen(bool new_fullscreen);
+ 
++  // [cod3 0322] The client area's size in physical pixels, for a program that draws a chosen resolution one to one:
++  // the window is asked for width x height. Only for a window that is open and windowed (not fullscreen, maximized
++  // or minimized); otherwise, or when the window system refuses, false and nothing changes. The new size arrives
++  // the usual way (the actual size, then the desired logical size, as from a user's resize); a window system may
++  // give less than asked (a window larger than the screen), and the actual size then says what it gave.
++#define REX_UI_WINDOW_SET_CLIENT_PHYSICAL_SIZE 1
++  bool SetClientPhysicalSize(uint32_t width, uint32_t height);
++
+   // Fullscreen at this refresh rate, in an exclusive display mode at the
+   // desktop's resolution (the closest rate the display offers); 0 = borderless
+   // at the desktop's own mode. Applies at once when already fullscreen.
+@@ -564,6 +572,12 @@
+   // ApplyNew* means that the value has actually been changed to something
+   // different than it was previously.
+   virtual void ApplyNewFullscreen() {}
++  // [cod3 0322] SetClientPhysicalSize's request to the window system; false when it can't be made.
++  virtual bool ApplyNewClientPhysicalSize(uint32_t width, uint32_t height) {
++    (void)width;
++    (void)height;
++    return false;
++  }
+   virtual void ApplyNewDisplayChoice() {}
+   virtual void ApplyNewTitle() {}
+   // can_apply_state_in_current_phase whether the window is in a life cycle
+diff --git a/include/rex/ui/window_sdl.h b/include/rex/ui/window_sdl.h
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -54,6 +54,7 @@
+   void RequestCloseImpl() override;
+ 
+   void ApplyNewFullscreen() override;
++  bool ApplyNewClientPhysicalSize(uint32_t width, uint32_t height) override;  // [cod3 0322]
+   // SDL_SetWindowFullscreenMode for GetFullscreenRefreshRate().
+   void ApplyFullscreenDisplayMode();
+   // start_in_background: goes fullscreen the first time the window gets the
+diff --git a/src/ui/presenter.cpp b/src/ui/presenter.cpp
+--- a/src/ui/presenter.cpp
++++ b/src/ui/presenter.cpp
+@@ -38,6 +38,10 @@
+ REXCVAR_DEFINE_BOOL(host_present_from_non_ui_thread, true, "UI/Presenter",
+                     "Allow presentation from non-UI thread");
+ 
++// [cod3 0322] tests: each paint that shows the guest output at another size than its own, and a total every 2 s
++REXCVAR_DEFINE_BOOL(present_log_scaled_frames, false, "UI/Presenter",
++                    "Log each painted frame whose guest output is shown at another size than its own (scaled), and "
++                    "every 2 seconds how many frames were painted and scaled");
+ REXCVAR_DEFINE_BOOL(present_letterbox, true, "UI/Presenter",
+                     "Enable letterboxing for non-native aspect ratios");
+ 
+@@ -1104,6 +1108,29 @@
+         rescale_unsigned(output_height, host_rt_height, surface_height_in_paint_connection_);
+   }
+ 
++  // [cod3 0322] A guest output drawn at exactly the size it is shown at (SetGuestOutputNeverScaled) that isn't the
++  // rectangle's size now (the window has just changed; the next picture will be drawn at the new size): shown at its
++  // own size, centred on the rectangle, cut off where it is larger (the rectangle may reach outside the render
++  // target, as with overscan) and with bars where it is smaller (the letterbox rectangles below are made from this
++  // place). Each pixel stays one pixel: never resampled.
++  const bool never_scaled = guest_output_never_scaled_.load(std::memory_order_relaxed);
++  if (never_scaled && (output_width != properties.frontbuffer_width ||
++                       output_height != properties.frontbuffer_height)) {
++    flow.output_x += (int32_t(output_width) - int32_t(properties.frontbuffer_width)) / 2;
++    flow.output_y += (int32_t(output_height) - int32_t(properties.frontbuffer_height)) / 2;
++    output_width = properties.frontbuffer_width;
++    output_height = properties.frontbuffer_height;
++    static std::atomic<uint64_t> logged_size{0};
++    static std::atomic<int> logged_lines{0};
++    const uint64_t size = uint64_t(output_width) << 32 | output_height;
++    if (logged_size.exchange(size, std::memory_order_relaxed) != size &&
++        logged_lines.fetch_add(1, std::memory_order_relaxed) < 32) {
++      REXLOG_INFO("Presenter: the guest output ({}x{}) is shown at its own size at {},{} in the {}x{} render target "
++                  "until the next one is drawn at the new size (never scaled)",
++                  output_width, output_height, flow.output_x, flow.output_y, host_rt_width, host_rt_height);
++    }
++  }
++
+   // The out-of-bounds checks are needed for correct letterbox calculations.
+   // Though this normally shouldn't happen, but in case of rounding issues with
+   // extreme values.
+@@ -1113,7 +1140,8 @@
+   // spaces diverge unexpectedly), the computed output may become anchored at
+   // the top-left and smaller than the host render target. This results in only
+   // a top-left region being presented with black right/bottom areas.
+-  if (flow.output_x >= 0 && flow.output_y >= 0 && flow.output_x <= 1 && flow.output_y <= 1 &&
++  // [cod3 0322] not for a guest output that is never scaled: this would stretch it
++  if (!never_scaled && flow.output_x >= 0 && flow.output_y >= 0 && flow.output_x <= 1 && flow.output_y <= 1 &&
+       output_width < host_rt_width && output_height < host_rt_height) {
+     static std::atomic<bool> logged_top_left_expand = false;
+     if (!logged_top_left_expand.exchange(true)) {
+@@ -1131,6 +1159,30 @@
+       flow.output_x >= int32_t(host_rt_width) || flow.output_y >= int32_t(host_rt_height)) {
+     return flow;
+   }
++  // [cod3 0322] counted: painted, and scaled when the guest output isn't shown at its own size
++  {
++    const uint64_t painted = guest_output_painted_.fetch_add(1, std::memory_order_relaxed) + 1;
++    const bool scaled =
++        output_width != properties.frontbuffer_width || output_height != properties.frontbuffer_height;
++    const uint64_t scaled_count = guest_output_scaled_.fetch_add(scaled ? 1 : 0, std::memory_order_relaxed) +
++                                  (scaled ? 1 : 0);
++    if (REXCVAR_GET(present_log_scaled_frames)) {
++      if (scaled) {
++        REXLOG_INFO("Presenter: painted frame {} scaled: the guest output {}x{} shown as {}x{} at {},{}", painted,
++                    properties.frontbuffer_width, properties.frontbuffer_height, output_width, output_height,
++                    flow.output_x, flow.output_y);
++      }
++      static std::atomic<uint64_t> last_total_ms{0};
++      const uint64_t now_ms = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
++                                           std::chrono::steady_clock::now().time_since_epoch())
++                                           .count());
++      uint64_t last = last_total_ms.load(std::memory_order_relaxed);
++      if (now_ms - last >= 2000 && last_total_ms.compare_exchange_strong(last, now_ms)) {
++        REXLOG_INFO("Presenter: {} frames painted, {} of them scaled (never scaled: {})", painted, scaled_count,
++                    never_scaled ? "on" : "off");
++      }
++    }
++  }
+ 
+   // The output image may have a part of it outside the final render target (if
+   // using the overscan area to stretch the image to the entire surface while
+diff --git a/src/ui/window.cpp b/src/ui/window.cpp
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -327,6 +327,19 @@
+   }
+ }
+ 
++// [cod3 0322]
++bool Window::SetClientPhysicalSize(uint32_t width, uint32_t height) {
++  if (!width || !height || fullscreen_ || !CanApplyState()) {
++    return false;
++  }
++  WindowDestructionReceiver destruction_receiver(this);
++  const bool asked = ApplyNewClientPhysicalSize(width, height);
++  if (destruction_receiver.IsWindowDestroyedOrStateInapplicable()) {
++    return false;
++  }
++  return asked;
++}
++
+ void Window::SetFullscreenRefreshRate(double hz) {
+   hz = hz > 0.0 ? hz : 0.0;
+   if (fullscreen_refresh_rate_ == hz) {
+diff --git a/src/ui/window_sdl.cpp b/src/ui/window_sdl.cpp
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -579,6 +579,26 @@
+   SDL_SetWindowFullscreen(sdl_window_, IsFullscreen());
+ }
+ 
++// [cod3 0322] SDL window coordinates are physical pixels on Windows and X11 and points on macOS (as in OpenImpl).
++bool WindowSDL::ApplyNewClientPhysicalSize(uint32_t width, uint32_t height) {
++  if (!sdl_window_) {
++    return false;
++  }
++  if (SDL_GetWindowFlags(sdl_window_) &
++      (SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED)) {
++    return false;
++  }
++#if REX_PLATFORM_MAC
++  width = SizeToLogical(width);
++  height = SizeToLogical(height);
++#endif
++  if (!SDL_SetWindowSize(sdl_window_, int(width), int(height))) {
++    REXLOG_WARN("window: the client size {}x{} couldn't be asked for: {}", width, height, SDL_GetError());
++    return false;
++  }
++  return true;
++}
++
+ void WindowSDL::ApplyNewDisplayChoice() {
+   if (!sdl_window_) {
+     return;

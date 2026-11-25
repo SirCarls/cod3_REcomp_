@@ -1,0 +1,14 @@
+# Codegen overrides for CoD Classic's ui_sp.xdl (from its Xbox Live Arcade package). [acct2-uo]
+# How each one was found: dev/agents/acct2-uo/NOTES.md.
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own: tail branches (b) to code no .pdata entry names
+# (the codegen with the package, 2026-11-07 23:16).
+# ---------------------------------------------------------------------------
+[functions]
+0x89030AA8 = {}  # b from 0x89018800
+
+# Called at run time but not found by the codegen (run acct2-uo-r11, 2026-11-07 23:45: "[FATAL] Call to
+# invalid or unregistered function at guest address 0x89030B50", right after the module was loaded with its
+# 1537 functions).
+0x89030B50 = {}  # indirect call target (run r11)

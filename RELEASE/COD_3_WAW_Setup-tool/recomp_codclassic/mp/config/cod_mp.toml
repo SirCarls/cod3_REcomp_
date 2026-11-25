@@ -1,0 +1,26 @@
+# Codegen overrides for Call of Duty Classic's multiplayer program cod_mp.xex (Xbox Live Arcade,
+# title 58410957, media ID 1F7E7EEE, version 0.0.1.2, built 2009-09-12 06:42:10 UTC),
+# SHA-1 a8b6fa93d72f46159caf34e9575830a609383026. [acct2-uo]
+#
+# As ../../config/default.toml, for the multiplayer program's own addresses (NOTES.md).
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (C runtime), found by their callers as in the campaign's file: Com_Frame
+# (0x82088560) and Com_Init setjmp on the abort frame 0x82650600, Com_Error longjmps to it with -1,
+# and the script VM loops on setjmp(0x8282EE10). longjmp 0x821FE360 sits right before setjmp
+# 0x821FE680 (the campaign's layout).
+# ---------------------------------------------------------------------------
+setjmp_address = 0x821FE680
+longjmp_address = 0x821FE360
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own. The first MP codegen (2026-11-07 21:58)
+# stopped on one "UnresolvedCall": a tail branch (b) to code no .pdata entry names.
+# ---------------------------------------------------------------------------
+[functions]
+0x820E0990 = {}  # b from 0x820D7AA0
+
+# 0x82118CB8 branches into the body of 0x82118E08 (1,060 bytes): the campaign's 0x8210A370 and
+# 0x8210A4C0 again (same layout, same compile errors at the same offsets, 22:03). Its end is set to
+# 0x82118E08's, so it holds all of the shared code.
+0x82118CB8 = { end = 0x82119230 }

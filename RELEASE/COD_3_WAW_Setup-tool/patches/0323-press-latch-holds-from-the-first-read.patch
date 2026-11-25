@@ -1,0 +1,127 @@
+diff --git a/include/rex/input/press_latch.h b/include/rex/input/press_latch.h
+--- a/include/rex/input/press_latch.h
++++ b/include/rex/input/press_latch.h
+@@ -12,9 +12,22 @@
+  * - A press is a button going down, or a trigger rising from below
+  *   kTriggerThreshold; a trigger's latch keeps the highest value it reached.
+  * - The first read after the press shows it, and so does every read within
+- *   kHoldNs of the press (a game that reads a pad twice in one frame sees it
+- *   both times). After that it is gone.
+- * - A press still held at a read is simply the pad's state: the latch drops it.
++ *   kHoldNs of that first read (a game that reads a pad several times in one
++ *   frame sees it every time). After that it is gone.
++ *   [cod3 0323] Was: within kHoldNs (4 ms) of the press itself. A press that
++ *   ended between two frames' reads was then shown to whichever read came
++ *   first, and only to it: with two readers a frame (Call of Duty 3 reads the
++ *   pad from several places in a frame, and the port's cutscene skip reads it
++ *   too), the read that builds the game's input often saw it released. At 20
++ *   fps a 20 ms tap reached the game about one time in seven (rexglue-native
++ *   thread2, the scripted pad). The window now starts at the first read that
++ *   shows it and lasts 25 ms: every read of that frame sees it (a frame's reads
++ *   come a few ms apart on the game's thread), and at 144 fps the same press
++ *   shows for 3-4 frames as one short continuous press, so a toggle still sees
++ *   one edge and nothing doubles.
++ * - A press still held at a read is simply the pad's state. [cod3 0323] That read
++ *   also starts its window: let go within it, the reads left in it still show it
++ *   (a frame's second reader); a hold longer than the window is never lengthened.
+  * - Nothing is delayed: a read never shows less than the pad as it is.
+  *
+  * Plain values only (no SDK types), so the drivers and a unit test share it.
+@@ -29,8 +42,12 @@
+ 
+ class PressLatch {
+  public:
+-  // Reads closer together than this after a press all show it.
+-  static constexpr uint64_t kHoldNs = 4'000'000;
++  // Reads within this of the first read that shows a press all show it ([cod3 0323] 25 ms; was 4 ms from the press).
++  static constexpr uint64_t kHoldNs = 25'000'000;
++  // [cod3 0323] A press the pad itself shows at a read: let go within this of that read, the reads left in it still
++  // show it (the frame's other readers, 0-1 ms apart in Call of Duty 3); short, so a hold is lengthened by at most
++  // this, and only a press shorter than it from the first read that saw it.
++  static constexpr uint64_t kSeenHeldNs = 8'000'000;
+   // XInput's trigger threshold (rex/input/state_merge.h's kTriggerThreshold).
+   static constexpr uint8_t kTriggerPressed = 30;
+ 
+@@ -39,7 +56,7 @@
+     const uint16_t down = static_cast<uint16_t>(after & ~before);
+     for (int i = 0; i < 16; ++i) {
+       if (down & (1u << i)) {
+-        buttons_[i] = {now_ns, false, true};
++        buttons_[i] = {now_ns, kHoldNs, false, true};
+       }
+     }
+   }
+@@ -53,7 +70,7 @@
+     if (e.on) {
+       peak_[which] = std::max(peak_[which], after);
+     } else if (before < kTriggerPressed) {
+-      e = {now_ns, false, true};
++      e = {now_ns, kHoldNs, false, true};
+       peak_[which] = after;
+     }
+   }
+@@ -70,7 +87,10 @@
+       }
+       const uint16_t bit = static_cast<uint16_t>(1u << i);
+       if (buttons & bit) {
+-        e.on = false;  // still held: the pad shows it
++        // [cod3 0323] still held: the pad shows it. Its window starts at the first read that sees it (as for a
++        // released one), and it ends there: a press let go before the next read of that frame (a second reader a
++        // few ms later) is still shown to it; a hold longer than the window is never lengthened.
++        Seen(e, now_ns);
+         continue;
+       }
+       if (Show(e, now_ns)) {
+@@ -85,7 +105,7 @@
+         continue;
+       }
+       if (*value[t] >= peak_[t]) {
+-        e.on = false;  // the pad shows as much
++        Seen(e, now_ns);  // [cod3 0323] the pad shows as much (see the buttons)
+         continue;
+       }
+       if (Show(e, now_ns)) {
+@@ -113,20 +133,38 @@
+  private:
+   struct Entry {
+     uint64_t at_ns = 0;
++    uint64_t window_ns = kHoldNs;  // [cod3 0323] kSeenHeldNs once a read saw it held
+     bool shown = false;
+     bool on = false;
+   };
+ 
++  // [cod3 0323] A read at `now_ns` where the pad itself shows the press: its window starts here if no read has shown
++  // it yet, and it is let go once the window has passed (the pad shows it as long as it is held).
++  static void Seen(Entry& e, uint64_t now_ns) {
++    if (!e.shown) {
++      e.shown = true;
++      e.at_ns = now_ns;
++      e.window_ns = kSeenHeldNs;
++    } else if (now_ns >= e.at_ns + e.window_ns) {
++      e.on = false;
++    }
++  }
++
+   // Whether a read at `now_ns` shows the press; ends it once it has been
+-  // shown and its hold has passed.
++  // shown and its hold has passed. [cod3 0323] The hold runs from the first
++  // read that shows it (at_ns is set there), not from the press.
+   static bool Show(Entry& e, uint64_t now_ns) {
+-    const bool within = now_ns < e.at_ns + kHoldNs;
+-    const bool show = !e.shown || within;
+-    e.shown = true;
++    if (!e.shown) {
++      e.shown = true;
++      e.at_ns = now_ns;
++      e.window_ns = kHoldNs;
++      return true;
++    }
++    const bool within = now_ns < e.at_ns + e.window_ns;
+     if (!within) {
+       e.on = false;
+     }
+-    return show;
++    return within;
+   }
+ 
+   std::array<Entry, 16> buttons_{};

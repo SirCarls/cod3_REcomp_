@@ -1,0 +1,11 @@
+address	name	wrapper	why
+001F14E0	RpWorldCreate	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: a world made: kept as alive (a dead world at the same address is alive again)
+001F5700	RpWorldStreamRead	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: a world read from a level's file: the same
+001F1450	RpWorldDestroy	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: a world freed: kept as dead until an object still in it is taken out
+001F3CC0	atomic frame sync tie	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: an atomic whose world is dead is taken out of it before its frame ties it again to that world's sectors (Road to Remagen)
+001F4960	RpWorldRemoveClump	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: a clump in a dead world is taken out without touching the world
+001F4600	RpWorldRemoveLight	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: a light in a dead world is taken out without touching the world
+001DDA70	RpCollisionWorldForAllIntersections	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: asked of a level section with no world yet: nothing to meet (the sewers' checkpoint restart)
+001CE8E0	RwFrameSyncDirty	fh/src/fh_worlds.c	[waw-decomp/fh3] 2026-11-23: the dirty frames' list cut at a link no frame owns (end of Airfield Ambush)
+000DC320	screen fade step	fh/src/fh_fade.c	[waw-decomp/fh13] 2026-11-24: the fade run once per whole 60th of game time, so it lasts 4.25 s at every frame rate (FRAMERATE-AUDIT.md F10)
+00138F9A	XFONT_TextOut	fh/src/fh_text.c	[waw-decomp-fh2 r19] 2026-11-24: the game's text (subtitles, messages) drawn with its own XFONT code at the picture's size, into a layer over the frame, not into the 640 x 480 back buffer

@@ -1,0 +1,92 @@
+From: [acct2-bro] 2026-11-08
+Subject: kernel_path.c (POSIX): find a path's folders and file whatever their case
+
+Xbox file systems ignore case and a POSIX host does not, so Finest Hour's
+d:\data\dsstdfx.bin was not found in a disc extracted as DATA/dsstdfx.bin, and
+the game stopped on its DirectSound effects image. Each component that isn't
+there as written is looked up again in its folder, ignoring case. Applied to
+the xboxrecomp checkout fh/ builds against: git apply THIS_FILE.
+
+diff --git a/src/kernel/kernel_path.c b/src/kernel/kernel_path.c
+index 2f1edbb..beff470 100644
+--- a/src/kernel/kernel_path.c
++++ b/src/kernel/kernel_path.c
+@@ -670,6 +670,8 @@ translate:
+ #include <sys/types.h>
+ #include <errno.h>
+ #include <fcntl.h>
++#include <dirent.h>
++#include <strings.h>
+ 
+ static char s_game_dir[MAX_PATH];
+ static char s_save_dir[MAX_PATH];
+@@ -684,6 +686,61 @@ static void strip_trailing_slash(char* s)
+         s[len - 1] = '\0';
+ }
+ 
++/* Xbox file systems (the disc's XDVDFS, the hard disk's FATX) ignore case; a
++ * POSIX host does not. A title that asks for d:\data\dsstdfx.bin finds a disc
++ * extracted as DATA/dsstdfx.bin only if each component of the path that isn't
++ * there as written is looked up again in its folder, ignoring case (Finest
++ * Hour, 2026-11-08: its DirectSound effects image). The part of the path up to
++ * fixed_len (the game or save dir) is left alone, and so is everything from
++ * the first component that matches nothing: a file the title is creating
++ * keeps the name it asked for. Costs one stat() when the path is there as
++ * written. */
++static void fold_case_existing(char* path, size_t fixed_len)
++{
++    struct stat st;
++    char* p;
++
++    if (stat(path, &st) == 0 || strlen(path) <= fixed_len)
++        return;
++    p = path + fixed_len;
++    while (*p == '/')
++        p++;
++    while (*p) {
++        char* end = strchr(p, '/');
++        int found = 1;
++
++        if (end)
++            *end = '\0';
++        if (stat(path, &st) != 0 && p > path && p[-1] == '/') {
++            size_t n = strlen(p);
++            DIR* d;
++            struct dirent* e;
++
++            found = 0;
++            p[-1] = '\0';
++            d = opendir(path[0] ? path : "/");
++            p[-1] = '/';
++            if (d) {
++                while ((e = readdir(d)) != NULL) {
++                    if (strlen(e->d_name) == n && strcasecmp(e->d_name, p) == 0) {
++                        memcpy(p, e->d_name, n);
++                        found = 1;
++                        break;
++                    }
++                }
++                closedir(d);
++            }
++        }
++        if (end)
++            *end = '/';
++        if (!found || !end)
++            return;
++        p = end + 1;
++        while (*p == '/')
++            p++;
++    }
++}
++
+ /* Recursively create a directory and all missing parents. */
+ static void mkdir_p(const char* path)
+ {
+@@ -890,6 +947,7 @@ translate:
+             while (n > 1 && host_path_buf[n - 1] == '/')
+                 host_path_buf[--n] = '\0';
+         }
++        fold_case_existing(host_path_buf, strlen(base_dir) + (sub_dir ? strlen(sub_dir) : 0));
+ 
+         XBOX_TRACE(XBOX_LOG_PATH, "%s -> %s", xbox_path, host_path_buf);
+         /* As the Win32 backend does: the bridge reads back the host path

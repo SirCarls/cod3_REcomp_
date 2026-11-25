@@ -1,0 +1,18 @@
+# The recompiler's manifest for Call of Duty: Black Ops (Xbox 360), the campaign and zombies program, built with the
+# same ReXGlue SDK and patches as Call of Duty 3 (../recomp/). [waw-decomp]
+# Laid out as Call of Duty 4's (../recomp_cod4/), which came from World at War's (../recomp_waw/). Black Ops runs on
+# World at War's engine: the hooks come over from World at War through dev/waw-decomp/bo1_360/pairs_sp.tsv.
+#
+# assets/ holds the game's files from the player's Xbox 360 disc (Call of Duty: Black Ops (USA, Europe),
+# default.xex SHA-1 177af142c223a49b126c47b59555dd0a87a45541). The multiplayer program, default_mp.xex (SHA-1
+# d69428cc9e0d56c33bc48f4302fa23dc7d92188e), will get its own folder, mp/, as Call of Duty 4's cod4mp.
+
+[project]
+name = "bo1"
+sdk_version = "0.10.0"
+game_root = "assets"
+
+[entrypoint]
+file_path = "assets/default.xex"
+out_directory_path = "generated/default"
+includes = ["config/default.toml"]

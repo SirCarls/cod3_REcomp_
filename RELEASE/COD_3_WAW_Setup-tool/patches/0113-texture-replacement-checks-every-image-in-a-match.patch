@@ -1,0 +1,309 @@
+diff --git a/include/rex/graphics/pipeline/texture/cache.h b/include/rex/graphics/pipeline/texture/cache.h
+index 10c038c..2449acc 100644
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -284,6 +284,12 @@ class TextureCache {
+       replacement_key_ = replacement_key;
+       replacement_denied_ = true;
+     }
++    // [acct2-main] 0113: whether a replacement texture's image was checked
++    // against the guest's alpha (texture_replacement::EnforceAlpha), so it's
++    // made again, checked, when the policy starts asking for the check
++    // (Policy::check_alpha).
++    bool replacement_alpha_checked() const { return replacement_alpha_checked_; }
++    void set_replacement_alpha_checked(bool checked) { replacement_alpha_checked_ = checked; }
+     // A normal texture standing in while its replacement image is read off the
+     // GPU thread (texture_replacement_async): the id of that read
+     // (TextureCache::RequestReplacementImage), 0 when there's none. Once the
+@@ -336,6 +342,7 @@ class TextureCache {
+     // 0 for a normal texture.
+     uint32_t replacement_level_count_ = 0;
+     bool replacement_denied_ = false;
++    bool replacement_alpha_checked_ = false;  // [acct2-main] 0113
+     uint32_t replacement_policy_generation_ = 0;
+     uint64_t replacement_load_id_ = 0;
+ 
+@@ -704,7 +711,8 @@ class TextureCache {
+   // data and the policy allows it, logging the outcome with
+   // texture_replacement_log. nullptr if not; then `denied_key_out` is set to
+   // the key when only the policy stood in the way (the normal texture made
+-  // instead remembers it, see Texture::SetReplacementDenied). With
++  // instead remembers it, see Texture::SetReplacementDenied) - [acct2-main]
++  // 0113: also when the policy's alpha check alone refused the image. With
+   // texture_replacement_async, the first time a texture's image is needed it is
+   // only asked for: nullptr, and `load_id_out` is the read's id, which the
+   // normal texture made instead keeps (Texture::set_replacement_load_id).
+@@ -724,12 +732,23 @@ class TextureCache {
+     xenos::TextureFormat format;
+     uint32_t width, height, level_count, max_width_height;
+     uint64_t max_bytes;
++    // [acct2-main] 0113: the image is checked against the guest's alpha on the
++    // loader thread (EnforceAlpha), with the guest's base level as
++    // ComputeReplacementKey gathered it (width x height). Part of the id.
++    bool check_alpha = false;
++    std::vector<uint8_t> guest_base;
+   };
+   struct ReplacementImageResult {
+     texture_replacement::Image image;
+     std::string error;
+     bool ok = false;
+     bool too_large = false;
++    // [acct2-main] 0113: checked on the loader thread (the request's
++    // check_alpha); refused by the check (then ok is false); the blocks
++    // ForceOpaque changed.
++    bool alpha_checked = false;
++    bool alpha_refused = false;
++    uint64_t forced_opaque = 0;
+     uint64_t done_time_ms = 0;
+   };
+   // The image for the request, if it has been read (taken out: the caller
+@@ -743,8 +762,10 @@ class TextureCache {
+ 
+   // Whether a texture's replacement decision no longer holds under the
+   // current policy: a replaced texture the policy now refuses, or a texture
+-  // the policy refused that it now allows. Brings the texture's generation up
+-  // to date when the decision holds.
++  // the policy refused that it now allows. [acct2-main] 0113: also a replaced
++  // texture whose image wasn't checked against the guest's alpha, once the
++  // policy asks for the check (Policy::check_alpha). Brings the texture's
++  // generation up to date when the decision holds.
+   bool ReplacementDecisionChanged(Texture& texture);
+   // A replacement texture whose guest data has changed, or any texture whose
+   // replacement decision no longer holds: removes it from the map (so the next
+diff --git a/include/rex/graphics/pipeline/texture/replacement.h b/include/rex/graphics/pipeline/texture/replacement.h
+index f9a2ac3..80d69cb 100644
+--- a/include/rex/graphics/pipeline/texture/replacement.h
++++ b/include/rex/graphics/pipeline/texture/replacement.h
+@@ -49,10 +49,12 @@
+  * texture for them, and creates the texture from the pack's image when the
+  * index has the key and the policy allows it.
+  *
+- * Images from the user pack, and every image while an allow list is in force,
+- * are also checked against the guest texture's alpha (EnforceAlpha): a
+- * replacement for an opaque texture is made opaque, and one for a texture
+- * with transparent parts may not be noticeably more see-through.
++ * Images from the user pack, and every image while an allow list is in force
++ * or `texture_replacement_check_alpha` is on (Policy::check_alpha), are also
++ * checked against the guest texture's alpha (EnforceAlpha): a replacement for
++ * an opaque texture is made opaque, and one for a texture with transparent
++ * parts may not be noticeably more see-through. With texture_replacement_async
++ * the check runs on the image loader thread (0113).
+  *
+  * The policy is live (GetPolicy): `texture_replacement_enabled` turns all
+  * replacement off and on, and `texture_replacement_allow_list` names a file
+@@ -205,6 +207,10 @@ struct Policy {
+   // may be empty: an allow list file that can't be read allows nothing, so a
+   // missing file fails closed).
+   std::shared_ptr<const std::unordered_set<uint64_t>> allow_list;
++  // [acct2-main] 0113: every pack's images are checked against the guest's
++  // alpha (EnforceAlpha), not only the user pack's: while an allow list is in
++  // force, or texture_replacement_check_alpha is on (a multiplayer match).
++  bool check_alpha = false;
+   uint32_t generation = 0;
+ 
+   bool Allows(uint64_t key) const {
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+index d35a104..00e6655 100644
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -1231,6 +1231,17 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+   std::string error;
+   bool too_large = false;
+   bool loaded;
++  // The user's own images, and every image while the policy asks for it (an
++  // allow list, or [acct2-main] 0113 texture_replacement_check_alpha: a
++  // multiplayer match), may not be more see-through than the original
++  // (EnforceAlpha, against the guest base level ComputeReplacementKey gathered
++  // in replacement_key_scratch_). With texture_replacement_async the loader
++  // thread checks it (0113), otherwise this thread does, below.
++  const bool strict_pack = replacement_index_->strict_alpha(entry->pack);
++  const bool check_alpha = strict_pack || policy.check_alpha;
++  uint64_t forced_opaque = 0;
++  bool alpha_checked = false;
++  bool alpha_refused = false;
+   if (REXCVAR_GET(texture_replacement_async)) {
+     // Off the GPU thread (0110): the first time, the image is only asked for,
+     // and the guest's texture is made meanwhile (it keeps the request's id and
+@@ -1243,10 +1254,16 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+     request.level_count = key.mip_max_level + 1;
+     request.max_width_height = GetMaxHostTextureWidthHeight(key.dimension);
+     request.max_bytes = memory_left;
++    // [acct2-main] 0113: a checked read is another read than an unchecked one
++    // (bit 63; the format, below 64, takes bits 56-61).
++    request.check_alpha = check_alpha;
++    if (check_alpha) {
++      request.guest_base = replacement_key_scratch_;
++    }
+     request.id = XXH3_64bits(file_name.data(), file_name.size()) ^
+                  (uint64_t(request.format) << 56) ^ (uint64_t(request.width) << 40) ^
+                  (uint64_t(request.height) << 24) ^ (uint64_t(request.level_count) << 16) ^
+-                 request.max_width_height;
++                 request.max_width_height ^ (uint64_t(check_alpha) << 63);
+     if (!request.id) {
+       request.id = 1;
+     }
+@@ -1261,6 +1278,9 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+     error = std::move(result.error);
+     too_large = result.too_large;
+     loaded = result.ok;
++    alpha_checked = result.alpha_checked;  // [acct2-main] 0113
++    alpha_refused = result.alpha_refused;
++    forced_opaque = result.forced_opaque;
+     // The limit as of now: other replacements may have come in while it was read.
+     if (loaded && memory_limit && image.data.size() > memory_left) {
+       loaded = false;
+@@ -1274,6 +1294,24 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+                                           GetMaxHostTextureWidthHeight(key.dimension), memory_left,
+                                           image, error, &too_large);
+   }
++  // Refused by the alpha check: for good when the pack itself is strict;
++  // under the policy alone, only while it lasts. [acct2-main] 0113: then the
++  // normal texture remembers the key (denied_key_out), so it's made again when
++  // the policy changes (ReplacementDecisionChanged); before, nothing made it
++  // again until it left the cache.
++  auto refuse_alpha = [&]() -> std::unique_ptr<Texture> {
++    if (strict_pack) {
++      replacement_failed_files_.insert(file_name);
++    } else {
++      denied_key_out = replacement_key;
++    }
++    REXGPU_WARN("Texture replacement: can't use {}: {}", file_name, error);
++    log_result(fmt::format("in the pack, but {} can't be used", file_name));
++    return nullptr;
++  };
++  if (alpha_refused) {
++    return refuse_alpha();
++  }
+   if (!loaded) {
+     if (too_large) {
+       // Not the file's fault: it may fit later, when other replacement
+@@ -1295,24 +1333,14 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+     log_result(fmt::format("in the pack, but {} can't be used", file_name));
+     return nullptr;
+   }
+-  // The user's own images, and every image while an allow list is in force
+-  // (a multiplayer match), may not be more see-through than the original:
+-  // replacement_key_scratch_ still holds the guest base level that
+-  // ComputeReplacementKey gathered.
+-  uint64_t forced_opaque = 0;
+-  const bool strict_pack = replacement_index_->strict_alpha(entry->pack);
+-  if (strict_pack || policy.allow_list) {
++  // Read on this thread (texture_replacement_async off): checked here.
++  // replacement_key_scratch_ still holds the guest base level.
++  if (check_alpha && !alpha_checked) {
++    alpha_checked = true;
+     if (!texture_replacement::EnforceAlpha(width, height, replacement_key_scratch_.data(),
+                                            replacement_key_scratch_.size(), image, forced_opaque,
+                                            error)) {
+-      // Refused for good when the pack itself is strict; under the policy
+-      // alone, only while it lasts (the texture is made again when it ends).
+-      if (strict_pack) {
+-        replacement_failed_files_.insert(file_name);
+-      }
+-      REXGPU_WARN("Texture replacement: can't use {}: {}", file_name, error);
+-      log_result(fmt::format("in the pack, but {} can't be used", file_name));
+-      return nullptr;
++      return refuse_alpha();
+     }
+   }
+   std::unique_ptr<Texture> texture = CreateReplacementTexture(key, image);
+@@ -1323,14 +1351,16 @@ std::unique_ptr<TextureCache::Texture> TextureCache::TryCreateReplacementTexture
+   }
+   assert_true(texture->key() == key);
+   texture->SetReplacement(replacement_key, uint32_t(image.levels.size()));
++  texture->set_replacement_alpha_checked(alpha_checked);  // [acct2-main] 0113
+   // Counted from now on (SetReplacement came after the constructor's
+   // SetHostMemoryUsage).
+   UpdateReplacementHostMemoryUsage(texture->host_memory_usage(), 0);
+   stats::Add(stats::Counter::kTexturesReplaced);
+-  log_result(fmt::format("replaced with {} ({}x{}, {:.2f}x, {} levels{}{})", file_name,
++  log_result(fmt::format("replaced with {} ({}x{}, {:.2f}x, {} levels{}{}{})", file_name,
+                          image.width, image.height,
+                          double(std::max(image.width, image.height)) / std::max(width, height),
+                          image.levels.size(), strict_pack ? ", user pack" : "",
++                         alpha_checked && !strict_pack ? ", alpha checked" : "",  // 0113
+                          forced_opaque ? fmt::format(", {} block(s) made opaque like the original",
+                                                      forced_opaque)
+                                        : std::string()));
+@@ -1390,6 +1420,18 @@ void TextureCache::ReplacementLoaderThread() {
+                                              request.height, request.level_count,
+                                              request.max_width_height, request.max_bytes,
+                                              result.image, result.error, &result.too_large);
++    // [acct2-main] 0113: the alpha check here too, so the GPU thread doesn't
++    // wait for it (it reads every texel's alpha of the image's top level, and
++    // ForceOpaque rewrites the blocks of every level).
++    if (result.ok && request.check_alpha) {
++      result.alpha_checked = true;
++      if (!texture_replacement::EnforceAlpha(request.width, request.height,
++                                             request.guest_base.data(), request.guest_base.size(),
++                                             result.image, result.forced_opaque, result.error)) {
++        result.ok = false;
++        result.alpha_refused = true;
++      }
++    }
+     if (!result.ok) {
+       result.image = texture_replacement::Image();
+     }
+@@ -1435,8 +1477,14 @@ bool TextureCache::ReplacementDecisionChanged(Texture& texture) {
+     texture.set_replacement_policy_generation(generation);
+     return false;
+   }
+-  const bool allowed = texture_replacement::GetPolicy().Allows(texture.replacement_key());
++  const texture_replacement::Policy policy = texture_replacement::GetPolicy();
++  const bool allowed = policy.Allows(texture.replacement_key());
+   if (texture.is_replacement() == allowed) {
++    // [acct2-main] 0113: a replacement made before the policy asked for the
++    // alpha check is made again, checked (the user pack's always were).
++    if (allowed && policy.check_alpha && !texture.replacement_alpha_checked()) {
++      return true;
++    }
+     texture.set_replacement_policy_generation(generation);
+     return false;
+   }
+diff --git a/src/graphics/pipeline/texture/replacement.cpp b/src/graphics/pipeline/texture/replacement.cpp
+index 58cdbe9..ab80769 100644
+--- a/src/graphics/pipeline/texture/replacement.cpp
++++ b/src/graphics/pipeline/texture/replacement.cpp
+@@ -58,6 +58,15 @@ REXCVAR_DEFINE_STRING(texture_replacement_allow_list, "", "GPU",
+                       "while the game runs. A file that can't be read allows nothing. Empty = "
+                       "every texture in the packs");
+ 
++// [acct2-main] 2026-11-14 0113 (a multiplayer safety review): the HD pack's folder is on the player's disk too, so
++// in a match its images are checked like the user pack's.
++REXCVAR_DEFINE_BOOL(texture_replacement_check_alpha, false, "GPU",
++                    "Check every replacement image against the game's own texture, not only the "
++                    "user pack's: an opaque texture stays opaque, and one with see-through parts "
++                    "may not get noticeably more see-through (an image that is, isn't used). For "
++                    "a multiplayer match, so no pack can make walls or bushes see-through. Can "
++                    "change while the game runs");
++
+ REXCVAR_DEFINE_INT32(texture_replacement_memory_limit, 4096, "GPU",
+                      "Most memory the replacement images alive at once may take, in MB (the "
+                      "images are uploaded as they are, so this is about their GPU memory too). A "
+@@ -417,10 +426,15 @@ void UpdatePolicy() {
+     }
+     policy.allow_list = std::move(keys);
+   }
++  // [acct2-main] 0113: an allow list checks every image, as before; the setting does it without one.
++  policy.check_alpha = REXCVAR_GET(texture_replacement_check_alpha) || policy.allow_list != nullptr;
+   if (!policy.enabled) {
+     REXGPU_INFO("Texture replacement: off (texture_replacement_enabled)");
+   } else if (!policy.allow_list) {
+-    REXGPU_INFO("Texture replacement: on for every texture in the packs");
++    REXGPU_INFO("Texture replacement: on for every texture in the packs{}",
++                policy.check_alpha ? ", every image checked against the game's alpha "
++                                     "(texture_replacement_check_alpha)"
++                                   : "");
+   }
+   std::lock_guard<std::mutex> lock(policy_mutex);
+   policy.generation = policy_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
+@@ -466,7 +480,8 @@ const Index* GetIndex() {
+     index = std::move(loaded);
+     // The policy follows its settings from now on.
+     UpdatePolicy();
+-    for (const char* name : {"texture_replacement_enabled", "texture_replacement_allow_list"}) {
++    for (const char* name : {"texture_replacement_enabled", "texture_replacement_allow_list",
++                             "texture_replacement_check_alpha"}) {  // [acct2-main] 0113
+       rex::cvar::RegisterChangeCallback(name,
+                                         [](std::string_view, std::string_view) { UpdatePolicy(); });
+     }

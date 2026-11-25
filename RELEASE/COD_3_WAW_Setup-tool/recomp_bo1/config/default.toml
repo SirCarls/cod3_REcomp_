@@ -1,0 +1,115 @@
+# Codegen overrides for Call of Duty: Black Ops' Xbox 360 default.xex (the campaign and zombies). [waw-decomp]
+# Title: Call of Duty: Black Ops (USA, Europe), default.xex SHA-1 177af142c223a49b126c47b59555dd0a87a45541.
+#
+# Filled in as the codegen and the first runs need it, the way World at War's ../recomp_waw/config/default.toml and
+# Call of Duty 4's ../recomp_cod4/config/default.toml were:
+#   setjmp_address / longjmp_address  the C runtime's pair (Com_Error leaves a frame with longjmp)
+#   [functions]                       functions the analyzer can't find (tail-branch targets, pointer-only functions)
+#   [[midasm_hook]]                   the port's hooks, one block each, with the reason
+# World at War's addresses carry over through dev/waw-decomp/bo1_360/pairs_sp.tsv (the blind pairing of 2026-10-20)
+# and WAWDECOMP-rea-work/waw-decomp-tools/bo1/map_hooks.py; each one is checked in Black Ops' own code before use.
+
+# ---------------------------------------------------------------------------
+# setjmp / longjmp (the C runtime's), 2026-11-09:
+#   setjmp 0x825FB3A0 is World at War's 0x8244D650 (_setjmp3) in the pairing (4 call votes); it saves r14-r31 into the
+#     buffer in r3.
+#   longjmp 0x825FB7A0 is World at War's 0x8244DCD0, the same machine code (x360-family's identical-code witness): it
+#     reads +312 first (the unwind check) and restores the frame.
+# Com_Error leaves the failing frame with longjmp to the setjmp of the thread's frame loop. Recompiled as plain
+# functions, longjmp would return into the code that raised the error instead. With both addresses the codegen makes
+# host setjmp/longjmp calls keyed by the guest buffer (as World at War's and Call of Duty 4's configs do).
+# ---------------------------------------------------------------------------
+setjmp_address = 0x825FB3A0
+longjmp_address = 0x825FB7A0
+
+# ---------------------------------------------------------------------------
+# Function boundaries the analyzer cannot discover on its own
+# ---------------------------------------------------------------------------
+[functions]
+# Reached only by a tail branch and outside every .pdata range: the codegen's first pass stopped on it ("target not
+# in any function", 2026-11-09 15:55, waw-bo1-codegen1). World at War's config has the same kind (0x82392D50).
+# Codegen discovers its extent itself.
+0x8239C0D0 = {}  # b from 0x824430A0
+
+# Functions only reachable through data pointers (vtable slots, callbacks, code references) that have no .pdata
+# entry: tools/find_missing_funcs.py on the decrypted image (tools/xex_dump.py) against the codegen's function
+# table, 2026-11-09 15:57. The first run stopped on one of them ("Call to invalid or unregistered function at guest
+# address 0x825070F8", waw-bo1-boot1, 7 s in, after the GPU emulation had started). Codegen discovers their extent
+# itself; the scan's size estimate is in each comment.
+0x821B2EC0 = {}  # vtable @0x820186DC (48 bytes in the scan)
+0x821B9568 = {}  # pointer @0x82018CC4 (52 bytes in the scan)
+0x82211198 = {}  # vtable @0x820205AC (16 bytes in the scan)
+0x82248450 = {}  # vtable @0x820251FC (52 bytes in the scan)
+0x8239BE80 = {}  # vtable @0x8263F584 (4 bytes in the scan)
+0x8239EE88 = {}  # code-ref @0x8239EFF4 (24 bytes in the scan)
+0x824F314C = {}  # code-ref @0x824F313C (540 bytes in the scan)
+0x824F7D00 = {}  # vtable @0x820ADE68 (8 bytes in the scan)
+0x824FBD68 = {}  # vtable @0x820AE034 (8 bytes in the scan)
+0x824FBD70 = {}  # vtable @0x820ADFF4 (8 bytes in the scan)
+0x824FBD78 = {}  # vtable @0x820AE03C (8 bytes in the scan)
+0x824FBD88 = {}  # vtable @0x820AE030 (8 bytes in the scan)
+0x824FBD90 = {}  # vtable @0x820ADFF0 (8 bytes in the scan)
+0x82501D18 = {}  # vtable @0x820ADFFC (8 bytes in the scan)
+0x82501D20 = {}  # vtable @0x820AE384 (8 bytes in the scan)
+0x82501D30 = {}  # vtable @0x820AE024 (8 bytes in the scan)
+0x82501D38 = {}  # vtable @0x820ADFF8 (8 bytes in the scan)
+0x82501D40 = {}  # vtable @0x820AE010 (8 bytes in the scan)
+0x82501D48 = {}  # vtable @0x820AE338 (8 bytes in the scan)
+0x82501D50 = {}  # vtable @0x820AE008 (8 bytes in the scan)
+0x82501D58 = {}  # vtable @0x820AE004 (8 bytes in the scan)
+0x82501FF0 = {}  # vtable @0x820AE444 (8 bytes in the scan)
+0x82502000 = {}  # vtable @0x820AE018 (8 bytes in the scan)
+0x82502008 = {}  # vtable @0x820AE368 (8 bytes in the scan)
+0x82502010 = {}  # vtable @0x820AE00C (8 bytes in the scan)
+0x825070F8 = {}  # vtable @0x820AE51C (24 bytes in the scan)
+0x82507EB0 = {}  # vtable @0x820AE4B4 (8 bytes in the scan)
+0x82508B30 = {}  # vtable @0x820AE564 (8 bytes in the scan)
+0x8250B8A0 = {}  # vtable @0x820AE6D0 (44 bytes in the scan)
+0x8250BB58 = {}  # vtable @0x820AE690 (8 bytes in the scan)
+0x8251A7C8 = {}  # vtable @0x820B24D4 (8 bytes in the scan)
+
+# ---------------------------------------------------------------------------
+# The game's main loop and its front end (src/bo1_hooks.cpp), carried over from World at War, 2026-11-09
+# ---------------------------------------------------------------------------
+# Com_Frame (0x82336208; World at War's 0x8223D8C0 in the pairing, and one of setjmp's callers): the frame count in
+# the log (bo1_log_frames) and debug console commands once the game is up (bo1_debug_command, bo1_debug_commands),
+# through Cbuf_AddText (0x8232EA30).
+[[midasm_hook]]
+address = 0x82336208
+name = "bo1_frame_start"
+registers = ["ctx", "base"]
+
+# Menus_OpenByName (0x8236DF18; World at War's 0x8225FDF0; r5 the name in Black Ops) and UI_SetActiveMenu (0x82373528;
+# r3 the local client, r4 the front end's state): each menu the game opens goes into the log (bo1_log_menus).
+[[midasm_hook]]
+address = 0x8236DF18
+name = "bo1_menu_open"
+registers = ["ctx", "base"]
+
+[[midasm_hook]]
+address = 0x82373528
+name = "bo1_set_active_menu"
+registers = ["ctx", "base"]
+
+# ---------------------------------------------------------------------------
+# The jump height at any frame rate (bo1_move_snap_hz, src/bo1_hooks.cpp), World at War's waw_move_snap_hz carried
+# over, 2026-11-09
+# ---------------------------------------------------------------------------
+# Pmove (its loop at 0x82154E3C; KisakBlack's Pmove_1, read as information only) runs PmoveSingle from
+# ps->commandTime to the command's time in pieces of at most 66 ms. At 0x82154E54, after `add r11,r10,r11`, r10 is
+# the piece's start and r11 its end (stored to pm->cmd.serverTime next, then `bl 0x82153A10`, PmoveSingle): the hook
+# records the piece.
+[[midasm_hook]]
+address = 0x82154E54
+name = "bo1_move_step"
+registers = ["ctx", "base"]
+
+# Sys_SnapVector (0x823C51A8: each of the three floats through fctiwz and back, a cut toward zero to whole units), the
+# velocity cut at the end of every PmoveSingle. Its only caller in the whole program is PmoveSingle's `bl` at
+# 0x82154D50 (r3 = r28 = ps + 0x30, ps->velocity; it returns to 0x82154D54). Returns true to skip the cut on a piece
+# that does not cross a boundary of the fixed clock.
+[[midasm_hook]]
+address = 0x823C51A8
+name = "bo1_move_snap"
+registers = ["ctx", "base"]
+return_on_true = true

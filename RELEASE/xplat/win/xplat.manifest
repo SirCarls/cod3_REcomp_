@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- [rexglue-native-io] 2026-11-16: cod3.exe's and cod3mp.exe's application manifest (src/win/app.rc).
+     activeCodePage UTF-8 (Windows 10 1903 and later, Windows 11): the program's narrow strings are UTF-8, so a path
+       with letters outside the PC's "language for non-Unicode programs" (a user or folder name in another script)
+       opens: the SDK's log and settings (spdlog, toml++) and std::filesystem::path::string() use narrow names, and
+       string() threw for such a path. Older Windows ignore the setting.
+     longPathAware: paths longer than 260 characters work where Windows has long paths turned on
+       (LongPathsEnabled, Windows 10 1607 and later). Nothing else (no DPI or OS-compatibility settings: SDL sets
+       DPI awareness itself). -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <activeCodePage xmlns="http://schemas.microsoft.com/SMI/2019/WindowsSettings">UTF-8</activeCodePage>
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

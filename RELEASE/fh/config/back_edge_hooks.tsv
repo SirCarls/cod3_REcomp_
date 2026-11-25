@@ -1,0 +1,2 @@
+address	hook	note
+000691DB	fh_edge_000691DB	the job thread (0x00068D90) going back to look at its queue again: with nothing queued it sleeps 1 ms (fh/src/fh_jobs.c, FH_JOB_REST=0 not)

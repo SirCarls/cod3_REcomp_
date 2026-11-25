@@ -1,0 +1,3 @@
+// xplat: the shared application manifest of every game (xplat.manifest next to this), for MinGW builds
+// (xplat/cmake/XplatWindowsApp.cmake; the MSVC ABI takes the manifest file itself). 1 = CREATEPROCESS_MANIFEST_RESOURCE_ID, 24 = RT_MANIFEST.
+1 24 "xplat.manifest"

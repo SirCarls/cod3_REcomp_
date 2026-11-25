@@ -1,0 +1,10 @@
+# Codegen overrides for CoD Classic's cgame_sp.xdl (from its Xbox Live Arcade package). [acct2-uo]
+# How each one was found: dev/agents/acct2-uo/NOTES.md.
+
+# ---------------------------------------------------------------------------
+# Function starts the codegen can't find on its own: tail branches (b) to code no .pdata entry names
+# (the first codegen with the package, 2026-11-07 23:12).
+# ---------------------------------------------------------------------------
+[functions]
+0x85034B30 = {}  # b from 0x85029D94
+0x85035E50 = {}  # b from 0x8502AEB8

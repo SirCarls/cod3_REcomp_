@@ -1,0 +1,21 @@
+diff --git a/src/ui/vulkan/vulkan_presenter.cpp b/src/ui/vulkan/vulkan_presenter.cpp
+--- a/src/ui/vulkan/vulkan_presenter.cpp
++++ b/src/ui/vulkan/vulkan_presenter.cpp
+@@ -1710,8 +1710,15 @@
+   image_create_info.arrayLayers = 1;
+   image_create_info.samples = VK_SAMPLE_COUNT_1_BIT;
+   image_create_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+-  image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+-                            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
++  // [rexglue-native] 2026-11-24 (patch 0320): TRANSFER_DST too. A program may fill the guest output with a copy
++  // instead of drawing into it (Call of Duty 3's native renderer copies its finished frame in with
++  // vkCmdCopyBufferToImage when it draws on a device of its own); without this usage the validation layer reports
++  // VUID-vkCmdCopyBufferToImage-dstImage-00177 and VUID-VkImageMemoryBarrier-oldLayout-01213 on every such frame.
++  // Copying into the guest output format (A2B10G10R10) needs no feature check: since Vulkan 1.1 (maintenance1) a
++  // format usable at all with optimal tiling can be a transfer destination.
++  image_create_info.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
++                            VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
++                            VK_IMAGE_USAGE_STORAGE_BIT;
+   image_create_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+   image_create_info.queueFamilyIndexCount = 0;
+   image_create_info.pQueueFamilyIndices = nullptr;

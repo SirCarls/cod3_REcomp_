@@ -1,0 +1,153 @@
+[acct2-main] SDK 0211, 2026-11-14 (owner 15:31: "We want a safe environment when playing online"; claimed on the board
+at 18:16, a free number beside 0209/0210; dev/agents/acct2-main/MP-SAFETY.md gap 1 a).
+What it does: with net_lan_only on (the default), system link also exchanges packets with the addresses named in
+net_broadcast_peers, not only with local network addresses. A friend over a VPN whose range isn't private (Tailscale's
+100.64.0.0/10, for example) or on another subnet can then play without turning net_lan_only off, which lets every
+internet address in. Only an address the local-network rule refused is looked up, so nothing changes on a local
+network; the list is parsed again only when the setting's text changes (0209's parser, moved up unchanged, which the
+broadcast still uses). The block warning says the address can be named there. 100.64.0.0/10 as a whole stays out on
+purpose: an internet provider's carrier-grade NAT shares it with its other customers. No new setting; the help texts
+of net_lan_only and net_broadcast_peers say so.
+To test: system link with net_lan_only on and the other PC's non-local address named in net_broadcast_peers (it joins);
+the same without naming it (blocked, logged once with the new hint). Checked so far: git apply --check on REA's
+build tree, applied before 0315 (the later patch to this file) and 0315 after it, a syntax compile with the SDK
+build's flags (no new warning).
+
+diff --git a/src/kernel/xam/xam_net.cpp b/src/kernel/xam/xam_net.cpp
+index bf705df..feb15bf 100644
+--- a/src/kernel/xam/xam_net.cpp
++++ b/src/kernel/xam/xam_net.cpp
+@@ -62,16 +62,20 @@ REXCVAR_DEFINE_STRING(net_interface, "", "Net",
+                       "default route; otherwise an IPv4 address of this PC or an interface name "
+                       "(names on Linux only). A loopback address (127.0.0.2, ...) gives each copy "
+                       "of the game on this PC its own system link address");
++// [acct2-main] 0211: the addresses named in net_broadcast_peers are allowed too.
+ REXCVAR_DEFINE_BOOL(net_lan_only, true, "Net",
+                     "System link: exchange packets only with local network addresses (private, "
+-                    "link-local and the chosen interface's subnet). Turn off to play over the "
+-                    "internet, for example with a forwarded port");
++                    "link-local and the chosen interface's subnet) and the addresses named in "
++                    "net_broadcast_peers. To play with friends over the internet or a VPN, name "
++                    "their addresses there and leave this on. Off lets every internet address in, "
++                    "for example with a forwarded port");
+ // [claude-9b-think] 0209: system link between copies on one PC (and past a router).
+ REXCVAR_DEFINE_STRING(net_broadcast_peers, "", "Net",
+                       "System link: IPv4 addresses, separated by commas, that also get every "
+                       "broadcast the game sends (finding games), as one packet each. For copies "
+                       "on one PC (127.0.0.1,127.0.0.2,...) and for PCs a broadcast can't reach (a "
+-                      "VPN, another subnet). Empty: the broadcast only");
++                      "VPN, another subnet). With net_lan_only on, these addresses may also play "
++                      "with this PC. Empty: the broadcast only");
+ // [claude-9b-think] 0209 r1 (UNTESTED): what system link does, for finding why a join hangs.
+ REXCVAR_DEFINE_BOOL(net_trace, false, "Net",
+                     "System link: log the XNet address calls (XNADDR to address and back, keys, "
+@@ -296,6 +300,10 @@ struct XNetState {
+   uint64_t clock = 0;
+   std::deque<uint32_t> qos_blocks;  // XNQOS results, oldest first
+   std::set<uint32_t> warned;        // addresses already logged as blocked
++  // [acct2-main] 0211: net_broadcast_peers as PeerAllowedLocked last parsed it.
++  std::string named_text;
++  std::vector<uint32_t> named;
++  bool named_valid = false;
+ };
+ 
+ XNetState& State() {
+@@ -431,6 +439,29 @@ uint32_t DirectedBroadcast(const TitleAddress& title) {
+   return rex::net::ipv4_directed_broadcast(title.addr, title.netmask);
+ }
+ 
++// [claude-9b-think] 0209: a net_broadcast_peers list, parsed (at most 32
++// addresses; anything that isn't a dotted-quad address is skipped).
++// [acct2-main] 0211: moved here unchanged from BroadcastPeers, which
++// PeerAllowedLocked now shares it with.
++std::vector<uint32_t> ParsePeerList(const std::string& list) {
++  std::vector<uint32_t> peers;
++  size_t pos = 0;
++  while (pos <= list.size() && peers.size() < 32) {
++    size_t end = list.find_first_of(", ;", pos);
++    if (end == std::string::npos) {
++      end = list.size();
++    }
++    uint32_t addr = 0;
++    if (end > pos && rex::net::parse_ipv4(std::string_view(list).substr(pos, end - pos), &addr) &&
++        addr && addr != rex::net::kIpv4Broadcast && !rex::net::ipv4_is_multicast(addr) &&
++        std::find(peers.begin(), peers.end(), addr) == peers.end()) {
++      peers.push_back(addr);
++    }
++    pos = end + 1;
++  }
++  return peers;
++}
++
+ // Whether system link may exchange packets with `addr`. Called with the
+ // state locked.
+ bool PeerAllowedLocked(XNetState& state, uint32_t addr) {
+@@ -438,7 +469,22 @@ bool PeerAllowedLocked(XNetState& state, uint32_t addr) {
+     return addr && !rex::net::ipv4_is_multicast(addr);
+   }
+   const TitleAddress& title = CurrentTitle(state);
+-  return rex::net::ipv4_is_lan_peer(addr, title.lan ? title.addr : 0, title.netmask);
++  if (rex::net::ipv4_is_lan_peer(addr, title.lan ? title.addr : 0, title.netmask)) {
++    return true;
++  }
++  // [acct2-main] 0211: an address the player named in net_broadcast_peers
++  // (a friend over a VPN or another subnet) is allowed too, so playing with
++  // friends never needs net_lan_only off. Only for the addresses the rule
++  // above refused (nothing changes on a local network); the list is parsed
++  // again only when the setting's text changes. The parser never returns 0,
++  // the limited broadcast or a multicast address.
++  std::string text = REXCVAR_GET(net_broadcast_peers);
++  if (!state.named_valid || text != state.named_text) {
++    state.named = ParsePeerList(text);
++    state.named_text = std::move(text);
++    state.named_valid = true;
++  }
++  return std::find(state.named.begin(), state.named.end(), addr) != state.named.end();
+ }
+ 
+ bool PeerAllowed(uint32_t addr, const char* what) {
+@@ -448,8 +494,11 @@ bool PeerAllowed(uint32_t addr, const char* what) {
+     return true;
+   }
+   if (state.warned.size() < kMaxWarnedAddresses && state.warned.insert(addr).second) {
+-    REXKRNL_WARN("XNet: {} {} blocked: not a local network address (net_lan_only)", what,
+-                 rex::net::format_ipv4(addr));
++    // [acct2-main] 0211: says how to let a friend in without net_lan_only off.
++    REXKRNL_WARN(
++        "XNet: {} {} blocked: not a local network address (net_lan_only; name it in "
++        "net_broadcast_peers to play with it)",
++        what, rex::net::format_ipv4(addr));
+   }
+   return false;
+ }
+@@ -461,27 +510,10 @@ TitleAddress TitleNow() {
+   return CurrentTitle(state);
+ }
+ 
+-// [claude-9b-think] 0209: net_broadcast_peers, parsed (at most 32 addresses;
+-// anything that isn't a dotted-quad address is skipped). Read at every
+-// broadcast: the game broadcasts only while it looks for games.
++// [claude-9b-think] 0209: net_broadcast_peers, parsed (ParsePeerList above).
++// Read at every broadcast: the game broadcasts only while it looks for games.
+ std::vector<uint32_t> BroadcastPeers() {
+-  std::vector<uint32_t> peers;
+-  std::string list = REXCVAR_GET(net_broadcast_peers);
+-  size_t pos = 0;
+-  while (pos <= list.size() && peers.size() < 32) {
+-    size_t end = list.find_first_of(", ;", pos);
+-    if (end == std::string::npos) {
+-      end = list.size();
+-    }
+-    uint32_t addr = 0;
+-    if (end > pos && rex::net::parse_ipv4(std::string_view(list).substr(pos, end - pos), &addr) &&
+-        addr && addr != rex::net::kIpv4Broadcast && !rex::net::ipv4_is_multicast(addr) &&
+-        std::find(peers.begin(), peers.end(), addr) == peers.end()) {
+-      peers.push_back(addr);
+-    }
+-    pos = end + 1;
+-  }
+-  return peers;
++  return ParsePeerList(REXCVAR_GET(net_broadcast_peers));
+ }
+ 
+ // [claude-9b-think] 0209 r1: net_trace. Datagrams are counted per flow (this socket's port, the peer's

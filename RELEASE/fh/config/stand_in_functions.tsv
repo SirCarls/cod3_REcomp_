@@ -1,0 +1,771 @@
+address	name	group	stack_bytes	register_args	returns	stand_in_return	params	size	problems
+000A44C0	GAME_FrameTimer	game	0		void	fh_frame_clock_step()	void	533	[acct2-fh] read from its code 2026-11-14 (fh/src/fh_frame_clock.c): once a frame, the frame's step in 60ths of a second from GetTickCount's whole milliseconds (x 0.06 at 0x002DC4E8, at most 5), its modes (0x003B479C), the game's time (0x003B4788) and frame count (0x003B4798); the stand-in measures the time between frames to the microsecond (game.fine_frame_clock)
+001119B0	GAME_FramesAsSeconds	game	0		float (x87)	fh_frame_clock_frames_as_seconds()	void	30	[acct2-fh] read from its code 2026-11-14 (fh/src/fh_frame_clock.c): the frame count (0x003B4798) x 1/60 (0x002DFB3C) pushed on the x87 stack, the time function of the object at 0x003E3870 (0x001119D0) whose only reader is the noise wobble 0x00111BB0; the stand-in pushes the frames' real time, so the wobble keeps its speed above 60 frames a second
+001C6A20	RW__RwCameraSetViewWindow	renderware	0		RwCamera *	fh_aspect_set_view_window(MEM32(g_esp + 4), MEM32(g_esp + 8))	RwCamera * camera, const RwV2d * viewWindow	71	[acct2-fh] read from its code 2026-11-13: copies the window to +0x68/+0x6C, 1/x and 1/y to +0x70/+0x74, then 0x001BF690(the camera's frame at +0x04); cdecl. The stand-in widens a 4:3 window to the picture's shape (fh/src/fh_aspect.c, Hor+; dev/agents/acct2-fh/RESOLUTION.md stage 3)
+001CFDE0	RW__RwErrorSet	renderware	0		RwError *	fh_rw_error_set(MEM32(g_esp + 4))	const RwError * error	83	
+0021EF80	D3D8LTCG__D3DDevice_GetCreationParameters	direct3d	4			zero		64	
+0021EFC0	D3D__D3DDevice_SetGammaRamp	direct3d	8		void	fh_present_gamma_ramp(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Flags, CONST D3DGAMMARAMP * pRamp	144	[acct2-fh] read from its code 2026-11-13 (the same code as Big Red One's D3D8LTCG::D3DDevice_SetGammaRamp, 0x003E5770 there): unless the device already holds the same 768 bytes (red, green, blue, 256 each), copies pRamp to the device's +0x1C28 + 0x1DC + (+0x2478 & 1) x 0x300 for the next vertical blank, or at once with Flags 2 (0x00224165); ret 8; Finest Hour calls it once, at start-up (0x0012C810 from 0x000A2C37), with ramp[i] = clamp(i x 1.0811 - 20.68 x the float at 0x003EAF70, 0, 255); native answer (fh_present.c keeps it)
+0021F050	D3D__D3DDevice_SetTransform	direct3d	8		HRESULT	fh_d3d_set_transform(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DTRANSFORMSTATETYPE State, CONST D3DMATRIX * pMatrix	288	named from its code 2026-11-08: copies 16 dwords to the device at 0xC60 + State * 64; State 1 (projection) also sets the depth scale; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+0021F170	D3D8LTCG__D3DDevice_GetViewport	direct3d	4			zero		64	
+0021F1B0	D3D__D3DDevice_SetMaterial	direct3d	4		HRESULT	fh_d3d_set_material(MEM32(g_esp + 4))	const D3DMATERIAL8 * pMaterial	48	[fh7] 2026-11-24: named from the other Finest Hour recompilation's address table for this build (reference only) and the arguments seen in our logs; native answer, kept in the device's state (fh_d3d_state.c) and counted by the draws, not drawn yet
+0021F1E0	D3D_0021F1E0	direct3d	0			zero		64	
+0021F220	D3D_0021F220	direct3d	0			zero		16	ret 0 from tail-jumped 0x00225320 (read by hand 2026-11-08)
+0021F230	D3D_0021F230	direct3d	0			zero		48	
+0021F260	D3D8LTCG__D3DDevice_GetScissors	direct3d	12			zero		96	
+0021F2C0	D3D_0021F2C0	direct3d	4			zero		80	
+0021F310	D3D__D3DDevice_SetSoftDisplayFilter	direct3d	4		void	zero	BOOL Enable	96	[acct2-fh] read from its code 2026-11-13: AvSendTVEncoderOption (kernel 2, through 0x002DB418) with option 14 and Enable != 0, unless it is already so; ret 4; the TV encoder's soft (luma) filter, called with 1 right after SetGammaRamp (0x0012C894): a TV signal's blur with nothing to stand for it on a PC, so it stays a stand-in that does nothing
+0021F370	D3D_0021F370	direct3d	8			zero		48	
+0021F3A0	D3D_0021F3A0	direct3d	4			zero		112	
+0021F410	D3D_0021F410	direct3d	4			zero		128	
+0021F490	D3D_0021F490	direct3d	4			zero		208	
+0021F560	D3D_0021F560	direct3d	8			zero		640	
+0021F7E0	D3D__D3DDevice_GetBackBuffer2	direct3d	4		D3DSurface *	fh_d3d_back_buffer(MEM32(g_esp + 4))	INT BackBuffer	80	
+0021F830	D3D_0021F830	direct3d	20			zero		816	
+0021FB60	D3D__D3DDevice_GetRenderTarget2	direct3d	0		D3DSurface *	fh_d3d_render_target()	void	32	
+0021FB80	D3D__D3DDevice_GetDepthStencilSurface2	direct3d	0		D3DSurface *	fh_d3d_depth_stencil_surface()	void	32	
+0021FBA0	D3D__D3DDevice_SetViewport	direct3d	4		HRESULT	fh_d3d_set_viewport(MEM32(g_esp + 4))	CONST D3DVIEWPORT8 * pViewport	560	named from its code 2026-11-08: reads X, Y, Width, Height against the render target; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+0021FDD0	D3D__D3DDevice_SetLight	direct3d	8		HRESULT	fh_d3d_set_light(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Index, const D3DLIGHT8 * pLight	704	[fh7] 2026-11-24: named from the other Finest Hour recompilation's address table for this build (reference only) and the arguments seen in our logs; native answer, kept in the device's state (fh_d3d_state.c) and counted by the draws, not drawn yet
+00220090	D3D__D3DDevice_LightEnable	direct3d	8		HRESULT	fh_d3d_light_enable(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Index, BOOL Enable	352	[fh7] 2026-11-24: named from the other Finest Hour recompilation's address table for this build (reference only) and the arguments seen in our logs; native answer, kept in the device's state (fh_d3d_state.c) and counted by the draws, not drawn yet
+002201F0	D3D_002201F0	direct3d	4			zero		48	
+00220220	D3D__D3DDevice_SetTexture	direct3d	8		HRESULT	fh_d3d_set_texture(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Stage, D3DBaseTexture * pTexture	432	named from its code 2026-11-08: keeps the stage's texture at device 0xF88 + Stage * 4; NULL pushes NV2A texture CONTROL0 (0x1B0C) = 0, stage off; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+002203D0	D3D__D3DDevice_SetPalette	direct3d	8		HRESULT	fh_d3d_set_palette(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Stage, D3DPalette * pPalette	144	named from its code 2026-11-08: keeps the stage's palette at device 0xF98 + Stage * 4 and pushes NV2A texture PALETTE (0x1B20) with its address; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+00220460	D3D_00220460	direct3d	0			zero		48	
+00220490	D3D8LTCG__D3DDevice_GetDisplayFieldStatus	direct3d	4			zero		64	
+002204D0	D3D_002204D0	direct3d	8			zero		224	
+002205B0	D3D_002205B0	direct3d	12			zero		768	
+002208B0	D3D_002208B0	direct3d	12			zero		128	
+00220930	D3D_00220930	direct3d	0			zero		304	
+00220A60	D3D_00220A60	direct3d	8			zero		80	
+00220AB0	D3D_00220AB0	direct3d	0			zero		592	
+00220D00	D3D8LTCG__D3D_SetPushBufferSize	direct3d	8			zero		32	
+00220D20	D3D__Direct3D_CreateDevice	direct3d	24		HRESULT	fh_d3d_create_device(MEM32(g_esp + 20), MEM32(g_esp + 24))	UINT Adapter, D3DDEVTYPE DeviceType, void * hFocusWindow, DWORD BehaviorFlags, D3DPRESENT_PARAMETERS * pPresentationParameters, IDirect3DDevice8 ** ppReturnedDeviceInterface	176	
+00220DD0	D3D_00220DD0	direct3d	8			zero		320	
+00220F10	D3D_00220F10	direct3d	8			zero		176	
+00220FC0	D3D_00220FC0	direct3d	12			zero		112	
+00221030	D3D8LTCG__D3DDevice_GetShaderConstantMode	direct3d	4			fh_d3d_get_shader_constant_mode(MEM32(g_esp + 4))	DWORD * pMode	32	[acct2-fh] read from its code 2026-11-14: *pMode = the mode kept at device + 0x1928; ret 4; native answer (fh_vsh.c)
+00221050	D3D_00221050	direct3d	12	ecx		zero		416	
+002211F0	D3D_002211F0	direct3d	8			zero		256	
+002212F0	D3D__D3DDevice_CreateVertexShader	direct3d	16	ecx	HRESULT	fh_d3d_create_vertex_shader(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	CONST DWORD * pDeclaration, CONST DWORD * pFunction, DWORD * pHandle, DWORD Usage	320	[acct2-fh] named from its code 2026-11-13: reads pFunction's kind and instruction count (its first two 16-bit words), allocates an object (0x00134A34), fills it from the declaration (0x00221050, 0x002211F0) and the program (0x00220FC0) and writes object | 1 to *pHandle; called by 0x0012DC90 for d:\clones.xvu; register_args ecx is only its "push ecx" for a local; native answer (fh_vsh.c)
+00221430	D3D8LTCG__D3DDevice_GetVertexShader	direct3d	4			zero		32	
+00221450	D3D_SetVertexShaderConstantInline1	direct3d	0	ecx,edx		fh_d3d_set_vertex_shader_constants(g_ecx, g_edx, 1)	ecx: the register (the NV2A's number, Direct3D's c0 = 96), edx: four floats	96	[acct2-fh] named from its code 2026-11-13: pushes NV2A 0x1EA4 = ecx and 0x0B80 with the 4 words at edx, and copies them to 0x0022F900 + 16 x ecx; called by the clones (0x000DA09F-0x000DA1FC: c4, c5, c6); native answer (fh_vsh.c)
+002214B0	D3D8LTCG__D3DDevice_SetVertexShaderConstant1Fast	direct3d	0	ecx,edx		fh_d3d_load_vertex_shader_constant_words(g_ecx, g_edx, 4)	ecx: the register (the NV2A's number), edx: four floats	80	[acct2-fh] read from its code 2026-11-13: pushes NV2A 0x1EA4 = ecx and 0x0B80 with the 4 words at edx, and keeps no copy; called by the particles (0x0012E001-0x0012E171); native answer (fh_vsh.c)
+00221500	D3D_SetVertexShaderConstantInline4	direct3d	0	ecx,edx		fh_d3d_set_vertex_shader_constants(g_ecx, g_edx, 4)	ecx: the first register (the NV2A's number), edx: sixteen floats	176	[acct2-fh] named from its code 2026-11-13: the same for four registers (0x0B80 with 16 words, through MMX); called per clone (0x000DA1CF: its matrix into c0-c3); native answer (fh_vsh.c)
+002215B0	D3D8LTCG__D3DDevice_SetVertexShaderConstantNotInlineFast	direct3d	4	ecx,edx		fh_d3d_load_vertex_shader_constant_words(g_ecx, g_edx, MEM32(g_esp + 4))	ecx: the first register, edx: the data, stack: a count of 32-bit words	224	[acct2-fh] read from its code 2026-11-13: pushes 0x1EA4 = ecx, then 0x0B80 with the words in pieces of at most 16, and keeps no copy; ret 4; called by the particles (0x0012EA7D, 0xCC words); native answer (fh_vsh.c)
+00221690	D3D8LTCG__D3DDevice_SetVertexShaderConstantNotInline	direct3d	4	ecx,edx		fh_d3d_set_vertex_shader_constant_words(g_ecx, g_edx, MEM32(g_esp + 4))	ecx: the first register, edx: the data, stack: a count of 32-bit words	64	[acct2-fh] read from its code 2026-11-13: copies the words to 0x0022F900 + 16 x ecx unless byte 0x002309C8 has 0x10, then calls 0x002215B0; native answer (fh_vsh.c)
+002216D0	D3D8LTCG__D3DDevice_GetVertexShaderConstant	direct3d	12			zero		48	
+00221700	D3D__D3DDevice_SetStreamSource	direct3d	12		HRESULT	fh_d3d_set_stream_source(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	UINT StreamNumber, D3DVertexBuffer * pStreamData, UINT Stride	144	named from its code 2026-11-08: keeps buffer and stride per stream (12 bytes each at 0x0022F608); [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+00221790	D3D_00221790	direct3d	8			zero		96	
+002217F0	D3D__D3DDevice_LoadVertexShaderProgram	direct3d	8		HRESULT	fh_d3d_load_vertex_shader_program(MEM32(g_esp + 4), MEM32(g_esp + 8))	CONST DWORD * pFunction, DWORD Address	112	[acct2-fh] read from its code 2026-11-13: the count is pFunction's second 16-bit word (x 4 words); unless the device's flags (+8) have 0x10 it copies the instructions to the device's +0x10A8 + Address x 16; pushes NV2A 0x1E9C = Address, then the words (0x00220FC0); ret 8; called by RenderWare's skinned pipeline (0x001EC33D, Address 12) before each skinned draw; native answer (fh_vsh.c: the program memory)
+00221860	D3D__D3DDevice_SelectVertexShader	direct3d	8		HRESULT	fh_d3d_select_vertex_shader(MEM32(g_esp + 4), MEM32(g_esp + 8))	DWORD Handle, DWORD Address	160	[acct2-fh] read from its code 2026-11-13: with a Handle, the device's +0x794 = Handle - 1 and +0x798 = Handle, and NV2A 0x1E94 = (6, the declaration's bit 0) when the inputs change; always NV2A 0x1EA0 = Address and +0x79C = Address; ret 8; called by RenderWare's skinned pipeline (0x001EC345) with its two-stream declarations; native answer (fh_d3d_state.c, drawn by fh_vsh_selected)
+00221900	D3D8LTCG__D3DDevice_SetShaderConstantMode	direct3d	4			fh_d3d_set_shader_constant_mode(MEM32(g_esp + 4))	DWORD Mode	288	[acct2-fh] read from its code 2026-11-14: bit 0x10 (no reserved constants) to device flag 0x200, the rest to device + 0x1928; with the rest 0 it pushes c-36..c-34 again (and the fixed-function matrices); ret 4; native answer (fh_vsh.c): the skinned meshes run with 0x11, their bones in c-38 and c-37
+00221A20	D3D_00221A20	direct3d	8			zero		64	
+00221A60	D3D_00221A60	direct3d	4			zero		32	
+00221A80	D3D_00221A80	direct3d	0	ecx		zero		240	
+00221B70	D3D__D3DDevice_SetVertexShader	direct3d	4	ecx	HRESULT	fh_d3d_set_vertex_shader(MEM32(g_esp + 4))	DWORD Handle	368	named from its code 2026-11-08: bit 0 of the handle tells a shader program from an FVF code; register_args ecx is only its "push ecx" for a local; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+00221CE0	D3D__D3DVertexBuffer_Lock2	direct3d	8		BYTE *	fh_d3d_resource_lock2(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DVertexBuffer * pThis, DWORD Flags	80	named from its code 2026-11-08: returns Data | 0x80000000 as D3DResource_Lock2 does (after waiting for the GPU unless Flags has 0xA0); the stand-in's 0 had the front end writing its vertices at guest address 0
+00221D30	D3D__D3DResource_Lock2	direct3d	8		BYTE *	fh_d3d_resource_lock2(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DResource * pThis, DWORD Flags	32	
+00221D50	D3D_00221D50	direct3d	4			zero		16	
+00221D60	D3D_00221D60	direct3d	12		void	fh_d3d_copy_dwords(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	void * pDest, const void * pSource, DWORD DwordCount	144	
+00221DF0	D3D__D3DDevice_DrawVerticesUP	direct3d	16		void	fh_d3d_draw_vertices_up(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	D3DPRIMITIVETYPE PrimitiveType, UINT VertexCount, CONST void * pVertexStreamZeroData, UINT VertexStreamZeroStride	368	[acct2-fh] read from its code 2026-11-13: pushes NV2A 0x17FC (begin) with the primitive type, then 0x1818 (inline vertices) with the vertices copied from the pointer, stride bytes apart, in pieces of at most 0x7FF words, then 0x17FC 0; ret 16; called by RenderWare 2D (0x001D5202) and the game screen quads (0x001842E5 FVF 0x144, 0x00184765 FVF 0x44); native answer (fh_draw.c)
+00221F60	D3D__D3DDevice_DrawVertices	direct3d	12		void	fh_d3d_draw_vertices(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT VertexCount	160	[acct2-fh] read from its code 2026-11-13: pushes 0x17FC with the primitive type, then 0x1810 words of (count - 1) << 24 | start in pieces of 256 vertices, then 0x17FC 0; ret 12; called by the particles (0x0012EACA, quad lists) and RenderWare (0x001C9BC4); native answer (fh_draw.c)
+00222000	D3D__D3DDevice_DrawIndexedVertices	direct3d	12		void	fh_d3d_draw_indexed_vertices(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	D3DPRIMITIVETYPE PrimitiveType, UINT VertexCount, CONST WORD * pIndexData	608	named from its code 2026-11-08: pushes NV2A BEGIN_END (0x17FC) with the primitive type, then the indices inline (ARRAY_ELEMENT16, 0x1800); [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+00222260	D3D_00222260	direct3d	12			zero		64	
+002222A0	D3D_002222A0	direct3d	4			zero		64	
+002222E0	D3D_002222E0	direct3d	0			zero		80	
+00222330	D3D8LTCG__D3DDevice_SetRenderState_PSTextureModes	direct3d	4			zero		48	
+00222360	D3D8LTCG__D3DDevice_SetRenderState_Simple	direct3d	0			zero		48	
+00222390	D3D__D3DDevice_SetRenderState	direct3d	8		HRESULT	fh_d3d_set_render_state(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DRENDERSTATETYPE State, DWORD Value	96	named from its code 2026-11-08: states below 0x5C are pushed at once, below 0x88 deferred, the rest through a table of handlers; values kept at 0x00230720; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+002223F0	D3D__D3DDevice_GetViewportOffsetAndScale	direct3d	8		void	fh_d3d_get_viewport_offset_and_scale(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DVECTOR4 * pOffset, D3DVECTOR4 * pScale	304	[acct2-fh] read from its code 2026-11-13: the viewport transform from the viewport, the super-sample scale and the screen-space offset (fh_d3d_state.h); ret 8; native answer in the port clip space: offset 0, scale (1, 1, 1, 0)
+00222520	D3D_00222520	direct3d	0			zero		320	
+00222660	D3D_00222660	direct3d	4			zero		64	
+002226A0	D3D_002226A0	direct3d	4			zero		64	
+002226E0	D3D8LTCG__D3DDevice_SetRenderState_FogColor	direct3d	4		void	fh_d3d_set_render_state(138, MEM32(g_esp + 4))	DWORD Value	80	[acct2-fh] read from its code 2026-11-14: SetRenderState's handler for state 138 (its slot in the table at 0x0022E5D0, which 0x00222390 indexes from state 0x88): pushes NV2A 0x02A8 with the color's red and blue swapped and keeps the value at 0x00230948 (0x00230720 + 4 x 138); the D3DX text object calls it directly (0x001832D1); native answer: kept in the device's state like SetRenderState's
+00222730	D3D_00222730	direct3d	4			zero		112	
+002227A0	D3D_002227A0	direct3d	?			zero		64	no ret found (tail jump or size too small); size 64 too small, read to next function 0x002227E0
+002227E0	D3D8LTCG__D3DDevice_SetRenderState_NormalizeNormals	direct3d	4		void	fh_d3d_set_render_state(142, MEM32(g_esp + 4))	DWORD Value	64	[fh9] 2026-11-24: read from its code: the entry for state 142 in SetRenderState's handler table at 0x0022E5D0 (which starts at state 136); it pushes NV2A 0x03A4 with the value and keeps the value at 0x00230958 (0x00230720 + 4 x 142); the game calls it directly (about 200,000 times in a 10-minute run, with 0 and 1), so the state was never kept; named from the other recompilation's address table (reference only); native answer: kept in the device's state like SetRenderState's, for the lighting (fixed.vert)
+00222820	D3D8LTCG__D3DDevice_SetRenderState_TextureFactor	direct3d	4		void	fh_d3d_set_render_state(148, MEM32(g_esp + 4))	DWORD Value	96	[acct2-fh] read from its code 2026-11-14: the handler for state 148: unless a pixel shader is set (device +0x784), pushes NV2A 0x0A60 with the value 16 times (both combiner factors of all 8 stages) and keeps it at 0x00230970; RenderWare calls it directly (0x001CF454, 0x001FAC0C, 0x001FB1A5); native answer: kept in the device's state like SetRenderState's
+00222880	D3D_00222880	direct3d	4	ecx		zero		112	
+002228F0	D3D_002228F0	direct3d	4			zero		128	
+00222970	D3D_00222970	direct3d	4	ecx		zero		128	
+002229F0	D3D_002229F0	direct3d	4			zero		96	
+00222A50	D3D_00222A50	direct3d	4			zero		80	
+00222AA0	D3D_00222AA0	direct3d	4			zero		96	
+00222B00	D3D_00222B00	direct3d	4			zero		128	
+00222B80	D3D_00222B80	direct3d	4			zero		80	
+00222BD0	D3D_00222BD0	direct3d	8			zero		272	
+00222CE0	D3D_00222CE0	direct3d	12			zero		112	
+00222D50	D3D_00222D50	direct3d	8			zero		64	
+00222D90	D3D_00222D90	direct3d	8			zero		64	
+00222DD0	D3D__D3DDevice_SetTextureStageState	direct3d	12		HRESULT	fh_d3d_set_texture_stage_state(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value	240	named from its code 2026-11-08: values kept at 0x00230520 + (Stage * 32 + Type) * 4; [waw-decomp] 11-09: native answer, kept in the device's state (fh_d3d_state.c)
+00222EC0	D3D_00222EC0	direct3d	0	ecx,edx		zero		112	
+00222F30	D3D_00222F30	direct3d	0	ecx,edx		zero		496	
+00223120	D3D_00223120	direct3d	0			zero		96	
+00223180	D3D_00223180	direct3d	0			zero		208	
+00223250	D3D_00223250	direct3d	0	ecx,edx		zero		864	
+002235B0	D3D_002235B0	direct3d	4			zero		144	
+00223640	D3D_00223640	direct3d	4			zero		160	
+002236E0	D3D_002236E0	direct3d	4			zero		112	
+00223750	D3D_00223750	direct3d	4			zero		48	
+00223780	D3D_00223780	direct3d	4			zero		112	
+002237F0	D3D_002237F0	direct3d	4			zero		112	
+00223860	D3D8LTCG__D3DDevice_SetRenderState_RopZCmpAlwaysRead	direct3d	4			zero		32	
+00223880	D3D8LTCG__D3DDevice_SetRenderState_RopZRead	direct3d	4			zero		32	
+002238A0	D3D8LTCG__D3DDevice_SetRenderState_DoNotCullUncompressed	direct3d	4			zero		32	
+002238C0	D3D_002238C0	direct3d	4			zero		48	
+002238F0	D3D_002238F0	direct3d	4			zero		48	
+00223920	D3D_00223920	direct3d	4			zero		128	
+002239A0	D3D_002239A0	direct3d	4			zero		80	
+002239F0	D3D_002239F0	direct3d	4			zero		80	
+00223A40	D3D_00223A40	direct3d	4			zero		80	
+00223A90	D3D_00223A90	direct3d	4			zero		160	
+00223B30	D3D_00223B30	direct3d	4			zero		64	
+00223B70	D3D_00223B70	direct3d	4			zero		64	
+00223BB0	D3D8LTCG__D3DResource_AddRef	direct3d	4			zero		64	
+00223BF0	D3D__D3DResource_Release	direct3d	4		ULONG	zero	D3DResource * pThis	80	
+00223C40	D3D8LTCG__D3DResource_GetType	direct3d	4			zero		144	
+00223CD0	D3D8LTCG__D3DResource_Register	direct3d	8			zero		48	
+00223D00	D3D_00223D00	direct3d	4			zero		16	ret 4 from tail-jumped 0x00225340 (read by hand 2026-11-08)
+00223D10	D3D_00223D10	direct3d	4			zero		112	
+00223D80	D3D_00223D80	direct3d	16			zero		96	
+00223DE0	D3D_00223DE0	direct3d	16			zero		48	
+00223E10	D3D_00223E10	direct3d	16			zero		144	
+00223EA0	D3D__D3DSurface_GetDesc	direct3d	8		HRESULT	fh_d3d_surface_get_desc(MEM32(g_esp + 4), MEM32(g_esp + 8))	D3DSurface * pThis, D3DSURFACE_DESC * pDesc	32	
+00223EC0	D3D__D3DSurface_LockRect	direct3d	16		HRESULT	fh_d3d_surface_lock_rect(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	D3DSurface * pThis, D3DLOCKED_RECT * pLockedRect, CONST RECT * pRect, DWORD Flags	32	
+00223EE0	D3D_00223EE0	direct3d	28			zero		176	
+00223F90	D3D_00223F90	direct3d	12			zero		16	ret 12 from tail-jumped 0x002268F0 (read by hand 2026-11-08)
+00223FA0	D3D_00223FA0	direct3d	8			zero		80	
+00223FF0	D3D_00223FF0	direct3d	20			zero		48	
+00224020	D3D_00224020	direct3d	12			zero		80	
+00224070	D3D_00224070	direct3d	24			zero		16	ret 24 from tail-jumped 0x00226BE0 (read by hand 2026-11-08)
+00224080	D3D_00224080	direct3d	4			zero		99	
+002240E3	D3D_002240E3	direct3d	4	ecx		zero		130	
+00224165	D3D_00224165	direct3d	4	ecx		zero		91	
+002241C0	D3D_002241C0	direct3d	16			zero		96	
+00224220	D3D_00224220	direct3d	12			zero		256	
+00224320	D3D_00224320	direct3d	12	ecx,eax		zero		208	
+002243F0	D3D_002243F0	direct3d	4	ecx		zero		96	
+00224450	D3D_00224450	direct3d	4	ecx		zero		48	
+00224480	D3D_00224480	direct3d	4	ecx		zero		80	
+002244D0	D3D_002244D0	direct3d	12			zero		1360	
+00224A20	D3D_00224A20	direct3d	0	ecx		zero		32	
+00224A40	D3D_00224A40	direct3d	4	ecx		zero		48	
+00224A70	D3D_00224A70	direct3d	12			zero		112	
+00224AE0	D3D_00224AE0	direct3d	0	ecx		zero		160	
+00224B80	D3D_00224B80	direct3d	0	ecx		zero		48	
+00224BB0	D3D_00224BB0	direct3d	0	eax		zero		256	
+00224CB0	D3D_00224CB0	direct3d	0	ecx		zero		128	
+00224D30	D3D_00224D30	direct3d	8			zero		128	
+00224DB0	D3D_00224DB0	direct3d	0			zero		48	
+00224DE0	D3D_00224DE0	direct3d	4			zero		32	
+00224E00	D3D_00224E00	direct3d	4			zero		32	ret 4 from tail-jumped 0x002252D0 (read by hand 2026-11-08)
+00224E20	D3D8LTCG__D3DDevice_EndPush	direct3d	4			zero		16	
+00224E30	D3D_00224E30	direct3d	0	ecx		zero		176	
+00224EE0	D3D_00224EE0	direct3d	0	ecx		zero		112	
+00224F50	D3D_00224F50	direct3d	4			zero		192	
+00225010	D3D_00225010	direct3d	8			zero		368	
+00225180	D3D_00225180	direct3d	8	ecx		zero		320	
+002252C0	D3D8LTCG__D3DDevice_MakeSpace	direct3d	0		DWORD *	fh_push_make_space()		16	[acct2-fh] read from its code 2026-11-13: calls 0x00225180 with the push size at 0x00232E64 and half of it, and returns where the next word goes; called when a writer finds the device's next word (0x002309C0) at or past its end of room (0x002309C4): RenderWare's skinned pipeline (0x001ECF82, 0x001ED02B) and Direct3D's own writers; native answer (fh_push.c: the port's push area, its constant loads read before each draw)
+002252D0	D3D_002252D0	direct3d	4			zero		80	
+00225320	D3D_00225320	direct3d	0			zero		32	
+00225340	D3D_00225340	direct3d	4			zero		128	
+002253C0	D3D_002253C0	direct3d	4			zero		64	
+00225400	D3D_00225400	direct3d	0			zero		240	
+002254F0	D3D_002254F0	direct3d	?			zero		272	no ret found (tail jump or size too small); size 272 too small, read to next function 0x00225600
+00225600	D3D_00225600	direct3d	0			zero		208	
+002256D0	D3D_002256D0	direct3d	0	ecx		zero		304	
+00225800	D3D_00225800	direct3d	4	ecx		zero		1440	
+00225DA0	D3D_00225DA0	direct3d	4	ecx		zero		1232	
+00226270	D3D_00226270	direct3d	0	ecx		zero		432	
+00226420	D3D_00226420	direct3d	4			zero		16	
+00226430	D3D_00226430	direct3d	4			zero		16	
+00226440	D3D_00226440	direct3d	4			zero		96	
+002264A0	D3D_002264A0	direct3d	4			zero		16	
+002264B0	D3D_002264B0	direct3d	0	ecx,eax		zero		16	
+002264C0	D3D_002264C0	direct3d	4			zero		192	
+00226580	D3D_00226580	direct3d	4			zero		32	
+002265A0	D3D_002265A0	direct3d	4			zero		48	
+002265D0	D3D_002265D0	direct3d	8			zero		64	
+00226610	D3D_00226610	direct3d	?			zero		161	no ret found (tail jump or size too small); size 161 too small, read to next function 0x002266B1
+002266B1	D3D_002266B1	direct3d	8	eax		zero		20	
+002266C5	D3D_002266C5	direct3d	8	eax		zero		107	
+00226730	D3D_00226730	direct3d	8			zero		112	
+002267A0	D3D_002267A0	direct3d	28			zero		336	
+002268F0	D3D_002268F0	direct3d	12			zero		192	
+002269B0	D3D_002269B0	direct3d	32			zero		560	
+00226BE0	D3D_00226BE0	direct3d	24	ecx		zero		160	
+00226C80	D3D_00226C80	direct3d	40			zero		501	
+00226E75	D3D_00226E75	direct3d	4			zero		64	
+00226EB5	D3D8LTCG__CMiniport_GetDisplayCapabilities	direct3d	0			zero		31	
+00226ED4	D3D_00226ED4	direct3d	0	ecx		zero		121	
+00226F4D	D3D_00226F4D	direct3d	28	ecx		zero		627	
+002271C0	D3D_002271C0	direct3d	24		HRESULT	fh_d3d_clear(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16), MEM32(g_esp + 20), MEM32(g_esp + 24))	DWORD Count, CONST D3DRECT * pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil	1008	[acct2-fh] read from its code 2026-11-22: D3DDevice_Clear (writes the NV2A's clear methods 0x1D8C... into the push buffer; reached from RenderWare's camera clear 0x001CF7C0 through its device's table at 0x001CF898, and from 0x001D6360); native answer (fh_d3d_state.c): a depth clear in the middle of a frame is done there (video.depth_clear), everything is counted
+002275B0	D3D_002275B0	direct3d	0	ecx		zero		32	
+002275D0	D3D_002275D0	direct3d	0			zero		16	
+002275E0	D3D_002275E0	direct3d	8			zero		288	
+00227700	D3D_00227700	direct3d	0	ecx		zero		224	
+002277E0	D3D_002277E0	direct3d	0	ecx		zero		272	
+002278F0	D3D_002278F0	direct3d	0	ecx		zero		304	
+00227A20	D3D_00227A20	direct3d	4			zero		112	
+00227A90	D3D_00227A90	direct3d	16			zero		80	
+00227AE0	D3D_00227AE0	direct3d	4	ecx		zero		624	
+00227D50	D3D_00227D50	direct3d	0	ecx		zero		176	
+00227E00	D3D_00227E00	direct3d	0	ecx		zero		400	
+00227F90	D3D_00227F90	direct3d	16			zero		215	
+00228067	D3D_00228067	direct3d	4	ecx		zero		19	
+0022807A	D3D_0022807A	direct3d	4	ecx		zero		64	
+002280BA	D3D_002280BA	direct3d	20	ecx		zero		99	
+0022811D	D3D_0022811D	direct3d	4	ecx		zero		52	
+00228151	D3D_00228151	direct3d	0	ecx		zero		43	
+0022817C	D3D_0022817C	direct3d	0	ecx		zero		65	
+002281BD	D3D_002281BD	direct3d	0	ecx		zero		131	
+00228240	D3D_00228240	direct3d	0	ecx		zero		152	
+002282D8	D3D_002282D8	direct3d	16			zero		90	
+00228332	D3D_00228332	direct3d	20	ecx		zero		207	
+00228401	D3D_00228401	direct3d	12	ecx		zero		144	
+00228491	D3D_00228491	direct3d	4	ecx		zero		107	
+002284FC	D3D_002284FC	direct3d	0	ecx		zero		21	
+00228511	D3D_00228511	direct3d	4	ecx		zero		30	
+0022852F	D3D_0022852F	direct3d	12	ecx		zero		206	
+002285FD	D3D_002285FD	direct3d	0	ecx		zero		71	
+00228644	D3D_00228644	direct3d	0	ecx		zero		354	
+002287A6	D3D_002287A6	direct3d	28	ecx		zero		494	
+00228994	D3D_00228994	direct3d	8	ecx		zero		194	
+00228A56	D3D_00228A56	direct3d	0	ecx		zero		458	
+00228C20	D3D_00228C20	direct3d	0			zero		160	
+00228CC0	D3D_00228CC0	direct3d	4			zero		368	
+00228E30	D3D_00228E30	direct3d	4			zero		896	
+002291B0	D3D_002291B0	direct3d	8			zero		496	
+002293A0	D3D_002293A0	direct3d	4			zero		480	
+00229580	D3D_00229580	direct3d	4			zero		960	
+00229940	D3D_00229940	direct3d	4	eax,edx		zero		240	
+00229A30	D3D_00229A30	direct3d	4			zero		448	
+00229BF0	D3D_00229BF0	direct3d	0	eax		zero		320	
+00229D30	D3D_00229D30	direct3d	8			zero		848	
+0022A080	D3D_0022A080	direct3d	8			zero		512	
+0022A280	D3D_0022A280	direct3d	0			zero		128	
+0022A300	D3D_0022A300	direct3d	4	ecx		zero		416	
+0022A4A0	D3D_0022A4A0	direct3d	0	ecx		zero		320	
+0022A5E0	D3D_0022A5E0	direct3d	0			zero		64	
+0022A620	D3D_0022A620	direct3d	4	ecx		zero		145	
+0022A6B1	D3D_0022A6B1	direct3d	0	ecx		zero		359	
+0022A818	D3D_0022A818	direct3d	0	ecx		zero		254	
+0022A916	D3D_0022A916	direct3d	0	ecx		zero		207	
+0022A9E5	D3D_0022A9E5	direct3d	0	ecx		zero		54	
+0022AA1B	D3D_0022AA1B	direct3d	0	ecx		zero		48	
+0022AA4B	D3D_0022AA4B	direct3d	0	ecx		zero		113	
+0022AABC	D3D_0022AABC	direct3d	0	ecx		zero		63	
+0022AAFB	D3D_0022AAFB	direct3d	4	ecx		zero		57	
+0022AB34	D3D_0022AB34	direct3d	4	ecx		zero		509	
+0022AD31	D3D_0022AD31	direct3d	0	ecx		zero		18	
+0022AD43	D3D_0022AD43	direct3d	16	ecx		zero		397	
+0022AED0	D3D_0022AED0	direct3d	20	ecx		zero		57	
+0022AF09	D3D_0022AF09	direct3d	8	ecx		zero		117	
+0022AF7E	D3D_0022AF7E	direct3d	0	ecx		zero		2527	
+0022B95D	D3D_0022B95D	direct3d	4	ecx		zero		291	
+0022BA80	D3D_0022BA80	direct3d	0	ecx		zero		129	
+0022BB01	D3D_0022BB01	direct3d	0	ecx		zero		639	
+0022BD80	D3D_0022BD80	direct3d	0			zero		160	
+0022BE20	D3D_0022BE20	direct3d	8			zero		1472	
+0022C3E0	D3D8LTCG__D3D_AllocContiguousMemory	direct3d	8			zero		32	ret from tail-called 0x00134A34
+0022C400	D3D_0022C400	direct3d	8	eax		zero		32	ret 8 from tail-jumped 0x00134A34 (read by hand 2026-11-08)
+0022C420	D3D__D3D_FreeContiguousMemory	direct3d	4			zero		32	
+0022C440	D3D_0022C440	direct3d	8			zero		80	
+0022C490	D3D_0022C490	direct3d	4			zero		32	
+0022C4B0	D3D8LTCG__D3DDevice_GetPixelShader	direct3d	4			zero		32	
+0022C4D0	D3D_0022C4D0	direct3d	8			zero		32	
+0022C4F0	D3D_0022C4F0	direct3d	4	ecx		zero		512	
+0022C6F0	D3D_0022C6F0	direct3d	12			zero		720	
+0022C9C0	D3D_0022C9C0	direct3d	0	edx		zero		224	
+0022CAA0	D3D_0022CAA0	direct3d	0			zero		288	
+0022CBC0	D3D_GetMultisampleScale	direct3d	8		void	fh_d3d_get_multisample_scale(MEM32(g_esp + 4), MEM32(g_esp + 8))	FLOAT * pX, FLOAT * pY	32	[acct2-fh] read from its code 2026-11-13: copies the device floats at +0x96C and +0x970 (samples a pixel across and down, made at 0x002258CB) to the two pointers; ret 8; called by RenderWare 2D (0x001D4EA1, 0x001D50D4); native answer in the port clip space (fh_d3d_state.h)
+0022CBE0	D3D_0022CBE0	direct3d	0			zero		288	
+0022CD00	D3D_0022CD00	direct3d	4			zero		384	
+0022CE80	D3D_0022CE80	direct3d	0	eax		zero		144	
+0022CF10	D3D_0022CF10	direct3d	0	eax		zero		112	
+0022CF80	D3D_0022CF80	direct3d	?	eax		zero		384	no ret found (tail jump or size too small); size 384 too small, read to next function 0x0022D100
+0022D100	D3D_0022D100	direct3d	4			zero		496	
+0022D2F0	D3D_0022D2F0	direct3d	0	ecx		zero		272	
+0022D400	D3D_0022D400	direct3d	0	eax		zero		64	
+0022D440	D3D__D3DDevice_Swap	direct3d	4		DWORD	fh_present_swap(MEM32(g_esp + 4))	DWORD Flags	240	named from its code 2026-11-08: the frame's end (flags 0 mean 5); the front end calls it once a frame; [waw-decomp] 11-09: native answer (fh_present.c)
+0022D530	D3D_0022D530	direct3d	12			zero		192	
+0022D5F0	D3D__Direct3DCreate8	direct3d	4		IDirect3D8 *	block	UINT SDKVersion	16	
+0022D600	D3D__Direct3D_GetAdapterModeCount	direct3d	4		UINT	fh_d3d_adapter_mode_count(MEM32(g_esp + 4))	UINT Adapter	160	
+0022D6A0	D3D__Direct3D_EnumAdapterModes	direct3d	12		HRESULT	fh_d3d_enum_adapter_modes(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	UINT Adapter, UINT Mode, D3DDISPLAYMODE * pMode	352	
+0022D800	D3D_0022D800	direct3d	24			zero		80	
+0022D850	D3D_0022D850	direct3d	0			zero		176	
+0022D900	D3D_0022D900	direct3d	0			zero		896	
+0022DC80	D3D_0022DC80	direct3d	16149			zero		6504	several ret sizes [0, 16149]
+002332A0	DSOUND__RemoveEntryList	directsound	4			zero		31	
+002332BF	DSOUND_002332BF	directsound	0			zero		17	
+002332D0	DSOUND__CIrql_Raise	directsound	0	ecx		zero		34	
+002332F2	DSOUND__CIrql_Lower	directsound	0	ecx		zero		23	
+00233309	DSOUND__CFpState_Save	directsound	0			zero		37	
+0023332E	DSOUND__CFpState_Restore	directsound	0			zero		30	
+0023334C	DSOUND_0023334C	directsound	4			zero		13	
+00233359	DSOUND_00233359	directsound	4			zero		17	
+0023336A	DSOUND__DSound_CRefCount_Release	directsound	4			zero		33	
+0023338B	DSOUND_0023338B	directsound	4			zero		9	
+00233394	DSOUND_00233394	directsound	4	eax		zero		73	
+002333DD	DSOUND_002333DD	directsound	0	eax,ecx		zero		4	
+002333E1	DSOUND_002333E1	directsound	32	ecx		zero		41	
+0023340A	DSOUND__CHRTFSource_GetDistanceVolume	directsound	32	ecx		zero		55	
+00233441	DSOUND_00233441	directsound	20	ecx		zero		32	
+00233461	DSOUND__CHRTFSource_GetFrontRearVolume	directsound	28			zero		52	
+00233495	DSOUND_00233495	directsound	16	ecx		zero		34	
+002334B7	DSOUND__CHRTFSource_GetDopplerPitch	directsound	16			zero		39	
+002334DE	DSOUND__DirectSoundEnterCriticalSection	directsound	0			zero		30	
+002334FC	DSOUND__CMcpxAPU_DownloadEffectsImage	directsound	12	ecx		zero		47	
+0023352B	DSOUND__CMcpxStream_GetLowWatermark	directsound	0	ecx		zero		63	
+0023356A	DSOUND__IDirectSound_Release	directsound	4			zero		22	
+00233580	DSOUND_00233580	directsound	20			zero		5	
+00233585	DSOUND__IDirectSoundBuffer_Release	directsound	4		HRESULT	fh_sound_release(MEM32(g_esp + 4))		22	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+0023359B	DSOUND__DirectSoundUseFullHRTF	directsound	0			zero		31	
+002335BA	DSOUND__XAudioCalculatePitch	directsound	4			zero		74	
+00233604	DSOUND__CDirectSoundSettings_SetEffectImageLocations	directsound	4			zero		34	
+00233626	DSOUND__CDirectSound_ctor	directsound	0	ecx		zero		29	
+00233643	DSOUND__CDirectSound_dtor	directsound	0	ecx		zero		58	
+0023367D	DSOUND_0023367D	directsound	8			zero		77	
+002336CA	DSOUND__CDirectSound_DownloadEffectsImage	directsound	20			zero		100	
+0023372E	DSOUND__CDirectSound_SetEffectData	directsound	24			zero		98	
+00233790	DSOUND_00233790	directsound	20			zero		95	
+002337EF	DSOUND_002337EF	directsound	4			zero		80	
+0023383F	DSOUND__CDirectSound_SetMixBinHeadroom	directsound	12			zero		95	
+0023389E	DSOUND_0023389E	directsound	12			zero		70	
+002338E4	DSOUND__CDirectSound_DoWork	directsound	4			zero		49	
+00233915	DSOUND__CDirectSound_EnableHeadphones	directsound	8	ecx		zero		283	
+00233A30	DSOUND__CDirectSoundVoiceSettings_SetMixBinVolumes	directsound	4			zero		37	
+00233A55	DSOUND__CDirectSoundVoiceSettings_IncludeSubMixBin	directsound	4	ecx		zero		110	
+00233AC3	DSOUND__CDirectSoundVoice_dtor	directsound	0	ecx		zero		77	
+00233B10	DSOUND__CDirectSoundVoice_SetPitch	directsound	8			zero		25	
+00233B29	DSOUND__CDirectSoundVoice_SetVolume	directsound	8			zero		28	
+00233B45	DSOUND__CDirectSoundVoice_SetHeadroom	directsound	8			zero		35	
+00233B68	DSOUND__CDirectSoundVoice_SetMixBinVolumes	directsound	8			zero		29	
+00233B85	DSOUND__CDirectSoundVoice_CommitDeferredSettings	directsound	4			zero		17	
+00233B96	DSOUND__CDirectSoundBufferSettings_SetNotificationPositions	directsound	8	ecx		zero		213	
+00233C6B	DSOUND__CDirectSoundBuffer_dtor	directsound	0	ecx		zero		51	ret from tail-called 0x00233AC3
+00233C9E	DSOUND_00233C9E	directsound	4			zero		71	
+00233CE5	DSOUND_00233CE5	directsound	4			zero		74	
+00233D2F	DSOUND__CDirectSoundBuffer_Play	directsound	16			zero		81	
+00233D80	DSOUND__CDirectSoundBuffer_Stop	directsound	4			zero		79	
+00233DCF	DSOUND_00233DCF	directsound	16			zero		89	
+00233E28	DSOUND__CDirectSoundBuffer_GetStatus	directsound	8			zero		81	
+00233E79	DSOUND__CDirectSoundBuffer_SetLoopRegion	directsound	12			zero		133	
+00233EFE	DSOUND_00233EFE	directsound	12			zero		85	
+00233F53	DSOUND_00233F53	directsound	32	ecx		zero		226	
+00234035	DSOUND_00234035	directsound	8			zero		81	
+00234086	DSOUND__CDirectSoundStream_dtor	directsound	0	ecx		zero		62	ret from tail-called 0x00233AC3
+002340C4	DSOUND_002340C4	directsound	4			zero		71	
+0023410B	DSOUND_0023410B	directsound	4			zero		78	
+00234159	DSOUND_00234159	directsound	8			zero		103	
+002341C0	DSOUND_002341C0	directsound	4			zero		77	
+0023420D	DSOUND_0023420D	directsound	4			zero		75	
+00234258	DSOUND_00234258	directsound	8			zero		81	
+002342A9	DSOUND__CDirectSoundStream_Process	directsound	12	ecx		zero		119	
+00234320	DSOUND__CDirectSoundStream_FlushEx	directsound	16			zero		106	
+0023438A	DSOUND__CDirectSound3DCalculator_GetVoiceData	directsound	20			zero		737	
+0023466B	DSOUND__CDirectSound3DCalculator_CalculateI3DL2Reverb	directsound	8	ecx		zero		55	
+002346A2	DSOUND_002346A2	directsound	4			zero		21	
+002346B7	DSOUND_002346B7	directsound	4			zero		10	ret from tail-called 0x002340C4
+002346C1	DSOUND_002346C1	directsound	4			zero		10	ret from tail-called 0x0023410B
+002346CB	DSOUND_002346CB	directsound	8			zero		78	
+00234719	DSOUND_00234719	directsound	8			zero		78	
+00234767	DSOUND_00234767	directsound	8			zero		78	
+002347B5	DSOUND__CDirectSoundStream_SetHeadroom	directsound	8			zero		82	
+00234807	DSOUND__CDirectSoundStream_SetMixBinVolumes_8	directsound	8			zero		82	
+00234859	DSOUND_00234859	directsound	8			zero		28	
+00234875	DSOUND_00234875	directsound	20			zero		39	
+0023489C	DSOUND_0023489C	directsound	20			zero		39	
+002348C3	DSOUND__IDirectSound_SetEffectData	directsound	24			zero		42	
+002348ED	DSOUND_002348ED	directsound	4			zero		24	
+00234905	DSOUND_00234905	directsound	8			zero		28	
+00234921	DSOUND__IDirectSound_SetMixBinHeadroom	directsound	12			zero		32	
+00234941	DSOUND_00234941	directsound	12			zero		32	
+00234961	DSOUND_00234961	directsound	8			zero		28	
+0023497D	DSOUND_0023497D	directsound	8			zero		28	
+00234999	DSOUND_00234999	directsound	8			zero		28	
+002349B5	DSOUND__IDirectSoundBuffer_Play	directsound	16		HRESULT	fh_sound_play(MEM32(g_esp + 4), MEM32(g_esp + 16))		36	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+002349D9	DSOUND__IDirectSoundBuffer_Stop	directsound	4		HRESULT	fh_sound_stop(MEM32(g_esp + 4))		24	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+002349F1	DSOUND_002349F1	directsound	16		HRESULT	fh_sound_stop(MEM32(g_esp + 4))		36	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00234A15	DSOUND_00234A15	directsound	12			zero		32	
+00234A35	DSOUND__IDirectSoundBuffer_GetStatus	directsound	8		HRESULT	fh_sound_get_status(MEM32(g_esp + 4), MEM32(g_esp + 8))		28	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00234A51	DSOUND_00234A51	directsound	12		HRESULT	fh_sound_get_position(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))		32	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00234A71	DSOUND_00234A71	directsound	8		HRESULT	fh_sound_set_position(MEM32(g_esp + 4), MEM32(g_esp + 8))		28	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00234A8D	DSOUND_00234A8D	directsound	32			zero		48	
+00234ABD	DSOUND__IDirectSoundStream_SetHeadroom	directsound	8			zero		5	ret from tail-called 0x002347B5
+00234AC2	DSOUND__IDirectSoundStream_SetMixBinVolumes_8	directsound	8			zero		5	ret from tail-called 0x00234807
+00234AC7	DSOUND__IDirectSoundStream_FlushEx	directsound	16			zero		24	
+00234ADF	DSOUND__DirectSoundDoWork	directsound	0			zero		41	
+00234B08	DSOUND_00234B08	directsound	4	ecx		zero		27	
+00234B23	DSOUND__CDirectSoundVoiceSettings_SetMixBins	directsound	4	ecx		zero		203	
+00234BEE	DSOUND__CDirectSoundVoiceSettings_SetOutputBuffer	directsound	4	ecx		zero		211	
+00234CC1	DSOUND__CDirectSoundVoice_ctor	directsound	4	ecx		zero		42	
+00234CEB	DSOUND_00234CEB	directsound	4	ecx		zero		27	
+00234D06	DSOUND__CDirectSoundVoice_Initialize	directsound	12			zero		151	
+00234D9D	DSOUND__CDirectSoundVoice_SetFrequency	directsound	8			zero		36	
+00234DC1	DSOUND_00234DC1	directsound	8			zero		84	
+00234E15	DSOUND__CDirectSoundVoice_SetMixBins	directsound	8			zero		29	
+00234E32	DSOUND__CDirectSoundVoice_SetAllParameters	directsound	12			zero		312	
+00234F6A	DSOUND__CDirectSoundVoice_SetRolloffCurve	directsound	16			zero		67	
+00234FAD	DSOUND_00234FAD	directsound	12			zero		202	
+00235077	DSOUND__CDirectSoundBufferSettings_SetPlayRegion	directsound	8	ecx		zero		36	
+0023509B	DSOUND__CDirectSoundBuffer_ctor	directsound	4	ecx		zero		24	
+002350B3	DSOUND_002350B3	directsound	4	ecx		zero		27	
+002350CE	DSOUND__CDirectSoundBuffer_SetPlayRegion	directsound	12			zero		128	
+0023514E	DSOUND_0023514E	directsound	4	ecx		zero		27	
+00235169	DSOUND_00235169	directsound	8			zero		78	
+002351B7	DSOUND_002351B7	directsound	8			zero		78	
+00235205	DSOUND_00235205	directsound	8			zero		78	
+00235253	DSOUND_00235253	directsound	12			zero		82	
+002352A5	DSOUND__CDirectSoundBuffer_SetRolloffCurve	directsound	16			zero		86	
+002352FB	DSOUND_002352FB	directsound	12			zero		82	
+0023534D	DSOUND__CDirectSoundStream_SetMixBins	directsound	8			zero		82	
+0023539F	DSOUND_0023539F	directsound	8			zero		28	
+002353BB	DSOUND_002353BB	directsound	8			zero		28	
+002353D7	DSOUND_002353D7	directsound	8			zero		28	
+002353F3	DSOUND_002353F3	directsound	12			zero		32	
+00235413	DSOUND_00235413	directsound	16			zero		36	
+00235437	DSOUND_00235437	directsound	12			zero		32	
+00235457	DSOUND_00235457	directsound	12		HRESULT	fh_sound_set_play_region(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))		32	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00235477	DSOUND__IDirectSoundStream_SetMixBins	directsound	8			zero		5	ret from tail-called 0x0023534D
+0023547C	DSOUND__CDirectSound_Release	directsound	4	ecx		zero		201	
+00235545	DSOUND__CDirectSoundVoiceSettings_dtor	directsound	0	ecx		zero		77	
+00235592	DSOUND__CDirectSoundVoiceSettings_SetFormat	directsound	8	ecx		zero		134	
+00235618	DSOUND__CDirectSoundVoice_SetFormat	directsound	8			zero		68	
+0023565C	DSOUND__CDirectSoundBufferSettings_SetBufferData	directsound	8	ecx		zero		140	
+002356E8	DSOUND__CDirectSoundBuffer_SetBufferData	directsound	12	ecx		zero		174	
+00235796	DSOUND__CDirectSoundStream_Constructor	directsound	4	ecx		zero		37	
+002357BB	DSOUND__CDirectSound3DCalculator_Calculate3D	directsound	8			zero		576	
+002359FB	DSOUND_002359FB	directsound	8			zero		78	
+00235A49	DSOUND_00235A49	directsound	8		HRESULT	fh_sound_set_format(MEM32(g_esp + 4), MEM32(g_esp + 8))		28	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00235A65	DSOUND__IDirectSoundBuffer_SetBufferData	directsound	12		HRESULT	fh_sound_set_buffer_data(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))		32	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00235A85	DSOUND__CDirectSoundSettings_ctor	directsound	0	ecx		zero		143	
+00235B14	DSOUND_00235B14	directsound	4	ecx		zero		28	
+00235B30	DSOUND__CDirectSound_CommitDeferredSettings	directsound	4	ecx		zero		154	
+00235BCA	DSOUND_00235BCA	directsound	4	ecx		zero		27	
+00235BE5	DSOUND__CDirectSoundVoiceSettings_Initialize	directsound	12	ecx		zero		258	
+00235CE7	DSOUND__CDirectSoundBufferSettings_dtor	directsound	0	ecx		zero		37	ret from tail-called 0x00235545
+00235D0C	DSOUND__CDirectSoundBufferSettings_Initialize	directsound	4	ecx		zero		101	
+00235D71	DSOUND__CDirectSoundBuffer_Initialize	directsound	8	ecx		zero		231	
+00235E58	DSOUND__CDirectSoundStreamSettings_scalar_deleting_dtor	directsound	4	ecx		zero		33	
+00235E79	DSOUND__CDirectSoundStreamSettings_Initialize	directsound	4	ecx		zero		57	
+00235EB2	DSOUND__CDirectSoundStream_Initialize	directsound	8			zero		170	
+00235F5C	DSOUND_00235F5C	directsound	4			zero		24	
+00235F74	DSOUND__CDirectSound_CreateSoundBuffer	directsound	16			zero		156	
+00236010	DSOUND__CDirectSound_CreateSoundStream	directsound	16			zero		145	
+002360A1	DSOUND__CDirectSound_SetDistanceFactor	directsound	12			zero		95	
+00236100	DSOUND_00236100	directsound	12			zero		95	
+0023615F	DSOUND_0023615F	directsound	12			zero		95	
+002361BE	DSOUND__CDirectSound_SetOrientation	directsound	32			zero		141	
+0023624B	DSOUND__CDirectSound_SetPosition	directsound	20			zero		115	
+002362BE	DSOUND__CDirectSound_SetVelocity	directsound	20			zero		115	
+00236331	DSOUND_00236331	directsound	12			zero		264	
+00236439	DSOUND_00236439	directsound	4	ecx		zero		27	
+00236454	DSOUND__IDirectSound_CreateSoundBuffer	directsound	16		HRESULT	fh_sound_create_buffer(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))		36	[waw-decomp-fh2 r17] 2026-11-24: native answer, the buffer keeps its play time (src/fh_sound_timing.c)
+00236478	DSOUND_00236478	directsound	12	ecx		zero		36	
+0023649C	DSOUND_0023649C	directsound	12	ecx		zero		36	
+002364C0	DSOUND__IDirectSound_SetOrientation	directsound	32			zero		74	
+0023650A	DSOUND_0023650A	directsound	20			zero		53	
+0023653F	DSOUND_0023653F	directsound	12	ecx		zero		36	
+00236563	DSOUND_00236563	directsound	20			zero		53	
+00236598	DSOUND_00236598	directsound	12			zero		32	
+002365B8	DSOUND__CDirectSound_Initialize	directsound	4			zero		313	
+002366F1	DSOUND__DirectSoundCreateInternal	directsound	4			zero		109	
+0023675E	DSOUND__DirectSoundCreate	directsound	12	ecx		zero		71	
+002367A5	DSOUND__DirectSoundCreateStream	directsound	8	ecx		zero		87	
+002367FC	DSOUND__DSound_CMemoryManager_PoolAlloc	directsound	12			zero		71	
+00236843	DSOUND_00236843	directsound	?			zero		24	no ret found (tail jump or size too small); size 24 too small, read to next function 0x0023685B
+0023685B	DSOUND__CMemoryManager_PhysicalAlloc	directsound	16			zero		79	
+002368AA	DSOUND_002368AA	directsound	?			zero		24	no ret found (tail jump or size too small); size 24 too small, read to next function 0x002368C2
+002368C2	DSOUND__CMemoryManager_MemAlloc	directsound	12			zero		104	
+0023692A	DSOUND__CMemoryManager_MemFree	directsound	4			zero		52	
+0023695E	DSOUND__WaveFormat_PcmToInternalFormat	directsound	8			zero		41	
+00236987	DSOUND__WaveFormat_AdpcmToInternalFormat	directsound	8			zero		39	
+002369AE	DSOUND__WaveFormat_ExtensibleToInternalFormat	directsound	8			zero		73	
+002369F7	DSOUND__WaveFormat_CreateInternalFormat	directsound	8			zero		67	
+00236A3A	DSOUND_00236A3A	directsound	0			zero		11	
+00236A45	DSOUND_00236A45	directsound	0			zero		11	
+00236A50	DSOUND__Math_MagnitudeVector3	directsound	4			zero		39	
+00236A77	DSOUND__Math_MetersToVolume	directsound	4	eax		zero		55	
+00236AAE	DSOUND_00236AAE	directsound	4	eax		zero		73	
+00236AF7	DSOUND__CFullHRTFListener_CalcNormOrient	directsound	12			zero		61	
+00236B34	DSOUND__CFullHRTFSource_CalcNormPos	directsound	20			zero		73	
+00236B7D	DSOUND__CFullHRTFSource_CalcPolarCoords	directsound	32			zero		355	
+00236CE0	DSOUND__CFullHRTFSource_CalcConeAngle	directsound	12			zero		150	
+00236D76	DSOUND__CFullHRTFSource_CalcRelativeVelocity	directsound	20			zero		75	
+00236DC1	DSOUND__CFullHRTFSource_GetDistanceVolume	directsound	32	ecx,eax		zero		273	
+00236ED2	DSOUND__CFullHRTFSource_GetConeVolume	directsound	20			zero		144	
+00236F62	DSOUND_00236F62	directsound	28			zero		207	
+00237031	DSOUND__CFullHRTFSource_GetCenterVolume	directsound	16	eax		zero		162	
+002370D3	DSOUND__CFullHRTFSource_GetDopplerPitch	directsound	16	eax		zero		121	
+0023714C	DSOUND_0023714C	directsound	16	ecx,eax		zero		284	
+00237268	DSOUND__CHRTFSource_SetFullHRTF5Channel	directsound	0			zero		111	
+002372D7	DSOUND__CMcpxGPDspManager_ctor	directsound	0	ecx		zero		31	
+002372F6	DSOUND__CMcpxGPDspManager_Initialize	directsound	0	ecx		zero		117	
+0023736B	DSOUND__CMcpxGPDspManager_ParseEffectImageInfo	directsound	4	ecx		zero		373	
+002374E0	DSOUND__CMcpxGPDspManager_GetEffectMap	directsound	8	ecx		zero		39	
+00237507	DSOUND__CMcpxGPDspManager_CommitChanges	directsound	8			zero		101	
+0023756C	DSOUND__CMcpxGPDspManager_AC3SetOutputBuffer	directsound	8	ecx		zero		20	
+00237580	DSOUND__CMcpxGPDspManager_SetMultipassBuffer	directsound	8	ecx		zero		23	
+00237597	DSOUND__CMcpxGPDspManager_dtor	directsound	0	ecx		zero		65	
+002375D8	DSOUND__CMcpxGPDspManager_DownloadEffectsImage	directsound	12	ecx		zero		153	
+00237671	DSOUND__CMcpxGPDspManager_SetEffectData	directsound	20	ecx		zero		169	
+0023771A	DSOUND__CMcpxGPDspManager_GetEffectData	directsound	16			zero		58	
+00237754	DSOUND__MoveEntryTailList	directsound	8			zero		42	
+0023777E	DSOUND__CMcpxAPU_ctor	directsound	4	ecx		zero		152	
+00237816	DSOUND__CMcpxAPU_Terminate	directsound	0	ecx		zero		99	
+00237879	DSOUND__CMcpxAPU_AllocateVoices	directsound	4	ecx		zero		145	
+0023790A	DSOUND__CMcpxAPU_FreeVoices	directsound	4	ecx		zero		109	
+00237977	DSOUND__CMcpxAPU_WaitForMagicWrite	directsound	0	ecx		zero		99	
+002379DA	DSOUND__CMcpxAPU_ServiceVoiceInterrupt	directsound	0	ecx		zero		121	
+00237A53	DSOUND__CMcpxAPU_GetInterruptStatusCallback	directsound	4			zero		44	
+00237A7F	DSOUND__CMcpxAPU_HandleDeltaPanic	directsound	0	ecx		zero		110	
+00237AED	DSOUND__CMcpxAPU_HandleIdleVoice	directsound	4			zero		80	
+00237B3D	DSOUND__CMcpxAPU_ScheduleDeferredCommandLow	directsound	4			zero		37	
+00237B62	DSOUND__CMcpxAPU_RemoveDeferredCommandHigh	directsound	4	ecx		zero		98	
+00237BC4	DSOUND_00237BC4	directsound	0	ecx		zero		130	
+00237C46	DSOUND_00237C46	directsound	0	ecx		zero		146	
+00237CD8	DSOUND__CMcpxAPU_SetHRTFHeadroom	directsound	4	ecx		zero		55	
+00237D0F	DSOUND__CMcpxAPU_SetMixBinHeadroom	directsound	4	ecx		zero		69	
+00237D54	DSOUND__CMcpxAPU_SetSpeakerConfig	directsound	0	ecx		zero		89	
+00237DAD	DSOUND__CMcpxAPU_AddSynchVoice	directsound	4	ecx		zero		39	
+00237DD4	DSOUND__CMcpxAPU_RemoveSynchVoice	directsound	4	ecx		zero		17	
+00237DE5	DSOUND__CMcpxAPU_CommitI3DL2Listener	directsound	0	ecx		zero		183	
+00237E9C	DSOUND_00237E9C	directsound	16			zero		12	
+00237EA8	DSOUND_00237EA8	directsound	4			zero		28	
+00237EC4	DSOUND__CMcpxAPU_dtor	directsound	0	ecx		zero		171	
+00237F6F	DSOUND__CMcpxAPU_ServiceApuInterruptDpc	directsound	0	ecx		zero		66	
+00237FB1	DSOUND__CMcpxAPU_HandleSoftwareMethod	directsound	8			zero		22	
+00237FC7	DSOUND__CMcpxAPU_RemoveDeferredCommand	directsound	4	ecx		zero		68	
+0023800B	DSOUND_0023800B	directsound	16			zero		12	
+00238017	DSOUND_00238017	directsound	4	ecx		zero		27	
+00238032	DSOUND__CMcpxAPU_HandleFETrap	directsound	0	ecx		zero		71	
+00238079	DSOUND_00238079	directsound	4	ecx		zero		214	
+0023814F	DSOUND__CMcpxAPU_ServiceApuInterrupt	directsound	0	ecx		zero		85	
+002381A4	DSOUND__CMcpxAPU_ScheduleDeferredCommand	directsound	4	ecx		zero		71	
+002381EB	DSOUND_002381EB	directsound	8			zero		12	
+002381F7	DSOUND__CMcpxAPU_Initialize	directsound	0	ecx		zero		242	
+002382E9	XVOICE__XMOAcceptPacket	directsound	4			zero		30	
+00238307	XVOICE__XMOCompletePacket	directsound	20			zero		68	
+0023834B	DSOUND__MoveHeadTailList	directsound	8			zero		27	
+00238366	DSOUND__CMcpxNotifier_GetStatus	directsound	4	ecx		zero		30	
+00238384	DSOUND__CMcpxVoiceClient_BytesToSamples	directsound	4	ecx		zero		25	
+0023839D	DSOUND__CMcpxVoiceClient_SamplesToBytes	directsound	4	ecx		zero		34	
+002383BF	DSOUND__CMcpxStream_HasPendingData	directsound	0	ecx		zero		24	
+002383D7	DSOUND__CMcpxStream_Initialize	directsound	0	ecx		zero		167	
+0023847E	DSOUND__CMcpxStream_Stop	directsound	4	ecx		zero		114	
+002384F0	DSOUND__CMcpxStream_GetStatus	directsound	4	ecx		zero		90	
+0023854A	DSOUND__CMcpxStream_OnEndOfStream	directsound	0	ecx		zero		45	
+00238577	DSOUND__CMcpxStream_MapPacket	directsound	8	ecx		zero		355	
+002386DA	DSOUND__CMcpxStream_CommitSsl	directsound	4	ecx		zero		213	
+002387AF	DSOUND__CMcpxStream_CompletePacket	directsound	8	ecx		zero		76	
+002387FB	DSOUND__CMcpxStream_ReleaseStreamResources	directsound	0	ecx		zero		64	ret from tail-called 0x002399CF
+0023883B	DSOUND_0023883B	directsound	16	ecx		zero		47	
+0023886A	DSOUND__CMcpxStream_RemoveDeferredCommand	directsound	4	ecx		zero		26	
+00238884	DSOUND__CMcpxStream_ctor	directsound	8	ecx		zero		171	
+0023892F	DSOUND__CMcpxStream_Stop_Ex	directsound	12	ecx		zero		57	
+00238968	DSOUND__CMcpxStream_MapPackets	directsound	4	ecx		zero		103	
+002389CF	DSOUND__CMcpxStream_CompletePackets	directsound	8	ecx		zero		118	
+00238A45	DSOUND__CMcpxStream_CompleteDeferredPackets	directsound	0	ecx		zero		40	
+00238A6D	DSOUND__CMcpxStream_Discontinuity	directsound	0	ecx		zero		45	
+00238A9A	DSOUND__CMcpxStream_CompleteSsl	directsound	8	ecx		zero		195	
+00238B5D	DSOUND__CMcpxStream_Flush	directsound	4	ecx		zero		224	
+00238C3D	DSOUND__CMcpxStream_OnDeferredFlush	directsound	0	ecx		zero		16	
+00238C4D	DSOUND__CMcpxStream_Process	directsound	0	ecx		zero		228	
+00238D31	DSOUND__CMcpxStream_ServiceVoiceInterrupt	directsound	0	ecx		zero		136	
+00238DB9	DSOUND__CMcpxStream_dtor	directsound	0	ecx		zero		93	ret from tail-called 0x0023ADEC
+00238E16	DSOUND__CMcpxStream_SetFormat	directsound	0	ecx		zero		239	
+00238F05	DSOUND__CMcpxStream_SubmitPacket	directsound	4	ecx		zero		206	
+00238FD3	DSOUND__CMcpxStream_Pause	directsound	4	ecx		zero		142	
+00239061	DSOUND_00239061	directsound	8			zero		75	
+002390AC	DSOUND_002390AC	directsound	4	ecx		zero		27	
+002390C7	DSOUND_002390C7	directsound	4	eax		zero		137	
+00239150	DSOUND__Math_RatioToPitch	directsound	4	ecx		zero		30	
+0023916E	DSOUND__CMcpxBufferSgeHeap_CreateMarker	directsound	16			zero		54	
+002391A4	DSOUND__CMcpxSlopMemoryHeap_CreateMarker	directsound	12			zero		39	
+002391CB	DSOUND__CMcpxBufferSgeHeap_ctor	directsound	0	ecx		zero		32	
+002391EB	DSOUND__CMcpxBufferSgeHeap_dtor	directsound	0	ecx		zero		34	
+0023920D	DSOUND__CMcpxBufferSgeHeap_Initialize	directsound	4	ecx		zero		139	
+00239298	DSOUND__CMcpxBufferSgeHeap_AllocRun	directsound	8	ecx		zero		209	
+00239369	DSOUND__CMcpxBufferSgeHeap_CoalesceRuns	directsound	8	ecx		zero		33	
+0023938A	DSOUND__CMcpxBufferSgeHeap_MapBuffer	directsound	12	ecx		zero		109	
+002393F7	DSOUND__CMcpxBufferSgeHeap_UnmapBuffer	directsound	8			zero		23	
+0023940E	DSOUND__CMcpxSlopMemoryHeap_ctor	directsound	0	ecx		zero		37	
+00239433	DSOUND__CMcpxSlopMemoryHeap_dtor	directsound	0	ecx		zero		97	
+00239494	DSOUND__CMcpxSlopMemoryHeap_AddRun	directsound	12	ecx		zero		132	
+00239518	DSOUND__CMcpxSlopMemoryHeap_Alloc	directsound	4	ecx		zero		225	
+002395F9	DSOUND__CMcpxSlopMemoryHeap_CoalesceRuns	directsound	8			zero		27	
+00239614	DSOUND_00239614	directsound	4	ecx		zero		27	
+0023962F	DSOUND__CMcpxBufferSgeHeap_Alloc	directsound	8	ecx		zero		143	
+002396BE	DSOUND__CMcpxBufferSgeHeap_FreeRun	directsound	4	ecx		zero		92	
+0023971A	DSOUND_0023971A	directsound	4	ecx		zero		27	
+00239735	DSOUND__CMcpxSlopMemoryHeap_Free	directsound	4	ecx		zero		153	
+002397CE	DSOUND__CMcpxBufferSgeHeap_Free	directsound	4	ecx		zero		75	
+00239819	DSOUND_00239819	directsound	0			zero		11	
+00239824	DSOUND_00239824	directsound	0			zero		11	
+0023982F	DSOUND_0023982F	directsound	0	ecx,edx		zero		4	
+00239833	DSOUND_00239833	directsound	16	ecx		zero		34	
+00239855	DSOUND__CMcpxNotifier_Reset	directsound	0	ecx		zero		28	
+00239871	DSOUND__CMcpxVoiceClient_Initialize	directsound	4			zero		75	
+002398BC	DSOUND__CMcpxVoiceClient_SetFormat	directsound	0	ecx		zero		275	
+002399CF	DSOUND__CMcpxVoiceClient_ReleaseVoiceResources	directsound	0	ecx		zero		136	
+00239A57	DSOUND__CMcpxVoiceClient_ConvertMixBinValues	directsound	8	ecx		zero		177	
+00239B08	DSOUND__CMcpxVoiceClient_ConvertVolumeValues	directsound	4	ecx		zero		596	
+00239D5C	DSOUND__CMcpxVoiceClient_ConvertPitchValue	directsound	4	ecx		zero		130	
+00239DDE	DSOUND__CMcpxVoiceClient_GetAntecedentVoice	directsound	8	ecx		zero		116	
+00239E52	DSOUND__CMcpxVoiceClient_RemoveIdleVoice	directsound	4	ecx		zero		476	
+0023A02E	DSOUND__CMcpxVoiceClient_RemoveStuckVoice	directsound	0	ecx		zero		101	
+0023A093	DSOUND__CMcpxVoiceClient_ReleaseVoice	directsound	0	ecx		zero		132	
+0023A117	DSOUND_0023A117	directsound	0	ecx		zero		84	
+0023A16B	DSOUND__CMcpxVoiceClient_PauseVoice	directsound	4	ecx		zero		230	
+0023A251	DSOUND__CMcpxVoiceClient_LoadHRTFFilter	directsound	8	ecx		zero		367	
+0023A3C0	DSOUND__CMcpxVoiceClient_SetFilter	directsound	4	ecx		zero		330	
+0023A50A	DSOUND__CMcpxVoiceClient_GetSslPosition	directsound	0	ecx		zero		139	
+0023A595	DSOUND__CMcpxNotifier_Initialize	directsound	8	ecx		zero		30	
+0023A5B3	DSOUND__CMcpxVoiceNotifier_Initialize	directsound	4			zero		23	
+0023A5CA	DSOUND__CMcpxVoiceClient_AllocateVoiceResources	directsound	0	ecx		zero		378	
+0023A744	DSOUND__CMcpxVoiceClient_SetMixBins	directsound	0	ecx		zero		193	
+0023A805	DSOUND__CMcpxVoiceClient_SetVolume	directsound	0	ecx		zero		152	
+0023A89D	DSOUND__CMcpxVoiceClient_SetPitch	directsound	0	ecx		zero		146	
+0023A92F	DSOUND__CMcpxVoiceClient_WaitForVoiceOff	directsound	0	ecx		zero		28	
+0023A94B	DSOUND__CMcpxVoiceClient_Apply3dSettings	directsound	0	ecx		zero		105	
+0023A9B4	DSOUND__CMcpxVoiceClient_ctor	directsound	8	ecx		zero		101	
+0023AA19	DSOUND_0023AA19	directsound	4	ecx		zero		314	
+0023AB53	DSOUND__CMcpxVoiceClient_Commit3dSettings	directsound	0	ecx		zero		133	
+0023ABD8	DSOUND_0023ABD8	directsound	0	ecx		zero		269	
+0023ACE5	DSOUND__CMcpxVoiceClient_DisconnectVoice	directsound	0	ecx		zero		263	
+0023ADEC	DSOUND__CMcpxVoiceClient_dtor	directsound	0	ecx		zero		56	
+0023AE24	DSOUND__CMcpxVoiceClient_ActivateVoice	directsound	0	ecx		zero		460	
+0023AFF0	DSOUND_0023AFF0	directsound	4	ecx		zero		27	
+0023B00B	DSOUND_0023B00B	directsound	0	ecx,edx		zero		4	
+0023B00F	DSOUND__CMcpxBuffer_MapBuffer	directsound	4	ecx		zero		114	
+0023B081	DSOUND__CMcpxBuffer_UnmapBuffer	directsound	0	ecx		zero		67	
+0023B0C4	DSOUND__CMcpxBuffer_PlayFromCurrent	directsound	4	ecx		zero		321	
+0023B205	DSOUND__CMcpxBuffer_PlayFromPosition	directsound	8	ecx,eax		zero		383	
+0023B384	DSOUND__CMcpxBuffer_Pause	directsound	4	ecx		zero		115	
+0023B3F7	DSOUND__CMcpxBuffer_GetStatus	directsound	4	ecx		zero		66	
+0023B439	DSOUND__CMcpxBuffer_GetCurrentPosition	directsound	8	ecx		zero		223	
+0023B518	DSOUND__CMcpxBuffer_ServiceVoiceInterrupt	directsound	0	ecx		zero		71	
+0023B55F	DSOUND__CMcpxBuffer_NotifyToPosition	directsound	8	ecx		zero		97	
+0023B5C0	DSOUND__CMcpxBuffer_NotifyStop	directsound	0	ecx		zero		58	
+0023B5FA	DSOUND_0023B5FA	directsound	16	ecx		zero		47	
+0023B629	DSOUND__CMcpxBuffer_RemoveDeferredCommand	directsound	4	ecx		zero		26	
+0023B643	DSOUND__CMcpxBuffer_ctor	directsound	8	ecx		zero		92	
+0023B69F	DSOUND__CMcpxBuffer_MapInputBuffer	directsound	0	ecx		zero		101	
+0023B704	DSOUND__CMcpxBuffer_MapEffectsBuffer	directsound	0	ecx		zero		82	
+0023B756	DSOUND__CMcpxBuffer_OnPositionDelta	directsound	0	ecx		zero		159	
+0023B7F5	DSOUND__CMcpxBuffer_AllocateBufferResources	directsound	0	ecx		zero		78	
+0023B843	DSOUND__CMcpxBuffer_Play	directsound	4	ecx		zero		176	
+0023B8F3	DSOUND__CMcpxBuffer_SetPlayRegion	directsound	0	ecx		zero		75	
+0023B93E	DSOUND__CMcpxBuffer_SetLoopRegion	directsound	0	ecx		zero		30	
+0023B95C	DSOUND__CMcpxBuffer_Stop	directsound	4	ecx		zero		144	
+0023B9EC	DSOUND__CMcpxBuffer_SetCurrentPosition	directsound	4	ecx		zero		246	
+0023BAE2	DSOUND__CMcpxBuffer_Initialize	directsound	0	ecx		zero		36	
+0023BB06	DSOUND__CMcpxBuffer_SetBufferData	directsound	0	ecx		zero		26	
+0023BB20	DSOUND__CMcpxBuffer_ReleaseBufferResources	directsound	0	ecx		zero		77	ret from tail-called 0x002399CF
+0023BB6D	DSOUND__CMcpxBuffer_SetFormat	directsound	0	ecx		zero		88	
+0023BBC5	DSOUND_0023BBC5	directsound	12	ecx		zero		57	
+0023BBFE	DSOUND__CMcpxBuffer_OnDeferredTerminate	directsound	0	ecx		zero		27	
+0023BC19	DSOUND__CMcpxBuffer_dtor	directsound	0	ecx		zero		61	ret from tail-called 0x0023ADEC
+0023BC56	DSOUND__CMcpxBuffer_ReleaseBufferData	directsound	4	ecx		zero		49	
+0023BC87	DSOUND_0023BC87	directsound	8			zero		79	
+0023BCD6	DSOUND_0023BCD6	directsound	4	ecx		zero		27	
+0023BCF1	DSOUND__mBToLinear	directsound	4			zero		78	
+0023BD3F	DSOUND__CI3DL2Listener_SetSize	directsound	4	ecx,eax		zero		142	
+0023BDCD	DSOUND__CI3DL2Listener_SetReflectionsGain	directsound	4	ecx		zero		57	
+0023BE06	DSOUND__CI3DL2Listener_SetReflectionsDelay	directsound	4	ecx		zero		30	
+0023BE24	DSOUND__CI3DL2Listener_SetReverbGain	directsound	4	ecx		zero		56	
+0023BE5C	DSOUND__CI3DL2Listener_SetReverbDelay	directsound	4	ecx		zero		154	
+0023BEF6	DSOUND_0023BEF6	directsound	4	ecx		zero		125	
+0023BF73	DSOUND__CI3DL2Listener_Initialize	directsound	0	ecx		zero		77	
+0023BFC0	DSOUND__CI3DL2Listener_Get1PoleLoPass	directsound	24			zero		189	
+0023C07D	DSOUND__CI3DL2Source_Get1PoleLoPass	directsound	16	ecx		zero		140	
+0023C109	DSOUND_0023C109	directsound	8	ecx		zero		97	
+0023C16A	DSOUND_0023C16A	directsound	20			zero		171	
+0023C215	DSOUND__CI3DL2Source_CalculateI3DL2	directsound	32			zero		303	
+0023C344	DSOUND__CI3DL2Listener_SetDecayTimes	directsound	12	ecx		zero		234	
+0023C42E	DSOUND__CI3DL2Listener_CalculateI3DL2	directsound	8	ecx		zero		904	
+0023C7B6	DSOUND__CMcpxDspScratchDma_ctor	directsound	4	ecx		zero		26	
+0023C7D0	DSOUND__CMcpxDspScratchDma_dtor	directsound	0	ecx		zero		46	
+0023C7FE	DSOUND__CMcpxDspScratchDma_Initialize	directsound	4	ecx		zero		179	
+0023C8B1	DSOUND__CMcpxDspScratchDma_AddPages	directsound	12	ecx		zero		82	
+0023C903	DSOUND__CMcpxDspScratchDma_Copy	directsound	12	ecx		zero		40	
+0023C92B	DSOUND__CMcpxDspScratchDma_AdjustFxScratch	directsound	4	ecx		zero		216	
+0023CA03	DSOUND__lfsr	directsound	16			zero		121	
+0023CA7C	DSOUND__XAudiopUtility_GenerateKey	directsound	4			zero		45	
+0023CAA9	DSOUND__XAudiopUtility_Decode	directsound	20			zero		207	
+0023CB78	DSOUND__CMcpxCore_SetupVoiceProcessor	directsound	0			zero		211	
+0023CC4B	DSOUND__CMcpxCore_SetupGlobalProcessor	directsound	0	ecx		zero		319	
+0023CD8A	DSOUND__CMcpxCore_SetupEncodeProcessor	directsound	0	ecx		zero		420	
+0023CF2E	DSOUND__CMcpxCore_SetupAc97	directsound	0	ecx		zero		185	
+0023CFE7	DSOUND__CMcpxCore_SetInterruptState	directsound	4	ecx		zero		55	
+0023D01E	DSOUND__CMcpxCore_SetPrivLockState	directsound	4	ecx		scratch		55	
+0023D055	DSOUND__CMcpxCore_SetFrontEndState	directsound	4	ecx		zero		91	
+0023D0B0	DSOUND__CMcpxCore_SetSetupEngineState	directsound	4	ecx		zero		98	
+0023D112	DSOUND__CMcpxCore_GetPhysicalMemoryProperties	directsound	16	ecx		zero		119	
+0023D189	DSOUND__CMcpxCore_MapTransfer	directsound	12			zero		61	
+0023D1C6	DSOUND__CMcpxCore_AllocateContext	directsound	12			zero		63	
+0023D205	DSOUND__CMcpxCore_ResetGlobalCounters	directsound	0			zero		122	
+0023D27F	DSOUND__CMcpxCore_SetupDSPs	directsound	0	ecx		zero		44	
+0023D2AB	DSOUND__CMcpxCore_ctor	directsound	4	ecx		zero		35	
+0023D2CE	DSOUND__CMcpxCore_dtor	directsound	0	ecx		zero		165	ret from tail-called 0x0023DEFC
+0023D373	DSOUND__CMcpxCore_SetupFrontEndProcessor	directsound	0	ecx		zero		205	
+0023D440	DSOUND__CMcpxCore_AllocateApuMemory	directsound	0	ecx		zero		384	
+0023D5C0	DSOUND__CMcpxCore_IdleVoiceProcessor	directsound	4			zero		221	
+0023D69D	DSOUND_0023D69D	directsound	4	ecx		zero		27	
+0023D6B8	DSOUND__CMcpxCore_Reset	directsound	0	ecx		zero		125	ret from tail-called 0x0023DE7E
+0023D735	DSOUND__CMcpxCore_Initialize	directsound	0	ecx		zero		108	
+0023D7A1	DSOUND_0023D7A1	directsound	0	ecx		zero		8	
+0023D7A9	DSOUND__CAc97Device_AcquireCodecSemaphore	directsound	0			zero		45	
+0023D7D6	DSOUND__CAc97Device_CodecReady	directsound	0			zero		80	
+0023D826	DSOUND__CAc97Device_SynchronizeAciInterrupt	directsound	0	ecx		zero		20	
+0023D83A	DSOUND__CAc97Device_PokeAc97Register	directsound	8			zero		29	
+0023D857	DSOUND__CAc97Device_PowerUp	directsound	0			zero		24	
+0023D86F	DSOUND__CAc97Channel_Pause	directsound	0	ecx		zero		47	
+0023D89E	DSOUND__CAc97Channel_SetPrdIndeces	directsound	16	ecx		zero		144	
+0023D92E	DSOUND__CAc97Channel_SetMode	directsound	4	ecx		zero		49	
+0023D95F	DSOUND__CAc97Channel_SetPosition	directsound	4	ecx		zero		46	
+0023D98D	DSOUND_0023D98D	directsound	4			zero		14	
+0023D99B	DSOUND__CAc97Device_CreateChannel	directsound	8	ecx		zero		104	
+0023DA03	DSOUND__CAc97Channel_AttachPacket	directsound	8	ecx		zero		145	
+0023DA94	DSOUND__CAc97Channel_Reset	directsound	0	ecx		zero		114	
+0023DB06	DSOUND__CAc97Channel_Flush	directsound	4	ecx		zero		78	
+0023DB54	DSOUND__CAc97Channel_Run	directsound	4	ecx		zero		90	
+0023DBAE	DSOUND__CAc97Channel_Initialize	directsound	12	ecx		zero		162	
+0023DC50	DSOUND__CAc97Channel_Terminate	directsound	0	ecx		zero		78	
+0023DC9E	DSOUND__CAc97Channel_ServiceInterrupt	directsound	0	ecx		zero		87	
+0023DCF5	DSOUND__CAc97Device_ServiceAciInterrupt	directsound	0	ecx		zero		212	
+0023DDC9	DSOUND__CAc97Device_ServiceAciInterruptDpc	directsound	0	ecx		zero		89	
+0023DE22	DSOUND_0023DE22	directsound	8			zero		17	
+0023DE33	DSOUND_0023DE33	directsound	16			zero		12	
+0023DE3F	DSOUND__CAc97Device_ReleaseChannel	directsound	4	ecx		zero		63	
+0023DE7E	DSOUND__CAc97Device_Terminate	directsound	0	ecx		zero		111	
+0023DEED	DSOUND_0023DEED	directsound	4			zero		15	
+0023DEFC	DSOUND_0023DEFC	directsound	0			zero		13	
+0023DF09	DSOUND__CAc97Device_Initialize	directsound	4	ecx		zero		223	
+0023DFE8	DSOUND_0023DFE8	directsound	0			zero		6	
+0023DFEE	DSOUND_0023DFEE	directsound	12			zero		158	
+0023E08C	DSOUND__CMcpxEPDspManager_ctor	directsound	0	ecx		zero		13	
+0023E099	DSOUND_0023E099	directsound	0	ecx		zero		4	
+0023E09D	DSOUND__CMcpxEPDspManager_AC3StartGpInput	directsound	4	ecx		zero		119	
+0023E114	DSOUND__CMcpxEPDspManager_AC3SetAnalogOutput	directsound	8	ecx		zero		40	
+0023E13C	DSOUND__CMcpxEPDspManager_AC3SetDigitalOutput	directsound	8	ecx		zero		69	
+0023E181	DSOUND__CMcpxEPDspManager_dtor	directsound	0	ecx		zero		29	
+0023E19E	DSOUND_0023E19E	directsound	46344	ecx		zero		78246	several ret sizes [0, 4, 7, 24, 34, 320, 5431, 6150, 10164, 11323, 12335, 13742, 15361, 15362, 15363, 15364, 15398, 15418, 15654, 15667, 15895, 16449, 16581, 16691, 17338, 17461, 17715, 18719, 19772, 46344]
+00251610	BINK__BinkGetError	bink	0		char *	fh_movie_get_error()	void		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00251A80	BINK__BinkSetSoundTrack	bink	8		void	fh_movie_set_sound_track(MEM32(g_esp + 4), MEM32(g_esp + 8))	U32 total_tracks, U32 * tracks		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00251CC0	BINK__BinkOpen	bink	8		HBINK	fh_movie_open(MEM32(g_esp + 4), MEM32(g_esp + 8))	const char * name, U32 flags		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00253500	BINK__BinkWait	bink	4		S32	fh_movie_wait(MEM32(g_esp + 4))	HBINK bink		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00253700	BINK__BinkPause	bink	8		S32	fh_movie_pause(MEM32(g_esp + 4), MEM32(g_esp + 8))	HBINK bink, S32 pause		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00253800	BINK__BinkSetVolume	bink	12		void	fh_movie_set_volume(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	HBINK bink, U32 track_id, S32 volume		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00253850	BINK__BinkGetTrackID	bink	8		U32	fh_movie_get_track_id(MEM32(g_esp + 4), MEM32(g_esp + 8))	HBINK bink, U32 track_index		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+002539B0	BINK__BinkCopyToBuffer	bink	28		S32	fh_movie_copy_to_buffer(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16), MEM32(g_esp + 20), MEM32(g_esp + 24), MEM32(g_esp + 28))	HBINK bink, void * dest, S32 pitch, U32 height, U32 x, U32 y, U32 flags		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+002539F0	BINK__BinkDoFrame	bink	4		S32	fh_movie_do_frame(MEM32(g_esp + 4))	HBINK bink		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00253FD0	BINK__BinkNextFrame	bink	4		void	fh_movie_next_frame(MEM32(g_esp + 4))	HBINK bink		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+00254170	BINK__BinkClose	bink	4		void	fh_movie_close(MEM32(g_esp + 4))	HBINK bink		[acct2-fh] read from the game's calls 2026-11-13 (fh/src/fh_movie.c says where); native answer: the film through FFmpeg
+002D43C0	XAPI__XGetDevices	input	4		DWORD	fh_pad_get_devices(MEM32(g_esp + 4))	PXPP_DEVICE_TYPE type	34	named 2026-11-13 by the byte match with Big Red One's XAPI (acct2-fh/v3/names/matches.tsv)
+002D43E2	XAPI__XGetDeviceChanges	input	12		BOOL	fh_pad_get_device_changes(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12))	PXPP_DEVICE_TYPE type, DWORD * insertions, DWORD * removals	109	named 2026-11-13 by the byte match with Big Red One's XAPI (acct2-fh/v3/names/matches.tsv)
+002D444F	XAPI__XInputOpen	input	16		HANDLE	fh_pad_open(MEM32(g_esp + 4), MEM32(g_esp + 8), MEM32(g_esp + 12), MEM32(g_esp + 16))	PXPP_DEVICE_TYPE type, DWORD port, DWORD slot, XINPUT_POLLING_PARAMETERS * polling	86	named 2026-11-13 by fh_xpp_find.py: Big Red One's XInputOpen's instructions at the same distance before XInputGetCapabilities
+002D44A5	XAPI__XInputClose	input	4		void	fh_pad_close(MEM32(g_esp + 4))	HANDLE device	12	named 2026-11-13 by fh_xpp_find.py: Big Red One's XInputClose's instructions at the same distance before XInputGetCapabilities
+002D44B1	XAPI__XInputGetCapabilities	input	8		DWORD	fh_pad_get_capabilities(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_CAPABILITIES * capabilities	472	named 2026-11-13 by the byte match with Big Red One's XAPI (acct2-fh/v3/names/matches.tsv)
+002D4689	XAPI__XInputGetState	input	8		DWORD	fh_pad_get_state(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_STATE * state	115	named 2026-11-13 by the byte match with Big Red One's XAPI (acct2-fh/v3/names/matches.tsv)
+002D46FC	XAPI__XInputSetState	input	8		DWORD	fh_pad_set_state(MEM32(g_esp + 4), MEM32(g_esp + 8))	HANDLE device, XINPUT_FEEDBACK * feedback	51	named 2026-11-13 by the byte match with Big Red One's XAPI (acct2-fh/v3/names/matches.tsv)

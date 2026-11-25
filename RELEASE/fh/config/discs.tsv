@@ -1,0 +1,3 @@
+xbe_md5	name	loader_back_edge	notes
+af0a66b99b0140e42341246f3e75a88e	Europe v3 (En,Fr,Es,It), certificate version 3	0x000691DB	the port's base disc
+a6ffcb8503513094d57480362dee49a4	USA v1, certificate version 1		the loader's routine 0x00068D90 differs on v1: its back edge needs a person (rc2-fh's fh_v1_map.tsv)

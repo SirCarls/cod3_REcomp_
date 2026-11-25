@@ -1,0 +1,155 @@
+# Call of Duty: Finest Hour, the port's settings [acct2-fh]
+#
+# Copy this file next to the game (beside the fh program, or the folder above it), or point FH_SETTINGS at it. Every
+# setting below is at its default. Each one also has an environment variable (in brackets); a variable that is set
+# wins over this file, as the test runs use them. The resolution options and how they compare with Call of Duty 3's:
+# dev/agents/acct2-fh/RESOLUTION.md.
+#
+# While playing, F2 (or Back + Start held for a second on a controller) opens the settings window over the game: its
+# VIDEO page has every [display] setting below and applies each at once (V-Sync at the next start); Save there, or
+# closing it, writes the changes back into this file, every other line and comment kept.
+
+version = 1
+
+[display]
+# How the game is shown: "window", "borderless" (fills the screen, the desktop's size kept) or "exclusive" (the
+# monitor switched to fullscreen_size and refresh_rate). [FH_DISPLAY_MODE; FH_FULLSCREEN=1 is borderless]
+mode = "window"
+# Which monitor: its name as the system gives it (the log's "[fh] display" line), or its number from 1; "" is the one
+# the window opens on. [FH_MONITOR]
+monitor = ""
+# Exclusive mode only: the refresh rate in Hz, the nearest the monitor has; 0 is the monitor's own. [FH_REFRESH_RATE]
+refresh_rate = 0
+# Exclusive mode only: the monitor's size, "<width>x<height>", the nearest mode it has; "" is the desktop's.
+# [FH_FULLSCREEN_SIZE]
+fullscreen_size = ""
+# The window's size when it isn't fullscreen, "<width>x<height>". [FH_WINDOW_SIZE]
+window_size = "1280x960"
+# Frames in step with the display (no tearing); false shows the newest frame at each refresh without waiting
+# (mailbox, no tearing either, where the driver offers it; otherwise as "immediate"); "immediate" shows each frame
+# the moment it is done (the least wait; it may tear).
+# [FH_VSYNC]
+vsync = true
+# How the picture is scaled into the window: "smooth" (filtered), "sharp" (each pixel kept as it is), "integer"
+# (whole multiples only, sharp, with black around it; a picture bigger than the window is still shrunk to fit),
+# "cas" (AMD FidelityFX CAS: filtered, then sharpened) or "fsr" (AMD FidelityFX FSR 1: a picture smaller than its
+# place scaled up by EASU, then sharpened by RCAS; best with render_percent below 100; CAS when not scaled up).
+# [FH_SCALING]
+scaling = "smooth"
+# "cas": how sharp, 0-1 (0 still sharpens a little). [FH_CAS_SHARPNESS]
+cas_sharpness = 0.0
+# "fsr": how much less sharp, in stops, 0-2 (0 the sharpest). [FH_FSR_SHARPNESS_REDUCTION]
+fsr_sharpness_reduction = 0.2
+# "fsr": EASU passes at most, 1-8; each one doubles the size, the last one goes the rest of the way (more passes,
+# a little sharper for a picture far smaller than the window). [FH_FSR_PASSES]
+fsr_passes = 4
+# How the picture fills the window: "bars" keeps its shape with black bars at the sides or top and bottom; "stretch"
+# fills the window, out of shape. [FH_FIT]
+fit = "bars"
+
+# The size the game is drawn at, apart from the window's. The port draws every triangle itself, so any size from
+# 64x48 to the graphics card's largest picture (16384 a side on most) is drawn at that size, sharp; a size bigger than
+# the window is shrunk to fit it (supersampling), a smaller one stretched over it. The films, the game's own text and
+# the textures stay at the Xbox's sizes.
+# "auto" (the window's size, the screen's in fullscreen), "original" (the Xbox's 640x480), "480p", "720p", "1080p",
+# "1440p", "2160p" (4K), "2880p" (5K), "4320p" (8K), or "<width>x<height>". With fit = "bars" the size is made the
+# picture's shape (4:3): 1080p is drawn at 1440x1080. [FH_RENDER_RESOLUTION; FH_SIZE=<width>x<height> as given]
+render_resolution = "auto"
+# Each side times this percent, 10-400: 50 draws a quarter of the pixels (faster), 200 four times as many (sharper).
+# Not for "original". [FH_RENDER_PERCENT]
+render_percent = 100
+# A change to the size (the window resized, a setting changed while playing) is made at once, without restarting;
+# false keeps the size the game started with. [FH_LIVE_RESOLUTION]
+live_resolution = true
+# The picture's shape: "auto" (the window's shape, the screen's in fullscreen), "game" (the Xbox's 4:3), "resolution"
+# (render_resolution's shape), or your own: "16:9", "21:9", "32:9", "2560x1080", "2.39"..., from 1:4 to 8:1. The view
+# up and down stays the game's and the sides show more of the world (wider) or less (narrower), as in Call of Duty 3;
+# the HUD, the menus and the films stay 4:3 in the middle. [FH_ASPECT_RATIO; FH_ASPECT=0 draws the game's view
+# whatever the shape, for comparison]
+aspect_ratio = "auto"
+
+# The frame rate: "console" holds the game to the console's 60 frames a second, at the game's own pace; 0 is no
+# limit (as fast as the game and the display give them; with vsync = true the display's refresh rate is the most);
+# 1 to 1000 is at most that many frames a second, paced by the port. The game moves by the time between frames
+# (game.fine_frame_clock below), so its speed stays the same; what can still differ above 60 is listed in
+# dev/agents/acct2-fh/FRAMERATE-AUDIT.md. [FH_MAX_FPS; FH_FRAME_PACING=0 is 0]
+max_fps = "console"
+# Every that many seconds a "[fps]" line in the log: the frame rate, the frame's time, and the game's step and clock
+# (the frame-rate audit's numbers); 0 is never. [FH_FPS_LOG]
+fps_log = 0
+
+[game]
+# The console's language, which the game reads once at its start: "english", "french", "italian" or "spanish" (the
+# four this disc has; its text, voices and some films follow). "german", "japanese" and the console's other languages
+# (or their numbers 1-9) can be given too; the game shows English for them. Takes effect at the next start.
+# [FH_LANGUAGE]
+language = "english"
+# The time between frames, which the game moves everything by, measured to the microsecond (true), or in whole
+# milliseconds as the console did (false: above 60 frames a second the steps then differ by 20% or more from frame
+# to frame, and from 1000 some frames don't move at all). [FH_FINE_FRAME_CLOCK]
+fine_frame_clock = true
+# The game's two clocks that count frames instead of time follow the frames' real time (true), or count as the
+# console did (false): the frame count / 60, which moves the camera shake's smooth random wobble, and the shake's own
+# frame time, which the game works out once, at the first shake, and keeps. With false, above 60 frames a second the
+# shakes wobble that much faster and end that much sooner (4 times at 240).
+# [FH_FRAME_CLOCKS_BY_TIME]
+frame_clocks_by_time = true
+# [acct2-fh] 11-22: above 60 frames a second, the game's update runs in whole 60ths (true) or every frame with the
+# frame's own step (false). On the Xbox a frame was never shorter than a 60th, and some of the game goes wrong with
+# smaller steps (a screen fade ends sooner, enemy fire almost stops with no frame limit). With true every frame is
+# still drawn, the game moves 60 times a second, and 60 frames a second and below are exactly as with false.
+# Only frames shorter than 0.9 of a 60th (above 66.7 frames a second) are gathered. boot92 (11-22) found the game
+# skipped its drawing on a held frame; from build68 the frame is drawn anyway (the game's own draw-only call).
+# [FH_FIXED_STEP]
+fixed_step_above_60 = true
+# [waw-decomp/fh13] 11-24: the screen fade (a level cut to a whole number each time it runs) runs once per whole
+# 60th of game time (true), so it lasts 4.25 s at every frame rate as at the console's 60, or once a frame with the
+# frame's step (false), when it lasts 5 s at 20 and 30 frames a second. [FH_FADE_BY_60THS]
+fade_by_60ths = true
+# Every press reaches the game, however short and however low the frame rate (true): a tap made and let go
+# between two frames is shown for one update, and presses made faster than the frames come are shown one by one.
+# false: the pad as read once a frame, so below 60 a quick tap can be missed. [FH_PAD_KEEP_PRESSES]
+pad_keep_presses = true
+# Above 60 frames a second, draw the frames between the game's 60 updates a second part way from one update to
+# the next (true), so the picture moves at the full frame rate (one 60th of lag); false: those frames show the last
+# update again, so the picture moves 60 times a second. [FH_DRAW_BETWEEN]
+draw_between = true
+# A folder of HD textures, <width>x<height>_<key>.png as the setup tool makes them: a texture with a picture
+# there is drawn from it. Empty: the game's own textures. [FH_HD_TEXTURES]
+hd_textures = ""
+# Print each texture's HD name when it is first drawn, with hit or miss. [FH_HD_TEXTURES_LOG]
+hd_textures_log = false
+
+[video]
+# [acct2-fh] 11-22: the game's clears of the depth in the middle of a frame (D3DDevice_Clear after the world is
+# drawn, as before its first-person arms and gun): done (true) or left out as before build68 (false), when the world
+# could show through the gun. The log's [clears] line counts them. [FH_DEPTH_CLEAR]
+depth_clear = true
+
+[input]
+# [input-port] 11-24: the keyboard's keys, as "action=KEY,KEY;action=KEY" ("" the defaults: W A S D the left stick,
+# I J K L the right stick, the arrow keys the d-pad, Enter start, Space a, Ctrl b, R x, F y, E black, Q white, Z lt,
+# X rt, Shift and V the stick clicks). The actions are the pad's: up down left right start back lthumb rthumb a b x y
+# black white lt rt move_forward move_back move_left move_right look_up look_down look_left look_right. Two keys an
+# action at most, a key for three actions at most; key names as in Call of Duty 3 (SPACE, MOUSE1, UPARROW, ...). An
+# action left out keeps its default unless the text gives that key to another; "action=" leaves it with none.
+# Escape is always back too. [FH_BINDS_KBM]
+binds_kbm = ""
+# The controller's sticks: a push smaller than this part of a full push counts as none, and the rest of the travel is
+# stretched over the whole range (0 to 0.9; 0 none). [FH_DEAD_ZONE]
+dead_zone = 0
+
+[interface]
+# The F2 settings window's look: "cod3" (Call of Duty 3's black, brass and parchment), "olive", "parchment" or
+# "contrast".
+theme = "cod3"
+# Its text size in points: 14, 16, 18, 20 or 24.
+text_size = 16
+# How solid it is, 0.6 to 1 (lower shows more of the game behind it).
+opacity = 0.94
+# Back + Start held for a second on a controller opens and closes it.
+pad_shortcut = true
+# The console (its CONSOLE page; ~ opens the window there) shows the log's last lines: everything the port prints
+# still goes where it went (the terminal, or a log file), and a copy is kept for the page (true); false leaves the
+# log alone, and the page shows only the console's own answers. Takes effect at the next start. [FH_CONSOLE_LOG]
+console_log = true
